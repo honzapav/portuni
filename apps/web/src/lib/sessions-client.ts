@@ -15,11 +15,12 @@
 //   in this mode.
 //
 // Frame shapes mirror apps/server/api/sessions-ws.ts exactly (client:
-// subscribe/unsubscribe/message/answer/interrupt/suspend/close; server:
+// subscribe/unsubscribe/message/answer/interrupt/continue/close; server:
 // reply/error/event/delta/session_state) -- see that file's own header
 // comment for the canonical protocol description.
 
 import { isTauri } from "./backend-url.js";
+import type { SessionSummary, SessionRunRow } from "../types";
 
 export type SessionState = "running" | "suspended" | "closed" | "archived";
 export type ConnectionStatus = "open" | "reconnecting" | "closed";
@@ -78,7 +79,7 @@ type ClientFrame =
       payload: { session_id: string; request_id: string; decision: { value: string | boolean } };
     }
   | { id: string; type: "interrupt"; payload: { session_id: string } }
-  | { id: string; type: "suspend"; payload: { session_id: string } }
+  | { id: string; type: "continue"; payload: { session_id: string } }
   | { id: string; type: "close"; payload: { session_id: string } };
 
 // 1s -> 30s, doubling, same schedule as the Rust bridge's own
@@ -333,7 +334,11 @@ export interface SessionsClient {
   message(sessionId: string, text: string): Promise<void>;
   answer(sessionId: string, requestId: string, value: string | boolean): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
-  suspend(sessionId: string): Promise<void>;
+  // #378: "Pokračovat v nové session" / "Navázat" -- closes this session and
+  // starts a fresh, running one on the same node, carrying its summary as
+  // orientation. Returns the new session so the caller can switch the
+  // active thread to it without a second round trip.
+  continueSession(sessionId: string): Promise<{ session: SessionSummary; run: SessionRunRow }>;
   close(sessionId: string): Promise<void>;
   onEvent(sessionId: string, cb: (event: CanonicalEventEnvelope) => void): () => void;
   onDelta(sessionId: string, cb: (delta: SessionDeltaMessage) => void): () => void;
@@ -505,8 +510,11 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     async interrupt(sessionId) {
       await send({ type: "interrupt", payload: { session_id: sessionId } });
     },
-    async suspend(sessionId) {
-      await send({ type: "suspend", payload: { session_id: sessionId } });
+    async continueSession(sessionId) {
+      return send<{ session: SessionSummary; run: SessionRunRow }>({
+        type: "continue",
+        payload: { session_id: sessionId },
+      });
     },
     async close(sessionId) {
       await send({ type: "close", payload: { session_id: sessionId } });

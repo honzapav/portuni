@@ -107,8 +107,6 @@ function installRuntime(script: readonly FakeScriptStep[]) {
     store: new DbSessionStore(dbFixture.db),
     registry: { getAdapter: (id) => (id === adapter.id ? adapter : null) },
     provision: stubProvision(),
-    suspendPollIntervalMs: 10,
-    suspendTimeoutMs: 100,
   });
   setSessionRuntimeForTesting(runtime);
   return { runtime, adapter };
@@ -162,7 +160,9 @@ describe("task REST endpoints under /sessions", () => {
     const eventsBody = JSON.parse(eventsRes.body) as { events: SessionEventRow[]; next_after: number | null };
     assert.deepEqual(
       eventsBody.events.map((e) => e.kind),
-      ["run_started", "user_message", "run_ended"],
+      // #378: nobody closed this run explicitly, so it falls through to the
+      // auto-summary/suspend path and gets its handoff event too.
+      ["run_started", "user_message", "run_ended", "handoff"],
     );
     assert.deepEqual(eventsBody.events[1].payload, { text: "Fix the bug", source: "chat" });
     assert.equal(eventsBody.next_after, null);
@@ -266,7 +266,10 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   test("POST /sessions/:id/messages promotes a draft: resolves the runner, names the thread, starts the run", async () => {
-    installRuntime([]);
+    // A trailing wait keeps the run live -- an empty script would auto-
+    // complete right away and (#378) fall into the auto-summary/suspend
+    // path, which is not what this test is about.
+    installRuntime([{ wait: "message" }]);
     const draftRes = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
     const { session: draft } = JSON.parse(draftRes.body) as { session: SessionSummary };
 
@@ -290,7 +293,7 @@ describe("task REST endpoints under /sessions", () => {
     const eventsBody = JSON.parse(eventsRes.body) as { events: SessionEventRow[] };
     assert.deepEqual(
       eventsBody.events.map((e) => e.kind),
-      ["state_changed", "run_started", "user_message", "run_ended"],
+      ["state_changed", "run_started", "user_message"],
     );
     assert.deepEqual(eventsBody.events[0].payload, { from: "draft", to: "running", waiting: false });
     assert.deepEqual(eventsBody.events[2].payload, {
@@ -389,7 +392,7 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal((answered.payload as { decision: { value: boolean } | null }).decision?.value, true);
   });
 
-  test("interrupt, suspend, resume {mode: handoff} and close move the session through its states", async () => {
+  test("interrupt leaves the run live, continue moves to a new session, and close ends it (#378)", async () => {
     installRuntime([{ wait: "message" }]);
     const start = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
@@ -398,25 +401,32 @@ describe("task REST endpoints under /sessions", () => {
     });
     const { session: started } = JSON.parse(start.body) as { session: SessionSummary };
 
+    // interrupt() only cancels the current turn -- the run and the session
+    // both stay live, so a message right after is accepted as ordinary.
     const interruptRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/interrupt`);
     assert.equal(interruptRes.statusCode, 200);
+    const afterInterrupt = (JSON.parse(interruptRes.body) as { session: SessionSummary }).session;
+    assert.equal(afterInterrupt.state, "running");
 
-    // Suspend on a session with no live run still runs the full poll (short,
-    // via the test-only override) and falls back to a server-generated
-    // handoff since nothing calls portuni_session_suspend in this test.
-    const suspendRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/suspend`);
-    assert.equal(suspendRes.statusCode, 200);
-    const suspended = (JSON.parse(suspendRes.body) as { session: SessionSummary }).session;
-    assert.equal(suspended.state, "suspended");
-
-    const resumeRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/resume`, {
-      mode: "handoff",
+    const msgRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/messages`, {
+      text: "still here?",
     });
-    assert.equal(resumeRes.statusCode, 200);
-    const resumed = (JSON.parse(resumeRes.body) as { session: SessionSummary; run: SessionRunRow }).session;
-    assert.equal(resumed.state, "running");
+    assert.equal(msgRes.statusCode, 202);
 
-    const closeRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/close`);
+    // "Pokračovat v nové session": closes the old session (no summary
+    // written on it -- continueSession's own close is not the auto-summary
+    // path) and starts a fresh, running one on the same node, carrying the
+    // old session's history as orientation.
+    const continueRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/continue`);
+    assert.equal(continueRes.statusCode, 200);
+    const { session: continued } = JSON.parse(continueRes.body) as { session: SessionSummary; run: SessionRunRow };
+    assert.notEqual(continued.id, started.id);
+    assert.equal(continued.state, "running");
+
+    const oldRes = await call(makeIdentity("U1"), "GET", `/sessions/${started.id}`);
+    assert.equal((JSON.parse(oldRes.body) as { state: string }).state, "closed");
+
+    const closeRes = await call(makeIdentity("U1"), "POST", `/sessions/${continued.id}/close`);
     assert.equal(closeRes.statusCode, 200);
     const closed = (JSON.parse(closeRes.body) as { session: SessionSummary }).session;
     assert.equal(closed.state, "closed");

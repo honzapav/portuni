@@ -111,6 +111,7 @@ import {
   handleAnswerSessionQuestion,
   handleAppendSessionEvents,
   handleCloseSession,
+  handleContinueSession,
   handleCreateSessionRecord,
   handleCreateSessionRun,
   handleDeleteSession,
@@ -123,11 +124,9 @@ import {
   handleListSessionRuns,
   handlePatchSession,
   handlePatchSessionRun,
-  handleResumeSession,
   handleSendSessionMessage,
   handleStartSession,
   handleListSessions,
-  handleSuspendSession,
   handleTerminalExit,
   handleTransitionSessionState,
 } from "./sessions.js";
@@ -815,14 +814,10 @@ async function routeSessions(
     await handleInterruptSession(req, res, identity, decodeURIComponent(interruptMatch[1]));
     return true;
   }
-  const suspendMatch = pathname.match(/^\/sessions\/([^/]+)\/suspend$/);
-  if (suspendMatch && method === "POST") {
-    await handleSuspendSession(req, res, identity, decodeURIComponent(suspendMatch[1]));
-    return true;
-  }
-  const resumeMatch = pathname.match(/^\/sessions\/([^/]+)\/resume$/);
-  if (resumeMatch && method === "POST") {
-    await handleResumeSession(req, res, identity, decodeURIComponent(resumeMatch[1]));
+  // #378: "Pokračovat v nové session" / "Navázat".
+  const continueMatch = pathname.match(/^\/sessions\/([^/]+)\/continue$/);
+  if (continueMatch && method === "POST") {
+    await handleContinueSession(req, res, identity, decodeURIComponent(continueMatch[1]));
     return true;
   }
   const closeMatch = pathname.match(/^\/sessions\/([^/]+)\/close$/);

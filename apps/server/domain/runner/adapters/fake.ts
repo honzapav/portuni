@@ -126,10 +126,12 @@ export class FakeRunnerAdapter implements RunnerAdapter {
       async answer(): Promise<void> {
         resolveWait("answer");
       },
+      // #378: mirrors the real Claude adapter -- interrupt() only cancels
+      // whatever turn is in flight, it never ends the run. The script (if
+      // paused at a wait step) stays paused; ending the run is close()'s
+      // job alone.
       async interrupt(): Promise<void> {
-        if (ended) return;
-        stopAndResume();
-        emitEnded("interrupted");
+        // no-op
       },
       async close(): Promise<void> {
         if (ended) return;

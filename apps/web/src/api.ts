@@ -228,16 +228,6 @@ export function fetchSession(id: string): Promise<SessionSummary> {
   return jsonRequest<SessionSummary>("GET", `/sessions/${encodeURIComponent(id)}`);
 }
 
-// POST /sessions/:id/resume -- owner-only, not part of the live WS channel
-// (sessions-client.ts's ClientFrame union has no resume frame, matching the
-// server's own protocol -- resume starts a NEW run, it isn't an action on
-// the live one). "Nahodit": conversation-resume when the underlying CLI
-// transcript still exists, handoff-resume otherwise (GET /sessions/:id/
-// resume-info decides which is offered).
-export function resumeSession(id: string, mode: "conversation" | "handoff"): Promise<{ run: SessionRunRow }> {
-  return jsonRequest<{ run: SessionRunRow }>("POST", `/sessions/${encodeURIComponent(id)}/resume`, { mode });
-}
-
 // POST /sessions -- starts a task (session + first run) as a server-driven
 // run. `brief` omitted creates a draft instead (#374, "a thread opens
 // empty"): no run, `run` comes back null; the first message
@@ -262,6 +252,20 @@ export function startDraftThread(nodeId: string): Promise<SessionSummary> {
 // thread is closed via sessionsClient.close, never deleted.
 export function deletePersistentSession(id: string): Promise<void> {
   return jsonRequest<{ deleted: boolean }>("DELETE", `/sessions/${encodeURIComponent(id)}`).then(() => undefined);
+}
+
+// POST /sessions/:id/continue (#378) -- closes this session (its summary
+// seeds the new one, not a fresh suspend) and starts a new, running one on
+// the same node. "Pokračovat v nové session" (offered any time) and
+// "Navázat" (a closed thread, same call minus the prior close) both call
+// this; the new session becomes the active thread. Owner-only ("resume"
+// tier) -- a plain REST wrapper (not sessionsClient) so a caller with no
+// live-channel client (DetailPane.sessions.tsx's Relace tab) can use it too.
+export function continueSession(id: string): Promise<{ session: SessionSummary; run: SessionRunRow }> {
+  return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>(
+    "POST",
+    `/sessions/${encodeURIComponent(id)}/continue`,
+  );
 }
 
 // GET /overview -- Přehled tab (#196). One aggregate, permission-filtered

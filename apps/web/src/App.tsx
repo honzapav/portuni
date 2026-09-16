@@ -895,30 +895,27 @@ export default function App() {
   }, []);
 
   // The × on a thread's own sub-row (#374): a draft with no first message
-  // yet is deleted outright; anything else is Uzavřít, which asks first
-  // (window.confirm is a stand-in -- #378 replaces it with a real
-  // confirmation carrying the session's summary).
-  const workspaceCloseTask = useCallback(
-    (session: SessionSummary) => {
-      const forgetLocally = () => {
-        setLocalDrafts((prev) => {
-          if (!(session.id in prev)) return prev;
-          const next = { ...prev };
-          delete next[session.id];
-          return next;
-        });
-        setWorkspaceOpenSession((prev) => (prev?.id === session.id ? null : prev));
-      };
-      if (session.state === "draft") {
-        forgetLocally();
-        void deletePersistentSession(session.id).catch(() => undefined);
-        return;
-      }
-      if (!window.confirm(`Uzavřít vlákno „${session.name}“?`)) return;
-      void sessionsClient.close(session.id).catch(() => undefined);
-    },
-    [sessionsClient],
-  );
+  // yet is deleted outright; anything else is Uzavřít, which asks first --
+  // via closeTaskConfirm below, a real dialog (window.confirm is a no-op
+  // in the Tauri webview, same reasoning as editorGuard).
+  const [closeTaskConfirm, setCloseTaskConfirm] = useState<SessionSummary | null>(null);
+  const workspaceCloseTask = useCallback((session: SessionSummary) => {
+    const forgetLocally = () => {
+      setLocalDrafts((prev) => {
+        if (!(session.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[session.id];
+        return next;
+      });
+      setWorkspaceOpenSession((prev) => (prev?.id === session.id ? null : prev));
+    };
+    if (session.state === "draft") {
+      forgetLocally();
+      void deletePersistentSession(session.id).catch(() => undefined);
+      return;
+    }
+    setCloseTaskConfirm(session);
+  }, []);
 
   // Close a node: drop it from the open set. Its sessions keep running on
   // the sidecar. Moves the workspace selection to a neighbouring open node,
@@ -1196,6 +1193,34 @@ export default function App() {
               </Button>
               <Button disabled={fileEditor.saving} onClick={() => void resolveEditorGuard("save")}>
                 {fileEditor.saving ? "Ukládám…" : "Uložit"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+      {closeTaskConfirm && (
+        <Dialog open onOpenChange={(open) => !open && setCloseTaskConfirm(null)}>
+          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>Uzavřít vlákno?</DialogTitle>
+              <DialogDescription>
+                Vlákno „{closeTaskConfirm.name}“ se uzavře. Server napřed uloží shrnutí konverzace; najdeš ho pak
+                mezi Hotové.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCloseTaskConfirm(null)}>
+                Zpět
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  const session = closeTaskConfirm;
+                  setCloseTaskConfirm(null);
+                  void sessionsClient.close(session.id).catch(() => undefined);
+                }}
+              >
+                Uzavřít
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -12,16 +12,24 @@
 // while a caller is still awaiting a different runtime method) are
 // persisted and published in emission order, never interleaved.
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { getDb } from "../../infra/db.js";
 import { getSessionScope, threadNameFromFirstMessage } from "../sessions.js";
-import { suspendSessionServerSide, type ServerHandoffReason } from "../session-handoff.js";
+import {
+  buildRunSummaryContent,
+  checkConversationResumable,
+  suspendSessionServerSide,
+  type ServerHandoffReason,
+  type SummaryEvent,
+} from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
 import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
 import { detectAll } from "./registry.js";
 import { getInstanceDefaults, getInstanceEnv, listInstances, type InstanceDefaults } from "./instances.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
-import type { ProvisionRunInput, ProvisionRunResult, ProvisionRunResumeInfo } from "./provision.js";
+import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
 import type {
   CanonicalEvent,
   DeltaFrame,
@@ -32,21 +40,6 @@ import type {
   RunStart,
   RunnerAdapter,
 } from "./types.js";
-
-// Moved from apps/web/src/lib/session-suspend.ts (the web copy is deleted
-// once the terminal removal phase lands) -- the one instruction every
-// suspend path sends the runner, asking the agent to write its own handoff
-// and call portuni_session_suspend before the server gives up and writes a
-// minimal one itself.
-export const SUSPEND_INSTRUCTION =
-  "Please suspend this session now: call portuni_session_suspend with a brief handoff summary of where you left off, then stop.";
-
-const DEFAULT_SUSPEND_TIMEOUT_MS = 30_000;
-const DEFAULT_SUSPEND_POLL_INTERVAL_MS = 1_000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // A draft's first message (#374) has no runner/instance chosen up front --
 // the spec's "a thread opens empty: no modal, no required field" rules out
@@ -116,12 +109,9 @@ export interface CreateSessionRuntimeDeps {
   store: SessionStore;
   registry: RunnerRegistryLookup;
   provision: (input: ProvisionRunInput) => Promise<ProvisionRunResult>;
-  // Test-only overrides for the suspend() poll loop -- production leaves
-  // these at their 1s/30s defaults.
-  suspendPollIntervalMs?: number;
-  suspendTimeoutMs?: number;
-  // What suspend() falls back to when no handoff arrived in time (spec:
-  // "the server generates one from the session record"). Defaults to the
+  // #378: writes the mechanical summary and moves the session to suspended
+  // -- called whenever a run ends other than by Uzavřít/continue (any
+  // reason), and by the idle sweep specifically ("idle"). Defaults to the
   // local-mode implementation (suspendSessionServerSide against the graph
   // db); boot/session-runtime.ts's createAgentSessionRuntime supplies
   // domain/runner/suspend-fallback-central.ts's version instead, since
@@ -163,16 +153,30 @@ export interface SessionRuntime {
   // instead (local mode's own handlers still use domain/sessions.ts's
   // getSession directly; this exists for the agent-mode caller).
   getSession(sessionId: string): Promise<SessionRow | null>;
+  // #378: sending into a session with no live run is what promotes a draft
+  // (#374, unchanged) or resumes a suspended thread (new: `--resume` on the
+  // last run's agent_session_id while that's still valid, else from the
+  // summary) -- there is no separate resume verb to call first. Throws
+  // "has no live run" only for a closed/archived session, same wording as
+  // before.
   sendMessage(sessionId: string, text: string): Promise<void>;
   answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void>;
+  // Cancels the CURRENT TURN only (Query.interrupt()) -- the process, the
+  // prompt queue and the run all stay alive; a message right after is
+  // ordinary. Ending the run is close()'s job alone.
   interrupt(sessionId: string): Promise<void>;
   // #375: forwards a model change to a live run's Query (no restart) --
   // a no-op when the session has no live run, since the REST handler's own
   // plain column write already persists the choice for the NEXT run.
   setModel(sessionId: string, model: string | null): Promise<void>;
-  suspend(sessionId: string): Promise<SessionRow>;
-  resume(sessionId: string, mode: "conversation" | "handoff"): Promise<SessionRunRow>;
   closeSession(sessionId: string): Promise<SessionRow>;
+  // #378: closes THIS session (summary written from what's in the log,
+  // used to seed the new one -- not from a fresh suspend, since Uzavřít-
+  // shaped closes never go through the auto-summary path) and starts a new
+  // one, running, on the same node -- "Pokračovat v nové session" (offered
+  // any time) and "Navázat" (a closed thread, same call minus the prior
+  // close) both call this.
+  continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }>;
   subscribe(target: string, listener: RuntimeListener): () => void;
   sessionSignals(sessionId: string): Promise<SessionSignals>;
   // The session's currently open question, or null -- lets a caller (the
@@ -191,6 +195,13 @@ export interface SessionRuntime {
   // uses this only in tests, to assert a closed socket's subscription was
   // actually dropped rather than leaked.
   subscriberCount(target: string): number;
+  // #378: ends any live run idle for longer than idleMs (no activity --
+  // messages, adapter events, answers), writing the same mechanical
+  // summary as any other non-close run end (reason "idle"). Called
+  // directly by tests (no timer involved); production wiring is an
+  // external interval (boot/session-sweep.ts) calling this on the
+  // process's one runtime instance, same pattern as the other boot sweeps.
+  checkIdleRunsOnce(idleMs: number, now?: number): Promise<void>;
 }
 
 interface LiveRun {
@@ -200,8 +211,6 @@ interface LiveRun {
 
 export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRuntime {
   const { store, registry, provision } = deps;
-  const suspendPollIntervalMs = deps.suspendPollIntervalMs ?? DEFAULT_SUSPEND_POLL_INTERVAL_MS;
-  const suspendTimeoutMs = deps.suspendTimeoutMs ?? DEFAULT_SUSPEND_TIMEOUT_MS;
   const suspendFallback =
     deps.suspendFallback ?? ((sessionId: string, reason: ServerHandoffReason) => suspendSessionServerSide(getDb(), sessionId, reason));
 
@@ -217,10 +226,24 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // Per-session serial dispatch: every appendAndPublish for a session
   // chains onto this so emission order survives concurrent sink calls.
   const queues = new Map<string, Promise<void>>();
-  // Sessions a suspend() is in progress for: the run_ended the adapter's
-  // close() emits during a suspend is recorded as "suspended", not the
-  // adapter's own "completed" -- the adapter cannot know why it was closed.
-  const suspending = new Set<string>();
+  // #378: sessions a closeSession()/continueSession() close is in progress
+  // for -- the run_ended that follows must NOT trigger the auto-summary/
+  // suspend path (handleAdapterEvent), since these two already own the
+  // resulting state transition (closed) themselves.
+  const closingSessions = new Set<string>();
+  // #378: the reason the NEXT run_ended for this session should suspend
+  // with, when it's the idle sweep asking for it specifically ("idle")
+  // rather than the generic "run_ended" catch-all handleAdapterEvent falls
+  // back to. Set by endIdleRun just before closing, consumed once.
+  const pendingEndReason = new Map<string, ServerHandoffReason>();
+  // #378: last time ANY activity was observed for a session's live run
+  // (started, a message sent, an adapter event, a question answered) --
+  // the idle sweep's own cutoff. Cleared once the run ends.
+  const lastActivityAt = new Map<string, number>();
+
+  function touchActivity(sessionId: string): void {
+    lastActivityAt.set(sessionId, Date.now());
+  }
 
   function publish(sessionId: string, event: PublishedEvent): void {
     for (const listener of subscribers.get(sessionId) ?? []) listener(sessionId, event);
@@ -324,6 +347,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       const live = liveRuns.get(sessionId);
       const agentSessionId = live?.runId === runId ? live.handle.agentSessionId() : null;
       liveRuns.delete(sessionId);
+      lastActivityAt.delete(sessionId);
       runStartScopeSize.delete(runId);
       await store.patchRun(runId, {
         ended_at: new Date().toISOString(),
@@ -333,13 +357,40 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       });
       await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
       await clearWaitingIfPending(sessionId, runId);
+
+      // #378: closeSession()/continueSession() already own the resulting
+      // transition (to "closed") for their own run end -- everything else
+      // (idle, error, a natural CLI-initiated end) writes the mechanical
+      // summary and moves the session to suspended instead.
+      if (closingSessions.has(sessionId)) {
+        closingSessions.delete(sessionId);
+      } else {
+        const reason = pendingEndReason.get(sessionId) ?? "run_ended";
+        pendingEndReason.delete(sessionId);
+        const suspended = await suspendFallback(sessionId, reason);
+        if (suspended) {
+          await appendAndPublish(sessionId, runId, [
+            { kind: "handoff", payload: { path: suspended.handoff_path, hash: suspended.handoff_hash } },
+          ]);
+        }
+      }
     }
   }
 
-  // A run closed by suspend() ends as "suspended" whatever the adapter's
-  // close() reported (the fake, and any graceful close, says "completed").
+  // A run ended by anything other than an explicit close/continue is
+  // recorded as "suspended" (whatever the adapter's own close() reported --
+  // the fake, and any graceful close, says "completed"; the adapter cannot
+  // know why it was closed) so the run's own history matches the session
+  // ending up suspended. An adapter-reported error/limit/host_lost reason
+  // stays as-is -- that IS the informative reason, not an artifact of who
+  // called close().
   function withSuspendReason(sessionId: string, event: CanonicalEvent | DeltaFrame): CanonicalEvent | DeltaFrame {
-    if ("kind" in event && event.kind === "run_ended" && suspending.has(sessionId)) {
+    if (
+      "kind" in event &&
+      event.kind === "run_ended" &&
+      event.payload.reason === "completed" &&
+      !closingSessions.has(sessionId)
+    ) {
       return { kind: "run_ended", payload: { ...event.payload, reason: "suspended" } };
     }
     return event;
@@ -413,6 +464,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
     const handle = await adapter.start(runStart, makeSink(session.id, run.id));
     liveRuns.set(session.id, { handle, runId: run.id });
+    touchActivity(session.id);
     // Written before drain() lets any already-queued run_ended handler
     // remove it, so write-then-remove ordering always holds even for a
     // wait-free script. A null pid (the fake adapter, or a real one that
@@ -474,22 +526,32 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   async function sendMessage(sessionId: string, text: string): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (live) {
+      touchActivity(sessionId);
       await enqueue(sessionId, () =>
         appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
       );
       await live.handle.send(text);
       return;
     }
-    await promoteDraftAndStart(sessionId, text);
+
+    const session = await store.getSession(sessionId);
+    if (!session) throw new Error(`sendMessage: session ${sessionId} not found`);
+    if (session.state === "draft") {
+      await promoteDraftAndStart(sessionId, text);
+      return;
+    }
+    if (session.state === "suspended") {
+      await resumeByWriting(sessionId, session, text);
+      return;
+    }
+    throw new Error(`sendMessage: session ${sessionId} has no live run`);
   }
 
   // A thread is a session row from the moment it opens (#374, "the session
   // row exists from the moment the thread opens"): the first message is
   // what promotes a draft to running and starts its first run, resolving
   // runner/instance the same way startTask's caller used to before it was
-  // chosen up front in a now-removed dialog. Any other session with no live
-  // run (a thread whose run has already ended) is out of this issue's scope
-  // -- #378 teaches that case to resume-by-writing; today it still refuses.
+  // chosen up front in a now-removed dialog.
   async function promoteDraftAndStart(sessionId: string, text: string): Promise<void> {
     const session = await store.getSession(sessionId);
     if (!session) throw new Error(`sendMessage: session ${sessionId} not found`);
@@ -535,11 +597,75 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     });
   }
 
+  // #378 ("Resume is writing"): sending into a thread whose last run ended
+  // starts a new one -- no mode picker, the server decides. `--resume` on
+  // the last run's agent_session_id while the CLI's own transcript for it
+  // still exists (checkConversationResumable, the same check GET
+  // /sessions/:id/resume-info already used); otherwise the session's own
+  // summary (written when the last run ended) becomes extra orientation,
+  // same as the old handoff-mode resume did.
+  async function resumeByWriting(sessionId: string, session: SessionRow, text: string): Promise<void> {
+    if (!session.node_id) throw new Error(`sendMessage: session ${sessionId} has no anchor node`);
+    const runner = session.runner;
+    if (!runner) throw new Error(`sendMessage: session ${sessionId} has no runner to resume under`);
+
+    const runs = await store.listRuns(sessionId);
+    const lastRun = runs.length > 0 ? runs[runs.length - 1] : null;
+
+    const provisioned = await provision({ userId: session.user_id, nodeId: session.node_id, sessionId, resume: null });
+
+    const canResumeConversation =
+      lastRun?.agent_session_id != null &&
+      (await checkConversationResumable(session.cli, lastRun.agent_session_id, provisioned.cwd));
+
+    let runStartResume: RunStart["resume"] = null;
+    let runProvisioned = provisioned;
+    if (canResumeConversation && lastRun?.agent_session_id) {
+      runStartResume = { agentSessionId: lastRun.agent_session_id };
+    } else {
+      const summary = session.handoff_path
+        ? await readFile(join(provisioned.cwd, session.handoff_path), "utf8").catch(() => null)
+        : session.handoff_inline;
+      if (summary) {
+        runProvisioned = {
+          ...provisioned,
+          orientation: `${provisioned.orientation}\n\n## Předání (obnovení ze shrnutí)\n\nKonverzace se neobnovuje přímo; pokračuješ z tohoto shrnutí:\n\n${summary}`,
+        };
+      }
+    }
+
+    const instanceId = session.instance_id;
+    const run = await store.createRun({
+      session_id: sessionId,
+      runner,
+      instance_id: instanceId,
+      host_id: session.host_id,
+      resumed_from_run_id: lastRun?.id ?? null,
+      agent_session_id: runStartResume?.agentSessionId ?? null,
+    });
+    const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
+    const updated = await store.patchSession(sessionId, { state: "running" });
+
+    // Same reason as promoteDraftAndStart's own state_changed: a window
+    // other than this one showing the thread learns it woke up.
+    await appendAndPublish(sessionId, null, [
+      { kind: "state_changed", payload: { from: "suspended", to: "running", waiting: false } },
+    ]);
+
+    await startRun(updated, run, runProvisioned, instanceEnv, {
+      brief: text,
+      runStartResume,
+      resumeMode: runStartResume ? "conversation" : "handoff",
+      policy: "default",
+    });
+  }
+
   // Same ordering rule: the answered question (and the waiting: false
   // state) is recorded before the adapter learns the decision.
   async function answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (!live) throw new Error(`answer: session ${sessionId} has no live run`);
+    touchActivity(sessionId);
 
     const pending = pendingQuestions.get(sessionId);
     if (pending && pending.request_id === requestId) {
@@ -549,11 +675,20 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       });
     }
     await live.handle.answer(requestId, decision);
+    // Whatever the adapter does in reaction (more events, or the run
+    // ending) is sunk through the same per-session queue -- drain it so a
+    // caller awaiting answer() sees the reaction, not just the decision.
+    await drain(sessionId);
   }
 
+  // #378: cancels the CURRENT TURN only (Query.interrupt()) -- the process,
+  // the prompt queue and the run stay alive, so a message right after is an
+  // ordinary one. Ending the run belongs to close() alone (closeSession,
+  // continueSession, the idle sweep).
   async function interrupt(sessionId: string): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (!live) return;
+    touchActivity(sessionId);
     await live.handle.interrupt();
     await drain(sessionId);
   }
@@ -569,128 +704,131 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     await live.handle.setModel(model);
   }
 
+  // #378: the only action that actually ends a live run's process (besides
+  // continueSession and the idle sweep) -- close(), not interrupt(), so the
+  // run genuinely stops instead of just cancelling the current turn.
+  // Uzavřít is the one irreversible action, so closingSessions is set
+  // first: the run_ended this produces must not ALSO trigger the auto-
+  // summary/suspend path, since this function already owns the transition
+  // to closed.
   async function closeSession(sessionId: string): Promise<SessionRow> {
     const live = liveRuns.get(sessionId);
     if (live) {
-      await live.handle.interrupt();
+      closingSessions.add(sessionId);
+      await live.handle.close();
       await drain(sessionId);
     }
     return store.patchSession(sessionId, { state: "closed" });
   }
 
-  async function pollUntilSuspended(sessionId: string): Promise<boolean> {
-    const deadline = Date.now() + suspendTimeoutMs;
-    for (;;) {
-      const row = await store.getSession(sessionId);
-      if (row?.state === "suspended") return true;
-      if (Date.now() >= deadline) return false;
-      await sleep(Math.min(suspendPollIntervalMs, Math.max(deadline - Date.now(), 0)));
-    }
-  }
-
-  async function suspend(sessionId: string): Promise<SessionRow> {
+  // #378: ends an idle live run (no activity for longer than idleMs) the
+  // same way closeSession would, EXCEPT it does NOT add to closingSessions
+  // -- the resulting run_ended is meant to fall through to the auto-
+  // summary/suspend path in handleAdapterEvent, tagged "idle" specifically
+  // (via pendingEndReason) rather than the generic "run_ended".
+  async function endIdleRun(sessionId: string): Promise<void> {
     const live = liveRuns.get(sessionId);
-    const runId = live?.runId ?? (await store.liveRun(sessionId))?.id ?? null;
-
-    suspending.add(sessionId);
-    try {
-      await enqueue(sessionId, () =>
-        appendAndPublish(sessionId, runId, [
-          { kind: "user_message", payload: { text: SUSPEND_INSTRUCTION, source: "system" } },
-        ]),
-      );
-      if (live) await live.handle.send(SUSPEND_INSTRUCTION);
-
-      const reachedSuspended = await pollUntilSuspended(sessionId);
-
-      let handoffEvent: CanonicalEvent;
-      if (reachedSuspended) {
-        const session = await mustGetSession(sessionId);
-        handoffEvent = {
-          kind: "handoff",
-          payload: { path: session.handoff_path, hash: session.handoff_hash, generated_by: "agent" },
-        };
-      } else {
-        // The same server-written fallback every other server-side suspend
-        // uses locally (#329): a file in the mirror when this device has
-        // one, handoff_inline otherwise, marked with its reason either
-        // way. suspendFallback is the agent-mode-aware seam (default:
-        // suspendSessionServerSide against the graph db).
-        const session = await suspendFallback(sessionId, "suspend_timeout");
-        if (!session) throw new Error(`suspend: session ${sessionId} not found`);
-        handoffEvent = {
-          kind: "handoff",
-          payload: { path: session.handoff_path, hash: session.handoff_hash, generated_by: "server" },
-        };
-      }
-
-      if (live) {
-        await live.handle.close();
-        await drain(sessionId);
-      }
-
-      await enqueue(sessionId, () => appendAndPublish(sessionId, runId, [handoffEvent]));
-    } finally {
-      suspending.delete(sessionId);
-    }
-    return mustGetSession(sessionId);
+    if (!live) return;
+    pendingEndReason.set(sessionId, "idle");
+    await live.handle.close();
+    await drain(sessionId);
   }
 
-  async function resume(sessionId: string, mode: "conversation" | "handoff"): Promise<SessionRunRow> {
-    const session = await mustGetSession(sessionId);
-    if (!session.node_id) throw new Error(`resume: session ${sessionId} has no anchor node`);
-    if (await store.liveRun(sessionId)) {
-      throw new Error(`resume: session ${sessionId} already has a live run`);
+  async function checkIdleRunsOnce(idleMs: number, now: number = Date.now()): Promise<void> {
+    const staleIds = [...liveRuns.keys()].filter((id) => now - (lastActivityAt.get(id) ?? now) > idleMs);
+    for (const id of staleIds) {
+      await endIdleRun(id);
+    }
+  }
+
+  async function nodeNameForSession(nodeId: string): Promise<string | null> {
+    try {
+      const db = getDb();
+      const res = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [nodeId] });
+      return res.rows.length > 0 ? String(res.rows[0].name) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // #378: "Pokračovat v nové session" / "Navázat" -- closes THIS session
+  // (summary built from whatever's in its own log right now, used only to
+  // seed the new one -- not the auto-summary/suspend path, since this ends
+  // as closed, never suspended) and starts a fresh one, running, on the
+  // same node, carrying the old summary as extra orientation. No mode
+  // picker, no brief: the new thread starts itself, same shape as a
+  // handoff-mode resume used to, just into a brand new session row.
+  async function continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
+    const oldSession = await mustGetSession(sessionId);
+    if (!oldSession.node_id) throw new Error(`continueSession: session ${sessionId} has no anchor node`);
+    const runner = oldSession.runner;
+    if (!runner) throw new Error(`continueSession: session ${sessionId} has no runner to continue under`);
+
+    const live = liveRuns.get(sessionId);
+    if (live) {
+      closingSessions.add(sessionId);
+      await live.handle.close();
+      await drain(sessionId);
     }
 
-    const runs = await store.listRuns(sessionId);
-    const lastRun = runs.length > 0 ? runs[runs.length - 1] : null;
-    const runner = session.runner ?? lastRun?.runner;
-    if (!runner) throw new Error(`resume: session ${sessionId} has no runner to resume under`);
+    const scope = await getSessionScope(getDb(), sessionId).catch(() => []);
+    const rows = await store.listEvents(sessionId);
+    const events: SummaryEvent[] = rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
+    const nodeName = await nodeNameForSession(oldSession.node_id);
+    const summary = buildRunSummaryContent({
+      nodeName,
+      sessionName: oldSession.name,
+      reason: "continue",
+      events,
+      writeSet: scope.filter((s) => s.writable === 1).map((s) => s.node_id),
+      readSet: scope.map((s) => s.node_id),
+      lastActiveAt: oldSession.last_active_at,
+    });
 
-    let runStartResume: RunStart["resume"] = null;
-    let provisionResume: ProvisionRunResumeInfo;
-    let agentSessionId: string | null = null;
+    await store.patchSession(sessionId, { state: "closed" });
+    await appendAndPublish(sessionId, null, [
+      { kind: "state_changed", payload: { from: oldSession.state, to: "closed", waiting: false } },
+    ]);
 
-    if (mode === "conversation") {
-      if (!lastRun?.agent_session_id) {
-        throw new Error(`resume: session ${sessionId} has no resumable conversation`);
-      }
-      agentSessionId = lastRun.agent_session_id;
-      runStartResume = { agentSessionId };
-      provisionResume = { mode: "conversation" };
-    } else {
-      provisionResume = { mode: "handoff", handoffPath: session.handoff_path };
-    }
+    const newSession = await store.createSession({
+      node_id: oldSession.node_id,
+      user_id: oldSession.user_id,
+      brief: null,
+      runner,
+      instance_id: oldSession.instance_id,
+      host_id: oldSession.host_id,
+      model: oldSession.model,
+      effort: oldSession.effort,
+    });
+    await store.patchSession(newSession.id, { name: oldSession.name, name_is_custom: true });
 
     const provisioned = await provision({
-      userId: session.user_id,
-      nodeId: session.node_id,
-      sessionId,
-      resume: provisionResume,
+      userId: oldSession.user_id,
+      nodeId: oldSession.node_id,
+      sessionId: newSession.id,
+      resume: null,
     });
+    const seededProvisioned = {
+      ...provisioned,
+      orientation: `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n${summary}`,
+    };
 
     const run = await store.createRun({
-      session_id: sessionId,
+      session_id: newSession.id,
       runner,
-      instance_id: session.instance_id,
-      host_id: session.host_id,
-      resumed_from_run_id: lastRun?.id ?? null,
-      agent_session_id: agentSessionId,
+      instance_id: oldSession.instance_id,
+      host_id: oldSession.host_id,
     });
+    const instanceEnv = oldSession.instance_id ? ((await getInstanceEnv(oldSession.instance_id)) ?? {}) : {};
 
-    const instanceEnv = session.instance_id ? ((await getInstanceEnv(session.instance_id)) ?? {}) : {};
-
-    await store.patchSession(sessionId, { state: "running" });
-
-    await startRun(session, run, provisioned, instanceEnv, {
+    await startRun(await mustGetSession(newSession.id), run, seededProvisioned, instanceEnv, {
       brief: null,
-      runStartResume,
-      resumeMode: mode,
+      runStartResume: null,
+      resumeMode: null,
       policy: "default",
     });
 
-    return run;
+    return { session: await mustGetSession(newSession.id), run };
   }
 
   async function sessionSignals(sessionId: string): Promise<SessionSignals> {
@@ -741,14 +879,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     answer,
     interrupt,
     setModel,
-    suspend,
-    resume,
+    closeSession,
+    continueSession,
     pendingQuestion,
     recordStoppedBy,
     subscriberCount,
     listEvents,
-    closeSession,
     subscribe,
     sessionSignals,
+    checkIdleRunsOnce,
   };
 }

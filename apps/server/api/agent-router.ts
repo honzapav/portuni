@@ -229,9 +229,6 @@ export type AgentRouteFn = (
 ) => Promise<boolean>;
 
 export interface AgentRouterOpts {
-  // Test-only: shortens suspend()'s poll loop so a suspend-timeout fallback
-  // test doesn't take the real 30s. Production never sets this.
-  sessionRuntimeOpts?: { suspendPollIntervalMs?: number; suspendTimeoutMs?: number };
   // The runtime this router drives. desktop.ts builds one per agent-mode
   // sidecar and hands the SAME instance to the live channel
   // (createAgentSessionsWsDeps), so a task started over REST is the one the
@@ -249,7 +246,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
   // own identity resolved from the device token) -- guardAgentRestWrite
   // below is only the same local webview-proxy-trust posture every other
   // mutating route on this router already applies.
-  const sessionRuntime = opts?.sessionRuntime ?? createAgentSessionRuntime(client, opts?.sessionRuntimeOpts);
+  const sessionRuntime = opts?.sessionRuntime ?? createAgentSessionRuntime(client);
 
   return async (req, res, url, identity) => {
     const method = req.method ?? "GET";
@@ -602,32 +599,18 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       return true;
     }
 
-    const sessionSuspendMatch = pathname.match(/^\/sessions\/([^/]+)\/suspend$/);
-    if (sessionSuspendMatch && method === "POST") {
-      const sessionId = decodeURIComponent(sessionSuspendMatch[1]);
+    // #378: "Pokračovat v nové session" / "Navázat" -- closes this session
+    // and starts a new one on the same node, seeded with its summary.
+    const sessionContinueMatch = pathname.match(/^\/sessions\/([^/]+)\/continue$/);
+    if (sessionContinueMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionContinueMatch[1]);
       if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
       try {
-        // Same 30s-poll contract as the local REST route.
-        const session = await sessionRuntime.suspend(sessionId);
-        respondJson(res, 200, { session });
-      } catch (err) {
-        respondError(res, `POST /sessions/${sessionId}/suspend`, err);
-      }
-      return true;
-    }
-
-    const sessionResumeMatch = pathname.match(/^\/sessions\/([^/]+)\/resume$/);
-    if (sessionResumeMatch && method === "POST") {
-      const sessionId = decodeURIComponent(sessionResumeMatch[1]);
-      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
-      const body = await parseJsonBody(req, res, z.object({ mode: z.enum(["conversation", "handoff"]) }));
-      if (!body) return true;
-      try {
-        const run = await sessionRuntime.resume(sessionId, body.mode);
-        respondJson(res, 200, { run });
+        const { session, run } = await sessionRuntime.continueSession(sessionId);
+        respondJson(res, 200, { session, run });
       } catch (err) {
         if (respondAgentSessionError(res, err)) return true;
-        respondError(res, `POST /sessions/${sessionId}/resume`, err);
+        respondError(res, `POST /sessions/${sessionId}/continue`, err);
       }
       return true;
     }

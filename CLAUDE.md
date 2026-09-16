@@ -2096,6 +2096,98 @@ symlink to this file.
   `models()` (returns whatever fixed list its `FakeRunnerAdapterOptions.models`
   constructor option was given, `[]` by default) purely so it satisfies the
   now-larger `RunnerAdapter` interface -- no test exercises it beyond that.
+- **The deterministic thread lifecycle (#378, phase 3 of the task-surface
+  spec) replaces the suspend handshake with a mechanical summary, and
+  narrows `interrupt()` to "cancel the current turn."** `adapters/claude.ts`'s
+  `interrupt()` now only calls `Query.interrupt()` -- no more ending the
+  prompt queue, no more waiting for the process to exit -- so the process,
+  the queue and the run all stay alive; `RunTranslationState.interrupting`
+  is gone entirely, and the natural completion path always reports
+  `"completed"`. `FakeRunnerAdapter.interrupt()` mirrors this: a no-op
+  (previously it stopped the script and emitted `run_ended {reason:
+  "interrupted"}`). **Ending a run other than via Uzavřít auto-writes a
+  summary and suspends the session** -- `session-runtime.ts`'s
+  `closingSessions: Set<string>` (renamed/repurposed from the old
+  suspend-tracking set) marks a run end as an explicit close
+  (`closeSession`/`continueSession`); `handleAdapterEvent`'s `run_ended`
+  branch checks it, and when a run ends WITHOUT that mark it calls
+  `suspendFallback` (default: `suspendSessionServerSide`, unchanged) with a
+  `pendingEndReason` (`"run_ended"` by default, `"idle"` for the idle sweep
+  below) and then appends the `handoff` canonical event itself (`{path,
+  hash}` off the now-suspended row) -- the same pattern `run-sweep.ts`'s
+  `host_lost` path already used, now shared. `withSuspendReason` rewrites
+  an adapter-reported `"completed"` to `"suspended"` unless
+  `closingSessions` has the session, so the run's own history matches the
+  session ending up suspended; an adapter-reported error/limit/host_lost
+  reason is untouched. **`SUSPEND_INSTRUCTION`, `pollUntilSuspended`, the
+  `suspend_timeout` poll/fallback, `POST /sessions/:id/suspend` and its WS
+  frame are gone** -- `SessionRuntime` lost `suspend`/`resume`, gained
+  `continueSession`/`checkIdleRunsOnce`. `portuni_session_suspend` (MCP)
+  is untouched -- it stays the only channel a hand-opened CLI has, and a
+  handoff it wrote is appended to the summary rather than waited for.
+  `HandoffEvent.payload` dropped `generated_by` (now just `{path, hash}` --
+  every runner-driven handoff event is server-written now, so the field
+  had nothing left to distinguish); `SessionResumeInfo.reason`/
+  `ServerHandoffReason` kept `generated_by`/`reason` and gained
+  `"run_ended"`/`"continue"` -- that machinery still labels a hand-opened
+  CLI's server-suspended row in Relace ("pozastaveno serverem"), a
+  narrower, unrelated survival, not a re-add of what was removed.
+  **Idle is the server's**: `boot/session-sweep.ts`'s `startIdleRunSweep`
+  (60s interval, unref'd, `PORTUNI_RUN_IDLE_MS` default 30 min) drives
+  `checkIdleRunsOnce(idleMs)`, wired in both `index.ts` and `desktop.ts`
+  (agent mode) right after `sweepOrphanedRunsOnBoot`. `endIdleRun` sets
+  `pendingEndReason: "idle"` and calls `close()` on the live handle --
+  the SAME `handleAdapterEvent` path as any other non-close end, just
+  tagged `"idle"` instead of the generic `"run_ended"`.
+  **Resume is writing**: `sendMessage`'s no-live-run branch now checks
+  session state -- `"draft"` still promotes (#374, unchanged), `"suspended"`
+  calls the new `resumeByWriting` (`checkConversationResumable` when the
+  CLI's own conversation is still valid, else reads `handoff_path`/
+  `handoff_inline` and starts a fresh run carrying it as orientation,
+  `resume: "handoff"` on the new `run_started` event, `resumed_from_run_id`
+  linking the two runs) -- there is no mode picker, the server decides.
+  `POST /sessions/:id/resume` and its dedicated web action are gone;
+  `api.ts`'s `resumeSession` was deleted outright (dead code once the route
+  went). **`POST /sessions/:id/continue`** (`continueSession`, wired in
+  `router.ts`, `agent-router.ts`, `sessions-ws.ts`'s new `continue` frame,
+  `min-scopes.ts`, `auth/session-access.ts`'s existing `"resume"` tier) is
+  "Pokračovat v nové session" (offered any time there's an open thread) and
+  "Navázat" (a closed thread, same call minus the prior close): closes
+  THIS session (`closingSessions`-gated, like `closeSession` -- its own
+  summary is not auto-written, since `continueSession` builds its own from
+  the log and seeds the NEW session with it as orientation) and starts a
+  fresh, running one on the same node, returning `{session, run}` for the
+  new one. The WS reply carries the curated `SessionSummary`
+  (`sessions.ts`'s `toSummary`, exported for this), not the raw row, to
+  match every REST session response.
+  **Web**: `SessionChat.tsx` lost Přerušit/Pozastavit/Pokračovat/Předat a
+  začít znovu and `handleRestartFromHandoff`; the composer's own
+  `PromptInputSubmit` doubles as the stop control (`status="streaming"` +
+  `onStop`) whenever `liveRunId` is set, and Esc in the textarea does the
+  same -- both just call `interrupt()`, a no-op when there's nothing to
+  cancel, so typing is never blocked. A suspended thread shows a
+  dismissible notice bar above the composer instead of disabling it
+  (`noticeDismissed`, reset whenever a NEW run starts -- `liveRunId` flips
+  non-null again -- so the next time it ends up here shows a fresh bar,
+  not a permanently-dismissed one); the composer stays enabled the whole
+  time, since sending is what resumes. Uzavřít opens a confirm dialog
+  (`closeConfirmOpen`, a real `Dialog` -- `window.confirm` is a no-op in
+  the Tauri webview) before calling `close()`. The same confirm-dialog
+  fix applies to `WorkspaceNodeList`'s thread-row `×` (`App.tsx`'s
+  `closeTaskConfirm` state replacing its own `window.confirm` stand-in) and
+  `DetailPane.sessions.tsx`'s row-level Uzavřít (`closeConfirm`) --
+  `DetailPane.sessions.tsx` also lost both Nahodit buttons (resuming is
+  no longer a picked action, the `resumeInfo` fetch is purely informational
+  now) and gained a `Navázat` button on a closed row (`continueSession`,
+  a new plain REST wrapper in `api.ts` since that tab has no
+  `sessionsClient` of its own) that jumps to the fresh thread via
+  `onOpenChat`. **No context-usage ring**: the spec's mockup shows
+  "Pokračovat v nové session" beside a context-percentage ring, emphasised
+  past 80% -- there is no token-usage tracking anywhere in this codebase to
+  drive that (`RunEndedEvent.payload.usage` is adapter-reported and
+  untyped), so the button is offered plainly, without the ring or the
+  80%-emphasis threshold; a real ring needs its own token-accounting work
+  first, out of scope here.
 
 ## Security rules (from the auth refactor post-mortem)
 

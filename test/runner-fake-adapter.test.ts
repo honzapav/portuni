@@ -96,7 +96,7 @@ describe("FakeRunnerAdapter", () => {
     ]);
   });
 
-  it("interrupt mid-script stops further steps and emits run_ended interrupted", async () => {
+  it("interrupt() never ends the run or stops the script (#378)", async () => {
     const script: FakeScriptStep[] = [userMsg, { wait: "message" }, assistantMsg];
     const adapter = new FakeRunnerAdapter({ script });
     const events: (CanonicalEvent | DeltaFrame)[] = [];
@@ -106,16 +106,15 @@ describe("FakeRunnerAdapter", () => {
 
     await handle.interrupt();
 
-    assert.deepEqual(events, [
-      userMsg,
-      { kind: "run_ended", payload: { run_id: "R1", reason: "interrupted", usage: null } },
-    ]);
+    // Nothing observable happened -- the script is still paused at its
+    // wait step, exactly as before interrupt() was called.
+    assert.deepEqual(events, [userMsg]);
 
-    // A resume attempt after interrupt is a no-op -- the script is over.
-    await handle.send("too late");
+    await handle.send("continue");
     assert.deepEqual(events, [
       userMsg,
-      { kind: "run_ended", payload: { run_id: "R1", reason: "interrupted", usage: null } },
+      assistantMsg,
+      { kind: "run_ended", payload: { run_id: "R1", reason: "completed", usage: null } },
     ]);
   });
 

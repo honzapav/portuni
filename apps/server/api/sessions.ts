@@ -13,11 +13,16 @@
 //   POST  /sessions/record                 write   -> central record half (#323): create the row
 //                                                      only, no run -- the agent-mode sidecar's own
 //                                                      CentralSessionStore is the only caller
-//   POST  /sessions/:id/messages           write   -> send a chat message (owner only)
+//   POST  /sessions/:id/messages           write   -> send a chat message (owner only) --
+//                                                      also what promotes a draft or resumes
+//                                                      a suspended thread; there is no
+//                                                      separate resume call (#378)
 //   POST  /sessions/:id/questions/:req_id  write   -> answer an open question (owner only)
-//   POST  /sessions/:id/interrupt          write   -> interrupt the live run (owner or manage)
-//   POST  /sessions/:id/suspend            write   -> suspend, up to a 30s poll (owner or manage)
-//   POST  /sessions/:id/resume             write   -> start a new run from handoff/conversation (owner only)
+//   POST  /sessions/:id/interrupt          write   -> cancel the current turn only (owner or
+//                                                      manage) -- the run stays live (#378)
+//   POST  /sessions/:id/continue           write   -> close this session, start a new one on
+//                                                      the same node seeded with its summary
+//                                                      (owner only; #378)
 //   POST  /sessions/:id/close              write   -> close the session (owner or manage)
 //   GET   /sessions/:id/events             read    -> canonical event log
 //   POST  /sessions/:id/events             write   -> central record half (#323): batch-append
@@ -74,9 +79,9 @@ import { getInstanceEnv } from "../domain/runner/instances.js";
 import { DbSessionStore } from "../domain/runner/store.js";
 import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
-import type { SessionResumeInfo, SessionRunRow, SessionSummary } from "../shared/api-types.js";
+import type { SessionResumeInfo, SessionSummary } from "../shared/api-types.js";
 
-async function toSummary(row: SessionRow): Promise<SessionSummary> {
+export async function toSummary(row: SessionRow): Promise<SessionSummary> {
   return {
     id: row.id,
     node_id: row.node_id,
@@ -624,33 +629,13 @@ export async function handleInterruptSession(
   }
 }
 
-export async function handleSuspendSession(
-  req: IncomingMessage,
-  res: ServerResponse,
-  identity: RequestIdentity,
-  sessionId: string,
-): Promise<void> {
-  try {
-    const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
-    if (!existing) return;
-    // The runtime's own poll loop awaits up to 30s for the agent's
-    // portuni_session_suspend before falling back to a server-generated
-    // handoff -- this route's caller is expected to wait for it.
-    const updated = await getSessionRuntime().suspend(sessionId);
-    await logAudit(identity.userId, "session_suspend", "session", sessionId, {});
-    await noteIfNotOwner(existing, identity, sessionId);
-    respondJson(res, 200, { session: await toSummary(updated) });
-  } catch (err) {
-    respondError(res, `${req.method} /sessions/${sessionId}/suspend`, err);
-  }
-}
-
-const ResumeBody = z.object({
-  mode: z.enum(["conversation", "handoff"]),
-});
-
-export async function handleResumeSession(
+// #378: "Pokračovat v nové session" (offered any time, beside the context
+// ring) and "Navázat" (a closed thread, same call minus the prior close)
+// both call this -- closes the current session (its summary is what seeds
+// the new one, not the auto-summary/suspend path: this session ends up
+// closed, never suspended) and starts a fresh one, running, on the same
+// node. Owner-only, same tier resume used to be.
+export async function handleContinueSession(
   req: IncomingMessage,
   res: ServerResponse,
   identity: RequestIdentity,
@@ -660,28 +645,11 @@ export async function handleResumeSession(
     const db = getDb();
     const existing = await guardSessionAccess(res, db, identity, sessionId, "resume");
     if (!existing) return;
-    const body = await parseJsonBody(req, res, ResumeBody);
-    if (!body) return;
-
-    let run: SessionRunRow;
-    try {
-      run = await getSessionRuntime().resume(sessionId, body.mode);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes("already has a live run")) {
-        respondJson(res, 409, { error: err.message, code: "ALREADY_RUNNING" });
-        return;
-      }
-      if (err instanceof Error && err.message.includes("no resumable conversation")) {
-        respondJson(res, 409, { error: err.message, code: "NOT_RESUMABLE" });
-        return;
-      }
-      throw err;
-    }
-    await logAudit(identity.userId, "session_resume", "session", sessionId, { mode: body.mode });
-    const updated = await getSession(db, sessionId);
-    respondJson(res, 200, { session: await toSummary(updated ?? existing), run });
+    const { session, run } = await getSessionRuntime().continueSession(sessionId);
+    await logAudit(identity.userId, "session_continue", "session", sessionId, { new_session_id: session.id });
+    respondJson(res, 200, { session: await toSummary(session), run });
   } catch (err) {
-    respondError(res, `${req.method} /sessions/${sessionId}/resume`, err);
+    respondError(res, `${req.method} /sessions/${sessionId}/continue`, err);
   }
 }
 

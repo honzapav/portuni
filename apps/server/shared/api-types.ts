@@ -503,7 +503,21 @@ export type SessionResumeInfo = {
   // (a dropped connection, idle GC, terminal exit, or the boot sweep) --
   // lets the Relace row say e.g. "pozastaveno serverem (nečinnost 30 min)".
   generated_by: "server" | null;
-  reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | "host_lost" | null;
+  // Mirrors domain/session-handoff.ts's own ServerHandoffReason (shared has
+  // no domain imports, same precedent as RunEndReason below) -- #378 added
+  // "run_ended" (any non-close run end) and "continue"; "suspend_timeout"
+  // stays only so an old row's already-written reason marker still parses,
+  // no runtime code produces it anymore.
+  reason:
+    | "disconnect"
+    | "idle"
+    | "terminal_exit"
+    | "boot_sweep"
+    | "suspend_timeout"
+    | "host_lost"
+    | "run_ended"
+    | "continue"
+    | null;
 };
 
 // Runner batch (docs/superpowers/specs/2026-09-12-runner-and-session-design.md):

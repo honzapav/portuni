@@ -20,7 +20,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionState, SessionSummary } from "../types";
-import { fetchSessionSignals, fetchPersistentSessionResumeInfo, resumeSession, type SessionSignals } from "../api";
+import { fetchSessionSignals, type SessionSignals } from "../api";
 import { sessionRowAccess } from "../lib/session-views";
 import { useMe } from "../lib/use-me";
 import type { SessionsClient } from "../lib/sessions-client";
@@ -39,6 +39,15 @@ import {
 } from "../lib/session-chat";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { X } from "lucide-react";
 import {
   Conversation,
   ConversationContent,
@@ -110,10 +119,16 @@ export default function SessionChat({
     setComposerTextState(text);
   };
   const [sending, setSending] = useState(false);
-  const [actionPending, setActionPending] = useState<"interrupt" | "suspend" | "close" | "resume" | "restart" | null>(null);
-  // Whether the CLI conversation can still be picked up (GET
-  // /sessions/:id/resume-info); "Předat a začít znovu" is always offered.
-  const [conversationResumable, setConversationResumable] = useState(false);
+  const [actionPending, setActionPending] = useState<"interrupt" | "close" | "continue" | null>(null);
+  // #378: "Uzavřít" is the one irreversible action, so it's the only one
+  // that asks -- confirmed via this dialog, not window.confirm (a no-op in
+  // the Tauri webview).
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  // The notice bar (#378, "the process was ended, the next message
+  // replays the conversation") is dismissible per-occurrence: dismissing
+  // hides THIS bar, but the next run that ends up here (liveRunId flips
+  // non-null again, meaning a new run started) shows a fresh one.
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
   const { meId, canManage } = useMe();
   const access = sessionRowAccess(session.user_id, meId, canManage);
 
@@ -261,32 +276,26 @@ export default function SessionChat({
     };
   }, [session.id, live.state, sessionsClient]);
 
-  // Resume-mode offer, fetched once the session is suspended.
+  // #378: a new run starting is "the thread woken again" -- clear a
+  // previous dismissal so the NEXT time this run ends up with nothing
+  // live (idle, error, natural completion), the notice shows fresh.
   useEffect(() => {
-    if (live.state !== "suspended") {
-      setConversationResumable(false);
-      return;
-    }
-    let cancelled = false;
-    void fetchPersistentSessionResumeInfo(session.id)
-      .then((info) => {
-        if (!cancelled) setConversationResumable(info.conversation_resumable);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [session.id, live.state]);
+    if (liveRunId !== null) setNoticeDismissed(false);
+  }, [liveRunId]);
 
   const displayEvents = useMemo(() => collapseToolCalls(events), [events]);
   const openQuestion = latestQuestionEvent(events);
   const isWaiting = live.state === "running" && live.waiting_since !== null;
+  const runIsLive = liveRunId !== null;
   const streamingText = liveRunId ? textDeltaBuffers[liveRunId] : undefined;
   const streamingReasoning = liveRunId ? reasoningDeltaBuffers[liveRunId] : undefined;
   const chip = sessionStatusChip(live.state, live.waiting_since);
   const restartHint = signals ? formatRestartHint(signals) : null;
+  // #378: an open thread with a run that ended other than by Uzavřít --
+  // the next message replays the whole conversation from the summary.
+  const showNotice = live.state === "suspended" && !noticeDismissed;
 
-  const runAction = async (action: "interrupt" | "suspend" | "close") => {
+  const runAction = async (action: "interrupt" | "close") => {
     setActionPending(action);
     setError(null);
     try {
@@ -298,31 +307,19 @@ export default function SessionChat({
     }
   };
 
-  const handleResume = async (mode: "conversation" | "handoff") => {
-    setActionPending("resume");
+  // "Pokračovat v nové session" (offered any time) / "Navázat" (a closed
+  // thread): POST /sessions/:id/continue closes this session (its summary
+  // seeds the new one) and starts a fresh, running one on the same node --
+  // the new row becomes the active thread (WorkspaceView keys SessionChat
+  // on the session id, so this swap remounts it).
+  const handleContinue = async () => {
+    setActionPending("continue");
     setError(null);
     try {
-      await resumeSession(session.id, mode);
+      const { session: newSession } = await sessionsClient.continueSession(session.id);
+      onSessionUpdated(newSession);
     } catch (e) {
       setError(String(e));
-    } finally {
-      setActionPending(null);
-    }
-  };
-
-  // The restart indicator's own action (spec, "Suspend and resume"):
-  // hand the context over and start a fresh run from the handoff --
-  // a suspend (which writes the handoff) followed by a handoff-mode
-  // resume, as one click.
-  const handleRestartFromHandoff = async () => {
-    setActionPending("restart");
-    setError(null);
-    try {
-      await sessionsClient.suspend(session.id);
-      await resumeSession(session.id, "handoff");
-    } catch (e) {
-      setError(String(e));
-    } finally {
       setActionPending(null);
     }
   };
@@ -376,30 +373,16 @@ export default function SessionChat({
             {session.model ? ` · ${session.model}` : ""}
             {session.effort ? ` · ${session.effort}` : ""}
           </span>
-          {live.state === "running" && access.canPauseOrClose && (
-            <>
-              <HeaderButton disabled={actionPending !== null} onClick={() => void runAction("interrupt")}>
-                {actionPending === "interrupt" ? "Přerušuji…" : "Přerušit"}
-              </HeaderButton>
-              <HeaderButton disabled={actionPending !== null} onClick={() => void runAction("suspend")}>
-                {actionPending === "suspend" ? "Pozastavuji…" : "Pozastavit"}
-              </HeaderButton>
-            </>
-          )}
-          {live.state === "suspended" && access.canResume && (
-            <>
-              {conversationResumable && (
-                <HeaderButton disabled={actionPending !== null} onClick={() => void handleResume("conversation")}>
-                  {actionPending === "resume" ? "Nahazuji…" : "Pokračovat"}
-                </HeaderButton>
-              )}
-              <HeaderButton disabled={actionPending !== null} onClick={() => void handleResume("handoff")}>
-                {actionPending === "resume" ? "Nahazuji…" : "Předat a začít znovu"}
-              </HeaderButton>
-            </>
+          {/* #378: Přerušit/Pozastavit are gone -- stopping a turn is the
+              composer's own stop button (+ Esc) below, and a run no longer
+              needs an explicit suspend, ever. */}
+          {(live.state === "running" || live.state === "suspended") && access.canResume && (
+            <HeaderButton disabled={actionPending !== null} onClick={() => void handleContinue()}>
+              {actionPending === "continue" ? "Pokračuji…" : "Pokračovat v nové session"}
+            </HeaderButton>
           )}
           {(live.state === "running" || live.state === "suspended") && access.canPauseOrClose && (
-            <HeaderButton disabled={actionPending !== null} onClick={() => void runAction("close")}>
+            <HeaderButton disabled={actionPending !== null} onClick={() => setCloseConfirmOpen(true)}>
               {actionPending === "close" ? "Zavírám…" : "Uzavřít"}
             </HeaderButton>
           )}
@@ -409,12 +392,51 @@ export default function SessionChat({
       {restartHint && (
         <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-1 text-[11px] text-[var(--color-text-dim)]">
           <span>{restartHint}</span>
-          {access.canResume && (
-            <HeaderButton disabled={actionPending !== null} onClick={() => void handleRestartFromHandoff()}>
-              {actionPending === "restart" ? "Předávám…" : "Předat a začít znovu"}
-            </HeaderButton>
-          )}
         </div>
+      )}
+
+      {showNotice && (
+        <div className="mx-4 mt-2 flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] text-[var(--color-text-muted)]">
+          <span className="flex-1 leading-[1.5]">
+            Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě
+            jednou.
+          </span>
+          <button
+            type="button"
+            onClick={() => setNoticeDismissed(true)}
+            className="shrink-0 text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+            aria-label="Skrýt"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
+
+      {closeConfirmOpen && (
+        <Dialog open onOpenChange={(open) => !open && setCloseConfirmOpen(false)}>
+          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>Uzavřít vlákno?</DialogTitle>
+              <DialogDescription>
+                Vlákno „{session.name}“ se uzavře. Server napřed uloží shrnutí konverzace.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCloseConfirmOpen(false)}>
+                Zpět
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  setCloseConfirmOpen(false);
+                  void runAction("close");
+                }}
+              >
+                Uzavřít
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
 
       {error && (
@@ -467,16 +489,23 @@ export default function SessionChat({
               value={composerText}
               onChange={(e) => setComposerText(e.target.value)}
               disabled={composerDisabled || sending}
+              // #378: Esc stops the current turn the same way the composer's
+              // own stop button does -- a no-op when nothing is live, so
+              // this is safe to fire regardless of runIsLive.
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && runIsLive) {
+                  e.preventDefault();
+                  void runAction("interrupt");
+                }
+              }}
               placeholder={
                 !access.canResume
                   ? "Zprávy může posílat jen vlastník relace."
                   : isWaiting
                     ? "Relace čeká na odpověď na otázku výše."
-                    : live.state === "suspended"
-                      ? "Relace je pozastavena — nejdřív ji nahoď."
-                      : live.state === "closed" || live.state === "archived"
-                        ? "Relace je uzavřená."
-                        : "Napiš zprávu…"
+                    : live.state === "closed" || live.state === "archived"
+                      ? "Relace je uzavřená."
+                      : "Napiš zprávu…"
               }
             />
           </PromptInputBody>
@@ -517,8 +546,13 @@ export default function SessionChat({
               )}
             </PromptInputTools>
             <PromptInputSubmit
-              disabled={composerDisabled || sending || !composerText.trim()}
-              status={sending ? "submitted" : undefined}
+              // #378: while a run is live, the button IS the stop control
+              // (a stop square, click -> interrupt()) -- Enter in the
+              // textarea still submits normally either way, since that goes
+              // through the form's own onSubmit, not this button's click.
+              disabled={runIsLive ? actionPending !== null : composerDisabled || sending || !composerText.trim()}
+              status={sending ? "submitted" : runIsLive ? "streaming" : undefined}
+              onStop={runIsLive ? () => void runAction("interrupt") : undefined}
             />
           </PromptInputFooter>
         </PromptInput>
@@ -627,7 +661,7 @@ function EventRow({
         </Checkpoint>
       );
     case "handoff":
-      return <SystemMarker>Handoff uložen{event.payload.generated_by === "server" ? " (serverem)" : ""}</SystemMarker>;
+      return <SystemMarker>Shrnutí relace uloženo</SystemMarker>;
     case "state_changed":
       return (
         <SystemMarker>

@@ -20,7 +20,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { sha256Buffer } from "../sync/hash.js";
 import { getMirrorPath } from "../sync/mirror-registry.js";
-import { buildServerHandoffContent, handoffRelativePath, type ServerHandoffReason } from "../session-handoff.js";
+import {
+  buildRunSummaryContent,
+  handoffRelativePath,
+  type ServerHandoffReason,
+  type SummaryEvent,
+} from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
 import type { SessionStore } from "./store.js";
 
@@ -31,10 +36,17 @@ export function createSuspendFallbackCentral(
     const session = await store.getSession(sessionId);
     if (session?.state !== "running") return session;
 
-    const content = buildServerHandoffContent({
+    // #378: the summary's events come through the same SessionStore
+    // abstraction every other agent-mode call already goes through --
+    // listEvents works identically to the local path, unlike session_scope
+    // (still empty here; agent mode has no local session_scope table).
+    const rows = await store.listEvents(sessionId);
+    const events: SummaryEvent[] = rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
+    const content = buildRunSummaryContent({
       nodeName: null,
       sessionName: session.name,
       reason,
+      events,
       writeSet: [],
       readSet: [],
       lastActiveAt: session.last_active_at,

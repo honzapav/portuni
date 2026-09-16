@@ -87,9 +87,12 @@ export interface CompactionEvent {
   payload: { trigger: "auto" | "manual" };
 }
 
+// #378: always server-written now (session-runtime.ts's own suspend
+// handshake -- the only thing that ever produced an "agent"-generated one
+// here -- is gone), so the payload no longer distinguishes generated_by.
 export interface HandoffEvent {
   kind: "handoff";
-  payload: { path: string | null; hash: string | null; generated_by: "agent" | "server" };
+  payload: { path: string | null; hash: string | null };
 }
 
 export interface StateChangedEvent {

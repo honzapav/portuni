@@ -81,9 +81,10 @@ export interface CompactionEvent {
   kind: "compaction";
   payload: { trigger: "auto" | "manual" };
 }
+// #378: always server-written now -- no more generated_by to distinguish.
 export interface HandoffEvent {
   kind: "handoff";
-  payload: { path: string | null; hash: string | null; generated_by: "agent" | "server" };
+  payload: { path: string | null; hash: string | null };
 }
 export interface StateChangedEvent {
   kind: "state_changed";

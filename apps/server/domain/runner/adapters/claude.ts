@@ -317,7 +317,6 @@ interface RunTranslationState {
   latestUsage: unknown;
   pendingToolCalls: Map<string, PendingToolCall>;
   pendingPermissions: Map<string, PendingPermission>;
-  interrupting: boolean;
   ended: boolean;
   endedResolve: () => void;
   endedPromise: Promise<void>;
@@ -334,7 +333,6 @@ function createState(): RunTranslationState {
     latestUsage: null,
     pendingToolCalls: new Map(),
     pendingPermissions: new Map(),
-    interrupting: false,
     ended: false,
     endedResolve,
     endedPromise,
@@ -667,13 +665,14 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         for await (const msg of q) {
           await translateMessage(msg);
         }
+        // #378: the loop only ends naturally once the prompt queue itself
+        // ends (close()'s own job) -- interrupt() no longer touches the
+        // queue, so this is always a graceful close. session-runtime.ts's
+        // own withSuspendReason is what rewrites this to "suspended" when
+        // the close wasn't an explicit Uzavřít/continue.
         sink({
           kind: "run_ended",
-          payload: {
-            run_id: run.runId,
-            reason: state.interrupting ? "interrupted" : "completed",
-            usage: state.latestUsage,
-          },
+          payload: { run_id: run.runId, reason: "completed", usage: state.latestUsage },
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -732,23 +731,16 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answer: decision.value } });
         }
       },
+      // #378 ("Stop, not Přerušit"): cancels the CURRENT TURN only
+      // (Query.interrupt()) -- the process, the prompt queue and the run
+      // all stay alive, so the very next send() is an ordinary message.
+      // Ending the queue (and therefore the run) belongs to close() alone.
       async interrupt(): Promise<void> {
         if (state.ended) return;
-        state.interrupting = true;
         try {
           await q.interrupt();
         } catch {
           // Best-effort -- the process may already be gone.
-        }
-        promptQueue.end();
-        const abort = new AbortController();
-        try {
-          await Promise.race([
-            state.endedPromise,
-            waitForPidDeadOrTimeout(state.capturedPid, closePollIntervalMs, closeTimeoutMs, abort.signal),
-          ]);
-        } finally {
-          abort.abort();
         }
       },
       // Spec, "Process lifecycle": end stdin (the prompt stream), 2 s,
