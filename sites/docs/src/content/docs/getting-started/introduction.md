@@ -32,7 +32,7 @@ Portuni is an HTTP server that speaks MCP (Model Context Protocol). It exposes 4
 
 You can run it three ways:
 
-- **Desktop app** (`Portuni.app`, macOS) — recommended for daily use. A Tauri-built UI with a graph view, detail pane, and built-in terminal tabs. Bundles the MCP server as an embedded sidecar, so you don't have to keep a separate process running. Downloads are on the [GitHub releases](https://github.com/honzapav/portuni/releases) page; see [Desktop App](/clients/desktop-app/) for the details.
+- **Desktop app** (`Portuni.app`, macOS) — recommended for daily use. A Tauri-built UI with a graph view, a detail pane, and a task chat in which agents run as runner-managed tasks (there is no embedded terminal). Bundles the MCP server as an embedded sidecar, so you don't have to keep a separate process running. Downloads are on the [GitHub releases](https://github.com/honzapav/portuni/releases) page; see [Desktop App](/clients/desktop-app/) for the details.
 - **Desktop app pointed at your organization's central server** — the teammate setup. You sign in with your Google account; the graph and file content live on the org's server, and you never handle database credentials at all. The local sidecar runs as a sync agent for your mirror folders.
 - **CLI / standalone server** — clone the repo, `npm install && npm run build`, then `npx varlock run -- npm start`. The path most contributors and CI use; same MCP surface as the desktop app's sidecar.
 

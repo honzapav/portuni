@@ -10,10 +10,10 @@ totally different layouts without stepping on each other.
 
 ## What's inside a mirror
 
-A mirror is usually created implicitly the first time an agent terminal is
-launched for a node. In the desktop app, the node detail header also offers
+A mirror is usually created implicitly the first time a task is started
+for a node ("Nový úkol"). In the desktop app, the node detail header also offers
 a direct "Vytvořit pracovní složku" button when the node has no mirror on
-this device yet, so you can create the folder without opening a terminal
+this device yet, so you can create the folder without starting a task
 first. The Files tab offers the same action: a node with remote files but
 no mirror on this device shows a banner instead of the sync button ("Tento
 uzel nemá na tomto počítači pracovní složku..."); creating the folder from

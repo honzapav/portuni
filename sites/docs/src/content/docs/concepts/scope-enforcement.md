@@ -55,7 +55,7 @@ Writes divide into three concentric zones, each with different default behavior:
 
 The primary mechanism is declarative: when a mirror is created or renamed, Portuni writes per-harness configuration into `local_path`, layering on top of user-owned files (never replacing them). Portuni does not try to intercept individual filesystem calls from arbitrary harnesses – cross-harness interception is fragile and easy to bypass.
 
-There is one runtime layer on top: agent terminals spawned from the desktop app run under a **Seatbelt kernel sandbox** whose profile Portuni generates per session (`apps/server/domain/sandbox-profile.ts`). The kernel grants read+write on the home mirror, read-only on the **real** mirrors of the home node's depth-1 neighbours (the stable spawn scope), and denies the rest of `PORTUNI_ROOT`; everything outside the root stays unrestricted – the sandbox protects the knowledge graph, it is not a general-purpose jail. Manual shells outside the app rely on the declarative configs alone.
+There is one runtime layer on top: a **task** started from the desktop app ("Nový úkol") runs through Portuni's runner, which decides each write itself by the same write-scope rules the guard hook applies (`apps/server/domain/runner/permissions.ts`): editing inside the current mirror is allowed, editing another node's mirror is refused, and a scope-expanding or plan-approval request shows up as a question in the task's chat. Hand-opened shells rely on the declarative configs alone.
 
 The generated files:
 
