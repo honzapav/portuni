@@ -496,16 +496,28 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       const body = await parseJsonBody(req, res, StartSessionBody);
       if (!body) return true;
       if (!guardAgentRestWrite(req, res, identity, body.node_id)) return true;
-      // #374's draft-thread creation (POST /sessions with no brief) is not
-      // wired up for central/agent mode yet -- the record half's draft
-      // would need its own CentralClient method and REST shape, out of
-      // scope here. A clear 501 instead of a crash on the now-optional
-      // brief/runner fields; see the #374 PR/issue comment.
-      if (body.brief === undefined || !body.runner) {
-        respondJson(res, 501, {
-          error: "starting an empty thread is not supported in this data mode yet",
-          code: "DRAFT_NOT_SUPPORTED",
-        });
+      // #374's draft thread: no brief yet, so no runner to resolve either
+      // -- the first message promotes it (session-runtime.ts's
+      // promoteDraftAndStart). The row itself is created through the
+      // runtime's own store, which in this mode is CentralSessionStore,
+      // i.e. central's POST /sessions/record draft shape.
+      if (body.brief === undefined) {
+        try {
+          const session = await sessionRuntime.createDraft({
+            userId: identity.userId,
+            nodeId: body.node_id,
+            model: body.model,
+            effort: body.effort,
+          });
+          respondJson(res, 201, { session, run: null });
+        } catch (err) {
+          if (respondCentral404(res, err)) return true;
+          respondError(res, "POST /sessions", err);
+        }
+        return true;
+      }
+      if (!body.runner) {
+        respondJson(res, 400, { error: "runner is required when brief is given", code: "RUNNER_REQUIRED" });
         return true;
       }
       if (!getAdapter(body.runner)) {

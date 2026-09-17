@@ -707,13 +707,26 @@ export async function handleListSessionEvents(
 // central/google-mode deployment (or, harmlessly, an env-mode one) can
 // serve as the record of truth for an agent-mode sidecar's session runtime.
 
-const RecordSessionBody = z.object({
-  node_id: z.string().min(1),
-  brief: z.string().nullable().optional(),
-  runner: z.string().min(1),
-  instance_id: z.string().nullable().optional(),
-  host_id: z.string().nullable().optional(),
-});
+// Two shapes, one route: a task's record (runner known) and #374's draft
+// (nothing known yet but the anchor node). A draft in central/agent mode
+// has to be created here rather than device-side -- the row IS the thread,
+// and central is where every other device reads it from.
+const RecordSessionBody = z.union([
+  z.object({
+    draft: z.literal(true),
+    node_id: z.string().min(1),
+    model: z.string().nullable().optional(),
+    effort: z.string().nullable().optional(),
+  }),
+  z.object({
+    draft: z.literal(false).optional(),
+    node_id: z.string().min(1),
+    brief: z.string().nullable().optional(),
+    runner: z.string().min(1),
+    instance_id: z.string().nullable().optional(),
+    host_id: z.string().nullable().optional(),
+  }),
+]);
 
 // Record-only: creates the session row without starting a run (unlike
 // POST /sessions, which is startTask's REST surface). The agent-mode
@@ -737,17 +750,26 @@ export async function handleCreateSessionRecord(
       return;
     }
 
-    const session = await new DbSessionStore(db).createSession({
-      node_id: body.node_id,
-      user_id: identity.userId,
-      brief: body.brief ?? null,
-      runner: body.runner,
-      instance_id: body.instance_id ?? null,
-      host_id: body.host_id ?? null,
-    });
+    const store = new DbSessionStore(db);
+    const session =
+      body.draft === true
+        ? await store.createDraft({
+            node_id: body.node_id,
+            user_id: identity.userId,
+            model: body.model,
+            effort: body.effort,
+          })
+        : await store.createSession({
+            node_id: body.node_id,
+            user_id: identity.userId,
+            brief: body.brief ?? null,
+            runner: body.runner,
+            instance_id: body.instance_id ?? null,
+            host_id: body.host_id ?? null,
+          });
     await logAudit(identity.userId, "session_record", "session", session.id, {
       node_id: body.node_id,
-      runner: body.runner,
+      ...(body.draft === true ? { draft: true } : { runner: body.runner }),
     });
     // Raw SessionRow, same reasoning as GET/PATCH /sessions/:id above.
     respondJson(res, 201, session);

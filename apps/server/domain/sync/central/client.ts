@@ -13,6 +13,7 @@ import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
 import type {
+  CreateDraftSessionInput,
   CreateRunInput,
   CreateRunnerSessionInput,
   ListEventsOptions,
@@ -122,6 +123,10 @@ export interface CentralClient {
   // agent-mode live channel's initial session_state snapshot.
   listSessionRecords(opts: { states: readonly SessionState[]; limit?: number }): Promise<SessionRow[]>;
   createSessionRecord(input: CreateRunnerSessionInput): Promise<SessionRow>;
+  // #374's draft thread, created before a brief or runner exists. Same
+  // POST /sessions/record endpoint, its draft shape -- the row is the
+  // thread, so central has to own it in this mode too.
+  createDraftSessionRecord(input: CreateDraftSessionInput): Promise<SessionRow>;
   patchSessionRecord(id: string, patch: PatchSessionInput): Promise<SessionRow>;
   createSessionRun(input: CreateRunInput): Promise<SessionRunRow>;
   patchSessionRun(sessionId: string, runId: string, patch: PatchRunInput): Promise<SessionRunRow>;
@@ -421,6 +426,18 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
     async createSessionRecord(input) {
       const p = "/sessions/record";
       const r = await request("POST", p, input);
+      if (r.status !== 201) throwFor(r.status, p, r.json);
+      return r.json as SessionRow;
+    },
+
+    async createDraftSessionRecord(input) {
+      const p = "/sessions/record";
+      const r = await request("POST", p, {
+        draft: true,
+        node_id: input.node_id,
+        model: input.model ?? null,
+        effort: input.effort ?? null,
+      });
       if (r.status !== 201) throwFor(r.status, p, r.json);
       return r.json as SessionRow;
     },

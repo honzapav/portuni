@@ -17,6 +17,7 @@ import type { DbClient, InStatement, InValue } from "../../infra/db.js";
 import { z } from "zod";
 import {
   createSession as createSessionRow,
+  createDraftSession as createDraftSessionRow,
   getSession as getSessionRow,
   transitionSessionState,
 } from "../sessions.js";
@@ -112,6 +113,17 @@ export interface CreateRunnerSessionInput {
   effort?: string | null;
 }
 
+// #374's draft thread: a row that exists from the moment the thread opens,
+// before it has a brief or a runner -- the first message resolves both.
+// Separate from CreateRunnerSessionInput because none of that input's
+// required fields are known yet, not because the storage differs.
+export interface CreateDraftSessionInput {
+  node_id: string;
+  user_id: string;
+  model?: string | null;
+  effort?: string | null;
+}
+
 export interface PatchSessionInput {
   state?: SessionState;
   waiting_since?: string | null;
@@ -158,6 +170,7 @@ export interface ListEventsOptions {
 
 export interface SessionStore {
   createSession(input: CreateRunnerSessionInput): Promise<SessionRow>;
+  createDraft(input: CreateDraftSessionInput): Promise<SessionRow>;
   getSession(id: string): Promise<SessionRow | null>;
   patchSession(id: string, patch: PatchSessionInput): Promise<SessionRow>;
   createRun(input: CreateRunInput): Promise<SessionRunRow>;
@@ -183,6 +196,13 @@ export class DbSessionStore implements SessionStore {
       host_id: input.host_id,
       model: input.model ?? null,
       effort: input.effort ?? null,
+    });
+  }
+
+  async createDraft(input: CreateDraftSessionInput): Promise<SessionRow> {
+    return createDraftSessionRow(this.db, input.user_id, input.node_id, {
+      model: input.model,
+      effort: input.effort,
     });
   }
 

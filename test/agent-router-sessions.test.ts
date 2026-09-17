@@ -26,6 +26,7 @@ import type { NodeSyncInfo, RegisterFileRecordResult } from "../apps/server/doma
 import type { RemoteSweepResult } from "../apps/server/domain/sync/remote-sweep.js";
 import type { DataSourceRow, SessionRow } from "../apps/server/shared/types.js";
 import type {
+  CreateDraftSessionInput,
   CreateRunInput,
   CreateRunnerSessionInput,
   ListEventsOptions,
@@ -102,6 +103,40 @@ class FakeCentral implements CentralClient {
     return row;
   }
 
+  async createDraftSessionRecord(input: CreateDraftSessionInput): Promise<SessionRow> {
+    if (!this.nodeVisible.has(input.node_id)) {
+      throw new CentralHttpError("node not found", 404);
+    }
+    const now = new Date().toISOString();
+    const row: SessionRow = {
+      id: ulid(),
+      node_id: input.node_id,
+      user_id: input.user_id,
+      session_type: "interactive_task",
+      cli: null,
+      instance_id: null,
+      agent_session_id: null,
+      terminal_id: null,
+      brief: null,
+      runner: null,
+      host_id: null,
+      waiting_since: null,
+      state: "draft",
+      handoff_path: null,
+      handoff_hash: null,
+      handoff_inline: null,
+      name: "Nový úkol",
+      name_is_custom: 0,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
+      created_at: now,
+      last_active_at: now,
+      closed_at: null,
+    };
+    this.sessions.set(row.id, row);
+    return row;
+  }
+
   async patchSessionRecord(id: string, patch: PatchSessionInput): Promise<SessionRow> {
     const row = this.sessions.get(id);
     if (!row) throw new CentralHttpError("session not found", 404);
@@ -112,6 +147,15 @@ class FakeCentral implements CentralClient {
       ...(patch.waiting_since !== undefined ? { waiting_since: patch.waiting_since } : {}),
       ...(patch.handoff_path !== undefined ? { handoff_path: patch.handoff_path } : {}),
       ...(patch.handoff_hash !== undefined ? { handoff_hash: patch.handoff_hash } : {}),
+      // Draft promotion (#374) sends these too, and central's own
+      // PatchSessionBody accepts them -- a fake that dropped them would
+      // leave the promoted row without a runner to resume under.
+      ...(patch.brief !== undefined ? { brief: patch.brief } : {}),
+      ...(patch.runner !== undefined ? { runner: patch.runner } : {}),
+      ...(patch.instance_id !== undefined ? { instance_id: patch.instance_id } : {}),
+      ...(patch.name_is_custom !== undefined ? { name_is_custom: patch.name_is_custom ? 1 : 0 } : {}),
+      ...(patch.model !== undefined ? { model: patch.model } : {}),
+      ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
     };
     this.sessions.set(id, updated);
     return updated;
@@ -340,6 +384,63 @@ describe("agent-router: sessions/tasks", () => {
         [4, "handoff"],
       ],
     );
+  });
+
+  // #374 shipped with central/agent-mode drafts unimplemented (a 501), but
+  // the UI creates a draft for EVERY new thread -- so in central mode no
+  // task could be started at all until the record half learned this shape.
+  it("POST /sessions with no brief creates a draft on central, no run", async () => {
+    const res = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID }),
+    });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { session: SessionRow; run: SessionRunRow | null };
+    assert.equal(body.run, null);
+    assert.equal(body.session.state, "draft");
+    assert.equal(body.session.node_id, NODE_ID);
+    assert.equal(body.session.brief, null);
+    assert.equal(body.session.runner, null);
+    assert.equal(fake.sessions.size, 1);
+    assert.equal(fake.runs.size, 0);
+  });
+
+  it("a draft's model/effort reach central, and its first message promotes it to running", async () => {
+    const created = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, model: "sonnet", effort: "medium" }),
+    });
+    assert.equal(created.status, 201);
+    const { session } = (await created.json()) as { session: SessionRow };
+    assert.equal(session.model, "sonnet");
+    assert.equal(session.effort, "medium");
+
+    const sent = await fetch(`${base}/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "Udělej to" }),
+    });
+    assert.equal(sent.status, 202);
+    // The scripted fake adapter can finish before this assertion runs, and
+    // #378 suspends a session on any run end -- what matters here is that
+    // the draft was promoted and got a run, not which side of the finish
+    // line it is on.
+    const promoted = fake.sessions.get(session.id);
+    assert.notEqual(promoted?.state, "draft");
+    assert.equal(promoted?.runner, "fake");
+    assert.equal(fake.runs.size, 1);
+  });
+
+  it("POST /sessions 404s for a draft on a node central does not know about", async () => {
+    const res = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: "unknown-node" }),
+    });
+    assert.equal(res.status, 404);
+    assert.equal(fake.sessions.size, 0);
   });
 
   it("POST /sessions 400s for an unknown runner without ever touching central", async () => {

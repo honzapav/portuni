@@ -1967,10 +1967,20 @@ symlink to this file.
   modal, no required field"). The org lookup degrades to "no organization"
   in agent mode (no local graph db there, same try/catch-degrade pattern
   `readSessionScopeSize` already uses) rather than failing the promotion;
-  **draft creation itself is not yet wired up for central/agent mode**
-  (`agent-router.ts`'s `POST /sessions` answers `501 DRAFT_NOT_SUPPORTED`
-  for a briefless body) -- the central record half's draft would need its
-  own `CentralClient` method and REST shape, left as a follow-up. **Naming**:
+  **draft creation works in
+  central/agent mode too** -- #374 shipped it as a `501
+  DRAFT_NOT_SUPPORTED` in `agent-router.ts`, which in practice meant no
+  task could be started at all there once the dialog was gone (every new
+  thread opens as a draft), so the record half learned the shape:
+  `SessionStore.createDraft` (`DbSessionStore` -> `createDraftSession`,
+  `CentralSessionStore` -> `CentralClient.createDraftSessionRecord`), the
+  same `POST /sessions/record` endpoint with a `{draft: true, node_id,
+  model, effort}` body (`RecordSessionBody` is a two-shape union now), and
+  `SessionRuntime.createDraft` as the one call `agent-router.ts` makes --
+  the local route still writes through `createDraftSession` directly, its
+  own audit and visibility checks unchanged. Central's `PatchSessionBody`
+  already accepted the promotion fields (`brief`/`runner`/`instance_id`/
+  `name_is_custom`), so promotion by first message needed nothing new. **Naming**:
   `domain/sessions.ts`'s `threadNameFromFirstMessage` (mirrored, not
   imported, as `apps/web/src/lib/session-chat.ts`'s own copy of the same
   function -- the server/web boundary this codebase already keeps
