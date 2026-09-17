@@ -156,6 +156,18 @@ symlink to this file.
   link resolve through) follows the *other* one, the `make_latest` pin;
   `gh release edit --prerelease=false` never sends it. Full flow + one-time
   PAT setup: `CONTRIBUTING.md`, `docs/release-process.md`.
+- **The server deploys itself from CI.** `.github/workflows/deploy-server.yml`
+  runs on every green CI run on `main` (and on manual dispatch), skips
+  commits that touch nothing under `apps/server/`, and runs the same
+  `scripts/deploy-vps.sh` a laptop would -- with `PORTUNI_SKIP_QA=1`, since
+  the commit's own CI run is what gated it. The pre-migration Turso backup
+  runs there too and is kept as a workflow artifact for 30 days (in CI it
+  otherwise lands in the runner's home and dies with it -- the same
+  "backup that protects nothing" shape as `docs/lessons-learned.md` §7).
+  Secrets it needs: `VPS_SSH_KEY`, `VPS_HOST`, `TURSO_URL`,
+  `TURSO_AUTH_TOKEN`. A laptop deploy still works and still runs the full
+  gate; it needs those Turso vars in the environment, which live only in
+  `/opt/portuni/portuni.env` on the VPS.
 - **Update the public docs site (`sites/docs/`) in the SAME branch as any
   behaviour/tool/API change.** release-please only bumps the version and
   CHANGELOG — it never touches `sites/docs/`, so a change shipped without a
