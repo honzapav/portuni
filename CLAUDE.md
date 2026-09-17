@@ -1255,7 +1255,7 @@ symlink to this file.
   (one more `ServerHandoffReason`, alongside `boot_sweep`/`suspend_timeout`
   — Relace label "proces osiřel po restartu") followed by its own `handoff
   {generated_by: "server"}` event, same shape `session-runtime.ts`'s own
-  `suspend()` produces for a live run. Local mode only: a pid file is only
+  `suspend()` produces for a live run. A pid file is only
   ever written by the process that spawned the child, on this same machine,
   so only that process's own next boot can find it — wired into `index.ts`
   unconditionally and `desktop.ts`'s non-agent branch, the same two call
@@ -1263,6 +1263,23 @@ symlink to this file.
   of it rather than fired independently, since this sweep's own
   `suspendSessionServerSide` call already resolves a session the other
   sweep's `'running'`-row query would otherwise race.
+  **It runs in central/agent mode too (#393)** — #325 scoped itself to
+  "local mode", which by #323 was the wrong axis: the machine is what
+  matters, and a central-mode sidecar spawns the same children and leaves
+  the same pid files, so quitting the app with a task in flight left the
+  run open and its session reading `running` forever (the idle sweep
+  cannot see it — `checkIdleRunsOnce` filters `liveRuns`, an in-process
+  map that is empty after a restart). The db-shaped half is two injected
+  functions now (`RunSweepBackend`: `resolveRun` + `suspend`, over a
+  `SessionStore`): `localRunSweepBackend` reads `session_runs` by run id
+  as before, `centralRunSweepBackend` resolves the run through
+  `store.listRuns(session_id)` and suspends via the runtime's own
+  `createSuspendFallbackCentral`. That lookup needs a session id, so the
+  pid file records one (`PidFileContent.session_id`, nullable — a file
+  written before this field is removed as stale rather than re-examined at
+  every boot). `desktop.ts`'s `agentMain` calls
+  `sweepOrphanedRunsOnBootCentral`; there is no
+  `sweepStaleRunningSessionsOnBoot` to order against there.
 - **Bulk sync is a server-side job; the pending aggregate separates
   actionable work from decisions.**
   - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the
