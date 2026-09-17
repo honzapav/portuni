@@ -12,7 +12,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
-import { isOurChild, parseProcessIdentity, sweepOrphanedRuns } from "../apps/server/domain/runner/run-sweep.js";
+import {
+  centralRunSweepBackend,
+  isOurChild,
+  parseProcessIdentity,
+  sweepOrphanedRuns,
+  sweepOrphanedRunsOn,
+} from "../apps/server/domain/runner/run-sweep.js";
 import { writePidFile, readPidFile } from "../apps/server/domain/runner/pid-file.js";
 import { isProcessAlive } from "../apps/server/domain/runner/process-liveness.js";
 import { getSession } from "../apps/server/domain/sessions.js";
@@ -56,7 +62,7 @@ describe("sweepOrphanedRuns (#325)", () => {
     const dataDir = await mkdtemp(join(tmpdir(), "portuni-run-sweep-"));
     const { store, session, run } = await startSessionAndRun(shared.db);
     const child = await spawnSleeper();
-    await writePidFile(dataDir, run.id, child.pid!);
+    await writePidFile(dataDir, run.id, child.pid!, session.id);
 
     const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
 
@@ -104,7 +110,7 @@ describe("sweepOrphanedRuns (#325)", () => {
     const dataDir = await mkdtemp(join(tmpdir(), "portuni-run-sweep-"));
     const { store, session, run } = await startSessionAndRun(shared.db);
     await store.patchRun(run.id, { ended_at: new Date().toISOString(), end_reason: "completed" });
-    await writePidFile(dataDir, run.id, 999_999_999);
+    await writePidFile(dataDir, run.id, 999_999_999, session.id);
 
     const result = await sweepOrphanedRuns(shared.db, dataDir);
 
@@ -120,7 +126,7 @@ describe("sweepOrphanedRuns (#325)", () => {
     const shared = await sharedDb();
     const dataDir = await mkdtemp(join(tmpdir(), "portuni-run-sweep-"));
     const { store, session, run } = await startSessionAndRun(shared.db);
-    await writePidFile(dataDir, run.id, 999_999_999);
+    await writePidFile(dataDir, run.id, 999_999_999, session.id);
 
     const result = await sweepOrphanedRuns(shared.db, dataDir, { sigtermGraceMs: 10 });
 
@@ -160,7 +166,7 @@ describe("run sweep: pid identity (a reused pid is never killed)", () => {
     const dataDir = await mkdtemp(join(tmpdir(), "portuni-run-sweep-"));
     const { store, session, run } = await startSessionAndRun(shared.db);
     const child = await spawnSleeper();
-    await writePidFile(dataDir, run.id, child.pid!);
+    await writePidFile(dataDir, run.id, child.pid!, session.id);
     // ps reports a claude process that started well after the file: a
     // reused pid, e.g. the user's own interactive Claude Code.
     const later = new Date(Date.now() + 60_000);
@@ -177,5 +183,64 @@ describe("run sweep: pid identity (a reused pid is never killed)", () => {
     child.kill("SIGKILL");
     const endedRun = (await store.listRuns(session.id))[0];
     assert.equal(endedRun.end_reason, "host_lost");
+  });
+});
+
+// #393: the same pid files are left behind by a central-mode sidecar, which
+// has no graph db at all -- the run and session records live on central and
+// are reached through the SessionStore. The backend is the only difference;
+// the killing, the run_ended event and the suspend are the same code.
+describe("sweepOrphanedRuns in central mode (#393)", () => {
+  it("resolves the run through the store and writes the same outcome", async () => {
+    const shared = await sharedDb();
+    const dataDir = await mkdtemp(join(tmpdir(), "portuni-run-sweep-central-"));
+    const { store, session, run } = await startSessionAndRun(shared.db);
+    await writePidFile(dataDir, run.id, 999_999_999, session.id);
+
+    const suspended: Array<[string, string]> = [];
+    const backend = centralRunSweepBackend(store, async (sessionId, reason) => {
+      suspended.push([sessionId, reason]);
+      return null;
+    });
+
+    const result = await sweepOrphanedRunsOn(backend, dataDir, { isAlive: () => false });
+    assert.equal(result.cleaned, 1);
+    assert.equal(result.killed, 0);
+    assert.deepEqual(suspended, [[session.id, "host_lost"]]);
+
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[0].end_reason, "host_lost");
+    assert.notEqual(runs[0].ended_at, null);
+
+    const events = await store.listEvents(session.id);
+    assert.equal(
+      events.some((e) => e.kind === "run_ended"),
+      true,
+    );
+    assert.equal(await readPidFile(join(dataDir, "runs", `${run.id}.pid`)), null);
+  });
+
+  it("removes a pid file that names no session, since there is nothing to resolve it from", async () => {
+    const shared = await sharedDb();
+    const dataDir = await mkdtemp(join(tmpdir(), "portuni-run-sweep-legacy-"));
+    const { store, session, run } = await startSessionAndRun(shared.db);
+    // A file written before the session id was recorded (#393).
+    await writePidFile(dataDir, run.id, 999_999_999, session.id);
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      join(dataDir, "runs", `${run.id}.pid`),
+      JSON.stringify({ pid: 999_999_999, started_at: new Date().toISOString() }),
+      "utf8",
+    );
+
+    const backend = centralRunSweepBackend(store, async () => null);
+    const result = await sweepOrphanedRunsOn(backend, dataDir, { isAlive: () => false });
+    assert.equal(result.cleaned, 0);
+    assert.equal(result.staleFilesRemoved, 0);
+    assert.equal(await readPidFile(join(dataDir, "runs", `${run.id}.pid`)), null);
+
+    // The run is untouched -- this path removes the file, nothing else.
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[0].ended_at, null);
   });
 });

@@ -9,6 +9,11 @@ import { join } from "node:path";
 export interface PidFileContent {
   pid: number;
   started_at: string;
+  // #393: the boot sweep resolves the run from this id in central/agent
+  // mode, where there is no local session_runs table to look it up in --
+  // the record lives on central and every read there is keyed by session.
+  // Null for a file written before this field existed.
+  session_id: string | null;
 }
 
 function runsDir(dataDir: string): string {
@@ -19,9 +24,14 @@ function pidFilePath(dataDir: string, runId: string): string {
   return join(runsDir(dataDir), `${runId}.pid`);
 }
 
-export async function writePidFile(dataDir: string, runId: string, pid: number): Promise<void> {
+export async function writePidFile(
+  dataDir: string,
+  runId: string,
+  pid: number,
+  sessionId: string,
+): Promise<void> {
   await mkdir(runsDir(dataDir), { recursive: true });
-  const content: PidFileContent = { pid, started_at: new Date().toISOString() };
+  const content: PidFileContent = { pid, started_at: new Date().toISOString(), session_id: sessionId };
   await writeFile(pidFilePath(dataDir, runId), JSON.stringify(content), "utf8");
 }
 
@@ -42,7 +52,11 @@ export async function readPidFile(path: string): Promise<PidFileContent | null> 
     const raw = await readFile(path, "utf8");
     const parsed = JSON.parse(raw) as Partial<PidFileContent>;
     if (typeof parsed.pid !== "number" || typeof parsed.started_at !== "string") return null;
-    return { pid: parsed.pid, started_at: parsed.started_at };
+    return {
+      pid: parsed.pid,
+      started_at: parsed.started_at,
+      session_id: typeof parsed.session_id === "string" ? parsed.session_id : null,
+    };
   } catch {
     return null;
   }

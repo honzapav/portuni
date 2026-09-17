@@ -27,7 +27,8 @@ import { createAgentSessionsWsDeps, createSessionsWsServer } from "./api/session
 import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
-import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
+import { sweepOrphanedRunsOnBoot, sweepOrphanedRunsOnBootCentral } from "./boot/run-sweep.js";
+import { CentralSessionStore } from "./domain/runner/store-central.js";
 import {
   startIdleRunSweep,
   sweepStaleDraftSessionsOnBoot,
@@ -199,6 +200,12 @@ async function agentMain(client: CentralClient): Promise<void> {
   // modes), so the idle sweep runs against THIS process's own runtime
   // instance, not the local singleton (which agent mode never touches).
   startIdleRunSweep(sessionRuntime);
+  // #393: this process spawns the runner children here too, so a crash or
+  // a quit with a task in flight leaves the same pid files behind as in
+  // local mode -- and nothing used to reap them, so the run stayed open and
+  // its session read "running" forever. The idle sweep cannot see them: it
+  // filters an in-process map that is empty after a restart.
+  void sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client));
 
   // Watcher with the central reconcile; the boot backfill is done below (the
   // built-in backfill needs the local graph db the agent doesn't have), and
