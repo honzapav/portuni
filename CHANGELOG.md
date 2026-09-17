@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/honzapav/portuni/compare/v0.18.0...v0.18.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **runner,server:** create draft threads in central mode too ([#395](https://github.com/honzapav/portuni/issues/395)) ([9746754](https://github.com/honzapav/portuni/commit/97467548beb21738e8621ab6ad8b917f90c307e9))
+
 ## [0.18.0](https://github.com/honzapav/portuni/compare/v0.17.0...v0.18.0) (2026-09-16)
 
 
