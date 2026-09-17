@@ -1,11 +1,9 @@
 // Read a file's content for portuni_read_file. This is the universal
-// (no-hooks) read channel for ad-hoc in-scope nodes: the seatbelt only
-// grants a real mirror path for home + depth-1 neighbours; an ad-hoc node
-// with a local mirror also gets hardlinked into the session's projection
-// directory (domain/session-projection.ts) so it becomes readable on disk
-// too, but a node with no local mirror on this device has no disk path at
-// all -- portuni_read_file is the one channel that always works, since the
-// server (unsandboxed) reads the live file or falls back to the remote.
+// (no-hooks) read channel for a node with no local mirror on this device:
+// a node WITH a mirror is fully readable at its real, on-disk path (no
+// sandbox narrows that anymore, #346) -- portuni_read_file is the one
+// channel that always works regardless, since the server reads the live
+// file or falls back to the remote.
 //
 // Two sources, tried in order by readNodeFile:
 //   1. the node's local mirror on disk (readNodeFileFromMirror);
@@ -18,17 +16,19 @@
 // which rejects any traversal that would escape the mirror; the remote path
 // goes through the same validation buildRemotePath applies.
 
-import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { dirname, extname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { readFile, mkdir, writeFile, stat } from "node:fs/promises";
+import { basename, dirname, extname, join } from "node:path";
 import type { DbClient } from "../infra/db.js";
 import { getMirrorPath } from "./sync/mirror-registry.js";
 import { readFileBytesRemote } from "./sync/file-content-remote.js";
 import { FileContentError } from "./sync/file-content.js";
 import { ensureUnderRoot } from "../shared/safe-path.js";
+import { resolveRunnerDataDir } from "./runner/data-dir.js";
 
 // Guardrail: portuni_read_file returns whole-file content inline. Very large
 // files belong to the disk-path path (as_path, or the too_large refusal
-// pointing at it -- see mcp/read-file-spill.ts), not this tool -- cap the
+// pointing at it -- see readNodeFileOrPath below), not this tool -- cap the
 // inline payload so a huge file can't blow the context window.
 export const MAX_READ_BYTES = 1_000_000;
 
@@ -37,17 +37,17 @@ export type NodeFileContent =
   | { kind: "binary"; base64: string; bytes: number }
   // Deliberately carries only the size, never the bytes: this shape is what
   // a tool result is built from, and an oversized buffer must not ride along
-  // on it. The spill path (mcp/read-file-spill.ts) works from the mirror
-  // hardlink or its own uncapped raw fetch instead.
+  // on it. The path branch (readNodeFileOrPath below) works from the real
+  // mirror path or its own uncapped raw fetch instead.
   | { kind: "too_large"; bytes: number }
   | { kind: "no_mirror" }
   | { kind: "no_remote" }
   | { kind: "native_format" }
   | { kind: "not_found" };
 
-// Exported for mcp/read-file-spill.ts, which fetches raw bytes itself (via a
-// db-backed read in local mode, or CentralClient.getFileRaw in agent mode)
-// and classifies them locally rather than through readNodeFile*.
+// Exported for readNodeFileOrPath's remote-fetch branch, which fetches raw
+// bytes itself (via a db-backed read in local mode, or CentralClient.getFileRaw
+// in agent mode) and classifies them locally rather than through readNodeFile*.
 export function classifyBytes(bytes: Buffer): NodeFileContent {
   if (bytes.length > MAX_READ_BYTES) return { kind: "too_large", bytes: bytes.length };
   // NUL byte => treat as binary and hand back base64.
@@ -148,9 +148,10 @@ export async function readNodeFile(
 }
 
 // Raw bytes, no size cap and no text/binary classification: mirror first,
-// remote fallback when this machine holds no mirror of the node. Used by the
-// read-file spill path (mcp/read-file-spill.ts) to write a node's file to
-// disk when it has no local mirror to hardlink from.
+// remote fallback when this machine holds no mirror of the node. Used as
+// readNodeFileOrPath's local-mode `remote` fetch, for the case it has
+// already ruled out (no local mirror) -- so this always resolves via the
+// remote branch in practice, kept generic for symmetry with readNodeFile.
 export async function readNodeFileRaw(
   db: DbClient,
   userId: string,
@@ -162,9 +163,9 @@ export async function readNodeFileRaw(
   return rawFromRemote(db, nodeId, relPath);
 }
 
-// Write bytes to a path inside a session's projection directory, creating
-// any missing parent directories. Used to spill a node's content there
-// when it has no local mirror to hardlink from instead.
+// Write bytes to a plain path, creating any missing parent directories.
+// Used to spill a node's content to disk when it has no local mirror to
+// read it from directly (see readNodeFileOrPath's remote-fetch branch).
 export async function writeBytesToPath(destPath: string, bytes: Buffer): Promise<void> {
   await mkdir(dirname(destPath), { recursive: true });
   await writeFile(destPath, bytes);
@@ -255,4 +256,95 @@ export function formatNodeFileContent(
     case "not_found":
       return { content: [{ type: "text", text: `No such file: ${path}` }], isError: true };
   }
+}
+
+function spilledResult(
+  path: string,
+  bytes: number,
+  relPath: string,
+): { content: Array<{ type: "text"; text: string }> } {
+  return {
+    content: [
+      { type: "text", text: JSON.stringify({ path, bytes, mime: mimeFromExtension(relPath) }) },
+    ],
+  };
+}
+
+// Where a remote-fetched file lands when as_path is requested (or the file
+// is over the inline cap) and the node has no local mirror on this device:
+// a plain, uniquely-named file under the runner data dir (the same
+// PORTUNI_DATA_DIR-derived location run pid files and runners.json use).
+// There is no sandbox boundary to respect here anymore (#346) -- this is
+// purely a scratch location the agent's own Read/Grep tools can open.
+function spillPath(relPath: string): string {
+  return join(resolveRunnerDataDir(), "read-file-spill", randomUUID(), basename(relPath));
+}
+
+// Fetches a node file's raw bytes when it has no local mirror on this
+// device. Uncapped by design -- MAX_READ_BYTES only bounds what may be
+// inlined into a tool result, not what may be spilled to disk.
+export type RemoteRawFetch = (
+  nodeId: string,
+  relPath: string,
+) => Promise<Exclude<NodeFileContent, { kind: "text" | "binary" | "too_large" }> | { kind: "ok"; bytes: Buffer }>;
+
+export interface ReadNodeFileOrPathArgs {
+  userId: string;
+  nodeId: string;
+  relPath: string;
+  asPath: boolean;
+  remote: RemoteRawFetch;
+}
+
+// Serves portuni_read_file either inline (the common case: small text/binary
+// content) or as a disk path when the file is over the inline limit or the
+// caller passed as_path (#252, widened by #346 once the sandbox that used to
+// require spilling everything into a per-session projection directory was
+// removed): do not add chunked reads (offset/length) -- every chunk would
+// still pass through the model's context with no server-side grep, so the
+// agent would page blindly through a large file. Read the returned path with
+// your own Read/Grep instead.
+export async function readNodeFileOrPath(
+  args: ReadNodeFileOrPathArgs,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  const { userId, nodeId, relPath, asPath, remote } = args;
+  const mirrorPath = await getMirrorPath(userId, nodeId);
+
+  if (mirrorPath) {
+    // A node with a local mirror is fully readable at its real, on-disk
+    // path now -- report that path directly instead of copying or linking
+    // anything. Read once: a too_large outcome is kept so the fall-through
+    // below can report it without reading the (oversized) file a second
+    // time.
+    let inline: NodeFileContent | null = null;
+    if (!asPath) {
+      inline = await readNodeFileFromMirror(userId, nodeId, relPath);
+      if (inline.kind !== "too_large") return formatNodeFileContent(inline, relPath);
+    }
+    try {
+      const abs = ensureUnderRoot(mirrorPath, relPath);
+      const st = await stat(abs);
+      if (st.isFile()) return spilledResult(abs, st.size, relPath);
+    } catch {
+      /* traversal, or file missing at the mirror path -- fall through to inline below */
+    }
+    return formatNodeFileContent(
+      inline ?? (await readNodeFileFromMirror(userId, nodeId, relPath)),
+      relPath,
+    );
+  }
+
+  // No local mirror on this device: fetch the raw bytes (uncapped) and
+  // classify them ourselves, so a caller that only knows how to fetch raw
+  // bytes (agent-transport.ts's CentralClient-backed fetch) does not also
+  // need to reimplement the inline-vs-spill decision.
+  const raw = await remote(nodeId, relPath);
+  if (raw.kind !== "ok") return formatNodeFileContent(raw, relPath);
+  if (!asPath) {
+    const classified = classifyBytes(raw.bytes);
+    if (classified.kind !== "too_large") return formatNodeFileContent(classified, relPath);
+  }
+  const destPath = spillPath(relPath);
+  await writeBytesToPath(destPath, raw.bytes);
+  return spilledResult(destPath, raw.bytes.length, relPath);
 }

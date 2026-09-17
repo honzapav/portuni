@@ -2,23 +2,11 @@
 // three tiers (current mirror / sibling mirror / outside PORTUNI_ROOT).
 // Used by the optional portuni-guard PreToolUse hook so every harness gets
 // a uniform decision surface.
-//
-// GET /sandbox-profile?cwd=<abs> -- resolves the mirror containing cwd and
-// returns its Seatbelt disk-scope profile. Used by the `portuni run`
-// wrapper to sandbox agents launched from a plain shell (outside the
-// desktop app's pty_spawn path).
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { getDb } from "../infra/db.js";
 import { listUserMirrors } from "../domain/sync/mirror-registry.js";
 import { classifyWrite, resolvePortuniRoot } from "../domain/write-scope.js";
-import {
-  buildSeatbeltProfile,
-  resolveSandboxScopeForCwd,
-  ResumeSessionUnauthorizedError,
-} from "../domain/sandbox-profile.js";
 import { respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
-import { nodeVisibleTo } from "../auth/node-access.js";
 
 export async function handleWriteScope(
   req: IncomingMessage,
@@ -51,56 +39,6 @@ export async function handleWriteScope(
     const decision = cls.tier === "tier1_current" ? "allow" : "deny";
     respondJson(res, 200, { decision, ...cls });
   } catch (err) {
-    respondError(res, `${req.method} ${url.pathname}`, err);
-  }
-}
-
-export async function handleSandboxProfileByCwd(
-  req: IncomingMessage,
-  res: ServerResponse,
-  identity: RequestIdentity,
-  url: URL,
-): Promise<void> {
-  const cwd = url.searchParams.get("cwd");
-  if (!cwd) {
-    respondJson(res, 400, { error: "cwd parameter required" });
-    return;
-  }
-  try {
-    const db = getDb();
-    // Restart consolidation (#191): see handleNodeSandboxProfile.
-    const resumeSessionId = url.searchParams.get("resume_session_id") ?? undefined;
-    const r = await resolveSandboxScopeForCwd(db, identity.userId, cwd, resumeSessionId);
-    if (!r) {
-      respondJson(res, 409, {
-        error: `cwd is not inside any registered mirror: ${cwd}`,
-        code: "NO_MIRROR",
-      });
-      return;
-    }
-    // Group-visibility guard: a mirror cwd resolving to a hidden node must
-    // not leak its sandbox profile / node id. Same NO_MIRROR shape as an
-    // unregistered cwd so visibility is not distinguishable.
-    if (!(await nodeVisibleTo(db, identity, r.nodeId))) {
-      respondJson(res, 409, {
-        error: `cwd is not inside any registered mirror: ${cwd}`,
-        code: "NO_MIRROR",
-      });
-      return;
-    }
-    respondJson(res, 200, {
-      node_id: r.nodeId,
-      profile: buildSeatbeltProfile(r.scope),
-      portuni_root: r.scope.portuniRoot,
-      home_mirror: r.scope.homeMirror,
-      projection_root: r.scope.projectionRoot ?? null,
-      session_id: r.scope.sessionId ?? null,
-    });
-  } catch (err) {
-    if (err instanceof ResumeSessionUnauthorizedError) {
-      respondJson(res, 403, { error: err.message, code: "RESUME_UNAUTHORIZED" });
-      return;
-    }
     respondError(res, `${req.method} ${url.pathname}`, err);
   }
 }

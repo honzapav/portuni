@@ -175,12 +175,12 @@ door instead of central. Device-local tools (`portuni_mirror`, `portuni_status`,
 the local mirror + the central engine; every other tool (graph reads/writes,
 scope, responsibilities, ...) is proxied to central's `/mcp` unchanged. So a
 teammate's agent works on real files locally, while graph writes land on central
-with permissions enforced. Scope disk projection in agent mode is implemented
-via **real** seatbelt-granted paths: the seed set (home + depth-1, resolved
-from central) is read at its real mirror, and ad-hoc nodes via
-`portuni_read_file` — the old `.portuni-scope/` copy staging is retired (see
-[`scope-disk-projection.md`](./scope-disk-projection.md)). The dynamic scope
-*set* is still tracked upstream on the central session, not on the device.
+with permissions enforced. Disk read scope in agent mode is just this device's
+own mirror registry: any node with a local mirror here is read at its real
+path, no matter where it sits relative to the home node; a node with none is
+read via `portuni_read_file` (central/remote-direct, #346 — there is no
+sandbox or hardlink projection layer anymore). The dynamic scope *set* is
+still tracked upstream on the central session, not on the device.
 
 Proxied tools with a device-side step (`apps/server/mcp/agent-tools.ts`):
 - `portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file` run

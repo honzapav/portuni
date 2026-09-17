@@ -279,7 +279,8 @@ errors for them. Callable again on an already-suspended session to
 refresh the handoff -- the stored hash changes, so a resume can tell a
 human edited it since suspend.
 
-A later resume respawns the terminal in the same mirror, recomputes
-the sandbox profile from the session's accumulated read set, and either
-continues the same CLI conversation (when it still exists under the
-resumed profile) or starts fresh from the handoff content.
+A later resume starts a fresh run in the same mirror and either
+continues the same CLI conversation (when it still exists) or starts
+fresh from the handoff content -- there is no sandbox profile to
+recompute; a node with a local mirror on this device is readable at
+its real path regardless.

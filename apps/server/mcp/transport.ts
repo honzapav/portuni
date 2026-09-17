@@ -15,8 +15,7 @@ import {
   rehydrateConnectorWriteGrants,
   resumeSessionPersistence,
 } from "./session-persistence.js";
-import { disposeSessionProjection } from "./disk-projection.js";
-import { spawnSessionIdFromHeader } from "../domain/session-projection.js";
+import { spawnSessionIdFromHeader } from "../domain/sessions.js";
 import { extractClientNameFromInitializeBody } from "./client-name.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
@@ -109,36 +108,19 @@ export function createMcpTransport(): McpTransport {
       // on its presence.
       const homeNodeId = parseHomeNodeIdFromUrl(req.url);
 
-      // Resume (#204): the app respawns a terminal for a suspended session
-      // with ?resume_session_id= on the MCP URL, same param name the
-      // disk-plane sandbox-profile endpoints use for restart consolidation.
+      // Resume (#204): a resumed run's MCP connection carries
+      // ?resume_session_id= on the MCP URL.
       const resumeSessionId = parseResumeSessionIdFromUrl(req.url);
 
-      // X-Portuni-Profile: the spawn profile id (phase 3), sent only by
-      // Claude Code connections whose per-mirror .mcp.json carries the
-      // ${PORTUNI_PROFILE_ID:-} header expansion (buildClaudeMcpJson) --
-      // absent/empty for every other CLI or a plain, profile-less spawn.
-      const profileIdHeader = req.headers["x-portuni-profile"];
-      const profileId =
-        (Array.isArray(profileIdHeader) ? profileIdHeader[0] : profileIdHeader)?.trim() || null;
-
-      // X-Portuni-Spawn-Id (#208 follow-up): the id the Seatbelt profile's
-      // projection grant was already narrowed to at spawn time, sent the
-      // same way X-Portuni-Profile is -- see bindSessionPersistence. Only
-      // meaningful for a fresh (non-resume) connection; a resume already
-      // reuses its own known id via resumeSessionPersistence below.
-      // Validated as a ULID (spawnSessionIdFromHeader): the value ends up
-      // as a path segment under the projection root that is rm -rf'd on
-      // close, so a malformed header is dropped, not trusted.
+      // X-Portuni-Spawn-Id (#208 follow-up, runner batch Rule 2): the
+      // session id a fresh run's own MCP connection carries so it binds to
+      // the row session-runtime.ts already created instead of minting a
+      // new one -- see bindSessionPersistence / lookupSpawnSessionForBind.
+      // Only meaningful for a fresh (non-resume) connection; a resume
+      // already reuses its own known id via resumeSessionPersistence below.
+      // Validated as a ULID (spawnSessionIdFromHeader): a malformed header
+      // is dropped, not trusted.
       const spawnSessionId = spawnSessionIdFromHeader(req.headers["x-portuni-spawn-id"]);
-
-      // X-Portuni-Terminal (#218): the desktop PTY that spawned this
-      // connection's CLI (PORTUNI_TERMINAL_ID), sent only by Claude Code
-      // connections whose per-mirror .mcp.json carries the
-      // ${PORTUNI_TERMINAL_ID:-} header expansion -- see buildClaudeMcpJson.
-      const terminalIdHeader = req.headers["x-portuni-terminal"];
-      const terminalId =
-        (Array.isArray(terminalIdHeader) ? terminalIdHeader[0] : terminalIdHeader)?.trim() || null;
 
       // Headless connections without a task anchor are refused at seed
       // time — a headless session has no elicitation channel, so it must
@@ -187,15 +169,13 @@ export function createMcpTransport(): McpTransport {
       const { server, scope, bindSession } = createMcpServer(
         identity,
         homeNodeId,
-        profileId,
         resumeSessionId,
         spawnSessionId,
-        terminalId,
         boundExistingSession?.id ?? null,
       );
 
       if (boundExistingSession) {
-        await bindExistingSessionPersistence(getDb(), scope, identity, boundExistingSession);
+        await bindExistingSessionPersistence(getDb(), scope, boundExistingSession);
       }
 
       // Resume (#204): must be authorized and rehydrated before any tool
@@ -302,9 +282,7 @@ export function createMcpTransport(): McpTransport {
         if (transport.sessionId) {
           sessions.delete(transport.sessionId);
         }
-        // GC backstop (#218, "Sessions follow PTY exit"): a CLI whose config
-        // format cannot carry X-Portuni-Terminal (Codex, Vibe) or a crash
-        // that never reaches POST /terminals/:terminal_id/exit would
+        // GC backstop: a genuine client disconnect or a crash would
         // otherwise leave its session row stuck 'running' until the
         // 30-minute idle GC. closeSessionIfRunning (#329: suspends, not
         // closes) never touches 'suspended' -- an agent that called
@@ -314,9 +292,6 @@ export function createMcpTransport(): McpTransport {
             console.error("closeSessionIfRunning on transport close failed:", err);
           });
         }
-        // Disk contract: the agent never manages its projection directory
-        // (spec: "Disk contract") -- clean it up here, at session end.
-        void disposeSessionProjection(scope, identity.userId, getDb());
       };
 
       await server.connect(transport);

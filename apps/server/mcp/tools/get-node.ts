@@ -6,7 +6,6 @@ import { buildContextPayload } from "./context.js";
 import { getLocalMirror } from "../../domain/sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../../domain/sync/remote-path.js";
 import { guardNodeRead, scopeExpansionError } from "../scope.js";
-import { readableMirrorRoot } from "../disk-projection.js";
 import { filterVisibleNodeIds } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
@@ -14,7 +13,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
   const { scope } = ctx;
   server.tool(
     "portuni_get_node",
-    "Get a single node from the Portuni knowledge graph by ID or name. Use when the user names a specific node or you need rich single-node detail (files, visibility, timestamps, mirror metadata) that portuni_get_context's depth-0 root does not include. For neighbourhood / traversal use portuni_get_context with depth>=1. Returns the node's core fields plus owner, responsibilities (with assignees), data_sources, tools, goal, lifecycle_state, direct edges (both directions), files, events, and local mirror path. Subject to the session's read scope: if the target is outside scope and not user-confirmed, the call returns scope_expansion_required and the agent must call portuni_expand_scope first. Name-based lookups are filtered to in-scope candidates so unscoped name probing cannot surface neighbouring node metadata. Read files from readable_path (this session's actual readable disk path for the node), not local_mirror (registration metadata only, may not be readable under the sandbox) -- readable_path is null when the node has no local mirror on this device; use portuni_read_file for those.",
+    "Get a single node from the Portuni knowledge graph by ID or name. Use when the user names a specific node or you need rich single-node detail (files, visibility, timestamps, mirror metadata) that portuni_get_context's depth-0 root does not include. For neighbourhood / traversal use portuni_get_context with depth>=1. Returns the node's core fields plus owner, responsibilities (with assignees), data_sources, tools, goal, lifecycle_state, direct edges (both directions), files, events, and local mirror path. Subject to the session's read scope: if the target is outside scope and not user-confirmed, the call returns scope_expansion_required and the agent must call portuni_expand_scope first. Name-based lookups are filtered to in-scope candidates so unscoped name probing cannot surface neighbouring node metadata. Read files from readable_path (the node's real mirror path on this device) rather than deriving it yourself from local_mirror -- readable_path is null when the node has no local mirror on this device; use portuni_read_file for those.",
     {
       node_id: z.string().optional().describe("Node ID (ULID)"),
       name: z.string().optional().describe("Node name (case-insensitive match)"),
@@ -138,35 +137,15 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
 
       // 3. Fetch local mirror from per-device sync.db (the context payload
       //    only exposes local_path; this tool returns the richer pair).
-      const [mirror, homeMirrorRow] = await Promise.all([
-        getLocalMirror(ctx.identity.userId, row.id),
-        scope.homeNodeId
-          ? getLocalMirror(ctx.identity.userId, scope.homeNodeId)
-          : Promise.resolve(null),
-      ]);
+      const mirror = await getLocalMirror(ctx.identity.userId, row.id);
       const mirrorPath = mirror?.local_path ?? null;
       const localMirror = mirror
         ? { local_path: mirror.local_path, registered_at: mirror.registered_at }
         : null;
 
-      // Single-source disk projection: for a non-home in-scope node the agent
-      // can only read this session's hardlink projection, so derive file
-      // paths from there and ensure it is fresh first. local_mirror keeps
-      // pointing at the real mirror (it is metadata about registration, not
-      // a read path).
-      const homeMirror = homeMirrorRow?.local_path ?? null;
-      let projectionDir: string | null = null;
-      if (row.id !== scope.homeNodeId && scope.has(row.id)) {
-        const outcome = await ctx.projector.projectNode(row.id);
-        projectionDir = outcome.kind === "projected" ? outcome.dir : null;
-      }
-      const effectiveMirrorRoot = readableMirrorRoot({
-        scope,
-        nodeId: row.id,
-        homeMirror,
-        realMirror: mirrorPath,
-        projectionDir,
-      });
+      // A node with a local mirror on this device is fully readable at that
+      // real path (#346) -- no sandbox narrows it to home/depth-1 anymore.
+      const effectiveMirrorRoot = mirrorPath;
 
       // 4. + 5. The org_sync_key (for the per-file path derivation) and the
       //    file rows are both keyed only by this node and neither reads the
@@ -248,12 +227,9 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
         files,
         events: root.events,
         local_mirror: localMirror,
-        // Where to actually Read/Grep this node's files from, if anywhere:
-        // the real mirror for the home node, this session's hardlink
-        // projection for any other in-scope node, null when neither applies
-        // (no local mirror on this device, or the node is out of scope).
-        // local_mirror above is registration metadata, not a read path --
-        // use readable_path.
+        // Where to actually Read/Grep this node's files from: its real
+        // mirror path, null when this device has none. local_mirror above
+        // is registration metadata, not a read path -- use readable_path.
         readable_path: effectiveMirrorRoot,
       };
 
