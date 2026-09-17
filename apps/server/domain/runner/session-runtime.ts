@@ -484,7 +484,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // hasn't spawned yet) means the boot sweep simply has nothing to find
     // for this run -- best-effort, not a correctness requirement.
     const pid = handle.pid();
-    if (pid !== null) await writePidFile(resolveRunnerDataDir(), run.id, pid).catch(() => undefined);
+    if (pid !== null) {
+      await writePidFile(resolveRunnerDataDir(), run.id, pid, session.id).catch(() => undefined);
+    }
     // A script-driven (or otherwise fast) adapter may already have emitted
     // events synchronously during start() -- e.g. a wait-free fake script
     // runs to completion, including its own run_ended, before start()

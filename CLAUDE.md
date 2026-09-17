@@ -156,6 +156,18 @@ symlink to this file.
   link resolve through) follows the *other* one, the `make_latest` pin;
   `gh release edit --prerelease=false` never sends it. Full flow + one-time
   PAT setup: `CONTRIBUTING.md`, `docs/release-process.md`.
+- **The server deploys itself from CI.** `.github/workflows/deploy-server.yml`
+  runs on every green CI run on `main` (and on manual dispatch), skips
+  commits that touch nothing under `apps/server/`, and runs the same
+  `scripts/deploy-vps.sh` a laptop would -- with `PORTUNI_SKIP_QA=1`, since
+  the commit's own CI run is what gated it. The pre-migration Turso backup
+  runs there too and is kept as a workflow artifact for 30 days (in CI it
+  otherwise lands in the runner's home and dies with it -- the same
+  "backup that protects nothing" shape as `docs/lessons-learned.md` §7).
+  Secrets it needs: `VPS_SSH_KEY`, `VPS_HOST`, `TURSO_URL`,
+  `TURSO_AUTH_TOKEN`. A laptop deploy still works and still runs the full
+  gate; it needs those Turso vars in the environment, which live only in
+  `/opt/portuni/portuni.env` on the VPS.
 - **Update the public docs site (`sites/docs/`) in the SAME branch as any
   behaviour/tool/API change.** release-please only bumps the version and
   CHANGELOG — it never touches `sites/docs/`, so a change shipped without a
@@ -1243,7 +1255,7 @@ symlink to this file.
   (one more `ServerHandoffReason`, alongside `boot_sweep`/`suspend_timeout`
   — Relace label "proces osiřel po restartu") followed by its own `handoff
   {generated_by: "server"}` event, same shape `session-runtime.ts`'s own
-  `suspend()` produces for a live run. Local mode only: a pid file is only
+  `suspend()` produces for a live run. A pid file is only
   ever written by the process that spawned the child, on this same machine,
   so only that process's own next boot can find it — wired into `index.ts`
   unconditionally and `desktop.ts`'s non-agent branch, the same two call
@@ -1251,6 +1263,23 @@ symlink to this file.
   of it rather than fired independently, since this sweep's own
   `suspendSessionServerSide` call already resolves a session the other
   sweep's `'running'`-row query would otherwise race.
+  **It runs in central/agent mode too (#393)** — #325 scoped itself to
+  "local mode", which by #323 was the wrong axis: the machine is what
+  matters, and a central-mode sidecar spawns the same children and leaves
+  the same pid files, so quitting the app with a task in flight left the
+  run open and its session reading `running` forever (the idle sweep
+  cannot see it — `checkIdleRunsOnce` filters `liveRuns`, an in-process
+  map that is empty after a restart). The db-shaped half is two injected
+  functions now (`RunSweepBackend`: `resolveRun` + `suspend`, over a
+  `SessionStore`): `localRunSweepBackend` reads `session_runs` by run id
+  as before, `centralRunSweepBackend` resolves the run through
+  `store.listRuns(session_id)` and suspends via the runtime's own
+  `createSuspendFallbackCentral`. That lookup needs a session id, so the
+  pid file records one (`PidFileContent.session_id`, nullable — a file
+  written before this field is removed as stale rather than re-examined at
+  every boot). `desktop.ts`'s `agentMain` calls
+  `sweepOrphanedRunsOnBootCentral`; there is no
+  `sweepStaleRunningSessionsOnBoot` to order against there.
 - **Bulk sync is a server-side job; the pending aggregate separates
   actionable work from decisions.**
   - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the
