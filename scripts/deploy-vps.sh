@@ -21,12 +21,18 @@ cd "$(dirname "$0")/.."
 # own CI run went green, so re-running the whole gate on the runner would
 # just double the wall clock. A human deploy from a laptop keeps running it
 # -- there the working tree is whatever happens to be checked out.
+# The backup below needs TURSO_URL/TURSO_AUTH_TOKEN in the environment, and
+# the operator's only source for them is the VPS's own portuni.env -- so a
+# laptop deploy exports them for the whole run. The test suite inherits
+# that, and every test that starts a server then dies on
+# assertAuthRequiredIfNotLoopback ("TURSO_URL is set (shared team
+# database)" with no PORTUNI_AUTH_TOKEN). The gate must not see them.
 if [[ "${PORTUNI_SKIP_QA:-}" == "1" ]]; then
   echo "==> qa skipped (PORTUNI_SKIP_QA=1) -- build only"
-  npm run build
+  env -u TURSO_URL -u TURSO_AUTH_TOKEN npm run build
 else
   echo "==> qa (lint + typecheck + tests + build)"
-  npm run qa
+  env -u TURSO_URL -u TURSO_AUTH_TOKEN npm run qa
 fi
 
 # The server runs pending migrations on boot, so every deploy is a schema
