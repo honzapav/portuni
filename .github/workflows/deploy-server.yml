@@ -89,6 +89,13 @@ jobs:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
+          case "$VPS_SSH_KEY" in
+            *"PRIVATE KEY"*) ;;
+            *)
+              echo "::error::VPS_SSH_KEY is not a private key. Set it from the private half (gh secret set VPS_SSH_KEY < ~/.ssh/<key>), not the .pub."
+              exit 1
+              ;;
+          esac
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
@@ -100,6 +107,21 @@ jobs:
             IdentitiesOnly yes
             StrictHostKeyChecking yes
           EOF
+
+      # Fail on a bad key in seconds rather than after a multi-megabyte
+      # database dump: the backup runs inside the deploy step, so without
+      # this the first thing a wrong VPS_SSH_KEY costs is a full Turso
+      # export that is then thrown away with the failed run.
+      - name: Check the deploy key is accepted
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$VPS_HOST" true; then
+            echo "::error::ssh to the VPS was refused. VPS_SSH_KEY must be a passphrase-less private key whose public half is in root's authorized_keys on that host."
+            exit 1
+          fi
+          echo "ssh ok"
 
       - name: Deploy
         if: steps.decide.outputs.deploy == 'true'
