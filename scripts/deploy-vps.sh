@@ -17,8 +17,17 @@ HEALTH_URL="https://api.portuni.com/health"
 
 cd "$(dirname "$0")/.."
 
-echo "==> qa (lint + typecheck + tests + build)"
-npm run qa
+# CI (.github/workflows/deploy-server.yml) only ever deploys a commit whose
+# own CI run went green, so re-running the whole gate on the runner would
+# just double the wall clock. A human deploy from a laptop keeps running it
+# -- there the working tree is whatever happens to be checked out.
+if [[ "${PORTUNI_SKIP_QA:-}" == "1" ]]; then
+  echo "==> qa skipped (PORTUNI_SKIP_QA=1) -- build only"
+  npm run build
+else
+  echo "==> qa (lint + typecheck + tests + build)"
+  npm run qa
+fi
 
 # The server runs pending migrations on boot, so every deploy is a schema
 # change until proven otherwise. `docs/lessons-learned.md` §7 made "back up

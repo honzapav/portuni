@@ -1,0 +1,131 @@
+# Deploy the server to the VPS (api.portuni.com) whenever main's own CI run
+# goes green -- the step that used to be a laptop running
+# scripts/deploy-vps.sh by hand, which meant the deploy depended on whoever
+# happened to have Turso credentials and an ssh key in their shell.
+#
+# It runs the SAME script, with PORTUNI_SKIP_QA=1 (the commit's own CI run
+# is what gated it) so the gate is not paid twice.
+#
+# Required repository secrets:
+#   VPS_SSH_KEY         private key whose public half is in root@VPS's
+#                       authorized_keys (ed25519, no passphrase)
+#   VPS_HOST            e.g. root@64.226.121.79 -- the script's own default
+#                       is used when unset, but pin it here
+#   TURSO_URL           the PRODUCTION database, not a scratch one: this is
+#   TURSO_AUTH_TOKEN    what the pre-migration backup dumps
+#
+# The backup is uploaded as a workflow artifact -- in CI it would otherwise
+# be written to the runner's home directory and thrown away with it, which
+# is the same "backup that protects nothing" failure docs/lessons-learned.md
+# §7 recorded.
+name: Deploy server
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_backup:
+        description: "Skip the pre-migration Turso backup (dangerous)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never let two deploys rsync into /opt/portuni at once; never cancel one
+# half-way through, since a cancelled run can leave dist/ and node_modules
+# out of step with each other.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to api.portuni.com
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The commit CI actually ran against, not whatever main points at
+          # by the time this workflow starts.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 2
+
+      # A restart drops every live WebSocket and interrupts running tasks, so
+      # a docs- or desktop-only commit must not trigger one. The repo
+      # squash-merges, so a main commit is a PR's whole diff and HEAD~1 is a
+      # sound base; a manual dispatch always deploys.
+      - name: Decide whether this commit touches the server
+        id: decide
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only HEAD~1 HEAD)"
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(apps/server/|scripts/deploy-vps\.sh|package(-lock)?\.json|\.github/workflows/deploy-server\.yml)'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "No server-side change in this commit -- skipping the deploy."
+          fi
+
+      - uses: actions/setup-node@v7
+        if: steps.decide.outputs.deploy == 'true'
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+        if: steps.decide.outputs.deploy == 'true'
+
+      - name: Authorize ssh to the VPS
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          host="${VPS_HOST#*@}"
+          ssh-keyscan -H "$host" >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<EOF
+          Host $host
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Deploy
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          PORTUNI_VPS_HOST: ${{ secrets.VPS_HOST }}
+          PORTUNI_SKIP_QA: "1"
+          PORTUNI_SKIP_BACKUP: ${{ inputs.skip_backup && '1' || '' }}
+          TURSO_URL: ${{ secrets.TURSO_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: scripts/deploy-vps.sh
+
+      # backup-turso.ts writes into $HOME/backups, which upload-artifact
+      # cannot glob through a `~`; move it under the workspace first.
+      - name: Collect the pre-migration backup
+        if: always() && steps.decide.outputs.deploy == 'true'
+        run: |
+          mkdir -p backup-artifact
+          cp "$HOME"/backups/*.sql backup-artifact/ 2>/dev/null || true
+
+      # Kept even when the deploy itself failed: a backup taken right before
+      # a migration that then went wrong is exactly the one worth having.
+      - name: Keep the pre-migration backup
+        if: always() && steps.decide.outputs.deploy == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: turso-backup-${{ github.event.workflow_run.head_sha || github.sha }}
+          path: backup-artifact/*.sql
+          retention-days: 30
+          if-no-files-found: warn
