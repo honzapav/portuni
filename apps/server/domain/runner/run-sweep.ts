@@ -5,7 +5,11 @@
 // not survive to see it end (sidecar crash or restart). Local mode only:
 // a pid file is only ever written by the process that itself spawned the
 // child, on this same machine, so only that process's own next boot can
-// ever find it -- there is no cross-host lookup to build.
+// ever find it -- there is no cross-host lookup to build. "Local mode" is
+// about the machine, not the data mode: a central-mode sidecar spawns the
+// same children and leaves the same pid files behind, so #393 made the
+// db-shaped half of this sweep a pair of injected functions (resolveRun +
+// suspend) and central mode supplies its own, backed by CentralSessionStore.
 //
 // Mirrors boot/session-sweep.ts's shape one level down: that sweep already
 // suspends a 'running' session row with no live run at all (a hand-opened
@@ -18,8 +22,9 @@
 
 import { execFile as nodeExecFile } from "node:child_process";
 import type { DbClient } from "../../infra/db.js";
+import type { SessionRow } from "../../shared/types.js";
 import { suspendSessionServerSide } from "../session-handoff.js";
-import { DbSessionStore } from "./store.js";
+import { DbSessionStore, type SessionStore } from "./store.js";
 import { isProcessAlive } from "./process-liveness.js";
 import { listPidFiles, readPidFile, removePidFileAt, type PidFileEntry } from "./pid-file.js";
 
@@ -30,6 +35,22 @@ export interface RunSweepDeps {
   isAlive?: (pid: number) => boolean;
   sigtermGraceMs?: number;
   sleep?: (ms: number) => Promise<void>;
+}
+
+export interface SweptRun {
+  id: string;
+  session_id: string;
+  ended_at: string | null;
+}
+
+// What the sweep needs beyond the filesystem: where a run record lives and
+// how a session is suspended. Local mode reads both straight off the graph
+// db; central mode goes through CentralSessionStore and the same
+// suspend-fallback the runtime itself uses.
+export interface RunSweepBackend {
+  store: SessionStore;
+  resolveRun(runId: string, sessionId: string | null): Promise<SweptRun | null>;
+  suspend(sessionId: string, reason: "host_lost"): Promise<SessionRow | null>;
 }
 
 export interface RunSweepResult {
@@ -129,14 +150,19 @@ async function loadRun(db: DbClient, runId: string): Promise<{ id: string; sessi
   };
 }
 
-async function sweepOne(db: DbClient, entry: PidFileEntry, deps: Required<RunSweepDeps>, result: RunSweepResult): Promise<void> {
+async function sweepOne(
+  backend: RunSweepBackend,
+  entry: PidFileEntry,
+  deps: Required<RunSweepDeps>,
+  result: RunSweepResult,
+): Promise<void> {
   const content = await readPidFile(entry.path);
   if (!content) {
     await removePidFileAt(entry.path);
     return;
   }
 
-  const run = await loadRun(db, entry.runId);
+  const run = await backend.resolveRun(entry.runId, content.session_id);
   if (!run || run.ended_at !== null) {
     await removePidFileAt(entry.path);
     if (run) result.staleFilesRemoved++;
@@ -150,13 +176,13 @@ async function sweepOne(db: DbClient, entry: PidFileEntry, deps: Required<RunSwe
     result.killed++;
   }
 
-  const store = new DbSessionStore(db);
+  const store = backend.store;
   await store.appendEvents(run.session_id, run.id, [
     { kind: "run_ended", payload: { run_id: run.id, reason: "host_lost", usage: null } },
   ]);
   await store.patchRun(run.id, { ended_at: new Date().toISOString(), end_reason: "host_lost" });
 
-  const session = await suspendSessionServerSide(db, run.session_id, "host_lost");
+  const session = await backend.suspend(run.session_id, "host_lost");
   if (session) {
     await store.appendEvents(run.session_id, run.id, [
       { kind: "handoff", payload: { path: session.handoff_path, hash: session.handoff_hash } },
@@ -167,7 +193,11 @@ async function sweepOne(db: DbClient, entry: PidFileEntry, deps: Required<RunSwe
   result.cleaned++;
 }
 
-export async function sweepOrphanedRuns(db: DbClient, dataDir: string, deps: RunSweepDeps = {}): Promise<RunSweepResult> {
+export async function sweepOrphanedRunsOn(
+  backend: RunSweepBackend,
+  dataDir: string,
+  deps: RunSweepDeps = {},
+): Promise<RunSweepResult> {
   const resolved: Required<RunSweepDeps> = {
     execFile: deps.execFile ?? nodeExecFile,
     isAlive: deps.isAlive ?? isProcessAlive,
@@ -176,7 +206,40 @@ export async function sweepOrphanedRuns(db: DbClient, dataDir: string, deps: Run
   };
   const result: RunSweepResult = { killed: 0, cleaned: 0, staleFilesRemoved: 0 };
   for (const entry of await listPidFiles(dataDir)) {
-    await sweepOne(db, entry, resolved, result);
+    await sweepOne(backend, entry, resolved, result);
   }
   return result;
+}
+
+export function localRunSweepBackend(db: DbClient): RunSweepBackend {
+  return {
+    store: new DbSessionStore(db),
+    resolveRun: (runId) => loadRun(db, runId),
+    suspend: (sessionId, reason) => suspendSessionServerSide(db, sessionId, reason),
+  };
+}
+
+// Central mode has no session_runs table here: the run is resolved through
+// the session it belongs to, which is why the pid file records that id
+// (#393). A file written before that field existed names no session, so
+// there is nothing to resolve -- it is removed as stale rather than left
+// to be re-examined at every boot forever.
+export function centralRunSweepBackend(
+  store: SessionStore,
+  suspend: (sessionId: string, reason: "host_lost") => Promise<SessionRow | null>,
+): RunSweepBackend {
+  return {
+    store,
+    resolveRun: async (runId, sessionId) => {
+      if (!sessionId) return null;
+      const runs = await store.listRuns(sessionId);
+      const run = runs.find((r) => r.id === runId);
+      return run ? { id: run.id, session_id: run.session_id, ended_at: run.ended_at } : null;
+    },
+    suspend,
+  };
+}
+
+export async function sweepOrphanedRuns(db: DbClient, dataDir: string, deps: RunSweepDeps = {}): Promise<RunSweepResult> {
+  return sweepOrphanedRunsOn(localRunSweepBackend(db), dataDir, deps);
 }

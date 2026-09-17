@@ -8,11 +8,18 @@
 
 import { getDb } from "../infra/db.js";
 import { resolveRunnerDataDir } from "../domain/runner/data-dir.js";
-import { sweepOrphanedRuns } from "../domain/runner/run-sweep.js";
+import {
+  centralRunSweepBackend,
+  localRunSweepBackend,
+  sweepOrphanedRunsOn,
+  type RunSweepBackend,
+} from "../domain/runner/run-sweep.js";
+import { createSuspendFallbackCentral } from "../domain/runner/suspend-fallback-central.js";
+import type { SessionStore } from "../domain/runner/store.js";
 
-export async function sweepOrphanedRunsOnBoot(): Promise<void> {
+export async function sweepOrphanedRunsOnBoot(backend?: RunSweepBackend): Promise<void> {
   try {
-    const result = await sweepOrphanedRuns(getDb(), resolveRunnerDataDir());
+    const result = await sweepOrphanedRunsOn(backend ?? localRunSweepBackend(getDb()), resolveRunnerDataDir());
     if (result.cleaned > 0 || result.staleFilesRemoved > 0) {
       console.log(
         `[boot] run sweep: ${result.cleaned} orphaned run(s) marked host_lost (${result.killed} process(es) signaled), ${result.staleFilesRemoved} stale pid file(s) removed`,
@@ -21,4 +28,14 @@ export async function sweepOrphanedRunsOnBoot(): Promise<void> {
   } catch (e) {
     console.error("[boot] run sweep failed:", e);
   }
+}
+
+// #393: a central-mode sidecar spawns the same children and leaves the same
+// pid files, but has no graph db -- the run and session records live on
+// central. The suspend half reuses the runtime's own agent-mode fallback,
+// so an orphaned run is written up exactly the way a live one that timed
+// out would be.
+export async function sweepOrphanedRunsOnBootCentral(store: SessionStore): Promise<void> {
+  const suspend = createSuspendFallbackCentral(store);
+  await sweepOrphanedRunsOnBoot(centralRunSweepBackend(store, suspend));
 }
