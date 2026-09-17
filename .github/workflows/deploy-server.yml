@@ -84,15 +84,39 @@ jobs:
         if: steps.decide.outputs.deploy == 'true'
 
       - name: Authorize ssh to the VPS
+        id: ssh
         if: steps.decide.outputs.deploy == 'true'
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
+          case "$VPS_SSH_KEY" in
+            *"PRIVATE KEY"*) ;;
+            *)
+              echo "::error::VPS_SSH_KEY is not a private key. Set it from the private half (gh secret set VPS_SSH_KEY < ~/.ssh/<key>), not the .pub."
+              exit 1
+              ;;
+          esac
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          host="${VPS_HOST#*@}"
+
+          # VPS_HOST is a secret, so a wrong value is invisible in the log --
+          # and the one mistake that matters here (leaving the user off, so
+          # ssh logs in as `runner` and is refused) looks exactly like a bad
+          # key. Default the user instead of requiring the secret to carry it.
+          case "$VPS_HOST" in
+            *@*) target="$VPS_HOST"; echo "VPS_HOST carries a user" ;;
+            *)   target="root@$VPS_HOST"; echo "VPS_HOST carries no user -- defaulting to root" ;;
+          esac
+          host="${target#*@}"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+          # Not a secret: the fingerprint identifies which key this is
+          # without revealing it, so a mismatch against the VPS's
+          # authorized_keys can be diagnosed from the log alone.
+          ssh-keygen -lf ~/.ssh/id_deploy || echo "could not read the key -- wrong format or passphrase-protected"
+
           ssh-keyscan -H "$host" >> ~/.ssh/known_hosts 2>/dev/null
           cat >> ~/.ssh/config <<EOF
           Host $host
@@ -101,10 +125,28 @@ jobs:
             StrictHostKeyChecking yes
           EOF
 
+      # Fail on a bad key in seconds rather than after a multi-megabyte
+      # database dump: the backup runs inside the deploy step, so without
+      # this the first thing a wrong VPS_SSH_KEY costs is a full Turso
+      # export that is then thrown away with the failed run.
+      - name: Check the deploy key is accepted
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          TARGET: ${{ steps.ssh.outputs.target }}
+        run: |
+          if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$TARGET" true; then
+            echo "Refused. Verbose handshake (key material is never printed):"
+            ssh -v -o BatchMode=yes -o ConnectTimeout=10 "$TARGET" true 2>&1 |
+              grep -E "Offering|Authentications that can continue|Server accepts key|Trying private key|denied" || true
+            echo "::error::ssh to the VPS was refused. Compare the fingerprint printed above with the VPS's authorized_keys; VPS_SSH_KEY must be a passphrase-less private key whose public half is there."
+            exit 1
+          fi
+          echo "ssh ok"
+
       - name: Deploy
         if: steps.decide.outputs.deploy == 'true'
         env:
-          PORTUNI_VPS_HOST: ${{ secrets.VPS_HOST }}
+          PORTUNI_VPS_HOST: ${{ steps.ssh.outputs.target }}
           PORTUNI_SKIP_QA: "1"
           PORTUNI_SKIP_BACKUP: ${{ inputs.skip_backup && '1' || '' }}
           TURSO_URL: ${{ secrets.TURSO_URL }}
