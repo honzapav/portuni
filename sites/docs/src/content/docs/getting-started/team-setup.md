@@ -73,7 +73,7 @@ As a teammate you install the regular desktop app and point it at your organizat
 
 That's it. The graph you see — and everything your AI agents can do — is filtered through your permissions on the server.
 
-Mirror folders work in central mode too: the local sidecar runs as a **sync agent** that keeps your mirror folders and file status current, brokering every read and write through the central server with your device token. Folders materialize per node — open a node and hit **Otevřít terminál v Portuni** (or run a sync) and the app creates the local mirror for you. The app walks you through this right after your first sign-in.
+Mirror folders work in central mode too: the local sidecar runs as a **sync agent** that keeps your mirror folders and file status current, brokering every read and write through the central server with your device token. Folders materialize per node — open a node and hit **Vytvořit pracovní složku** (or run a sync) and the app creates the local mirror for you. The app walks you through this right after your first sign-in.
 
 Advanced: the same settings can still be written by hand into the app's `config.json` (`~/Library/Application Support/ooo.workflow.portuni/config.json`, keys `server_url`, `google_client_id`, `google_client_secret`, `data_mode: "central"`) — useful when the server does not serve `/auth/desktop-config`.
 

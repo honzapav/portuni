@@ -394,8 +394,8 @@ symlink to this file.
   (`apps/server/domain/scope-materialize.ts`). The per-mirror `.mcp.json` (Claude)
   and `.vibe/config.toml` (Mistral Vibe) carry `?home_node_id=…` (scope
   auto-seed) and reference the token via env var – never a literal. The
-  desktop app injects `PORTUNI_MCP_TOKEN` into spawned terminals; manual
-  shells outside the app must export it themselves (Settings → Copy token).
+  desktop app has no terminal of its own to inject it into (#345) — a shell
+  outside the app exports `PORTUNI_MCP_TOKEN` itself (Settings → Copy token).
   User-scoped fallbacks for sessions outside any mirror:
   `~/.claude.json` (`install_claude_global`), `~/.codex/config.toml`
   (`install_codex_global`), `~/.vibe/config.toml` (`install_vibe_global`).
@@ -738,13 +738,13 @@ symlink to this file.
   dev loop and the whole test suite) keeps the legacy behavior: every
   env-mode REST write allowed, unchanged. The packaged desktop app's Tauri
   host always sets this itself (fresh per launch, never on disk, never
-  exported into a spawned terminal) — the hardened posture is always on
-  there. The central-mode sync agent (`api/agent-router.ts`) applies the
+  exported into a spawned agent's own env) — the hardened posture is always
+  on there. The central-mode sync agent (`api/agent-router.ts`) applies the
   same posture through `guardAgentRestWrite` on every mutating REST route
   it serves (file create/delete/resolve, `PUT /nodes/:id/file`, sync run,
   mirror create): it has no graph db or session table to resolve a spawn
   id against, so a proven `X-Portuni-Webview-Proxy` header is the only
-  accepted proof once the secret is set — a spawned terminal mutates
+  accepted proof once the secret is set — a spawned agent mutates
   through the MCP tools, which central write-gates. Doesn't affect MCP
   tool calls either way — those keep `env`'s
   existing unscoped-write behavior, out of scope for this gate. See

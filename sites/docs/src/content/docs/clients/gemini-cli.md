@@ -27,7 +27,7 @@ Add Portuni to `~/.gemini/settings.json`:
 Use `httpUrl` for Streamable HTTP, not `url` – in Gemini CLI the `url` key is reserved for SSE transport, which Portuni doesn't serve. Easy to mix up, hard to notice.
 :::
 
-Gemini CLI resolves environment variables in `settings.json` strings, so reference the token as `$PORTUNI_MCP_TOKEN` rather than pasting it in. Export the variable in your shell (Settings → MCP Server → Copy token in the desktop app), or launch Gemini from a terminal the desktop app spawned, which has it injected. The bearer header matters: the desktop sidecar always requires it, and a standalone server requires it whenever `PORTUNI_AUTH_TOKEN` is set.
+Gemini CLI resolves environment variables in `settings.json` strings, so reference the token as `$PORTUNI_MCP_TOKEN` rather than pasting it in. Export the variable in your shell (Settings → MCP Server → Copy token in the desktop app). The bearer header matters: the desktop sidecar always requires it, and a standalone server requires it whenever `PORTUNI_AUTH_TOKEN` is set.
 
 The example above shows a standalone server on the default port `4011`. The desktop app's install buttons cover Claude Code, Codex, and Vibe but not Gemini, so to reach a desktop workspace you register it by hand the same way – each enabled workspace's sidecar listens on its own loopback port allocated from `47011` up, with its token in the `PORTUNI_MCP_TOKEN_<WORKSPACE_ID>` env var. Grab the URL and token from Settings → MCP Server.
 
@@ -99,7 +99,7 @@ Pair the sandbox with `--include-directories` so the sandbox image picks up your
 
 ## Running more than one Portuni instance
 
-With the desktop app, "more than one instance" is the normal state: every enabled workspace runs its own sidecar on its own port (from `47011` up) with its own token. Since there's no Gemini install button, mirror the naming convention the app uses for the other clients – one entry per workspace, named `portuni-<workspace-id>`, token referenced via that workspace's `PORTUNI_MCP_TOKEN_<ID>` variable. In app-spawned terminals all of those variables are already exported (plain `PORTUNI_MCP_TOKEN` aliases the active workspace).
+With the desktop app, "more than one instance" is the normal state: every enabled workspace runs its own sidecar on its own port (from `47011` up) with its own token. Since there's no Gemini install button, mirror the naming convention the app uses for the other clients – one entry per workspace, named `portuni-<workspace-id>`, token referenced via that workspace's `PORTUNI_MCP_TOKEN_<ID>` variable. Grab each workspace's token from Settings → MCP Server → Copy token and export the variable yourself.
 
 For standalone CLI servers, register each instance as its own MCP server in `~/.gemini/settings.json` the same way:
 
