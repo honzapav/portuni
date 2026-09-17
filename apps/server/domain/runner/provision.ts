@@ -1,12 +1,9 @@
-// Provisioning for a runner run (spec: "provision.ts"): what the terminal
-// spawn path does today, minus the terminal itself -- ensure the mirror
+// Provisioning for a runner run (spec: "provision.ts"): ensure the mirror
 // exists, build the orientation text, and resolve the MCP endpoint the
 // adapter's own MCP client connects back through. Reuses the exact
-// functions the REST/MCP spawn flow already calls
-// (domain/sync/mirror-create.ts's createMirrorForNode, domain/scope-
-// materialize.ts's orientationForNode, domain/write-scope.ts's URL/token
-// helpers) rather than the Seatbelt-specific parts of
-// domain/sandbox-profile.ts, which this does not import.
+// functions the REST/MCP spawn flow already calls (domain/sync/mirror-
+// create.ts's createMirrorForNode, domain/scope-materialize.ts's
+// orientationForNode, domain/write-scope.ts's URL/token helpers).
 
 import { getDb } from "../../infra/db.js";
 import { createMirrorForNode } from "../sync/mirror-create.js";

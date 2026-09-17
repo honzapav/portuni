@@ -8,9 +8,9 @@
 // the watcher_errors field on GET /nodes/:id/sync-status) and the watcher
 // itself read/write.
 //
-// Process-local and never persisted, same as session-projection.ts's
-// registry: on restart it starts empty, which is fine -- a still-broken
-// path re-records itself on the next reconcile attempt.
+// Process-local and never persisted: on restart it starts empty, which is
+// fine -- a still-broken path re-records itself on the next reconcile
+// attempt.
 
 import type { WatcherErrorEntry } from "../../shared/api-types.js";
 

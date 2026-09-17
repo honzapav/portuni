@@ -374,14 +374,6 @@ describe("buildClaudeMcpJson", () => {
     }
   });
 
-  it("carries the spawn profile id via env expansion, never a literal (phase 3)", () => {
-    const j = buildClaudeMcpJson({ url: "http://127.0.0.1:47011/mcp", homeNodeId: "01ABC" });
-    const portuni = (j as { mcpServers: { portuni: { headers?: Record<string, string> } } })
-      .mcpServers.portuni;
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
-    assert.equal(portuni.headers?.["X-Portuni-Profile"], "${PORTUNI_PROFILE_ID:-}");
-  });
-
   it("carries the spawn session id via env expansion, never a literal (#208 follow-up)", () => {
     const j = buildClaudeMcpJson({ url: "http://127.0.0.1:47011/mcp", homeNodeId: "01ABC" });
     const portuni = (j as { mcpServers: { portuni: { headers?: Record<string, string> } } })
@@ -390,12 +382,12 @@ describe("buildClaudeMcpJson", () => {
     assert.equal(portuni.headers?.["X-Portuni-Spawn-Id"], "${PORTUNI_SPAWN_SESSION_ID:-}");
   });
 
-  it("carries the spawning terminal id via env expansion, never a literal (#218)", () => {
+  it("does not carry the retired profile/terminal headers (#346)", () => {
     const j = buildClaudeMcpJson({ url: "http://127.0.0.1:47011/mcp", homeNodeId: "01ABC" });
     const portuni = (j as { mcpServers: { portuni: { headers?: Record<string, string> } } })
       .mcpServers.portuni;
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
-    assert.equal(portuni.headers?.["X-Portuni-Terminal"], "${PORTUNI_TERMINAL_ID:-}");
+    assert.equal(portuni.headers?.["X-Portuni-Profile"], undefined);
+    assert.equal(portuni.headers?.["X-Portuni-Terminal"], undefined);
   });
 });
 
@@ -568,14 +560,16 @@ describe("buildSoftHint", () => {
     assert.match(hint, /portuni_list_data_sources/);
   });
 
-  it("documents the real-path read model, not the retired .portuni-scope staging", () => {
+  it("documents the real-path read model, not the retired projection/sandbox staging", () => {
     const hint = buildSoftHint({
       currentMirror: "/root/org/proj",
       portuniRoot: "/root",
     });
-    assert.match(hint, /REAL paths/);
+    assert.match(hint, /real mirror path/);
     assert.match(hint, /portuni_read_file/);
     assert.doesNotMatch(hint, /\.portuni-scope/);
+    assert.doesNotMatch(hint, /hardlink/i);
+    assert.doesNotMatch(hint, /sandbox/i);
   });
 });
 

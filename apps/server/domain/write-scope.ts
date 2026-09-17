@@ -291,33 +291,17 @@ export function buildClaudeMcpJson(args: {
         // degrades to an empty header instead of a config load failure
         // when the variable is unset (e.g. a shell outside the app).
         //
-        // X-Portuni-Profile carries the spawn profile id (phase 3, spawn
-        // UX): pty_spawn exports PORTUNI_PROFILE_ID into the shell only
-        // when the terminal was launched under a profile, so this degrades
-        // to an empty header (parsed as "no profile") otherwise. This is
-        // the same env-expansion trick as the bearer token, applied to a
-        // non-secret value -- Claude first (spec: "Explicitly out of
-        // scope: Codex/Vibe/Gemini resume pointers, per-CLI capability"),
-        // Codex/Vibe's config formats have no equivalent runtime expansion
-        // for a second header.
-        // X-Portuni-Spawn-Id (#208 follow-up): pty_spawn exports
-        // PORTUNI_SPAWN_SESSION_ID when the sandbox profile it fetched
-        // before spawning carried a session_id, so the MCP session this
-        // connection creates reuses that id instead of minting an unrelated
-        // one -- the disk projector's per-session subdirectory then lines
-        // up with the Seatbelt grant already narrowed to it. Same
-        // Claude-only, degrades-to-empty-header pattern as X-Portuni-Profile.
-        // X-Portuni-Terminal (#218, phase 0 of the multi-window design):
-        // pty_spawn exports PORTUNI_TERMINAL_ID as the terminal's own id, so
-        // the session row this connection creates records which PTY spawned
-        // it -- POST /terminals/:terminal_id/exit (desktop's PTY exit
-        // handler) uses that correlation to close the session when the PTY
-        // dies. Same Claude-only, degrades-to-empty-header pattern.
+        // X-Portuni-Spawn-Id (#208 follow-up): set when the connecting
+        // process's own env carries PORTUNI_SPAWN_SESSION_ID, so the MCP
+        // session this connection creates binds to (or resumes) that id
+        // instead of minting an unrelated one -- see mcp/session-
+        // persistence.ts's lookupSpawnSessionForBind (the runner batch's
+        // "session exists before the runner" rule). Degrades to an empty
+        // header, same as the bearer token, when unset -- the ordinary case
+        // for a hand-opened CLI outside a runner-driven task.
         headers: {
           Authorization: `Bearer \${${tokenVar}:-}`,
-          "X-Portuni-Profile": `\${PORTUNI_PROFILE_ID:-}`,
           "X-Portuni-Spawn-Id": `\${PORTUNI_SPAWN_SESSION_ID:-}`,
-          "X-Portuni-Terminal": `\${PORTUNI_TERMINAL_ID:-}`,
         },
       },
     },
@@ -558,14 +542,14 @@ export function buildSoftHint(args: {
     "",
     "## Reading related nodes",
     "",
-    "Files belonging to the home node live at their real paths in this mirror.",
-    "Files of OTHER in-scope nodes (related/neighbour nodes) live in their own",
-    "mirrors at their REAL paths — the sandbox grants read-only access to those",
-    "mirrors. `portuni_get_node` and `portuni_get_context` already return the",
-    "real path in each file's `local_path`; use the path they give you. Nodes",
-    "added to the scope mid-session via `portuni_expand_scope` are NOT on disk —",
-    "read their content with `portuni_read_file(node_id, path)`. If a related",
-    "node is not yet in scope, the read tools return `scope_expansion_required` —",
+    "Any in-scope node with a local mirror on this device — the home node, a",
+    "neighbour, or one added mid-session via `portuni_expand_scope` — is",
+    "directly readable at its real mirror path. `portuni_get_node` and",
+    "`portuni_get_context` return that path in `readable_path`/`local_path`;",
+    "use it with your native Read/Grep tools. A node with no local mirror",
+    "here has `readable_path`/`local_path` set to null — read its content",
+    "with `portuni_read_file(node_id, path)` instead. If a related node is",
+    "not yet in scope, the read tools return `scope_expansion_required` —",
     "confirm with the user, then `portuni_expand_scope`.",
     "",
   );

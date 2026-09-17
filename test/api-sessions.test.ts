@@ -17,7 +17,7 @@ import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
-import { createSession } from "../apps/server/domain/sessions.js";
+import { createSession, closeSessionIfRunning } from "../apps/server/domain/sessions.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import type { SessionSummary, SessionResumeInfo } from "../apps/server/shared/api-types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -281,21 +281,20 @@ describe("session REST endpoints", () => {
     assert.equal(res.statusCode, 200);
   });
 
-  // #329: a server-generated suspend (here via the terminal-exit path)
-  // must be distinguishable from an agent-written one at resume time.
+  // #329: a server-generated suspend (here via the transport-disconnect GC
+  // backstop) must be distinguishable from an agent-written one at resume time.
   test("GET /sessions/:id/resume-info reports generated_by 'server' and the reason after a server-side suspend", async () => {
     const session = await createSession(db, SOLO, {
       node_id: nodeId,
       session_type: "interactive_task",
-      terminal_id: "term-resume-info",
     });
-    await call(makeIdentity(SOLO), "POST", "/terminals/term-resume-info/exit");
+    await closeSessionIfRunning(db, session.id, "disconnect");
 
     const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/resume-info`);
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body) as SessionResumeInfo;
     assert.equal(body.generated_by, "server");
-    assert.equal(body.reason, "terminal_exit");
+    assert.equal(body.reason, "disconnect");
   });
 
   // The restart indicator (#342, SessionChat header): GET /sessions/:id/
@@ -338,56 +337,4 @@ describe("session REST endpoints", () => {
     assert.equal(body.reason, null);
   });
 
-  test("POST /terminals/:id/exit closes only running sessions sharing the terminal id", async () => {
-    const running = await createSession(db, SOLO, {
-      node_id: nodeId,
-      session_type: "interactive_task",
-      terminal_id: "term-abc",
-    });
-    const other = await createSession(db, SOLO, {
-      node_id: nodeId,
-      session_type: "interactive_task",
-      terminal_id: "term-xyz",
-    });
-    const res = await call(makeIdentity(SOLO), "POST", "/terminals/term-abc/exit");
-    assert.equal(res.statusCode, 200);
-    assert.deepEqual(JSON.parse(res.body), { closed: 1 });
-
-    const closedRes = await call(makeIdentity(SOLO), "GET", `/nodes/${nodeId}/sessions`);
-    const closedBody = JSON.parse(closedRes.body) as { sessions: SessionSummary[] };
-    const runningRow = closedBody.sessions.find((s) => s.id === running.id);
-    const otherRow = closedBody.sessions.find((s) => s.id === other.id);
-    // #329: a terminal exit suspends (server-generated handoff) rather
-    // than closing outright -- closed is reached only by an explicit
-    // Uzavřít or the auto-archive sweep.
-    assert.equal(runningRow?.state, "suspended");
-    assert.equal(otherRow?.state, "running");
-  });
-
-  test("POST /terminals/:id/exit is idempotent", async () => {
-    await createSession(db, SOLO, {
-      node_id: nodeId,
-      session_type: "interactive_task",
-      terminal_id: "term-idempotent",
-    });
-    const first = await call(makeIdentity(SOLO), "POST", "/terminals/term-idempotent/exit");
-    assert.deepEqual(JSON.parse(first.body), { closed: 1 });
-    const second = await call(makeIdentity(SOLO), "POST", "/terminals/term-idempotent/exit");
-    assert.deepEqual(JSON.parse(second.body), { closed: 0 });
-  });
-
-  test("POST /terminals/:id/exit never closes another user's session", async () => {
-    const session = await createSession(db, "U2", {
-      node_id: nodeId,
-      session_type: "interactive_task",
-      terminal_id: "term-foreign",
-    });
-    const res = await call(makeIdentity(SOLO), "POST", "/terminals/term-foreign/exit");
-    assert.equal(res.statusCode, 200);
-    assert.deepEqual(JSON.parse(res.body), { closed: 0 });
-
-    const check = await call(makeIdentity("U2"), "GET", `/nodes/${nodeId}/sessions`);
-    const body = JSON.parse(check.body) as { sessions: SessionSummary[] };
-    assert.equal(body.sessions.find((s) => s.id === session.id)?.state, "running");
-  });
 });

@@ -106,12 +106,6 @@ export interface ScopeRequestDecision {
 export class SessionScope {
   private readonly nodes = new Set<string>();
   private readonly history: ExpansionRecord[] = [];
-  // Nodes granted their REAL mirror on disk at terminal spawn (home + depth-1,
-  // the stable seed set). The seatbelt read-allows exactly this set, so read
-  // tools return their real path and the disk projector must NOT hardlink
-  // them. Non-seed in-scope nodes (ad-hoc expansion) get hardlinked into the
-  // session's projection directory instead (mcp/disk-projection.ts).
-  private readonly seed = new Set<string>();
   // Write set: a placeholder for the write gate that lands in a later
   // phase (domain-layer enforcement, session_scope.writable). Populated
   // today only for nodes created by this session -- a task's own outputs
@@ -125,21 +119,6 @@ export class SessionScope {
   // session-persistence.ts) -- null until then, and for SessionScope
   // instances built by test harnesses that never persist at all.
   sessionId: string | null = null;
-  // Directory key the disk projector (mcp/disk-projection.ts) hardlinks
-  // ad-hoc nodes under, INDEPENDENT of sessionId above (#211). Set
-  // synchronously by createMcpServer, before any tool call can race it --
-  // unlike sessionId, which is written later by the fire-and-forget
-  // createSession INSERT. Resolves to (in order): the resumed session's own
-  // id (resume always supplies a validated, already-agreed-on id -- see
-  // resumeSessionPersistence); the relayed X-Portuni-Spawn-Id header value
-  // (Claude only, matches what domain/sandbox-profile.ts narrowed the
-  // Seatbelt grant to for this spawn); or
-  // domain/session-projection.ts's UNNARROWED_PROJECTION_ID, the fixed
-  // shared bucket every CLI that cannot relay the id (Codex, Vibe) falls
-  // back to, which the Seatbelt profile grants unconditionally for exactly
-  // this reason. Null only for SessionScope instances built directly by
-  // tests/callers that never went through createMcpServer.
-  projectionSessionId: string | null = null;
   readonly sessionType: SessionType;
   readonly createdAt: string;
 
@@ -166,9 +145,9 @@ export class SessionScope {
 
   // Subscribe to node additions. Listeners fire synchronously, once, only
   // when a node is newly inserted (not on a duplicate add). A throwing
-  // listener is swallowed so disk-projection failures never corrupt the
-  // authoritative in-memory scope. This is the single hook every disk
-  // projection of the scope set hangs off.
+  // listener is swallowed so a persistence-cache failure never corrupts the
+  // authoritative in-memory scope (session-persistence.ts's wireOngoingSync
+  // is the only subscriber).
   onAdd(listener: (nodeId: string) => void): void {
     this.addListeners.push(listener);
   }
@@ -185,19 +164,6 @@ export class SessionScope {
       }
     }
     return true;
-  }
-
-  // Add a node AND mark it part of the spawn seed set (real-path granted).
-  // Marks before add() so onAdd listeners (the disk projector) already see
-  // isSeed()===true and skip projecting it.
-  addSeed(nodeId: string): boolean {
-    this.seed.add(nodeId);
-    return this.add(nodeId);
-  }
-
-  // True for nodes granted their real mirror at spawn (home + depth-1).
-  isSeed(nodeId: string): boolean {
-    return this.seed.has(nodeId);
   }
 
   recordExpansion(record: ExpansionRecord): void {
@@ -253,7 +219,7 @@ export async function seedScopeFromHome(
   identity?: GroupIdentityView,
 ): Promise<string[]> {
   scope.homeNodeId = homeNodeId;
-  scope.addSeed(homeNodeId);
+  scope.add(homeNodeId);
 
   const rawNeighborIds = await nodeNeighbourIds(db, homeNodeId);
 
@@ -265,11 +231,8 @@ export async function seedScopeFromHome(
     neighborIds = rawNeighborIds;
   }
 
-  // Seed set = home + depth-1: the seatbelt grants these real paths, so mark
-  // them so read tools return the real mirror and the disk projector skips
-  // them.
   for (const id of neighborIds) {
-    scope.addSeed(id);
+    scope.add(id);
   }
   return [homeNodeId, ...neighborIds];
 }

@@ -16,11 +16,9 @@ import { buildNodeRoot, deriveLocalPath } from "../../domain/sync/remote-path.js
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
-import { readableMirrorRoot } from "../disk-projection.js";
 import { guardNodeRead } from "../scope.js";
 import { guardNodeWrite } from "../write-gate.js";
-import { readFileOrSpill } from "../read-file-spill.js";
-import { readNodeFileRaw } from "../../domain/read-node-file.js";
+import { readNodeFileOrPath, readNodeFileRaw } from "../../domain/read-node-file.js";
 import { searchFiles } from "../../domain/search-files.js";
 import { SEARCH_HITS_DEFAULT_LIMIT, SEARCH_HITS_MAX_LIMIT, SEARCH_SNIPPET_MAX_CHARS } from "../../domain/sync/types.js";
 import type { SessionCtx } from "../server.js";
@@ -46,7 +44,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_read_file",
-    "Read a file's content from an in-scope node that is NOT your home node or one of its direct neighbours. Those nodes' folders are directly readable on disk (use the native Read/Grep tools on the readable_path from portuni_get_context/get_node); this tool is for nodes reached by deeper graph traversal, whose files the sandbox does not expose on disk -- and for sessions with no local workspace at all (a remote client): when the node has no mirror on the serving machine, the file is read straight from its routed remote (Google Drive). Returns UTF-8 text, or base64 for binary, up to a 1 MB inline cap; a larger file (or as_path: true) instead returns {path, bytes, mime}, a disk path inside this session's projection directory that your native Read/Grep tools can use directly (no chunked-read API -- read the path yourself). `path` is the file's path within the node (e.g. \"wip/notes.md\"). Reading a node not yet in scope triggers a scope-expansion prompt, same as portuni_get_node.",
+    "Read a file's content from an in-scope node. A node with a local mirror on this device is directly readable on disk (use the native Read/Grep tools on the readable_path from portuni_get_context/get_node); this tool is mainly for a node with no local mirror here (central/remote-only, or a session with no local workspace at all), where the file is read straight from its routed remote (Google Drive) instead. Returns UTF-8 text, or base64 for binary, up to a 1 MB inline cap; a larger file (or as_path: true) instead returns {path, bytes, mime}, a disk path your native Read/Grep tools can use directly (no chunked-read API -- read the path yourself). `path` is the file's path within the node (e.g. \"wip/notes.md\"). Reading a node not yet in scope triggers a scope-expansion prompt, same as portuni_get_node.",
     {
       node_id: z.string().describe("Node the file belongs to"),
       path: z.string().describe("File path within the node, e.g. 'wip/notes.md'"),
@@ -69,11 +67,8 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      return readFileOrSpill({
+      return readNodeFileOrPath({
         userId: ctx.identity.userId,
-        homeNodeId: scope.homeNodeId,
-        projectionSessionId: scope.projectionSessionId,
-        projector: ctx.projector,
         nodeId: args.node_id,
         relPath: args.path,
         asPath: args.as_path === true,
@@ -282,26 +277,12 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       const visibleRows = result.rows.filter((r) => visibleFileNodeSet.has(r.node_id as string));
 
       // One mirror lookup per visible node, not per file row (it hits the
-      // local sync.db each time). For in-scope non-home nodes, we resolve to
-      // this session's hardlink projection directory so paths match what the
-      // Seatbelt sandbox actually allows the agent to read.
+      // local sync.db each time).
       const mirrorByNode = new Map<string, string | null>();
-      const homeMirror = scope.homeNodeId
-        ? await getMirrorPath(ctx.identity.userId, scope.homeNodeId)
-        : null;
       for (const row of visibleRows) {
         const nodeId = row.node_id as string;
         if (!mirrorByNode.has(nodeId)) {
-          const real = await getMirrorPath(ctx.identity.userId, nodeId);
-          let projectionDir: string | null = null;
-          if (nodeId !== scope.homeNodeId && scope.has(nodeId)) {
-            const outcome = await ctx.projector.projectNode(nodeId);
-            projectionDir = outcome.kind === "projected" ? outcome.dir : null;
-          }
-          mirrorByNode.set(
-            nodeId,
-            readableMirrorRoot({ scope, nodeId, homeMirror, realMirror: real, projectionDir }),
-          );
+          mirrorByNode.set(nodeId, await getMirrorPath(ctx.identity.userId, nodeId));
         }
       }
 

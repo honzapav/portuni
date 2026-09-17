@@ -10,7 +10,6 @@ import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { registerScopeTools } from "../apps/server/mcp/tools/scope.js";
 import { createSession, getSession } from "../apps/server/domain/sessions.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
@@ -40,8 +39,7 @@ const identity: RequestIdentity = {
 };
 
 async function connect(scope: SessionScope): Promise<McpClient> {
-  const projector = createDiskProjector({ userId: identity.userId, scope });
-  const ctx: SessionCtx = { scope, identity, projector };
+  const ctx: SessionCtx = { scope, identity };
   const server = new McpServer({ name: "session-suspend-test", version: "0.0.1" }, {});
   registerScopeTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

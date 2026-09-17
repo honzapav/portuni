@@ -22,7 +22,7 @@ api_key_header = "Authorization"
 api_key_format = "Bearer {token}"
 ```
 
-The bearer token is read from an environment variable (`api_key_env`), never written to the file. The example above is the standalone-server shape, with plain `PORTUNI_MCP_TOKEN`; configs written by a desktop workspace point at that workspace's sidecar port (allocated from `47011` up) and reference the workspace-suffixed `PORTUNI_MCP_TOKEN_<WORKSPACE_ID>` instead. Terminals the desktop app spawns get every workspace's variable injected, plus `PORTUNI_MCP_TOKEN` as an alias for the active workspace; for shells you open yourself, export the token once (Settings → MCP server → Copy token).
+The bearer token is read from an environment variable (`api_key_env`), never written to the file. The example above is the standalone-server shape, with plain `PORTUNI_MCP_TOKEN`; configs written by a desktop workspace point at that workspace's sidecar port (allocated from `47011` up) and reference the workspace-suffixed `PORTUNI_MCP_TOKEN_<WORKSPACE_ID>` instead. Export the token once in the shell you run Vibe from (Settings → MCP server → Copy token).
 
 In the desktop app, **Settings → MCP server → "Přidat do Vibu (~/.vibe/config.toml)"** writes this for you — one entry per enabled workspace, named `portuni-<workspace-id>` (a workspace migrated from a single-workspace install keeps the historical name `portuni`) — merging the Portuni servers into your existing config without disturbing your models or providers.
 
@@ -56,7 +56,7 @@ That's why the per-mirror file Portuni writes is minimal and safe — it never c
 
 ## Filesystem access
 
-Trusting a folder (via `--trust` or Vibe's trust prompt) is also what lets Vibe read and write there. For directories outside the working tree, pass `--add-dir <path>` (implicitly trusted for the session). When Vibe runs inside a terminal the desktop app spawned, the OS-level Seatbelt sandbox still scopes writes to the node's mirror regardless of Vibe's own tool permissions.
+Trusting a folder (via `--trust` or Vibe's trust prompt) is also what lets Vibe read and write there. For directories outside the working tree, pass `--add-dir <path>` (implicitly trusted for the session).
 
 ## Tool permissions
 

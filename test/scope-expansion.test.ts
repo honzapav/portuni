@@ -26,7 +26,6 @@ import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { registerNodeTools } from "../apps/server/mcp/tools/nodes.js";
 import { registerScopeTools } from "../apps/server/mcp/tools/scope.js";
 import type { SessionCtx } from "../apps/server/mcp/server.js";
@@ -66,8 +65,7 @@ async function connect(
   ident: RequestIdentity,
   elicit?: Elicitor,
 ): Promise<{ client: McpClient; scope: SessionScope }> {
-  const projector = createDiskProjector({ userId: ident.userId, scope });
-  const ctx: SessionCtx = { scope, identity: ident, projector, elicit };
+  const ctx: SessionCtx = { scope, identity: ident, elicit };
   const server = new McpServer({ name: "scope-expansion-test", version: "0.0.1" }, {});
   registerNodeTools(server, ctx);
   registerScopeTools(server, ctx);

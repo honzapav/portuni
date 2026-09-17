@@ -32,11 +32,6 @@ import {
   createMirrorForNode,
   MirrorCreateError,
 } from "../domain/sync/mirror-create.js";
-import {
-  buildSeatbeltProfile,
-  resolveSandboxScopeForNode,
-  ResumeSessionUnauthorizedError,
-} from "../domain/sandbox-profile.js";
 import type { SyncStatusResponse, UntrackedFile } from "../shared/api-types.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
@@ -891,64 +886,6 @@ export async function handleCreateNodeMirror(
       return;
     }
     respondError(res, `${req.method} /nodes/${nodeId}/mirror`, err);
-  }
-}
-
-// Disk-scope profile for spawning an agent terminal inside the node's
-// mirror. The desktop app fetches this right before pty_spawn and wraps
-// the shell in `sandbox-exec -f <profile>`, so any agent binary gets the
-// same boundary the MCP session scope enforces on the graph: home mirror
-// read+write, depth-1 neighbor mirrors read-only, rest of PORTUNI_ROOT
-// denied by the kernel. 409 NO_MIRROR mirrors the create-mirror-first
-// flow the app already follows.
-export async function handleNodeSandboxProfile(
-  req: IncomingMessage,
-  res: ServerResponse,
-  identity: RequestIdentity,
-  nodeId: string,
-): Promise<void> {
-  if (!nodeId) {
-    respondJson(res, 400, { error: "node id required" });
-    return;
-  }
-  try {
-    const db = getDb();
-    const exists = await db.execute({
-      sql: "SELECT 1 FROM nodes WHERE id = ?",
-      args: [nodeId],
-    });
-    // Group-visibility guard: a hidden node returns the same not-found shape
-    // so its sandbox profile / mirror layout never leaks.
-    if (exists.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `node ${nodeId} not found` });
-      return;
-    }
-    // Restart consolidation (#191): a resumed session passes the suspended
-    // session's id so its accumulated read set gets real-mirror grants too,
-    // not just the depth-1 seed set. Absent for a fresh spawn.
-    const resumeSessionId =
-      new URL(req.url ?? "", "http://internal").searchParams.get("resume_session_id") ?? undefined;
-    const scope = await resolveSandboxScopeForNode(db, identity.userId, nodeId, resumeSessionId);
-    if (!scope) {
-      respondJson(res, 409, {
-        error: `node ${nodeId} has no local mirror on this device`,
-        code: "NO_MIRROR",
-      });
-      return;
-    }
-    respondJson(res, 200, {
-      profile: buildSeatbeltProfile(scope),
-      portuni_root: scope.portuniRoot,
-      home_mirror: scope.homeMirror,
-      projection_root: scope.projectionRoot ?? null,
-      session_id: scope.sessionId ?? null,
-    });
-  } catch (err) {
-    if (err instanceof ResumeSessionUnauthorizedError) {
-      respondJson(res, 403, { error: err.message, code: "RESUME_UNAUTHORIZED" });
-      return;
-    }
-    respondError(res, `${req.method} /nodes/${nodeId}/sandbox-profile`, err);
   }
 }
 

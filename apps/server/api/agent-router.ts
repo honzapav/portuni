@@ -73,12 +73,6 @@ import { removeLocalCopyAndState } from "../domain/sync/local-cleanup.js";
 import { trackPendingPush, clearPendingPushIfCurrent, awaitPendingPush } from "../domain/sync/pending-pushes.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
-import {
-  buildSeatbeltProfile,
-  resolveNeighbourReadMirrors,
-  resolveSandboxScopeForCwd,
-  resolveSandboxScopeForNode,
-} from "../domain/sandbox-profile.js";
 import type {
   FileContentResponse,
   NodeMirrorResponse,
@@ -86,28 +80,11 @@ import type {
   UntrackedFile,
 } from "../shared/api-types.js";
 
-// The sandbox resolvers take a db parameter their implementations no longer
-// touch (mirror registry + env only). The agent has no graph db; passing
-// this sentinel documents the contract instead of hiding it.
+// A handful of device-local functions (readFileContent, writeFileContent,
+// readShowtimePreview) take a db parameter their agent-mode callers cannot
+// supply -- the agent has no graph db. Passing this sentinel documents the
+// contract instead of hiding it.
 const NO_DB = null as unknown as DbClient;
-
-// Central-mode read-grant set: the local graph replica is empty in central
-// mode, so depth-1 neighbours come from central node-detail, then map to
-// this device's mirrors (resolveNeighbourReadMirrors). Best-effort -- a
-// central hiccup degrades to a home-only profile, never a spawn failure.
-async function neighbourReadMirrorsCentral(
-  client: CentralClient,
-  userId: string,
-  nodeId: string,
-  homeMirror: string,
-): Promise<string[]> {
-  try {
-    const ids = await client.nodeNeighbours(nodeId);
-    return await resolveNeighbourReadMirrors(userId, ids, homeMirror);
-  } catch {
-    return [];
-  }
-}
 
 function respondCentral404(res: ServerResponse, err: unknown): boolean {
   if (err instanceof CentralHttpError && err.status === 404) {
@@ -290,38 +267,6 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     // filter here: agent mode is always a single device's own user.
     if (pathname === "/sync/health" && method === "GET") {
       respondJson(res, 200, { errors: getWatcherErrors() });
-      return true;
-    }
-
-    if (pathname === "/sandbox-profile" && method === "GET") {
-      const cwd = url.searchParams.get("cwd");
-      if (!cwd) {
-        respondJson(res, 400, { error: "cwd parameter required" });
-        return true;
-      }
-      try {
-        const r = await resolveSandboxScopeForCwd(NO_DB, identity.userId, cwd);
-        if (!r) {
-          respondJson(res, 409, {
-            error: `cwd is not inside any registered mirror: ${cwd}`,
-            code: "NO_MIRROR",
-          });
-          return true;
-        }
-        // Central mode has no local graph, so resolveSandboxScope leaves
-        // readMirrors empty; fill it from central's depth-1 neighbours.
-        r.scope.readMirrors = await neighbourReadMirrorsCentral(client, identity.userId, r.nodeId, r.scope.homeMirror);
-        respondJson(res, 200, {
-          node_id: r.nodeId,
-          profile: buildSeatbeltProfile(r.scope),
-          portuni_root: r.scope.portuniRoot,
-          home_mirror: r.scope.homeMirror,
-          projection_root: r.scope.projectionRoot ?? null,
-          session_id: r.scope.sessionId ?? null,
-        });
-      } catch (err) {
-        respondError(res, "GET /sandbox-profile", err);
-      }
       return true;
     }
 
@@ -1241,32 +1186,6 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           return true;
         }
         respondError(res, `POST /nodes/${nodeId}/mirror`, err);
-      }
-      return true;
-    }
-
-    const sandboxMatch = pathname.match(/^\/nodes\/([^/]+)\/sandbox-profile$/);
-    if (sandboxMatch && method === "GET") {
-      const nodeId = decodeURIComponent(sandboxMatch[1]);
-      try {
-        const scope = await resolveSandboxScopeForNode(NO_DB, identity.userId, nodeId);
-        if (!scope) {
-          respondJson(res, 409, {
-            error: `node ${nodeId} has no local mirror on this device`,
-            code: "NO_MIRROR",
-          });
-          return true;
-        }
-        scope.readMirrors = await neighbourReadMirrorsCentral(client, identity.userId, nodeId, scope.homeMirror);
-        respondJson(res, 200, {
-          profile: buildSeatbeltProfile(scope),
-          portuni_root: scope.portuniRoot,
-          home_mirror: scope.homeMirror,
-          projection_root: scope.projectionRoot ?? null,
-          session_id: scope.sessionId ?? null,
-        });
-      } catch (err) {
-        respondError(res, `GET /nodes/${nodeId}/sandbox-profile`, err);
       }
       return true;
     }

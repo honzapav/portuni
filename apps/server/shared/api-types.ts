@@ -449,13 +449,10 @@ export type SessionSummary = {
   // column, now a provider instance id rather than a desktop spawn-env
   // profile id.
   instance_id: string | null;
-  // Correlates to the desktop terminal that spawned this session's CLI
-  // (apps/desktop/src/pty.rs's PORTUNI_TERMINAL_ID, threaded through the
-  // X-Portuni-Terminal header, #218) -- Claude only; Codex/Vibe sessions
-  // always carry null here (their config format has no equivalent runtime
-  // header). Lets a desktop window match its own local terminals (whose id
-  // IS the terminal id, see lib/sessions.ts) to their persistent session
-  // rows without a second bespoke lookup (#231, close-dialog Pozastavit).
+  // Historical: correlated to the desktop terminal that spawned this
+  // session's CLI, back when the embedded terminal existed (#218). Nothing
+  // writes a non-null value anymore since its removal (#345/#346); the
+  // column stays for old rows until a later migration drops it.
   terminal_id: string | null;
   // The task as given (runner batch) -- the first user message on a fresh
   // run, null for a session predating it or with no task text.

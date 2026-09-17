@@ -133,9 +133,10 @@ export function extractHandoffTitle(content: string): string | null {
 // handleAdapterEvent) -- the generic case; "idle" is the more specific one
 // below, still reported separately so the Relace row can say "nečinnost"
 // rather than the generic wording. suspend_timeout is retired along with
-// the agent-cooperative suspend handshake it belonged to (#378) -- no
-// runtime code produces it anymore, but the value stays in this union so an
-// old row's already-written reason marker still parses.
+// the agent-cooperative suspend handshake it belonged to (#378), and
+// terminal_exit along with the embedded terminal itself (#345/#346) -- no
+// runtime code produces either anymore, but both values stay in this union
+// so an old row's already-written reason marker still parses.
 export type ServerHandoffReason =
   | "disconnect"
   | "idle"

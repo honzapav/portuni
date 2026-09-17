@@ -36,7 +36,6 @@ import {
   upsertSessionScopeRead,
 } from "../apps/server/domain/sessions.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { createElicitor } from "../apps/server/mcp/elicit.js";
 import {
   bindSessionPersistence,
@@ -83,9 +82,8 @@ async function waitUntil(cond: () => boolean | Promise<boolean>, timeoutMs = 200
 // A connector-shaped MCP client: no elicitation capability declared, exactly
 // like claude.ai web / mobile today.
 async function connectWithoutElicitation(scope: SessionScope, ident: RequestIdentity): Promise<McpClient> {
-  const projector = createDiskProjector({ userId: ident.userId, scope });
   const server = new McpServer({ name: "connector-grants-test", version: "0.0.1" }, {});
-  const ctx: SessionCtx = { scope, identity: ident, projector, elicit: createElicitor(server) };
+  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server) };
   registerNodeTools(server, ctx);
   registerScopeTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

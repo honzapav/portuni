@@ -19,13 +19,33 @@ import { suspendSessionServerSide, type ServerHandoffReason } from "./session-ha
 
 const SESSION_TYPES = ["interactive_task", "interactive_chat", "headless", "env"] as const;
 
+// A spawn/session id as minted by ulid(): 26 chars of Crockford base32. The
+// X-Portuni-Spawn-Id request header is client-supplied, so it is accepted
+// only in this exact shape, never as an arbitrary string -- a fresh run's
+// own MCP connection (session-runtime.ts's startTask) sets it to the
+// session row it already created, and the transport (mcp/transport.ts,
+// mcp/agent-transport.ts) looks that id up (lookupSpawnSessionForBind) to
+// decide whether to bind to the existing row instead of minting a new one.
+const SPAWN_SESSION_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+export function isSpawnSessionId(value: string): boolean {
+  return SPAWN_SESSION_ID_RE.test(value);
+}
+
+// Parse the X-Portuni-Spawn-Id request header: the relayed spawn id when it
+// is well-formed, null otherwise (absent, empty, or not a ULID).
+export function spawnSessionIdFromHeader(header: string | string[] | undefined): string | null {
+  const raw = (Array.isArray(header) ? header[0] : header)?.trim() || null;
+  return raw && isSpawnSessionId(raw) ? raw : null;
+}
+
 const CreateSessionInput = z.object({
   node_id: z.string().nullable().describe("Anchor node (ULID). Null for interactive_chat, which has no anchor."),
   session_type: z.enum(SESSION_TYPES).describe("Derived by the server from the auth path -- never self-declared."),
   cli: z.string().nullable().optional().describe("CLI the session runs under (claude|codex|vibe|...), when known."),
   instance_id: z.string().nullable().optional().describe("Runner provider instance used (apps/server/domain/runner/instances.ts) -- renamed from profile_id."),
   agent_session_id: z.string().nullable().optional().describe("The underlying agent CLI's own conversation id, for --resume."),
-  terminal_id: z.string().nullable().optional().describe("Desktop PTY that spawned this session's CLI (#218, phase 0 of the multi-window design), when known."),
+  terminal_id: z.string().nullable().optional().describe("Historical: the desktop PTY that spawned this session's CLI, back when one existed (#218). Nothing writes a non-null value anymore since the embedded terminal was removed (#345/#346); the column stays for old rows until a later migration drops it."),
   brief: z.string().nullable().optional().describe("The task as given (runner batch): the first user message on a fresh run."),
   runner: z.string().nullable().optional().describe("Runner adapter id (e.g. 'claude') this session's task runs under."),
   host_id: z.string().nullable().optional().describe("The device/workspace running this session's task."),
@@ -89,18 +109,17 @@ export function threadNameFromFirstMessage(text: string): string {
   return `${cut}…`;
 }
 
-// preassignedId (#208 follow-up, "kernel-level isolation between concurrent
-// sessions on the same node"): when the caller already minted this session's
-// id before the row existed -- the Seatbelt profile is frozen at spawn time,
-// before an MCP connection is even attempted, and its projection grant is
-// narrowed to that id (domain/sandbox-profile.ts) -- pass it here so the
-// domain id matches what the kernel already granted, instead of minting a
-// second, unrelated id. Not part of CreateSessionInput's zod schema: that
-// type also shapes any future MCP-exposed session-creation input, and a
-// self-declared id there would violate "derived by the server, never
-// self-declared". Only bindSessionPersistence (mcp/session-persistence.ts)
-// supplies it, sourced from a header the server itself put in the per-mirror
-// .mcp.json, never from raw client input.
+// preassignedId (#208 follow-up, runner batch Rule 2 "the session exists
+// before the runner"): when the caller already minted this session's id
+// before the row existed -- session-runtime.ts's startTask creates the row
+// first, then starts a run whose own MCP connection carries that id via
+// X-Portuni-Spawn-Id -- pass it here so the domain id matches instead of
+// minting a second, unrelated one. Not part of CreateSessionInput's zod
+// schema: that type also shapes any future MCP-exposed session-creation
+// input, and a self-declared id there would violate "derived by the server,
+// never self-declared". Only bindSessionPersistence (mcp/session-
+// persistence.ts) supplies it, sourced from a header the server itself
+// threads through, never from raw client input.
 export async function createSession(
   db: DbClient,
   userId: string,
@@ -246,12 +265,9 @@ export async function getSession(db: DbClient, id: string): Promise<SessionRow |
 // anchor check"). A caller-supplied resume_session_id must never be trusted
 // on its own: it must belong to the caller, be anchored to the node the
 // caller is actually resuming into, and be in the one state resume is valid
-// from. Shared by both the disk-plane resume (api/nodes.ts,
-// api/write-scope.ts sandbox-profile endpoints, via
-// domain/sandbox-profile.ts) and the graph-plane resume
-// (mcp/session-persistence.ts) so a bypass in one cannot happen without
-// bypassing the other. Mirrors api/sessions.ts's loadOwnSession plus the
-// anchor/state checks resume specifically needs.
+// from. Used by the graph-plane resume (mcp/session-persistence.ts). Mirrors
+// api/sessions.ts's loadOwnSession plus the anchor/state checks resume
+// specifically needs.
 export async function loadResumableSession(
   db: DbClient,
   userId: string,
@@ -368,42 +384,14 @@ export async function transitionSessionState(
   return row;
 }
 
-// PTY exit (#218, "Sessions follow PTY exit"): suspends (#329; previously
-// closed) every 'running' session sharing this terminal_id -- desktop's
-// pty.rs calls this via POST /terminals/:terminal_id/exit whenever the PTY
-// that spawned a CLI exits, for any reason (pty_kill, the user typing
-// `exit`, a crash). Scoped to actorUserId, matching the owner-scoped
-// pattern the rest of this module uses (a session is a personal work
-// record) -- a terminal_id from one user's PTY must never be able to touch
-// another user's session. Idempotent: a terminal_id with no running
-// session (already suspended/closed, or never bound to one) is a no-op.
-// Returns the number of sessions suspended. Thin wrapper around
-// suspendSessionServerSide (domain/session-handoff.ts) -- kept here, under
-// its original name, so call sites and tests don't need to change.
-export async function closeSessionsByTerminalId(
-  db: DbClient,
-  actorUserId: string,
-  terminalId: string,
-): Promise<number> {
-  const res = await db.execute({
-    sql: "SELECT id FROM sessions WHERE terminal_id = ? AND user_id = ? AND state = 'running'",
-    args: [terminalId, actorUserId],
-  });
-  for (const row of res.rows) {
-    await suspendSessionServerSide(db, String(row.id), "terminal_exit");
-  }
-  return res.rows.length;
-}
-
-// GC backstop (#218): called from mcp/transport.ts's onclose, for a CLI
-// whose config format cannot carry X-Portuni-Terminal (Codex, Vibe), a
-// crash that never reaches the exit endpoint above, a genuine client
-// disconnect, or the transport's own 30-minute idle GC force-closing it.
-// Suspends (#329; previously closed) the session iff it is still
-// 'running' -- an already-suspended session (the agent's own
-// portuni_session_suspend already ran) is untouched either way, since
-// suspendSessionServerSide only acts on 'running'. Thin wrapper, see
-// closeSessionsByTerminalId's comment.
+// GC backstop (#218): called from mcp/transport.ts's onclose, for a crash
+// that never reaches a graceful close, a genuine client disconnect, or the
+// transport's own 30-minute idle GC force-closing it. Suspends (#329;
+// previously closed) the session iff it is still 'running' -- an
+// already-suspended session (the agent's own portuni_session_suspend
+// already ran) is untouched either way, since suspendSessionServerSide only
+// acts on 'running'. Thin wrapper around suspendSessionServerSide
+// (domain/session-handoff.ts).
 export async function closeSessionIfRunning(
   db: DbClient,
   sessionId: string,
@@ -414,12 +402,10 @@ export async function closeSessionIfRunning(
 
 // Boot sweep (#272): a 'running' row can survive a process restart (app
 // quit, crash, central redeploy) that never reached the graceful close path
-// (mcp/transport.ts's onclose / closeSessionIfRunning, or
-// closeSessionsByTerminalId on PTY exit) -- at process start there is no
-// live transport that could possibly own any of these connections anymore,
-// so every 'running' row left over from a previous life is stale by
-// definition. Mirrors sweepStaleSessionProjectionsOnBoot's shape (same call
-// sites: index.ts, desktop.ts). Suspends (#329; previously closed) each one
+// (mcp/transport.ts's onclose / closeSessionIfRunning) -- at process start
+// there is no live transport that could possibly own any of these
+// connections anymore, so every 'running' row left over from a previous
+// life is stale by definition. Suspends (#329; previously closed) each one
 // with a server-generated handoff instead, so a session interrupted only by
 // a restart stays resumable. Not scoped to a single user: this is a
 // process-wide maintenance sweep, same as autoArchiveClosedSessions above.
