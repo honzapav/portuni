@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.2](https://github.com/honzapav/portuni/compare/v0.18.1...v0.18.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **runner:** reap orphaned runs in central mode too ([#398](https://github.com/honzapav/portuni/issues/398)) ([355f5a3](https://github.com/honzapav/portuni/commit/355f5a3eac97680d1c5eb297e55377a2a7c92893))
+
 ## [0.18.1](https://github.com/honzapav/portuni/compare/v0.18.0...v0.18.1) (2026-09-17)
 
 
