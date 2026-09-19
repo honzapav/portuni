@@ -280,6 +280,12 @@ class FakeCentral implements CentralClient {
   async nodeExists(nodeId: string): Promise<boolean> {
     return this.nodeVisible.has(nodeId);
   }
+  // #407: the node's organization, as central would answer it -- the
+  // runtime's org-default resolution in this mode goes through here.
+  nodeOrgs = new Map<string, string>();
+  async nodeOrganizationId(nodeId: string): Promise<string | null> {
+    return this.nodeOrgs.get(nodeId) ?? null;
+  }
   async nodeNeighbours(): Promise<string[]> {
     return [];
   }

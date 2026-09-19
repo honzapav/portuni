@@ -265,6 +265,41 @@ describe("createHttpCentralClient", () => {
     );
   });
 
+  it("nodeOrganizationId reads the outgoing belongs_to edge off node detail", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      {
+        status: 200,
+        json: {
+          edges: [
+            // An incoming belongs_to (something belongs to THIS node) and a
+            // non-organization peer are both the wrong edge.
+            { relation: "belongs_to", direction: "incoming", peer_id: "NX", peer_type: "organization" },
+            { relation: "belongs_to", direction: "outgoing", peer_id: "NY", peer_type: "project" },
+            { relation: "belongs_to", direction: "outgoing", peer_id: "ORG1", peer_type: "organization" },
+          ],
+        },
+      },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    assert.equal(await c.nodeOrganizationId("N1"), "ORG1");
+    assert.equal(calls[0].url, "https://api.example.com/nodes/N1");
+  });
+
+  it("nodeOrganizationId is null without a matching edge and on 404", async () => {
+    const { fetchImpl } = fakeFetch([
+      {
+        status: 200,
+        json: {
+          edges: [{ relation: "supports", direction: "outgoing", peer_id: "ORG1", peer_type: "organization" }],
+        },
+      },
+      { status: 404, json: { error: "nope" } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    assert.equal(await c.nodeOrganizationId("N1"), null);
+    assert.equal(await c.nodeOrganizationId("N2"), null);
+  });
+
   it("remoteSweep posts to the right URL and invalidates the sync-info cache", async () => {
     const { fetchImpl, calls } = fakeFetch([
       { status: 200, json: { node: { id: "N1" }, remote_name: "r", files: [] } },

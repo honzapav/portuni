@@ -1134,6 +1134,20 @@ symlink to this file.
   registered as a tracked file the way the local path's
   `writeHandoffAndSuspend` does (the next sync run's untracked-file
   discovery picks it up instead of it appearing immediately in Files).
+  **A third seam of the same shape, `CreateSessionRuntimeDeps
+  .resolveNodeOrgId` (#407)**: promoting a draft picks the node's
+  organization's default runner instance, which used to be a direct
+  `belongs_to` graph-db query wrapped in a swallow-everything try/catch —
+  in agent mode that always threw, so an org default never applied in the
+  one mode that actually has several instances. The local default is the
+  same query (no longer swallowing: a failed lookup must be
+  distinguishable from a node that genuinely has no organization);
+  `createAgentSessionRuntime` supplies `CentralClient.nodeOrganizationId`
+  (`GET /nodes/:id`, the outgoing `belongs_to` edge whose peer is an
+  organization — not `nodeNeighbours`, which #406 removes). A resolver
+  error degrades to "no organization" and never fails the promotion; it
+  logs one warning naming the node, but only when the fallback is visible
+  (>= 2 instances for that runner and some org default configured).
   `is_local_only_path` (`apps/desktop/src/lib.rs`) routes the bare
   `POST /sessions` and every per-session action verb
   (`messages`/`interrupt`/`suspend`/`resume`/`close`/`events`/`signals`/

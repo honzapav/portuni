@@ -147,6 +147,9 @@ class FakeCentral implements CentralClient {
   }
 
   neighbours: string[] = [];
+  async nodeOrganizationId(_nodeId: string): Promise<string | null> {
+    return null;
+  }
   async nodeNeighbours(_nodeId: string): Promise<string[]> {
     return this.neighbours;
   }

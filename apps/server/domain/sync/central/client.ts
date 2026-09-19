@@ -104,6 +104,12 @@ export interface CentralClient {
   remoteSweep(nodeId: string): Promise<RemoteSweepResult>;
   dataSources(nodeId: string): Promise<DataSourceRow[]>;
   nodeExists(nodeId: string): Promise<boolean>;
+  // The node's organization, read off central's own node-detail edges
+  // (#407): the runner's task defaults resolve the organization default
+  // instance from it, and an agent-mode sidecar has no graph db of its own
+  // to query for the belongs_to edge. null when the node has no
+  // organization or central does not know the node.
+  nodeOrganizationId(nodeId: string): Promise<string | null>;
   // Depth-1 neighbour ids from central node-detail. Used to compute the
   // seatbelt read grant in central mode (the local graph replica is empty).
   // Restricted/blanked peers (peer_id === "") are dropped.
@@ -386,6 +392,25 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       if (r.status === 200) return true;
       if (r.status === 404) return false;
       throwFor(r.status, p, r.json);
+    },
+
+    async nodeOrganizationId(nodeId) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}`;
+      const r = await request("GET", p);
+      if (r.status === 404) return null;
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      const edges =
+        (r.json as { edges?: Array<{ relation?: string; direction?: string; peer_id?: string; peer_type?: string }> })
+          .edges ?? [];
+      const org = edges.find(
+        (e) =>
+          e.relation === "belongs_to" &&
+          e.direction === "outgoing" &&
+          e.peer_type === "organization" &&
+          typeof e.peer_id === "string" &&
+          e.peer_id.length > 0,
+      );
+      return org?.peer_id ?? null;
     },
 
     async nodeNeighbours(nodeId) {
