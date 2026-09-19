@@ -32,6 +32,7 @@ import { isProcessAlive } from "../process-liveness.js";
 import type {
   EventSink,
   QuestionDecision,
+  RunEndReason,
   RunHandle,
   RunStart,
   RunnerAdapter,
@@ -321,6 +322,14 @@ interface RunTranslationState {
   endedResolve: () => void;
   endedPromise: Promise<void>;
   capturedPid: number | null;
+  // #411: set once a `result` message reports a provider failure (a spend
+  // limit, an error subtype). The run then ends with THIS reason instead of
+  // the "completed" a natural end reports.
+  providerEndReason: RunEndReason | null;
+  // #411: run_ended is emitted exactly once, whichever path gets there
+  // first -- the translate loop's own completion, its catch branch, or the
+  // provider-failure teardown below.
+  runEndedEmitted: boolean;
 }
 
 function createState(): RunTranslationState {
@@ -337,11 +346,45 @@ function createState(): RunTranslationState {
     endedResolve,
     endedPromise,
     capturedPid: null,
+    providerEndReason: null,
+    runEndedEmitted: false,
   };
 }
 
 function notLoggedInMessage(message: string): boolean {
   return /not logged in|not authenticated|please run.*login|no valid credentials/i.test(message);
+}
+
+// #411: a `result` message is the turn-complete signal, and it is also how
+// the SDK reports a provider failure -- a spend/rate limit arrives as
+// `subtype: "success"` with `is_error: true` and the provider's text in
+// `result`; the `error_*` subtypes say the turn stopped early. Neither ends
+// the CLI process in streaming-input mode (it waits for the next prompt),
+// so without this the run would stay live forever. Returns null for an
+// ordinary successful turn.
+export function providerResultFailure(
+  msg: Extract<SDKMessage, { type: "result" }>,
+): { reason: RunEndReason; message: string } | null {
+  const subtype = typeof msg.subtype === "string" ? msg.subtype : "success";
+  const isError = (msg as { is_error?: unknown }).is_error === true;
+  if (!isError && subtype === "success") return null;
+
+  const text = (msg as { result?: unknown }).result;
+  const errors = (msg as { errors?: unknown }).errors;
+  let message = "";
+  if (typeof text === "string" && text.trim() !== "") {
+    message = text;
+  } else if (Array.isArray(errors)) {
+    message = errors.filter((e): e is string => typeof e === "string" && e.trim() !== "").join("\n");
+  }
+  if (message.trim() === "") message = `Běh skončil chybou poskytovatele (${subtype}).`;
+
+  const terminalReason = (msg as { terminal_reason?: unknown }).terminal_reason;
+  const limitByMetadata =
+    /budget|limit/i.test(subtype) ||
+    (typeof terminalReason === "string" && /budget|limit|exhaust/i.test(terminalReason));
+  const reason: RunEndReason = limitByMetadata || /limit/i.test(message) ? "limit" : "error";
+  return { reason, message };
 }
 
 // --- message translation --------------------------------------------------
@@ -657,7 +700,54 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       }
       if (msg.type === "result") {
         state.latestUsage = { usage: msg.usage, total_cost_usd: msg.total_cost_usd };
+        // #411: a provider limit/error ends the run. The provider's own text
+        // goes into the transcript once, then the prompt stream is ended so
+        // the CLI exits and the translate loop below reports the run_ended
+        // this reason belongs to; endAfterProviderFailure is the bound on a
+        // child that ignores the end of its stdin.
+        const failure = providerResultFailure(msg);
+        if (failure !== null && state.providerEndReason === null) {
+          state.providerEndReason = failure.reason;
+          sink({ kind: "error", payload: { class: "provider", message: failure.message } });
+          void endAfterProviderFailure(failure.reason);
+        }
       }
+    }
+
+    // Emits the run's single run_ended, whichever path gets here first.
+    function emitRunEnded(reason: RunEndReason): void {
+      if (state.runEndedEmitted) return;
+      state.runEndedEmitted = true;
+      sink({ kind: "run_ended", payload: { run_id: run.runId, reason, usage: state.latestUsage } });
+    }
+
+    // Marks the run over and settles every SDK-side awaiter (a question
+    // nobody answered would otherwise stay pending forever -- spec: "blocks
+    // ... until answered or the run ends"). Idempotent.
+    function finalizeEnded(): void {
+      if (state.ended) return;
+      state.ended = true;
+      for (const [requestId, pending] of state.pendingPermissions) {
+        state.pendingPermissions.delete(requestId);
+        pending.resolve({ behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." });
+      }
+      state.endedResolve();
+    }
+
+    // #411: the teardown a provider failure triggers. Normally the child
+    // exits on the end of its prompt stream, the iterator finishes and the
+    // loop's own completion reports the run end; this only has work left
+    // when it does not -- then the escalation kills it and the run is ended
+    // here instead of hanging live forever, which is the bug this fixes.
+    async function endAfterProviderFailure(reason: RunEndReason): Promise<void> {
+      try {
+        await shutdownProcess();
+      } catch {
+        // Best-effort -- the run still has to end below.
+      }
+      if (state.ended) return;
+      emitRunEnded(reason);
+      finalizeEnded();
     }
 
     void (async () => {
@@ -669,33 +759,28 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         // ends (close()'s own job) -- interrupt() no longer touches the
         // queue, so this is always a graceful close. session-runtime.ts's
         // own withSuspendReason is what rewrites this to "suspended" when
-        // the close wasn't an explicit Uzavřít/continue.
-        sink({
-          kind: "run_ended",
-          payload: { run_id: run.runId, reason: "completed", usage: state.latestUsage },
-        });
+        // the close wasn't an explicit Uzavřít/continue. #411: a provider
+        // failure ended the queue itself and left its own reason behind,
+        // which withSuspendReason leaves untouched.
+        emitRunEnded(state.providerEndReason ?? "completed");
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (notLoggedInMessage(message)) {
-          sink({
-            kind: "error",
-            payload: { class: "provider", message: "Claude Code není přihlášený na tomto zařízení." },
-          });
-        } else {
-          sink({ kind: "error", payload: { class: "unknown", message } });
+        // #411: on a provider failure the provider's own message is already
+        // in the transcript and this throw is a consequence of the teardown
+        // it triggered -- exactly one error event per run.
+        if (state.providerEndReason === null) {
+          if (notLoggedInMessage(message)) {
+            sink({
+              kind: "error",
+              payload: { class: "provider", message: "Claude Code není přihlášený na tomto zařízení." },
+            });
+          } else {
+            sink({ kind: "error", payload: { class: "unknown", message } });
+          }
         }
-        sink({ kind: "run_ended", payload: { run_id: run.runId, reason: "error", usage: state.latestUsage } });
+        emitRunEnded(state.providerEndReason ?? "error");
       } finally {
-        state.ended = true;
-        // A question the run never got an answer to: the SDK's canUseTool
-        // promise would otherwise stay pending forever (spec: "blocks ...
-        // until answered or the run ends"). Deny, so the SDK-side awaiter
-        // settles too.
-        for (const [requestId, pending] of state.pendingPermissions) {
-          state.pendingPermissions.delete(requestId);
-          pending.resolve({ behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." });
-        }
-        state.endedResolve();
+        finalizeEnded();
       }
     })();
 
@@ -711,6 +796,28 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         abort.abort();
       }
       return state.ended || (state.capturedPid !== null && !isProcessAlive(state.capturedPid));
+    }
+
+    // Spec, "Process lifecycle": end stdin (the prompt stream), 2 s,
+    // SIGTERM, 5 s, SIGKILL. Each step is skipped as soon as the run ends
+    // on its own or the child is confirmed dead; a run whose child is
+    // already gone (crashed, killed out of band) therefore returns almost
+    // immediately instead of waiting for the SDK's own iterator to notice.
+    // Shared by close() and #411's provider-failure teardown.
+    async function shutdownProcess(): Promise<void> {
+      if (state.ended) return;
+      promptQueue.end();
+      if (await endedWithin(closeGraceMs)) return;
+      if (state.capturedPid === null) {
+        // Nothing to signal (the pid was never captured): fall back to the
+        // bounded wait for the SDK to finish.
+        await endedWithin(closeTimeoutMs);
+        return;
+      }
+      signalProcessGroup(state.capturedPid, "SIGTERM");
+      if (await endedWithin(closeTermMs)) return;
+      signalProcessGroup(state.capturedPid, "SIGKILL");
+      await endedWithin(closeTimeoutMs);
     }
 
     const handle: RunHandle = {
@@ -743,26 +850,8 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           // Best-effort -- the process may already be gone.
         }
       },
-      // Spec, "Process lifecycle": end stdin (the prompt stream), 2 s,
-      // SIGTERM, 5 s, SIGKILL. Each step is skipped as soon as the run
-      // ends on its own or the child is confirmed dead; a run whose child
-      // is already gone (crashed, killed out of band) therefore returns
-      // almost immediately instead of waiting for the SDK's own iterator
-      // to notice.
       async close(): Promise<void> {
-        if (state.ended) return;
-        promptQueue.end();
-        if (await endedWithin(closeGraceMs)) return;
-        if (state.capturedPid === null) {
-          // Nothing to signal (the pid was never captured): fall back to
-          // the bounded wait for the SDK to finish.
-          await endedWithin(closeTimeoutMs);
-          return;
-        }
-        signalProcessGroup(state.capturedPid, "SIGTERM");
-        if (await endedWithin(closeTermMs)) return;
-        signalProcessGroup(state.capturedPid, "SIGKILL");
-        await endedWithin(closeTimeoutMs);
+        await shutdownProcess();
       },
       async setModel(model: string | null): Promise<void> {
         if (state.ended) return;

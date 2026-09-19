@@ -1204,7 +1204,29 @@ symlink to this file.
   trigger reason before compaction happens; the message translation is a
   fixed `trigger: "auto"` backstop) — accepted as possible double emission
   for a purely cosmetic chat marker, not verified against a real run.
-  `detect()` (`claude --version` / `claude auth status`, 5s timeout each)
+  **A `result` message is also how a provider failure arrives, and it ends
+  the run (#411).** A spend/rate limit reads as `subtype: "success"` with
+  `is_error: true` and the provider's text in `result`; the `error_*`
+  subtypes (`error_during_execution`, `error_max_turns`,
+  `error_max_budget_usd`, …) carry theirs in `errors: string[]`. Neither
+  ends the CLI in streaming-input mode — it waits for the next prompt — so
+  before this the translate loop never completed, no `run_ended` was
+  emitted, and the session stayed `running` with the composer stuck in its
+  stop state forever. `providerResultFailure` (pure, exported) classifies
+  one: `reason: "limit"` when the subtype or `terminal_reason` says
+  budget/limit or the message matches `/limit/i`, `"error"` otherwise. The
+  run then emits ONE `error` event (`class: "provider"`) and ends the
+  prompt queue; `run_ended` carries that reason and is emitted exactly once
+  (`emitRunEnded`, idempotent — the loop's own completion, its catch branch
+  and the teardown all go through it). `endAfterProviderFailure` reuses
+  `close()`'s own escalation (`shutdownProcess`: end stdin, grace, SIGTERM,
+  term window, SIGKILL) as the bound on a child that ignores the end of its
+  stdin, and ends the run itself if the loop still hasn't. Nothing in the
+  runtime changed: `withSuspendReason` already leaves an adapter-reported
+  `limit`/`error` alone, so the non-close path suspends the thread with a
+  server-written summary exactly as for any other end, and the next message
+  resumes-by-writing (#378). `detect()` (`claude --version` / `claude auth
+  status`, 5s timeout each)
   and the whole message-translation surface are tested against an injected
   fake `query`/`exec` (`test/runner-claude-adapter.test.ts`); a real,
   logged-in run is a macOS-only human verification step, not in the gate.

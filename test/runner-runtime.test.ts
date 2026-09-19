@@ -218,6 +218,38 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     assert.equal(parseServerHandoffReason(row!.handoff_inline), "idle");
   });
 
+  it("a run ending on a provider limit suspends the thread with the provider message in its events (#411)", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    // What the Claude adapter reports when the CLI answers with a spend
+    // limit: one provider error, then the run ends with reason "limit".
+    const adapter = new FakeRunnerAdapter({
+      script: [
+        { kind: "error", payload: { class: "provider", message: "You've hit your monthly spend limit" } },
+        { end: "limit" },
+      ],
+    });
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    const row = await store.getSession(session.id);
+    assert.equal(row?.state, "suspended");
+    assert.ok(row?.handoff_inline, "a server-written summary must exist");
+
+    const runs = await store.listRuns(session.id);
+    // withSuspendReason leaves an adapter-reported limit alone -- that IS
+    // the informative reason.
+    assert.equal(runs[0].end_reason, "limit");
+
+    const events = await store.listEvents(session.id);
+    const error = events.find((e) => e.kind === "error");
+    assert.ok(error, "the provider message must be in the transcript");
+    assert.equal(JSON.parse(error!.payload).class, "provider");
+    assert.match(JSON.parse(error!.payload).message, /spend limit/);
+    assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
+  });
+
   it("checkIdleRunsOnce is a no-op when nothing is live", async () => {
     const { db } = await sharedDb();
     const store = new DbSessionStore(db);
