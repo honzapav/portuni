@@ -1208,6 +1208,7 @@ function DetailPaneBody({
             nodeId={node.id}
             onOpenFile={onOpenFile}
             onOpenChat={onOpenChat ? (sessionId) => onOpenChat(node.id, sessionId) : undefined}
+            onSessionStarted={onSessionStarted}
             liveStates={liveSessionStates}
             canManage={canManage}
             meId={meId}

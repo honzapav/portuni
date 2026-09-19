@@ -1941,13 +1941,44 @@ symlink to this file.
   id needed. **`WorkspaceNodeList.tsx`** renders persistent-session
   sub-rows under each node, fed by `App.tsx`'s `liveOpenSessionsByNode` -- one
   `fetchNodePersistentSessions(id, false)` per entry in `openNodeIds`,
-  refetched whenever that set changes, live-overlaid via
+  refetched whenever that set changes **and on every `session_state` frame
+  whose `node_id` is open (#412)**, live-overlaid via
   `mergeLiveSessionStates` against the SAME app-wide `sessionStates` map
   `countRunningSessions` reads (`sessionsClient.onSessionState`,
   `Set`-backed so multiple listeners coexist -- SessionChat keeps its own
   separate subscription for its own event log, untouched). Threading is
   `App.tsx` -> `Sidebar.tsx` (`workspaceOpenSessionsByNode`/
   `onWorkspaceOpenSessionChat`) -> `WorkspaceNodeList.tsx`.
+
+- **A thread started outside the Práce sidebar lands in it anyway, and the
+  shown one is highlighted (#412).** The per-node map only ever changed
+  when `openNodeIds` did, so a thread started from the node detail (the
+  Relace tab's "Navázat", the detail's "Nový úkol") never got a sub-row,
+  and a draft started there vanished the moment it was promoted -- the
+  promotion frame dropped it from `localDrafts` on the assumption that the
+  server list already had it, which nothing had refetched. Three folds in
+  `lib/session-views.ts` (pure, `test/session-views-helpers.test.ts`)
+  replace that: `mergeSessionIntoNodeMap` (a started, already-running
+  thread straight into `openSessionsByNode`, dedupe by id --
+  `registerSessionStarted`'s non-draft branch, and `SessionsSection`'s
+  "Navázat" now routes through the same `onSessionStarted` prop
+  `NewTaskButton` uses), `applyNodeSessionsRefetch` + `dropPromotedDrafts`
+  (a draft is forgotten only once the refetched list actually carries it,
+  so the row is never missing in between; both return their input
+  unchanged when nothing changed, since effects key on those identities)
+  and `mergeDraftsIntoNodeMap` (drafts overlaid, deduped by id, so the
+  overlap window renders one row). `refreshNodeSessions` (`App.tsx`) is
+  coalesced per node -- a request while one is in flight sets a trailing
+  flag instead of racing a second fetch -- and drops a response for a node
+  closed in the meantime (`openNodeIdsRef`). Server-side nothing changed:
+  `promoteDraftAndStart` already awaits `store.patchSession` before
+  `appendAndPublish`, in both stores (`CentralSessionStore.patchSession`
+  is one awaited REST call, `appendEvents` is coalesced but awaited), so
+  central has the promotion committed before the frame that triggers the
+  refetch goes out. `activeSessionId` (`workspaceOpenSession?.id`)
+  threads `App.tsx` -> `Sidebar.tsx` -> `WorkspaceNodeList.tsx` and marks
+  the shown thread in BOTH arrangements (`NodeTree`'s `TaskRow`, with the
+  node row's own accent rail, and `TaskList`'s grouped rows).
 
 - **`SessionChat.tsx` is built on AI Elements now, not hand-written bubbles
   (#373, phase 1 of `docs/superpowers/specs/2026-09-15-task-surface-

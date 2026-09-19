@@ -20,10 +20,15 @@ import {
 import type { SessionSummary, SessionRunRow } from "./types";
 import { createSessionsClient, type SessionStateMessage } from "./lib/sessions-client";
 import {
+  applyNodeSessionsRefetch,
   applySessionStateFrame,
   countRunningSessions,
+  dropPromotedDrafts,
+  mergeDraftsIntoNodeMap,
   mergeLiveSessionStates,
+  mergeSessionIntoNodeMap,
   pickOpenChatSession,
+  pruneNodeSessions,
 } from "./lib/session-views";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
@@ -516,21 +521,12 @@ export default function App() {
   // is -- every list the server serves (GET /nodes/:id/sessions included)
   // excludes it, so the window that created one tracks it here, keyed by
   // session id, until it is promoted (its first message starts the run) or
-  // closed. Once a session_state frame arrives for it, the server-fetched
-  // lists below already have it (running, or whatever it became), so it's
-  // dropped from here -- there is never a reason to still be tracking it
-  // as a draft afterward.
+  // closed. It is dropped from here only once a refetch of its node's
+  // threads actually carries it (dropPromotedDrafts, below): a promotion
+  // frame says "it is running now", not "the list you last fetched has
+  // it", and forgetting it on the frame alone made the row vanish the
+  // moment a draft became a real thread (#412).
   const [localDrafts, setLocalDrafts] = useState<Record<string, SessionSummary>>({});
-  useEffect(() => {
-    return sessionsClient.onSessionState((s) => {
-      setLocalDrafts((prev) => {
-        if (!(s.session_id in prev)) return prev;
-        const next = { ...prev };
-        delete next[s.session_id];
-        return next;
-      });
-    });
-  }, [sessionsClient]);
 
   // The selected node's own persistent session, when it has one that's
   // running/waiting/suspended/draft -- drives whether WorkspaceView's
@@ -581,36 +577,59 @@ export default function App() {
   // rather than duplicating the subscribe-per-session machinery
   // SessionChat needs for its own event log.
   const [openSessionsByNode, setOpenSessionsByNode] = useState<Record<string, SessionSummary[]>>({});
+  // What is open right now, readable from a fetch callback without making
+  // the callback itself depend on it (a response for a node closed in the
+  // meantime is dropped instead of re-adding its key).
+  const openNodeIdsRef = useRef<string[]>(openNodeIds);
   useEffect(() => {
-    if (openNodeIds.length === 0) {
-      setOpenSessionsByNode({});
+    openNodeIdsRef.current = openNodeIds;
+  }, [openNodeIds]);
+  // One node's threads, refetched. Coalesced per node: a second request
+  // while one is in flight schedules exactly one follow-up instead of
+  // racing a parallel fetch, so a burst of frames on the same node costs
+  // at most two round trips and the last one always wins.
+  const sessionRefetches = useRef(new Map<string, { trailing: boolean }>());
+  const refreshNodeSessions = useCallback(function refresh(nodeId: string): void {
+    const inFlight = sessionRefetches.current.get(nodeId);
+    if (inFlight) {
+      inFlight.trailing = true;
       return;
     }
-    let cancelled = false;
-    void Promise.all(
-      openNodeIds.map((id) =>
-        fetchNodePersistentSessions(id, false)
-          .then((res) => [id, res.sessions.filter((s) => s.state === "running" || s.state === "suspended")] as const)
-          .catch(() => [id, []] as const),
-      ),
-    ).then((entries) => {
-      if (!cancelled) setOpenSessionsByNode(Object.fromEntries(entries));
+    const entry = { trailing: false };
+    sessionRefetches.current.set(nodeId, entry);
+    void fetchNodePersistentSessions(nodeId, false)
+      .then((res) => {
+        if (!openNodeIdsRef.current.includes(nodeId)) return;
+        setOpenSessionsByNode((prev) => applyNodeSessionsRefetch(prev, nodeId, res.sessions));
+        setLocalDrafts((prev) => dropPromotedDrafts(prev, res.sessions));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        sessionRefetches.current.delete(nodeId);
+        if (entry.trailing && openNodeIdsRef.current.includes(nodeId)) refresh(nodeId);
+      });
+  }, []);
+  useEffect(() => {
+    setOpenSessionsByNode((prev) => pruneNodeSessions(prev, openNodeIds));
+    for (const id of openNodeIds) refreshNodeSessions(id);
+  }, [openNodeIds, refreshNodeSessions]);
+  // #412: a thread started anywhere else in the app (the Relace tab's
+  // "Navázat", the node detail's "Nový úkol", another window) announces
+  // itself only as a session_state frame, so that frame is what refetches
+  // the node it belongs to -- without it the sidebar's map only ever
+  // changed when the open-node set did.
+  useEffect(() => {
+    return sessionsClient.onSessionState((s) => {
+      if (s.node_id && openNodeIdsRef.current.includes(s.node_id)) refreshNodeSessions(s.node_id);
     });
-    return () => {
-      cancelled = true;
-    };
-  }, [openNodeIds]);
+  }, [sessionsClient, refreshNodeSessions]);
   // Local drafts merged in per node (#374) -- the server-fetched list above
-  // never contains one.
-  const openSessionsByNodeWithDrafts = useMemo(() => {
-    if (Object.keys(localDrafts).length === 0) return openSessionsByNode;
-    const merged: Record<string, SessionSummary[]> = { ...openSessionsByNode };
-    for (const draft of Object.values(localDrafts)) {
-      if (!draft.node_id) continue;
-      merged[draft.node_id] = [...(merged[draft.node_id] ?? []), draft];
-    }
-    return merged;
-  }, [openSessionsByNode, localDrafts]);
+  // never contains one, and a promoted draft stays here until a refetch
+  // proves the server list has it, so the merge dedupes by id.
+  const openSessionsByNodeWithDrafts = useMemo(
+    () => mergeDraftsIntoNodeMap(openSessionsByNode, localDrafts),
+    [openSessionsByNode, localDrafts],
+  );
   const liveOpenSessionsByNode = useMemo(
     () =>
       Object.fromEntries(
@@ -858,7 +877,13 @@ export default function App() {
       setWorkspaceOpenSession(result.session);
       if (result.session.state === "draft") {
         setLocalDrafts((prev) => ({ ...prev, [result.session.id]: result.session }));
+        return;
       }
+      // #412: an already-running thread (the Relace tab's "Navázat") has
+      // no draft phase to track, so it goes straight into the sidebar's
+      // per-node map -- the refetch its own state frame triggers is what
+      // confirms it, this is what makes the row appear at once.
+      setOpenSessionsByNode((prev) => mergeSessionIntoNodeMap(prev, result.session));
     },
     [],
   );
@@ -964,6 +989,7 @@ export default function App() {
           onWorkspaceCloseNode={closeNode}
           onWorkspaceNewTask={workspaceNewTask}
           workspaceOpenSessionsByNode={liveOpenSessionsByNode}
+          workspaceActiveSessionId={workspaceOpenSession?.id ?? null}
           onWorkspaceOpenSessionChat={openSessionChat}
           onWorkspaceRenameTask={workspaceRenameTask}
           onWorkspaceCloseTask={workspaceCloseTask}

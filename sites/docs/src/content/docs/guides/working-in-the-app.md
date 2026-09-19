@@ -54,7 +54,7 @@ When a node is selected, the detail pane on the right shows the same payload `po
 ```
 
 - **Sidebar header** (every tab) — the workspace switcher under the brand, the Přehled / Graf / Práce toggle, "Hledat uzel…" (also `⌘K` / `Ctrl+K`) opening a command palette that filters nodes by name, description and type, and "Nový uzel". The block is identical on every tab; in Graf a pick selects the node in the graph, in Práce it opens the node.
-- **Node list** (left, "Otevřené") — two arrangements, switched by the Uzly | Stav toggle (remembered per workspace). **Uzly**: every open node in the order you opened them, with a node-type dot and at most one activity dot (waiting on an answer, running, or suspended, from live `session_state` frames); its task sessions (including an empty, just-opened draft) sit as sub-rows flush under the node name, the state in the tooltip — click one to jump straight to the chat, double-click to rename inline, and the `×` revealed on hover closes it (a draft is deleted outright; anything else asks first). Hovering a node itself shows `+` (opens a new, empty thread on that node — the same one-click action as the detail pane's "Nový úkol") and `×` (close the node — its sessions keep running on the sidecar). **Stav**: tasks only, grouped Vyžadují pozornost / Pracují / Pozastavené / Nové / Hotové, each with its node's name underneath.
+- **Node list** (left, "Otevřené") — two arrangements, switched by the Uzly | Stav toggle (remembered per workspace). **Uzly**: every open node in the order you opened them, with a node-type dot and at most one activity dot (waiting on an answer, running, or suspended, from live `session_state` frames); its task sessions (including an empty, just-opened draft) sit as sub-rows flush under the node name, the state in the tooltip — click one to jump straight to the chat, double-click to rename inline, and the `×` revealed on hover closes it (a draft is deleted outright; anything else asks first). The thread the centre column is showing is highlighted the same way a selected node row is, in both arrangements. A thread started anywhere else — the detail pane's "Nový úkol", the Relace tab's "Navázat", another window — appears here as soon as its first `session_state` frame arrives, without reopening the node. Hovering a node itself shows `+` (opens a new, empty thread on that node — the same one-click action as the detail pane's "Nový úkol") and `×` (close the node — its sessions keep running on the sidecar). **Stav**: tasks only, grouped Vyžadují pozornost / Pracují / Pozastavené / Nové / Hotové, each with its node's name underneath.
 - **Centre** — [the task chat](#task-chat-práce) when the selected node has an open (running/suspended/draft) session; otherwise the same `DetailPane` the graph view uses, in "embedded" mode.
 - **Node detail** (right) — shown only while a chat occupies the centre, so the node stays visible next to its thread. The chevron at the top collapses it; the state persists in `localStorage` under `portuni:workspace.detailVisible`. A file opened from the Files tab replaces the detail with the editor in the same column.
 
@@ -220,7 +220,9 @@ delta is a live preview of; and
 every running or suspended session you can see the moment you connect
 (newest activity first, at most 500), and again on every `state_changed`,
 `question` or `run_ended` anywhere, with no subscription needed. This is what lets the Relace tab, the Práce sidebar and Přehled
-update live instead of polling.
+update live instead of polling. A frame for a node open in Práce also refetches that node's thread
+list (`GET /nodes/:id/sessions`), which is how a thread started outside the sidebar shows up there;
+the refetch is coalesced per node, so a burst of frames costs at most two round trips.
 
 Reconnect rule: a client that drops and reconnects re-subscribes to each
 session it cares about with the last `seq` it actually saw — nothing is

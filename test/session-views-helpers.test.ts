@@ -9,6 +9,11 @@ import {
   countRunningSessions,
   applySessionStateFrame,
   pickOpenChatSession,
+  mergeSessionIntoNodeMap,
+  applyNodeSessionsRefetch,
+  dropPromotedDrafts,
+  mergeDraftsIntoNodeMap,
+  pruneNodeSessions,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -192,5 +197,104 @@ describe("pickOpenChatSession", () => {
   it("finds a requested draft", () => {
     const list = [s("d1", "draft")];
     assert.equal(pickOpenChatSession(list, "d1")?.id, "d1");
+  });
+});
+
+// --------------------------------------------------------------- #412
+// The Práce sidebar's per-node thread map: a thread started from the node
+// detail has to land in it without waiting for the open-node set to
+// change, and a draft promoted by its first message must not fall out of
+// it in the window between the promotion frame and the refetch it
+// triggers.
+
+type Thread = { id: string; node_id: string | null; state: "running" | "suspended" | "closed" | "draft" };
+const thread = (id: string, state: Thread["state"], node_id: string | null = "n1"): Thread => ({
+  id,
+  node_id,
+  state,
+});
+
+describe("mergeSessionIntoNodeMap", () => {
+  it("adds a started thread under its node and dedupes by id", () => {
+    const started = thread("s1", "running");
+    const map = mergeSessionIntoNodeMap<Thread>({}, started);
+    assert.deepEqual(map.n1.map((s) => s.id), ["s1"]);
+
+    // Same id again (the refetch's own row) replaces in place, no duplicate.
+    const again = mergeSessionIntoNodeMap(map, { ...started, state: "suspended" });
+    assert.equal(again.n1.length, 1);
+    assert.equal(again.n1[0].state, "suspended");
+
+    // A second thread on the same node keeps the first.
+    const two = mergeSessionIntoNodeMap(again, thread("s2", "running"));
+    assert.deepEqual(two.n1.map((s) => s.id), ["s1", "s2"]);
+  });
+
+  it("ignores a node-less session", () => {
+    const map = mergeSessionIntoNodeMap<Thread>({}, thread("s1", "running", null));
+    assert.deepEqual(Object.keys(map), []);
+  });
+});
+
+describe("applyNodeSessionsRefetch", () => {
+  it("replaces one node's list with what is still open, leaving other nodes alone", () => {
+    const prev = { n1: [thread("old", "running")], n2: [thread("other", "running", "n2")] };
+    const next = applyNodeSessionsRefetch(prev, "n1", [
+      thread("a", "running"),
+      thread("b", "suspended"),
+      thread("c", "closed"),
+    ]);
+    assert.deepEqual(next.n1.map((s) => s.id), ["a", "b"]);
+    assert.deepEqual(next.n2.map((s) => s.id), ["other"]);
+  });
+});
+
+describe("draft promotion race (#412)", () => {
+  // The defect: the promotion frame dropped the local draft on arrival,
+  // assuming the server-fetched list already had it -- it had not been
+  // refetched, so the row disappeared. Modelled as the ordered calls the
+  // listener makes: frame -> (refetch in flight) -> response.
+  it("keeps the row visible from the promotion frame until the refetch carries it", () => {
+    const draft = thread("d1", "draft");
+    let byNode: Record<string, Thread[]> = { n1: [] };
+    let drafts: Record<string, Thread> = { d1: draft };
+
+    // Frame arrives: nothing is dropped yet, so the row is still there.
+    let rendered = mergeDraftsIntoNodeMap(byNode, drafts);
+    assert.deepEqual(rendered.n1.map((s) => s.id), ["d1"]);
+
+    // The refetch resolves with the promoted row.
+    const fetched = [thread("d1", "running")];
+    byNode = applyNodeSessionsRefetch(byNode, "n1", fetched);
+    drafts = dropPromotedDrafts(drafts, fetched);
+    rendered = mergeDraftsIntoNodeMap(byNode, drafts);
+    assert.deepEqual(rendered.n1.map((s) => s.id), ["d1"]);
+    assert.equal(rendered.n1[0].state, "running");
+    assert.deepEqual(Object.keys(drafts), []);
+  });
+
+  it("keeps tracking a draft the refetch did not carry, and never renders it twice", () => {
+    const drafts = { d1: thread("d1", "draft") };
+    // A refetch that raced the promotion (central had not committed it yet)
+    // returns nothing for the node: the draft stays tracked locally.
+    const stillDrafts = dropPromotedDrafts(drafts, []);
+    assert.deepEqual(Object.keys(stillDrafts), ["d1"]);
+    // Unchanged means the same reference, so a refetch that drops nothing
+    // does not re-run every effect keyed on the draft map.
+    assert.equal(stillDrafts, drafts);
+
+    // And once the server list does carry it, the merge yields one row.
+    const byNode = { n1: [thread("d1", "running")] };
+    const rendered = mergeDraftsIntoNodeMap(byNode, stillDrafts);
+    assert.equal(rendered.n1.length, 1);
+    assert.equal(rendered.n1[0].state, "running");
+  });
+});
+
+describe("pruneNodeSessions", () => {
+  it("drops entries for nodes that are no longer open", () => {
+    const prev = { n1: [thread("a", "running")], n2: [thread("b", "running", "n2")] };
+    assert.deepEqual(Object.keys(pruneNodeSessions(prev, ["n1"])), ["n1"]);
+    assert.deepEqual(Object.keys(pruneNodeSessions(prev, [])), []);
   });
 });

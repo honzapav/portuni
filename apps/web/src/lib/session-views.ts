@@ -143,3 +143,97 @@ export function pickOpenChatSession<T extends { id: string; state: SessionState 
   }
   return live[0] ?? null;
 }
+
+// ---------------------------------------------------------------- #412
+
+// The Práce sidebar's per-node thread map (App.tsx's openSessionsByNode).
+// A thread only ever reached it through the per-node refetch keyed on the
+// open-node set, so a thread started from the node detail (the Relace
+// tab's "Navázat", the detail's "Nový úkol") never showed up under its
+// node -- nothing changed that set. These are the three folds that keep
+// the map current without a refetch-everything pass.
+
+type NodeSession = { id: string; node_id: string | null; state: SessionState };
+
+// A thread the caller just started, straight into its node's list (the
+// server list is refetched too, but only once the state frame arrives --
+// the row must be there the moment the thread opens). Dedupe by id: a
+// session already listed is replaced in place, keeping its position.
+export function mergeSessionIntoNodeMap<T extends NodeSession>(
+  prev: Readonly<Record<string, T[]>>,
+  session: T,
+): Record<string, T[]> {
+  const nodeId = session.node_id;
+  if (!nodeId) return { ...prev };
+  const list = prev[nodeId] ?? [];
+  const existing = list.findIndex((s) => s.id === session.id);
+  const next = existing >= 0 ? list.map((s, i) => (i === existing ? session : s)) : [...list, session];
+  return { ...prev, [nodeId]: next };
+}
+
+// One node's refetched list replacing whatever was there. Restricted to
+// what the sidebar shows (a thread still open), same filter the
+// open-node-set fetch applies.
+export function applyNodeSessionsRefetch<T extends NodeSession>(
+  prev: Readonly<Record<string, T[]>>,
+  nodeId: string,
+  sessions: readonly T[],
+): Record<string, T[]> {
+  return { ...prev, [nodeId]: sessions.filter((s) => s.state === "running" || s.state === "suspended") };
+}
+
+// A locally-tracked draft (#374 -- the server lists none) is forgotten
+// only once the refetched server list actually carries it. Dropping it on
+// the promotion frame alone, before the refetch resolved, is what made the
+// row disappear the moment a draft became a real thread: the frame says
+// "it is running now", the list it should have moved into had not been
+// fetched since.
+export function dropPromotedDrafts<T extends { id: string }>(
+  drafts: Record<string, T>,
+  fetched: readonly { id: string }[],
+): Record<string, T> {
+  const seen = new Set(fetched.map((s) => s.id));
+  const next: Record<string, T> = {};
+  let dropped = false;
+  for (const [id, draft] of Object.entries(drafts)) {
+    if (seen.has(id)) dropped = true;
+    else next[id] = draft;
+  }
+  // Same reference when nothing changed: every refetch calls this, and a
+  // fresh object each time would re-run every effect keyed on the draft
+  // map (the shown thread's own fetch among them).
+  return dropped ? next : drafts;
+}
+
+// Drafts overlaid on the server-fetched map. Deduped by id, so the window
+// in which a draft is both still tracked locally and already in the
+// server's list renders one row, not two.
+export function mergeDraftsIntoNodeMap<T extends NodeSession>(
+  byNode: Readonly<Record<string, T[]>>,
+  drafts: Readonly<Record<string, T>>,
+): Record<string, T[]> {
+  const merged: Record<string, T[]> = { ...byNode };
+  for (const draft of Object.values(drafts)) {
+    if (!draft.node_id) continue;
+    const list = merged[draft.node_id] ?? [];
+    if (list.some((s) => s.id === draft.id)) continue;
+    merged[draft.node_id] = [...list, draft];
+  }
+  return merged;
+}
+
+// Entries for nodes no longer open, dropped -- the per-node refetch adds
+// keys on its own now, so nothing else prunes the map.
+export function pruneNodeSessions<T>(
+  byNode: Record<string, T[]>,
+  openNodeIds: readonly string[],
+): Record<string, T[]> {
+  const open = new Set(openNodeIds);
+  const next: Record<string, T[]> = {};
+  let removed = false;
+  for (const [id, list] of Object.entries(byNode)) {
+    if (open.has(id)) next[id] = list;
+    else removed = true;
+  }
+  return removed ? next : byNode;
+}
