@@ -39,6 +39,7 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_MAX_SESSIONS` | ditto | Concurrent MCP session cap |
 | `PORTUNI_URL` | derived | Server URL override used in materialized scope configs |
 | `PORTUNI_GUARD_SCRIPT` | `scripts/portuni-guard.sh` | Guard hook path written into mirror settings |
+| `PORTUNI_ELICIT_TIMEOUT_MS` | `240000` (4 min) | How long a scope/write confirmation dialog waits for an answer (`apps/server/mcp/elicit.ts`). Deliberately below the tool-call deadlines clients enforce (claude.ai aborts at 300 s) -- an unanswered dialog comes back as a structured refusal, never a hang. The agent-mode front door's nested relay hop is derived from this (one minute shorter), never configured separately. A value that is not a positive integer is ignored with a warning. |
 
 ## Sync / desktop
 

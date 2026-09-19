@@ -296,6 +296,31 @@ describe("portuni_store", () => {
     assert.equal(remote?.toString(), "hello world");
   });
 
+  it("is unaffected by the connector-session precondition: still registers and pushes (#409)", async () => {
+    // mcp/tools/files.ts's portuni_store now fails fast without a local
+    // sync.db (a connector session reaching central over HTTP). The agent
+    // front door never routes through that module -- LOCAL_TOOLS dispatch
+    // straight into this device's own sync engine, and a device always has
+    // a sync.db -- so the same call still registers the row, writes
+    // file_state and pushes the bytes.
+    const fake = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "device-local.md");
+    await writeFile(abs, "device-local");
+    const r = await callLocalTool(fake, "U1", "portuni_store", {
+      node_id: NODE_ID,
+      local_path: abs,
+    });
+    assert.notEqual(r.isError, true);
+    const payload = JSON.parse(r.content[0].text);
+    assert.ok(payload.file_id);
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/device-local.md"))?.toString(),
+      "device-local",
+    );
+    assert.ok(await getFileState(payload.file_id));
+  });
+
   it("pushes an update to an already-registered file", async () => {
     const fake = new FakeCentral();
     await setupMirror();

@@ -10,11 +10,18 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import {
   createElicitor,
+  createElicitorFromServer,
+  agentRelayElicitTimeoutMs,
+  elicitTimeoutMs,
   ELICIT_TIMEOUT_MS,
+  ELICIT_RELAY_MARGIN_MS,
   AGENT_RELAY_ELICIT_TIMEOUT_MS,
+  type ElicitCapableServer,
 } from "../apps/server/mcp/elicit.js";
+import { writeGuardError } from "../apps/server/domain/write-gate.js";
 
 async function connect(
   clientCapabilities: Record<string, unknown>,
@@ -83,7 +90,21 @@ describe("createElicitor: capability-present dialog path", () => {
   });
 });
 
-describe("elicitation timeouts (#206)", () => {
+// A server stub standing in for a client that never answers: the SDK's own
+// deadline fires and rejects with ErrorCode.RequestTimeout. Driving the
+// classification from the rejection (rather than waiting out a real timer)
+// keeps the test instant and deterministic -- no sleeps anywhere.
+function timingOutServer(recorded: { timeoutMs?: number }): ElicitCapableServer {
+  return {
+    getClientCapabilities: () => ({ elicitation: {} }),
+    elicitInput: (async (_params: unknown, options?: { timeout?: number }) => {
+      recorded.timeoutMs = options?.timeout;
+      throw new McpError(ErrorCode.RequestTimeout, "Request timed out");
+    }) as ElicitCapableServer["elicitInput"],
+  } as ElicitCapableServer;
+}
+
+describe("elicitation timeouts (#206, #409)", () => {
   it("uses generous, explicit timeouts (SDK default is 60s) with the outer hop longer than the inner one", () => {
     // The agent-mode front door nests two hops: central's own wait (using
     // ELICIT_TIMEOUT_MS, the general default) wraps the front door's relay
@@ -93,5 +114,62 @@ describe("elicitation timeouts (#206)", () => {
     assert.ok(ELICIT_TIMEOUT_MS > 60_000);
     assert.ok(AGENT_RELAY_ELICIT_TIMEOUT_MS > 60_000);
     assert.ok(AGENT_RELAY_ELICIT_TIMEOUT_MS < ELICIT_TIMEOUT_MS);
+  });
+});
+
+describe("elicitation deadline (#409)", () => {
+  it("stays below the 300s tool-call deadline claude.ai enforces, relay one margin shorter", () => {
+    assert.ok(ELICIT_TIMEOUT_MS < 300_000);
+    assert.equal(AGENT_RELAY_ELICIT_TIMEOUT_MS, ELICIT_TIMEOUT_MS - ELICIT_RELAY_MARGIN_MS);
+  });
+
+  it("resolves 'timeout' (not 'unsupported') when the dialog goes unanswered, and the write gate answers write_expansion_required", async () => {
+    const recorded: { timeoutMs?: number } = {};
+    const elicitor = createElicitorFromServer(timingOutServer(recorded));
+    const outcome = await elicitor.confirm("Allow this?");
+    assert.equal(outcome, "timeout");
+    assert.equal(recorded.timeoutMs, AGENT_RELAY_ELICIT_TIMEOUT_MS);
+    // What the caller (mcp/write-gate.ts, agent-transport.ts) turns that
+    // into: a structured refusal the agent can act on, flagged as a timed-out
+    // dialog rather than a client without dialogs.
+    const payload = writeGuardError("N1", "elicit", "ignored", {
+      elicitationSupported: true,
+      dialogTimedOut: true,
+    });
+    assert.equal(payload.error, "write_expansion_required");
+    assert.equal(payload.dialog_timed_out, true);
+    assert.equal(payload.elicitation_supported, undefined);
+    assert.match(payload.hint, /not answered in time/);
+  });
+
+  it("PORTUNI_ELICIT_TIMEOUT_MS overrides the outer hop, and the relay stays strictly shorter", () => {
+    assert.equal(elicitTimeoutMs({ PORTUNI_ELICIT_TIMEOUT_MS: "120000" }), 120_000);
+    assert.equal(agentRelayElicitTimeoutMs({ PORTUNI_ELICIT_TIMEOUT_MS: "120000" }), 60_000);
+    // Too small for a whole margin: half of the outer value, still shorter.
+    assert.equal(agentRelayElicitTimeoutMs({ PORTUNI_ELICIT_TIMEOUT_MS: "30000" }), 15_000);
+    // Any sane override keeps the relay strictly shorter (a 1 ms outer
+    // value is degenerate and floors at 1 ms for both).
+    for (const raw of ["120000", "30000", "2", ""]) {
+      const outer = elicitTimeoutMs({ PORTUNI_ELICIT_TIMEOUT_MS: raw });
+      assert.ok(agentRelayElicitTimeoutMs({ PORTUNI_ELICIT_TIMEOUT_MS: raw }) < outer);
+    }
+  });
+
+  it("ignores a non-positive-integer override instead of disabling the deadline", () => {
+    for (const raw of ["0", "-5", "abc", "1.5"]) {
+      assert.equal(elicitTimeoutMs({ PORTUNI_ELICIT_TIMEOUT_MS: raw }), ELICIT_TIMEOUT_MS);
+    }
+  });
+
+  it("the direct-client hop uses the outer deadline", async () => {
+    const recorded: { timeoutMs?: number } = {};
+    const fake = timingOutServer(recorded);
+    const server = new McpServer({ name: "elicit-timeout-test", version: "0.0.1" }, {});
+    // createElicitor reads server.server; swap in the stub so no real
+    // transport (and no real clock) is involved.
+    (server as unknown as { server: ElicitCapableServer }).server = fake;
+    const outcome = await createElicitor(server).confirm("Allow this?");
+    assert.equal(outcome, "timeout");
+    assert.equal(recorded.timeoutMs, ELICIT_TIMEOUT_MS);
   });
 });

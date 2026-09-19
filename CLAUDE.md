@@ -449,6 +449,34 @@ symlink to this file.
   (no `home_node_id`) and starts unscoped. Vibe merges project over user
   config (union-merge of `mcp_servers` by `name`), so the per-mirror file is
   minimal and never clobbers the user's models/providers.
+- **A confirmation dialog must never outlive the client's tool-call
+  deadline, and a tool that cannot possibly succeed never opens one
+  (#409).** `portuni_store` through the remote connector (claude.ai →
+  `api.portuni.com/mcp`, no local sync.db) used to return nothing for five
+  minutes: `mcp/tools/files.ts` ran `guardNodeWrite` first, the write-scope
+  dialog waited `ELICIT_TIMEOUT_MS` (8 min, longer than claude.ai's own
+  300 s tool abort), and `storeFile`'s own precondition -- the local sync.db
+  `portuni_status` fails on immediately -- only ran after it. Two halves:
+  `local-db.ts`'s `requireLocalSyncDb()` (the same
+  `PORTUNI_WORKSPACE_ROOT must be set for local sync.db` throw, just
+  earlier) is called at the top of `portuni_store` and of `portuni_pull`'s
+  download branch (`file_id`) -- and only those two; `portuni_adopt_files`
+  is deliberately remote-only (#351) and `portuni_pull(node_id)` is a
+  preview. The agent front door's device-local copies (`agent-tools.ts`'s
+  `LOCAL_TOOLS`) never route through `mcp/tools/files.ts` and always run on
+  a device that has a sync.db, so they are untouched. And the deadlines
+  came down below every common client's: `ELICIT_TIMEOUT_MS` 4 min,
+  `AGENT_RELAY_ELICIT_TIMEOUT_MS` 3 min (the nested front-door hop, derived
+  as outer minus `ELICIT_RELAY_MARGIN_MS` -- the invariant relay < outer is
+  what keeps an on-time answer from being discarded by the outer wait),
+  both overridable through the single `PORTUNI_ELICIT_TIMEOUT_MS` (positive
+  integer ms; anything else is ignored with one warning, and the relay is
+  always derived, never configured separately). `ElicitOutcome` gained
+  `"timeout"`: an unanswered dialog is no longer indistinguishable from a
+  client that has no dialogs at all, so `writeGuardError` answers
+  `write_expansion_required` with `dialog_timed_out: true` and a retryable
+  hint instead of the `elicitation_supported: false` wording that would
+  send the agent down a path it cannot use.
 - **Auto-seed runs on MCP connect** when the URL carries `?home_node_id=...`.
   Failures (DB unreachable, network) return 503 with the underlying reason
   rather than serving an empty-scope session – see `apps/server/mcp/transport.ts`.
