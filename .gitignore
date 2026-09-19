@@ -31,3 +31,5 @@ apps/desktop/sidecar-deps/
 .sandcastle/worktrees/
 .sandcastle/node_modules/
 .sandcastle/prompt.generated.md
+.sandcastle/prompt.review.generated.md
+.sandcastle/claude-home/

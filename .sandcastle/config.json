@@ -15,6 +15,7 @@
   "maxIterations": 10,
   "maxRuns": 24,
   "idleTimeoutSeconds": 1800,
+  "autoCompactWindow": 25,
   "sandboxSetup": [
     "npm ci",
     "npm ci --prefix apps/web",
@@ -31,11 +32,39 @@
   "labels": {
     "ready": "ready-for-agent",
     "tracking": "ralph-tracking",
-    "humanOnly": "human-only"
+    "humanOnly": "human-only",
+    "blocked": "agent-blocked",
+    "agent": "agent",
+    "closedByAgent": "closed-by-agent"
   },
   "commitPrefix": "RALPH",
+  "promptVars": {
+    "runtimeTargets": [
+      "a local workspace (env auth, no remote)",
+      "central mode (desktop as sync agent, PORTUNI_AGENT_MODE=1, everything through the central server)"
+    ],
+    "lessonsDoc": "docs/lessons-learned.md",
+    "evidenceCommands": [
+      "npm run qa",
+      "npm run test:pglite",
+      "cargo test (apps/desktop)"
+    ]
+  },
   "promptProject": ".sandcastle/prompt.project.md",
   "mainBranch": "main",
   "requireMain": true,
+  "review": {
+    "profile": "osobni",
+    "model": "claude-opus-5",
+    "when": "run"
+  },
+  "telemetry": {
+    "endpoint": "https://otlp-gateway-prod-eu-west-2.grafana.net/otlp",
+    "headerKeychainService": "skill.grafana-cloud.otlp-auth-header",
+    "resourceAttributes": {
+      "deployment.environment": "loop-mac"
+    },
+    "logUserPrompts": false
+  },
   "notify": "curl -s -m 8 -H \"Title: sandcastle $SANDCASTLE_PROJECT: $SANDCASTLE_EVENT\" -d \"$SANDCASTLE_MESSAGE\" https://ntfy.sh/sandcastle-honzapav-8159501a >/dev/null"
 }
