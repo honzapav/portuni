@@ -198,6 +198,76 @@ describe("startSyncJob / getSyncJob / getCurrentSyncJob (domain)", () => {
   });
 });
 
+describe("per-node serialization across jobs (#338 catch-up)", () => {
+  // The remote watcher's catch-up sweep runs through this same pool under
+  // its own identity, so two jobs can name the same node. They must never
+  // run it at once -- the later one waits.
+  const emptyRun = (): SyncRunResponse => ({
+    pushed: [],
+    pulled: [],
+    adopted: [],
+    adopted_remote: [],
+    conflicts: [],
+    deleted_local: [],
+    deleted_remote: [],
+    deleted_on_remote: [],
+    sweep_errors: [],
+    repaired: [],
+    pending_repairs: [],
+    errors: [],
+    skipped: [],
+  });
+
+  it("a second job on the same node waits for the first", async () => {
+    const nodeId = "N000000000000000000000PROJ";
+    const order: string[] = [];
+    let firstEntered!: () => void;
+    const entered = new Promise<void>((r) => {
+      firstEntered = r;
+    });
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    let secondStarted!: () => void;
+    const started = new Promise<void>((r) => {
+      secondStarted = r;
+    });
+
+    startSyncJob({
+      userId: "U-user",
+      nodeIds: [nodeId],
+      runNode: async () => {
+        order.push("first:start");
+        firstEntered();
+        await gate;
+        order.push("first:end");
+        return emptyRun();
+      },
+    });
+    await entered;
+
+    startSyncJob({
+      userId: "U-watcher",
+      nodeIds: [nodeId],
+      runNode: async () => {
+        order.push("second:start");
+        secondStarted();
+        return emptyRun();
+      },
+    });
+    // Drain the microtask and immediate queues: if the lock were missing,
+    // the second job's worker would already have run by now.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(order, ["first:start"]);
+
+    releaseFirst();
+    await started;
+    assert.deepEqual(order, ["first:start", "first:end", "second:start"]);
+  });
+});
+
 describe("POST /sync/jobs, GET /sync/jobs/:id, GET /sync/jobs/current (REST)", () => {
   it("starts a job over explicit node_ids and can be polled to completion", async () => {
     const shared = await makeSharedDb();

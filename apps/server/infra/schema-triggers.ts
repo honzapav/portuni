@@ -357,6 +357,29 @@ export const DDL = [
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_pending_file_ops_node ON pending_file_ops(node_id)`,
+
+  // Remote watcher (#338, docs/superpowers/specs/2026-09-12-remote-watcher-design.md).
+  // Central-only state; a local workspace never has a remote and never
+  // starts the watcher, so both tables simply stay empty there.
+  //   remote_cursors: the change-feed page token per remote, advanced only
+  //     once every change of a batch has been applied.
+  //   remote_folder_cache: the persistent half of the Drive adapter's
+  //     ancestor cache (folder id -> path relative to the remote root), so
+  //     resolving the path of a changed file costs 0-1 files.get instead of
+  //     a walk to the root. Created here; the adapter's own in-process memo
+  //     (drive-adapter.ts, #337) is what fills the role within one process.
+  `CREATE TABLE IF NOT EXISTS remote_cursors (
+    remote_name TEXT PRIMARY KEY,
+    cursor TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS remote_folder_cache (
+    remote_name TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (remote_name, folder_id)
+  )`,
   // NOTE: `local_mirrors` is NOT created in Turso. Per-device mirror paths
   // live in the local sync.db (see src/sync/local-db.ts). Migration 011
   // drops the legacy Turso `local_mirrors` table on existing installs.

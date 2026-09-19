@@ -1498,7 +1498,38 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration036,
   },
+  // #338 (remote watcher on central): two new tables, no rebuild and no
+  // index on an added column -- see docs/lessons-learned.md section 7.
+  // remote_cursors holds the change-feed page token per remote,
+  // remote_folder_cache the persistent folder id -> path ancestor cache.
+  // The same two tables are in PG_BASELINE_DDL (schema.pg.ts); the Postgres
+  // cutover has not run, so there is no pg-002.
+  {
+    id: "037_remote_watcher_tables",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('remote_cursors','remote_folder_cache')",
+      );
+      return r.rows.length === 2;
+    },
+    up: runMigration037,
+  },
 ];
+
+export async function runMigration037(db: DbClient): Promise<void> {
+  await db.execute(`CREATE TABLE IF NOT EXISTS remote_cursors (
+    remote_name TEXT PRIMARY KEY,
+    cursor TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  )`);
+  await db.execute(`CREATE TABLE IF NOT EXISTS remote_folder_cache (
+    remote_name TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (remote_name, folder_id)
+  )`);
+}
 
 export async function runMigration024(db: DbClient): Promise<void> {
   await db.execute(DDL_ACCESS_REQUESTS);

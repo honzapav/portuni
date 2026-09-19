@@ -1400,8 +1400,49 @@ symlink to this file.
     node folder costs one `files.get` per distinct ancestor, not one per
     change; a folder's OWN change refreshes its entry from the change itself
     (a rename resolves to the new path with no extra fetch), and every
-    `invalidatePrefix` drops the memo whole. **No caller yet** -- the watcher
-    loop, its cursor storage and the catch-up scheduling are #338.
+    `invalidatePrefix` drops the memo whole.
+  - **Remote watcher (#338): the remote side is observed, not re-derived on
+    read.** `boot/remote-watch.ts`'s `RemoteWatchLoop` runs on **central
+    only** (`index.ts`, `authMode() === "google"` -- an env-mode standalone
+    server, the desktop sidecar and the central-mode sync agent all skip
+    it): every `PORTUNI_REMOTE_WATCH_INTERVAL_MS` (60 s) it calls
+    `changes(cursor)` for each remote that implements the feed and applies
+    the batch through `domain/sync/remote-watcher.ts`. Rule 4 is the
+    load-bearing one -- **there is no second classification path**:
+    `remote-sweep.ts`'s three steps were extracted into exported functions
+    (`adoptRemoteFiles`, `refreshRemoteHashes` + its `needsHashRefresh`
+    predicate, `deleteRemovedRecords`) and both `remoteSweep` and the
+    watcher call the same ones, so one changed file and a whole-node sweep
+    cannot disagree. `planRemoteChanges` is the pure reducer
+    (`RemoteChange[]` + the watched node roots -> per-file operations; a
+    folder, a pathless hard delete, a path outside every node root and a
+    path outside `wip`/`outputs`/`resources` are dropped, longest node root
+    wins so a child project owns its files rather than its organization,
+    last change per path wins). `applyRemoteChanges` runs each one under
+    the same `withPathLock("<remote>:<remote_path>")` key the adapter-direct
+    central write path uses. **Registration only, never bytes** (rule 2): a
+    device with a mirror reads `pull` on its next status read, because
+    `statusScanCentral` classifies off `files.current_remote_hash` -- which
+    is exactly what the watcher maintains -- and the bytes still arrive
+    through a deliberate sync. The cursor (`remote_cursors`, migration 037 +
+    `PG_BASELINE_DDL`) is persisted **only after every change of a batch
+    applied**; a failed batch leaves it untouched and is replayed, which is
+    safe because each operation is idempotent. Catch-up is the full
+    `remoteSweep` for every node routed to the remote -- at boot, after a
+    feed `reset`, and every `PORTUNI_REMOTE_SWEEP_INTERVAL_MS` (6 h) -- run
+    through `sync-jobs.ts`'s worker pool; that pool now serializes per node
+    (`withNodeSyncLock`, path-lock keyed `sync-node:<id>`), so a catch-up
+    and a user-triggered "Synchronizovat vše" of the same node never
+    overlap, the later one waits. A tick that throws backs off from the tick
+    interval (60 s -> 2 -> 4 -> ... cap 1 h, `backoffMsFor`'s new `baseMs`
+    argument) and leaves the cursor alone. Nothing device-side changed: no
+    `agent-router.ts` route, no `is_local_only_path` entry, no
+    `CentralClient` method, no MCP tool -- the device already reads the
+    maintained state. `GET /sync/watch` and the UI that follows the watcher
+    are #339; `remote_folder_cache` is created by the same migration as the
+    persistent backing the spec reserves for the Drive adapter's ancestor
+    cache and is not read yet (#337's in-process `folderMemo` is what fills
+    the role today).
 - **The update check is scheduled from the hook's mount, not from
   `backend-ready` alone.** `check_update` (`apps/desktop/src/updater.rs`)
   only talks to the GitHub releases endpoint, so it does not depend on the

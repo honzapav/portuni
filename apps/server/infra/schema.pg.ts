@@ -284,6 +284,20 @@ export const PG_BASELINE_DDL: string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_pending_file_ops_node ON pending_file_ops(node_id)`,
 
+  // Remote watcher (#338). Migration 037 on the libsql side.
+  `CREATE TABLE IF NOT EXISTS remote_cursors (
+    remote_name TEXT PRIMARY KEY,
+    cursor TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS remote_folder_cache (
+    remote_name TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (remote_name, folder_id)
+  )`,
+
   `CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
