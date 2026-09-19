@@ -10,7 +10,7 @@
       "jrd": "skill.sandcastle-jrd.claude-oauth-token"
     }
   },
-  "model": "claude-sonnet-5",
+  "model": "claude-opus-5",
   "branchPrefix": "ralph/backlog",
   "maxIterations": 10,
   "maxRuns": 24,
