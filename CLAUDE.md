@@ -1384,6 +1384,24 @@ symlink to this file.
     recorded (`recordWatcherError`), never retried inside the chain;
     `MirrorWatcher.sweep()` re-backfills every watched mirror on a 10-minute
     interval (`boot/mirror-watch.ts`) and repairs it.
+  - **Remote change feed**: `FileAdapter.changes?(cursor)` (`domain/sync/
+    types.ts`, `RemoteChange`/`RemoteChanges`) is the optional capability the
+    remote watcher will poll on central
+    (`docs/superpowers/specs/2026-09-12-remote-watcher-design.md`); only the
+    Drive adapter implements it, fs/OpenDAL run on the full `remoteSweep`
+    alone. Drive's implementation pages `changes.list` with the shared
+    drive's `driveId` (no `corpora` -- that parameter belongs to
+    `files.list` and Drive rejects the request with it), reports `removed`
+    or `trashed` as a `remove` (a hard delete carries no metadata, so its
+    `path` is null), and answers a 410/404 page token with `reset: true` plus
+    a fresh start token. Path resolution is `pathFor`/`folderInfo`, promoted
+    out of `search()` to the adapter closure and backed by an adapter-level
+    `folderMemo` (folder id -> name + parent), so a page of changes under one
+    node folder costs one `files.get` per distinct ancestor, not one per
+    change; a folder's OWN change refreshes its entry from the change itself
+    (a rename resolves to the new path with no extra fetch), and every
+    `invalidatePrefix` drops the memo whole. **No caller yet** -- the watcher
+    loop, its cursor storage and the catch-up scheduling are #338.
 - **The update check is scheduled from the hook's mount, not from
   `backend-ready` alone.** `check_update` (`apps/desktop/src/updater.rs`)
   only talks to the GitHub releases endpoint, so it does not depend on the

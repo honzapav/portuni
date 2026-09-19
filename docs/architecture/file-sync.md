@@ -173,7 +173,18 @@ export interface FileAdapter {
   rename(from: string, to: string): Promise<void>;
   url(path: string): Promise<string>;             // browser-viewable URL
   export?(path: string, format: "pdf" | "markdown" | "docx"): Promise<Buffer>;
+  // Incremental change feed (Drive's Changes API). Optional: a backend
+  // without one is kept current by the full sweep alone.
+  changes?(cursor: string | null): Promise<{
+    cursor: string;              // hand back on the next call
+    changes: RemoteChange[];
+    reset: boolean;              // cursor invalid; the caller must full-sweep
+  }>;
 }
+
+export type RemoteChange =
+  | { kind: "upsert"; path: string; hash: string | null; modified_at: Date; is_folder: boolean }
+  | { kind: "remove"; path: string | null; file_id: string };
 
 export interface RemoteConfig {
   name: string;
@@ -190,7 +201,17 @@ export type DeviceTokens = Record<string, DeviceToken>;
 export function createAdapter(remote: RemoteConfig, tokens: DeviceTokens): FileAdapter;
 ```
 
-Seven core methods plus optional `export()` for native formats. Adapter factory takes a remote config plus device-local tokens and returns a ready adapter. Adapters are cached per remote_name within one server process so we do not rebuild OpenDAL operators on every call.
+Seven core methods plus optional `export()` for native formats and
+`changes()` for an incremental change feed. `changes()` is what the remote
+watcher (`docs/superpowers/specs/2026-09-12-remote-watcher-design.md`) polls
+on central: Drive implements it over `changes.getStartPageToken` /
+`changes.list` with the shared drive's `driveId`, resolves each entry's path
+by walking its `parents` chain up to the remote root (cached per folder id,
+so a change costs 0-1 `files.get`), reports a `removed` or `trashed` file as
+a `remove`, and answers an expired page token with `reset: true` plus a fresh
+start cursor. A change whose ancestry never reaches the remote root is
+dropped. fs/OpenDAL backends do not implement it and run on the full sweep
+alone. Adapter factory takes a remote config plus device-local tokens and returns a ready adapter. Adapters are cached per remote_name within one server process so we do not rebuild OpenDAL operators on every call.
 
 ## Routing policy
 
