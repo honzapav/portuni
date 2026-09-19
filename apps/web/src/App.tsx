@@ -1194,7 +1194,7 @@ export default function App() {
             if (wasQuit) void declineExit();
           }}
         >
-          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
+          <DialogContent showCloseButton={false} className="sm:max-w-[560px]">
             <DialogHeader>
               <DialogTitle>Neuložené změny</DialogTitle>
               <DialogDescription>
@@ -1206,6 +1206,7 @@ export default function App() {
             <DialogFooter>
               <Button
                 variant="outline"
+                size="sm"
                 onClick={() => {
                   const wasQuit = editorGuard?.kind === "quit";
                   setEditorGuard(null);
@@ -1214,10 +1215,14 @@ export default function App() {
               >
                 Zpět do editoru
               </Button>
-              <Button variant="destructive" onClick={() => void resolveEditorGuard("discard")}>
+              <Button variant="destructive" size="sm" onClick={() => void resolveEditorGuard("discard")}>
                 Zahodit změny
               </Button>
-              <Button disabled={fileEditor.saving} onClick={() => void resolveEditorGuard("save")}>
+              <Button
+                size="sm"
+                disabled={fileEditor.saving}
+                onClick={() => void resolveEditorGuard("save")}
+              >
                 {fileEditor.saving ? "Ukládám…" : "Uložit"}
               </Button>
             </DialogFooter>
@@ -1276,7 +1281,7 @@ export default function App() {
             void declineExit();
           }}
         >
-          <DialogContent showCloseButton={false} className="sm:max-w-[440px]">
+          <DialogContent showCloseButton={false} className="sm:max-w-[560px]">
             <DialogHeader>
               <DialogTitle>Nesynchronizovaná práce</DialogTitle>
               <DialogDescription>
@@ -1286,6 +1291,7 @@ export default function App() {
             <DialogFooter>
               <Button
                 variant="outline"
+                size="sm"
                 onClick={() => {
                   setSyncQuitGuard(null);
                   void declineExit();
@@ -1294,6 +1300,7 @@ export default function App() {
                 Zrušit
               </Button>
               <Button
+                size="sm"
                 onClick={() => {
                   setSyncQuitGuard(null);
                   setSyncOverviewOpen(true);
@@ -1304,6 +1311,7 @@ export default function App() {
               </Button>
               <Button
                 variant="destructive"
+                size="sm"
                 onClick={async () => {
                   setSyncQuitGuard(null);
                   await destroyCurrentWindow();
