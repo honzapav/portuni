@@ -237,7 +237,14 @@ export type SyncRunFile = {
   filename: string;
 };
 
-export type SyncRunErrorFile = SyncRunFile & { error: string };
+// `sync_class` is the class the file carried when the run tried to act on
+// it, so a caller can tell a failed pull from a failed push (#420): the
+// web's residual-pending accounting counts the two into different buckets,
+// and an error reported as a push would hide an incoming pull entirely.
+// Anything that is neither a push nor a pull candidate (a tombstone cleanup
+// that could not remove the stale local copy, an untracked file that failed
+// to adopt) is reported as "push": the next scan sees local work.
+export type SyncRunErrorFile = SyncRunFile & { error: string; sync_class: SyncClass };
 
 export type SyncRunSkippedFile = SyncRunFile & { sync_class: SyncClass };
 

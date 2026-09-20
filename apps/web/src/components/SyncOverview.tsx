@@ -11,6 +11,7 @@
 // stays a direct runNodeSync call -- one node is already fast enough that
 // a job adds nothing but latency.
 import { useEffect, useRef, useState } from "react";
+import { pluralFiles, pluralNodes } from "../lib/plural";
 import {
   RefreshCw,
   Loader2,
@@ -193,14 +194,14 @@ export default function SyncOverview({
           <DialogDescription className="flex items-baseline gap-4 whitespace-nowrap text-[12px]">
             <span>
               <span className="tabular-nums text-[var(--color-text)]">{pending.total}</span>{" "}
-              {fileWord(pending.total)} k synchronizaci
+              {pluralFiles(pending.total)} k synchronizaci
             </span>
             {pullNodes > 0 && (
               <span
                 title="Uzly, kde remote watcher zaregistroval novější verzi než má tento počítač. Stáhne je sync run."
               >
                 <span className="tabular-nums text-[var(--color-text)]">{pullNodes}</span>{" "}
-                {nodeWord(pullNodes)} s novinkami z remote
+                {pluralNodes(pullNodes)} s novinkami z remote
               </span>
             )}
             {pending.decisions > 0 && (
@@ -336,16 +337,3 @@ function Count({
   );
 }
 
-// Czech counts the noun by the number: 1 uzel, 2-4 uzly, 0 and 5+ uzlů.
-function nodeWord(n: number): string {
-  if (n === 1) return "uzel";
-  if (n >= 2 && n <= 4) return "uzly";
-  return "uzlů";
-}
-
-// Czech counts the noun by the number: 1 soubor, 2-4 soubory, 0 and 5+ souborů.
-function fileWord(n: number): string {
-  if (n === 1) return "soubor";
-  if (n >= 2 && n <= 4) return "soubory";
-  return "souborů";
-}

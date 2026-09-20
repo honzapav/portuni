@@ -33,8 +33,8 @@ import {
   setRemoteWatchStatusSource,
 } from "../domain/sync/remote-watch-status.js";
 import {
-  backoffMsFor,
   initialBackoff,
+  recordUnreachable,
   shouldAttempt,
   type BackoffState,
 } from "../domain/sync/central/reachability.js";
@@ -239,11 +239,9 @@ export class RemoteWatchLoop {
     const now = this.now();
     state.lastTickAt = now;
     state.lastError = e instanceof Error ? e.message : String(e);
-    const failures = state.backoff.consecutiveFailures + 1;
-    state.backoff = {
-      consecutiveFailures: failures,
-      nextAttemptAt: now + backoffMsFor(failures, this.intervalMs, MAX_BACKOFF_MS),
-    };
+    // Same schedule the backfill sweep uses, from this loop's own tick
+    // interval: 60 s -> 2 -> 4 -> ... -> 1 h.
+    state.backoff = recordUnreachable(state.backoff, now, this.intervalMs, MAX_BACKOFF_MS);
     console.warn(`[portuni:remote-watch] tick failed: ${state.lastError}`);
   }
 

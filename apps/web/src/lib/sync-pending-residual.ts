@@ -16,17 +16,21 @@ export function residualPendingNode(
   run: SyncRunResponse,
 ): SyncPendingNode | null {
   const skipped = (cls: string) => run.skipped.filter((s) => s.sync_class === cls).length;
-  // A failed transfer stays local work; a push the run declined to make
-  // (skipped) is still a push candidate on the next scan.
-  const push = run.errors.length + skipped("push");
+  const failed = (cls: string) => run.errors.filter((e) => e.sync_class === cls).length;
+  // A failed transfer stays work of its own class (#420): a pull that failed
+  // is still an incoming pull, not something to push. Every other error
+  // class (a failed push, a tombstone cleanup, an adoption) is local work
+  // the next scan sees as a push. A push the run declined to make (skipped)
+  // is still a push candidate on the next scan.
+  const push = run.errors.length - failed("pull") + skipped("push");
   const conflict = run.conflicts.length;
   const deleted_local = run.deleted_local.length;
   // Untracked files are adopted by the run; anything that failed to adopt
   // is already counted through `errors`.
   const untracked = 0;
-  // The run pulled every pull candidate (#339); one that failed is already
-  // counted through `errors` above, so nothing remains to pull.
-  const pull = 0;
+  // The run pulled every pull candidate (#339); one that failed is still
+  // pending as a pull, so it is counted here rather than as a push.
+  const pull = failed("pull");
   const total = push + untracked;
   const decisions = conflict + deleted_local;
   if (total === 0 && decisions === 0 && pull === 0) return null;

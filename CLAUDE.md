@@ -1262,7 +1262,14 @@ symlink to this file.
     human via `POST /nodes/:id/files/:fileId/resolve`). A node with only
     decisions still appears in the overview with `total: 0`.
     `SyncOverview.tsx` shows the split as `+N k rozhodnutí` and puts only
-    actionable nodes in a job's default node set.
+    actionable nodes in a job's default node set. A finished run's own
+    residual accounting (`apps/web/src/lib/sync-pending-residual.ts`, what
+    clears a just-synced node from the overview before the next aggregate
+    scan lands) reads `SyncRunResponse.errors[].sync_class`: every error
+    entry carries the class the file had when the run tried to act on it
+    (`sync-run.ts` and `engine-central.ts`'s `syncRunCentral` both tag
+    theirs), so a failed pull stays a pending `pull` instead of being
+    counted as a push the user is expected to clear.
   - **Central hash tracking**: `current_remote_hash` is central-mode
     classification's only source of remote truth, so every path that proves
     the remote's identity persists it -- `writeFileBytesRemote`'s `ifAbsent`

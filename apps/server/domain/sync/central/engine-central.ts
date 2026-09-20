@@ -1295,7 +1295,9 @@ export async function syncRunCentral(
   for (const c of cleanup.cleaned) {
     result.deleted_remote.push({ file_id: c.file_id, filename: c.filename });
   }
-  result.errors.push(...cleanup.errors);
+  // A stale local copy the cleanup could not remove reads as untracked on
+  // the next scan, i.e. local work again -- a push, never a pull (#420).
+  result.errors.push(...cleanup.errors.map((e) => ({ ...e, sync_class: "push" as const })));
 
   await mapConcurrent(scan.push_candidates, SYNC_RUN_CONCURRENCY, async (e) => {
     if (!e.local_path || !mirrorRoot) {
@@ -1303,6 +1305,7 @@ export async function syncRunCentral(
         file_id: e.file_id,
         filename: e.filename,
         error: "no local path -- node has no mirror on this device",
+        sync_class: "push",
       });
       return;
     }
@@ -1316,7 +1319,7 @@ export async function syncRunCentral(
         result.conflicts.push({ file_id: e.file_id, filename: e.filename });
         return;
       }
-      result.errors.push({ file_id: e.file_id, filename: e.filename, error: String(err) });
+      result.errors.push({ file_id: e.file_id, filename: e.filename, error: String(err), sync_class: "push" });
     }
   });
 
@@ -1325,7 +1328,7 @@ export async function syncRunCentral(
       await pullFileCentral(client, { userId: a.userId, nodeId: a.nodeId, entry: e, ctx });
       result.pulled.push({ file_id: e.file_id, filename: e.filename });
     } catch (err) {
-      result.errors.push({ file_id: e.file_id, filename: e.filename, error: String(err) });
+      result.errors.push({ file_id: e.file_id, filename: e.filename, error: String(err), sync_class: "pull" });
     }
   });
 
@@ -1354,7 +1357,12 @@ export async function syncRunCentral(
     for (const u of scan.new_local) {
       const rel = relPathFor(mirrorRoot, u.local_path);
       if (!rel) {
-        result.errors.push({ file_id: "", filename: u.filename, error: "outside mirror sections" });
+        result.errors.push({
+          file_id: "",
+          filename: u.filename,
+          error: "outside mirror sections",
+          sync_class: "push",
+        });
         continue;
       }
       relPaths.push(rel);
@@ -1365,7 +1373,12 @@ export async function syncRunCentral(
     } catch (err) {
       for (const rel of relPaths) {
         const u = byRelPath.get(rel);
-        result.errors.push({ file_id: "", filename: u?.filename ?? rel, error: String(err) });
+        result.errors.push({
+          file_id: "",
+          filename: u?.filename ?? rel,
+          error: String(err),
+          sync_class: "push",
+        });
       }
       registered = [];
     }
@@ -1396,7 +1409,7 @@ export async function syncRunCentral(
         });
         result.adopted.push({ file_id: reg.id, filename: u.filename });
       } catch (err) {
-        result.errors.push({ file_id: reg.id, filename: u.filename, error: String(err) });
+        result.errors.push({ file_id: reg.id, filename: u.filename, error: String(err), sync_class: "push" });
       }
     });
   } else {
@@ -1405,6 +1418,7 @@ export async function syncRunCentral(
         file_id: "",
         filename: u.filename,
         error: "no local path -- node has no mirror on this device",
+        sync_class: "push",
       });
     }
   }

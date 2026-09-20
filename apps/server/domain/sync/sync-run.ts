@@ -72,6 +72,7 @@ export async function runNodeSync(
         file_id: e.file_id,
         filename: e.filename,
         error: "no local path -- node has no mirror on this device",
+        sync_class: "push",
       });
       continue;
     }
@@ -87,6 +88,7 @@ export async function runNodeSync(
         file_id: e.file_id,
         filename: e.filename,
         error: String(err),
+        sync_class: "push",
       });
     }
   }
@@ -104,6 +106,7 @@ export async function runNodeSync(
         file_id: e.file_id,
         filename: e.filename,
         error: String(err),
+        sync_class: "pull",
       });
     }
   }
@@ -131,7 +134,9 @@ export async function runNodeSync(
   for (const c of cleanup.cleaned) {
     result.deleted_remote.push({ file_id: c.file_id, filename: c.filename });
   }
-  result.errors.push(...cleanup.errors);
+  // A stale local copy the cleanup could not remove is local work again on
+  // the next scan (it reads as untracked), so it counts as a push, not a pull.
+  result.errors.push(...cleanup.errors.map((e) => ({ ...e, sync_class: "push" as const })));
   const untracked = tombMatch.remaining;
   for (const u of untracked) {
     try {
@@ -142,7 +147,7 @@ export async function runNodeSync(
       });
       result.adopted.push({ file_id: sr.file_id, filename: u.filename });
     } catch (err) {
-      result.errors.push({ file_id: "", filename: u.filename, error: String(err) });
+      result.errors.push({ file_id: "", filename: u.filename, error: String(err), sync_class: "push" });
     }
   }
   return result;
