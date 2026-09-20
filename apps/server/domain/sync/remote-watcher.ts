@@ -18,7 +18,7 @@
 
 import type { DbClient } from "../../infra/db.js";
 import { nowExpr } from "../../infra/sql.js";
-import type { FileAdapter, FileRef, RemoteChange } from "./types.js";
+import type { FileAdapter, RemoteChange } from "./types.js";
 import { buildNodeRoot } from "./remote-path.js";
 import { listRules, resolveRemoteFromRules } from "./routing.js";
 import { withPathLock } from "./path-lock.js";
@@ -204,16 +204,23 @@ export async function applyRemoteChanges(
           return;
         }
         if (!record) {
-          // The change feed does not report a size, and nothing in the
-          // adopt path reads one -- the hash and the native flag are what
-          // adoptFiles takes from a ref.
-          const ref: FileRef = {
-            path: change.path,
-            hash: change.hash,
-            size: 0,
-            modified_at: new Date(),
-            is_native_format: false,
-          };
+          // Rule 4 again, and the one place it is not free: a full sweep
+          // classifies an adopt off the backend's own listing entry, where
+          // Drive derives is_native_format from the mime type. RemoteChange
+          // carries no mime field, so a ref synthesised from the change
+          // alone would read every Drive-native Doc/Sheet/Slide as an
+          // ordinary binary -- a native object has no md5Checksum, so the
+          // adopt's hash backfill fetches bytes Drive refuses to serve
+          // (403 Only files with binary content can be downloaded), the
+          // batch reports an error and the cursor is never persisted again
+          // (#416). One stat per genuinely new file buys the sweep's own
+          // answer; a hash refresh and a remove are untouched.
+          const ref = await a.adapter.stat(change.path);
+          // Created and gone again before this tick could look: nothing to
+          // adopt, exactly as a listing that no longer shows it. Its own
+          // remove change, if the feed reports one, finds no record and is
+          // a no-op too.
+          if (!ref) return;
           const res = await adoptRemoteFiles(db, {
             userId: a.userId,
             nodeId: change.nodeId,

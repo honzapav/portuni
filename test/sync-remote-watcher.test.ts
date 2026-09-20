@@ -27,6 +27,7 @@ import {
   setRemoteCursor,
   watchedNodesForRemote,
 } from "../apps/server/domain/sync/remote-watcher.js";
+import { remoteSweep } from "../apps/server/domain/sync/remote-sweep.js";
 import { RemoteWatchLoop } from "../apps/server/boot/remote-watch.js";
 import { statusScanCentral } from "../apps/server/domain/sync/central/engine-central.js";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
@@ -66,35 +67,58 @@ afterEach(async () => {
 
 // A backend double that holds bytes in memory, reports a content hash on
 // stat (like Drive's md5Checksum) and serves a scripted change feed.
+// `native` holds the paths it reports the way drive-adapter.ts reports a
+// Google Doc/Sheet/Slide -- is_native_format, no hash, and get() refusing
+// with Drive's own 403; `hashless` is a backend that reports no hash for an
+// ordinary binary (fs/OpenDAL), which is what makes the adopt path fetch
+// the bytes to hash them.
 interface FakeBackend extends FileAdapter {
   objects: Map<string, Buffer>;
+  native: Set<string>;
+  hashless: Set<string>;
+  getFails: Set<string>;
   feed: RemoteChanges[];
   statCalls: string[];
+  getCalls: string[];
   changesCalls: Array<string | null>;
 }
 
+const DRIVE_NATIVE_403 =
+  "Drive get: 403 Only files with binary content can be downloaded. Use Export with Docs Editors files.";
+
 function fakeBackend(): FakeBackend {
   const objects = new Map<string, Buffer>();
+  const native = new Set<string>();
+  const hashless = new Set<string>();
+  const getFails = new Set<string>();
   const feed: RemoteChanges[] = [];
   const statCalls: string[] = [];
+  const getCalls: string[] = [];
   const changesCalls: Array<string | null> = [];
   const refFor = (path: string, body: Buffer): FileRef => ({
     path,
-    hash: sha(body),
+    hash: native.has(path) || hashless.has(path) ? null : sha(body),
     size: body.length,
     modified_at: new Date(0),
-    is_native_format: false,
+    is_native_format: native.has(path),
   });
   return {
     objects,
+    native,
+    hashless,
+    getFails,
     feed,
     statCalls,
+    getCalls,
     changesCalls,
     async put(path, content) {
       objects.set(path, content);
       return refFor(path, content);
     },
     async get(path) {
+      getCalls.push(path);
+      if (native.has(path)) throw new Error(DRIVE_NATIVE_403);
+      if (getFails.has(path)) throw new Error(`fakeBackend: get refused for ${path}`);
       const b = objects.get(path);
       if (!b) throw new Error(`fakeBackend: no object at ${path}`);
       return b;
@@ -142,7 +166,7 @@ const remove = (path: string | null, file_id = "drive-id"): RemoteChange => ({
 
 async function recordRow(db: DbClient, remotePath: string) {
   const r = await db.execute({
-    sql: "SELECT id, filename, current_remote_hash, status FROM files WHERE remote_path = ?",
+    sql: "SELECT id, filename, current_remote_hash, status, is_native_format FROM files WHERE remote_path = ?",
     args: [remotePath],
   });
   return r.rows[0] ?? null;
@@ -316,6 +340,117 @@ describe("applyRemoteChanges", () => {
   });
 });
 
+// #416: RemoteChange carries no mime field, so the adopt branch used to
+// synthesize a FileRef with is_native_format hard-coded false. A Google
+// Doc/Sheet/Slide then took the non-native adopt path: no md5Checksum means
+// no hash, the hash backfill fetched bytes Drive refuses to serve for a
+// Docs-editors file (403), the batch reported an error, and the cursor was
+// never persisted again -- every later tick replayed the same growing batch.
+describe("a Drive-native file", () => {
+  const NATIVE = `${NODE_ROOT}/wip/Navrh.gdoc`;
+
+  function withNative(): FakeBackend {
+    const backend = fakeBackend();
+    backend.objects.set(NATIVE, Buffer.from(""));
+    backend.native.add(NATIVE);
+    setAdapterForTests("test-fs", backend);
+    return backend;
+  }
+
+  it("is adopted as native, with no hash backfill and no error", async () => {
+    const { db } = await makeSharedDb();
+    const backend = withNative();
+    const nodes = await watchedNodesForRemote(db, "test-fs");
+    const res = await applyRemoteChanges(db, {
+      userId: "U1",
+      remoteName: "test-fs",
+      adapter: backend,
+      plan: planRemoteChanges([upsert(NATIVE, null)], nodes).planned,
+    });
+
+    assert.deepEqual(res.errors, []);
+    assert.equal(res.adopted.length, 1);
+    // get() throws Drive's own 403, so any backfill attempt would be an
+    // error above -- assert it was never even tried.
+    assert.deepEqual(backend.getCalls, []);
+    const row = await recordRow(db, NATIVE);
+    assert.ok(row);
+    assert.equal(Number(row.is_native_format), 1);
+    assert.equal(row.current_remote_hash, null);
+  });
+
+  it("does not wedge the cursor: the tick persists it and the next one is a no-op", async () => {
+    const { db } = await makeSharedDb();
+    const backend = withNative();
+    await setRemoteCursor(db, "test-fs", "c1");
+    backend.feed.push({ cursor: "c2", reset: false, changes: [upsert(NATIVE, null)] });
+
+    const first = await runRemoteWatchTick(db, {
+      remoteName: "test-fs",
+      userId: "U1",
+      adapter: backend,
+      fullSweep: () => undefined,
+    });
+    assert.deepEqual(first.applied.errors, []);
+    assert.equal(first.applied.adopted.length, 1);
+    assert.equal(first.cursor_persisted, true);
+    assert.equal((await getRemoteCursor(db, "test-fs"))?.cursor, "c2");
+
+    // The feed is empty from the new cursor: nothing applied, nothing
+    // replayed, one record.
+    const second = await runRemoteWatchTick(db, {
+      remoteName: "test-fs",
+      userId: "U1",
+      adapter: backend,
+      fullSweep: () => undefined,
+    });
+    assert.deepEqual(second.applied.adopted, []);
+    assert.deepEqual(second.applied.errors, []);
+    assert.deepEqual(backend.changesCalls, ["c1", "c2"]);
+    const rows = await db.execute({
+      sql: "SELECT COUNT(*) AS n FROM files WHERE remote_path = ?",
+      args: [NATIVE],
+    });
+    assert.equal(Number(rows.rows[0].n), 1);
+  });
+
+  it("produces the same row as a full remoteSweep (rule 4: no second classification path)", async () => {
+    const shape = async (db: DbClient) => {
+      const row = await recordRow(db, NATIVE);
+      assert.ok(row, "the record exists");
+      return {
+        filename: row.filename,
+        status: row.status,
+        is_native_format: Number(row.is_native_format),
+        current_remote_hash: row.current_remote_hash,
+      };
+    };
+
+    const viaWatcher = await makeSharedDb();
+    const backend = withNative();
+    await applyRemoteChanges(viaWatcher.db, {
+      userId: "U1",
+      remoteName: "test-fs",
+      adapter: backend,
+      plan: planRemoteChanges(
+        [upsert(NATIVE, null)],
+        await watchedNodesForRemote(viaWatcher.db, "test-fs"),
+      ).planned,
+    });
+    const watcherRow = await shape(viaWatcher.db);
+
+    const viaSweep = await makeSharedDb();
+    const sweep = await remoteSweep(viaSweep.db, { userId: "U1", nodeId: viaSweep.nodeId });
+    assert.deepEqual(sweep.errors, []);
+    assert.equal(sweep.adopted.length, 1);
+    const sweepRow = await shape(viaSweep.db);
+
+    assert.deepEqual(watcherRow, sweepRow);
+    assert.equal(watcherRow.is_native_format, 1);
+    assert.deepEqual(backend.getCalls, []);
+  });
+});
+
 describe("runRemoteWatchTick", () => {
   it("takes a start token and asks for a baseline sweep when there is no cursor", async () => {
     const { db, nodeId } = await makeSharedDb();
@@ -347,8 +482,12 @@ describe("runRemoteWatchTick", () => {
     const ok = `${NODE_ROOT}/wip/ok.md`;
     const broken = `${NODE_ROOT}/wip/broken.md`;
     backend.objects.set(ok, Buffer.from("ok"));
-    // No object behind `broken` and no hash on the change, so the adopt
-    // path's own hash backfill has to fetch bytes -- and fails.
+    // `broken` is an ordinary binary the backend reports no hash for, so the
+    // adopt path's own hash backfill has to fetch its bytes -- and the fetch
+    // fails.
+    backend.objects.set(broken, Buffer.from("broken"));
+    backend.hashless.add(broken);
+    backend.getFails.add(broken);
     backend.feed.push({
       cursor: "c2",
       reset: false,

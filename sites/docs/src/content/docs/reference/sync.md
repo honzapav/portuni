@@ -142,6 +142,14 @@ to end, which is what Nastavení › Synchronizace shows as „poslední změna
 před 2 min". A failing remote reports `last_error` and, while it is backing
 off, `backoff_until`. Every timestamp is ISO-8601 UTC.
 
+What the watcher registers for one changed file is exactly what a full
+sweep would register for it, including a Google Doc/Sheet/Slide created
+under `wip/`, `outputs/` or `resources/`: it is adopted as a **native**
+file (the `native` sync class on every device), which has no content hash
+by construction — the watcher asks the backend what the file is rather
+than guessing from the change feed, and never tries to download bytes
+Drive does not serve for a Docs-editors file.
+
 ## Destructive operations
 
 All three operations below are confirm-first. The first call returns a preview without acting; show the preview to the user, then call again with `confirmed: true` to execute. Best-effort ordered (remote, then local, then DB) — a partial failure returns `repair_needed` with a hint, and the operation's intent is recorded so the next sync run retries it automatically until it completes.

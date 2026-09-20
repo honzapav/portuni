@@ -1413,7 +1413,20 @@ symlink to this file.
     (`adoptRemoteFiles`, `refreshRemoteHashes` + its `needsHashRefresh`
     predicate, `deleteRemovedRecords`) and both `remoteSweep` and the
     watcher call the same ones, so one changed file and a whole-node sweep
-    cannot disagree. `planRemoteChanges` is the pure reducer
+    cannot disagree. The one place that is not free is the adopt branch:
+    `RemoteChange` carries no mime field, so the watcher resolves the
+    `FileRef` with its own `adapter.stat(path)` instead of synthesising one
+    (#416). A synthesised ref hard-coded `is_native_format: false`, which
+    read every Drive-native Doc/Sheet/Slide as an ordinary binary -- a
+    native object has no `md5Checksum`, so `adoptRemoteFiles`' hash
+    backfill fetched bytes Drive refuses to serve (403), the batch reported
+    an error, and `cursor_persisted` (which requires an error-free batch)
+    stayed false forever: the same growing batch replayed every tick until
+    `CHANGES_MAX_PAGES` hid new changes entirely. One stat per genuinely
+    new file; a hash refresh and a remove are untouched, and a path whose
+    stat finds nothing (created and deleted between the change and the
+    tick) is skipped the way a listing that no longer shows it would be.
+    `planRemoteChanges` is the pure reducer
     (`RemoteChange[]` + the watched node roots -> per-file operations; a
     folder, a pathless hard delete, a path outside every node root and a
     path outside `wip`/`outputs`/`resources` are dropped, longest node root
