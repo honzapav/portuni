@@ -363,8 +363,9 @@ export const DDL = [
   //   remote_folder_cache: the persistent half of the Drive adapter's
   //     ancestor cache (folder id -> path relative to the remote root), so
   //     resolving the path of a changed file costs 0-1 files.get instead of
-  //     a walk to the root. Created here; the adapter's own in-process memo
-  //     (drive-adapter.ts, #337) is what fills the role within one process.
+  //     a walk to the root. Read and written through
+  //     drive-folder-cache.ts (#419), below the adapter's own bounded
+  //     in-process memo.
   `CREATE TABLE IF NOT EXISTS remote_cursors (
     remote_name TEXT PRIMARY KEY,
     cursor TEXT NOT NULL,

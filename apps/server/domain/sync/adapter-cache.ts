@@ -4,6 +4,7 @@ import { assertRemoteCapable } from "./types.js";
 import { getRemote } from "./routing.js";
 import { createOpenDALAdapter } from "./opendal-adapter.js";
 import { createDriveAdapter } from "./drive-adapter.js";
+import { createDbFolderPathStore } from "./drive-folder-cache.js";
 import { readDeviceTokens } from "./device-tokens.js";
 
 const cache = new Map<string, FileAdapter>();
@@ -18,7 +19,10 @@ export async function getAdapter(db: DbClient, remoteName: string): Promise<File
   if (!remote) throw new Error(`Unknown remote: ${remoteName}`);
   const tokens = await readDeviceTokens([remoteName]);
   const adapter = remote.type === "gdrive"
-    ? createDriveAdapter(remote, tokens)
+    // The Drive adapter's ancestor cache reads through `remote_folder_cache`
+    // (#419), so the first tick after a restart resolves a changed file's
+    // path from the DB instead of re-walking its ancestors over the network.
+    ? createDriveAdapter(remote, tokens, { folderCache: createDbFolderPathStore(db, remoteName) })
     : createOpenDALAdapter(remote, tokens);
   cache.set(remoteName, adapter);
   return adapter;

@@ -192,6 +192,12 @@ The watcher never moves bytes (a rename does not re-download the file);
 it only maintains what the remote holds, and the bytes still arrive
 through a deliberate sync.
 
+Turning a change into a path means walking the file's Drive folders up to
+the remote root. Those folder paths are cached on the server — in memory
+and in the database — so a restarted server resolves them without asking
+Drive again, and a folder renamed or moved drops its own cached path and
+everything under it, which the next changes refill.
+
 ## Destructive operations
 
 All three operations below are confirm-first. The first call returns a preview without acting; show the preview to the user, then call again with `confirmed: true` to execute. Best-effort ordered (remote, then local, then DB) — a partial failure returns `repair_needed` with a hint, and the operation's intent is recorded so the next sync run retries it automatically until it completes.

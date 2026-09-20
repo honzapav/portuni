@@ -1397,10 +1397,33 @@ symlink to this file.
     central-only, `remote_file_id` never leaves central (`SyncInfo.files`
     does not carry it and classification does not read it), and a
     relocation reaches a device through the `sync_move` tombstone the
-    sync-info tombstone query already ships. `remote_folder_cache` is created by the same migration as the
-    persistent backing the spec reserves for the Drive adapter's ancestor
-    cache and is not read yet (#337's in-process `folderMemo` is what fills
-    the role today).
+    sync-info tombstone query already ships. **The ancestor cache the
+    watcher's path resolution rides on is two tiers, and the lower one is
+    `remote_folder_cache` (#419).** `drive-folder-cache.ts` is the whole of
+    it: `createDbFolderPathStore(db, remoteName)` over the table migration
+    037 created (folder id -> path relative to the remote root, one row per
+    folder), and `createFolderPathCache(store, max)` over that -- an
+    insertion-ordered LRU memo bounded by
+    `PORTUNI_DRIVE_FOLDER_MEMO_MAX` (5 000), so Drive's folder history
+    cannot grow it without limit and an eviction costs a DB read rather
+    than a `files.get`. `adapter-cache.ts` is what hands the store to
+    `createDriveAdapter(remote, tokens, { folderCache })`; the third
+    parameter is optional and an adapter built without it (a test) behaves
+    exactly as #337's memo-only version did. Lookup order is memo -> row ->
+    Drive, writes go to both tiers (a *negative* entry -- "this ancestry
+    does not reach the remote root" -- is memo-only and never persisted),
+    and the first tick after a restart resolves a changed file's path from
+    the table instead of re-walking every ancestor over the network.
+    **Invalidation is by path, which is what the table stores**: a folder
+    reported by the change feed recomputes its own path from the change
+    (still no network call -- the change carries the name and the parent)
+    and, when that path moved, drops the folder's OLD path and everything
+    under it in both tiers; a removed folder drops the same subtree; the
+    adapter's own writes go through `invalidatePrefix`, which now narrows
+    to the written subtree instead of clearing the whole memo; and a
+    change-feed `reset` truncates the remote's rows, since the full sweep
+    that follows refills them. Descendants are never recomputed eagerly --
+    dropped rows refill lazily on the next miss, one `files.get` each.
   - **Watcher state is read through a seam, and its device-side signal is a
     `pull` count (#339).** `GET /sync/watch` (read tier) answers
     `{remotes: [{remote_name, watching, cursor_updated_at, last_tick_at,

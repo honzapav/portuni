@@ -1501,7 +1501,8 @@ const MIGRATIONS: Migration[] = [
   // #338 (remote watcher on central): two new tables, no rebuild and no
   // index on an added column -- see docs/lessons-learned.md section 7.
   // remote_cursors holds the change-feed page token per remote,
-  // remote_folder_cache the persistent folder id -> path ancestor cache.
+  // remote_folder_cache the persistent folder id -> path ancestor cache
+  // (read/written by domain/sync/drive-folder-cache.ts, #419).
   // The same two tables are in PG_BASELINE_DDL (schema.pg.ts); the Postgres
   // cutover has not run, so there is no pg-002.
   {
