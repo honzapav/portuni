@@ -34,6 +34,10 @@ type Props = {
   // server serves excludes a draft, so the caller merges its own in.
   // Status comes from state/waiting_since (session_state frames).
   openSessionsByNode: Record<string, SessionSummary[]>;
+  // #412: the thread the canvas currently shows, marked in both
+  // arrangements (the per-node tree and the grouped task list) the same way
+  // a selected node row is -- otherwise nothing says which row is open.
+  activeSessionId: string | null;
   onOpenSessionChat: (nodeId: string, sessionId: string) => void;
   // Inline rename (#374, "sub-rows ... inline rename").
   onRenameTask: (session: SessionSummary, name: string) => void;
@@ -151,6 +155,7 @@ function NodeTree({
   onCloseNode,
   onNewTask,
   openSessionsByNode,
+  activeSessionId,
   onOpenSessionChat,
   onRenameTask,
   onCloseTask,
@@ -164,7 +169,7 @@ function NodeTree({
   }
 
   return (
-    <ul className="flex flex-col gap-0.5 px-2.5 pb-4">
+    <ul className="flex flex-col gap-2 px-2.5 pb-4">
       {rows.map((r) => {
         const tasks = openSessionsByNode[r.id] ?? [];
         const activity = summarizeNodeActivity(tasks);
@@ -248,12 +253,13 @@ function NodeTree({
             </div>
 
             {tasks.length > 0 && (
-              <ul className="mb-1 flex flex-col gap-px">
+              <ul className="mt-0.5 flex flex-col gap-0.5">
                 {tasks.map((s) => (
                   <li key={s.id}>
                     <TaskRow
                       session={s}
                       title={taskTitle(s)}
+                      active={s.id === activeSessionId}
                       onClick={() => onOpenSessionChat(r.id, s.id)}
                       onRename={(name) => onRenameTask(s, name)}
                       onClose={() => onCloseTask(s)}
@@ -294,12 +300,14 @@ function taskTitle(s: Pick<SessionSummary, "state" | "waiting_since">): string {
 function TaskRow({
   session,
   title,
+  active,
   onClick,
   onRename,
   onClose,
 }: {
   session: SessionSummary;
   title: string;
+  active: boolean;
   onClick: () => void;
   onRename: (name: string) => void;
   onClose: () => void;
@@ -333,23 +341,33 @@ function TaskRow({
             setEditing(false);
           }
         }}
-        className="h-7 w-full pl-7 text-[12.5px]"
+        className="h-8 w-full pl-7 text-[12.5px]"
       />
     );
   }
 
   return (
     <div className="group/task relative flex items-center">
+      {active && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-[var(--color-accent)]"
+        />
+      )}
       <Button
         variant="ghost"
-        size="sm"
         onClick={onClick}
         onDoubleClick={(e) => {
           e.stopPropagation();
           startEditing();
         }}
         title={title}
-        className="w-full min-w-0 justify-start gap-2.5 pr-7 pl-7 font-normal text-[12.5px] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+        aria-current={active ? "true" : undefined}
+        className={`h-8 w-full min-w-0 justify-start gap-2.5 pr-7 pl-7 font-normal text-[12.5px] ${
+          active
+            ? "bg-[var(--color-surface-2)] font-medium text-[var(--color-text)]"
+            : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+        }`}
       >
         <span className="min-w-0 flex-1 truncate text-left">{session.name}</span>
       </Button>
@@ -372,7 +390,7 @@ function TaskRow({
 
 // ---------------------------------------------------------------- Stav
 
-function TaskList({ rows, openSessionsByNode, onOpenSessionChat }: Props) {
+function TaskList({ rows, openSessionsByNode, activeSessionId, onOpenSessionChat }: Props) {
   const byGroup = new Map<TaskGroupKey, { node: WorkspaceNodeRow; task: SessionSummary }[]>();
   for (const node of rows) {
     for (const task of openSessionsByNode[node.id] ?? []) {
@@ -406,7 +424,10 @@ function TaskList({ rows, openSessionsByNode, onOpenSessionChat }: Props) {
                   <Button
                     variant="ghost"
                     onClick={() => onOpenSessionChat(node.id, task.id)}
-                    className="h-auto w-full min-w-0 flex-col items-stretch gap-0.5 px-2.5 py-1.5 text-left font-normal hover:bg-[var(--color-surface-2)]"
+                    aria-current={task.id === activeSessionId ? "true" : undefined}
+                    className={`h-auto w-full min-w-0 flex-col items-stretch gap-0.5 px-2.5 py-1.5 text-left font-normal hover:bg-[var(--color-surface-2)] ${
+                      task.id === activeSessionId ? "bg-[var(--color-surface-2)]" : ""
+                    }`}
                   >
                     <span className="truncate text-[13px] font-medium text-[var(--color-text)]">{task.name}</span>
                     <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-[var(--color-text-dim)]">

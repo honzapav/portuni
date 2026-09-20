@@ -168,6 +168,9 @@ class FakeCentral implements CentralClient {
 
   // Configurable per test: which neighbour ids central reports for a node.
   neighbours: string[] = [];
+  async nodeOrganizationId(_nodeId: string): Promise<string | null> {
+    return null;
+  }
   async nodeNeighbours(_nodeId: string): Promise<string[]> {
     return this.neighbours;
   }

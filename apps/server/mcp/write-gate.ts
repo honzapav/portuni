@@ -58,6 +58,7 @@ export async function guardNodeWrite(
   const outcome = guardWrite(writeContextFromScope(scope), nodeId);
   if (outcome.kind === "allow") return { kind: "ok" };
   let elicitationSupported: boolean | undefined;
+  let dialogTimedOut = false;
   if (outcome.kind === "elicit" && elicitor !== undefined) {
     // The dialog gets the node's name and type; the agent-facing hint, with
     // its expand_scope instructions, goes to the structured error below. The
@@ -76,7 +77,11 @@ export async function guardNodeWrite(
     // the agent at portuni_expand_scope(writable: true), which is refused
     // on exactly such a client -- writeGuardError swaps in an honest hint
     // and flags the payload (elicitation_supported: false) instead.
+    // "timeout" = the dialog was shown and nobody answered before the hop's
+    // deadline (#409): the client CAN show dialogs, so the expand_scope
+    // path stays valid -- only the wording changes.
     elicitationSupported = dialogOutcome !== "unsupported";
+    dialogTimedOut = dialogOutcome === "timeout";
   }
   return {
     kind: "error",
@@ -85,7 +90,10 @@ export async function guardNodeWrite(
         {
           type: "text",
           text: JSON.stringify(
-            writeGuardError(nodeId, outcome.kind, outcome.agentHint, { elicitationSupported }),
+            writeGuardError(nodeId, outcome.kind, outcome.agentHint, {
+              elicitationSupported,
+              dialogTimedOut,
+            }),
           ),
         },
       ],

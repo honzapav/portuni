@@ -454,6 +454,146 @@ describe("Claude adapter: message translation", () => {
   });
 });
 
+describe("Claude adapter: a provider limit/error ends the run (#411)", () => {
+  // Collects the run's events and exposes a promise that settles on the
+  // run_ended -- the run's own signal, so no test here waits a fixed time
+  // for the teardown that produces it.
+  function collector() {
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    let resolveEnded: () => void = () => undefined;
+    const ended = new Promise<void>((resolve) => {
+      resolveEnded = resolve;
+    });
+    return {
+      events,
+      ended,
+      sink(e: CanonicalEvent | DeltaFrame): void {
+        events.push(e);
+        if ("kind" in e && e.kind === "run_ended") resolveEnded();
+      },
+    };
+  }
+
+  function resultMessage(overrides: Record<string, unknown>): SDKMessage {
+    return {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      stop_reason: null,
+      total_cost_usd: 0.01,
+      usage: { input_tokens: 1, output_tokens: 2 },
+      modelUsage: {},
+      permission_denials: [],
+      duration_ms: 1,
+      duration_api_ms: 1,
+      uuid: "u1",
+      session_id: "s1",
+      ...overrides,
+    } as unknown as SDKMessage;
+  }
+
+  function runEndedEvents(events: (CanonicalEvent | DeltaFrame)[]) {
+    return events.filter((e) => "kind" in e && e.kind === "run_ended") as Extract<
+      CanonicalEvent,
+      { kind: "run_ended" }
+    >[];
+  }
+
+  it("a spend-limit result (is_error, subtype success) ends the run with reason limit", async () => {
+    const script: SDKMessage[] = [
+      resultMessage({
+        is_error: true,
+        result: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+      }),
+    ];
+    // hold: true -- the real CLI stays alive waiting for the next prompt
+    // after the failing result, which is exactly what left the run live
+    // forever before this fix.
+    const { query, release } = makeFakeQuery(script, { hold: true });
+    const c = collector();
+    const adapter = createClaudeAdapter({
+      query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart(), c.sink);
+    await c.ended;
+
+    const errors = c.events.filter((e) => "kind" in e && e.kind === "error") as Extract<
+      CanonicalEvent,
+      { kind: "error" }
+    >[];
+    assert.equal(errors.length, 1, "exactly one error event");
+    assert.equal(errors[0].payload.class, "provider");
+    assert.match(errors[0].payload.message, /spend limit/);
+
+    const ends = runEndedEvents(c.events);
+    assert.equal(ends.length, 1, "exactly one run_ended");
+    assert.equal(ends[0].payload.reason, "limit");
+
+    // close() resolves rather than waiting out a run that already ended.
+    await handle.close();
+    release();
+  });
+
+  it("an error subtype joins its errors array into the provider message and ends with reason error", async () => {
+    const script: SDKMessage[] = [
+      resultMessage({ subtype: "error_during_execution", is_error: true, errors: ["a", "b"] }),
+    ];
+    const { query } = makeFakeQuery(script);
+    const c = collector();
+    const adapter = createClaudeAdapter({ query, closePollIntervalMs: 5, closeGraceMs: 10, closeTimeoutMs: 10 });
+    const handle = await adapter.start(makeRunStart(), c.sink);
+    await c.ended;
+
+    const errors = c.events.filter((e) => "kind" in e && e.kind === "error") as Extract<
+      CanonicalEvent,
+      { kind: "error" }
+    >[];
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].payload.class, "provider");
+    assert.equal(errors[0].payload.message, "a\nb");
+
+    const ends = runEndedEvents(c.events);
+    assert.equal(ends.length, 1);
+    assert.equal(ends[0].payload.reason, "error");
+    await handle.close();
+  });
+
+  it("an iterator that ends on its own after the failing result still emits exactly one run_ended", async () => {
+    const script: SDKMessage[] = [
+      resultMessage({ is_error: true, result: "You've hit your monthly spend limit" }),
+    ];
+    const { query, release } = makeFakeQuery(script, { hold: true });
+    const c = collector();
+    const adapter = createClaudeAdapter({
+      query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 50,
+      closeTermMs: 50,
+      closeTimeoutMs: 50,
+    });
+    const handle = await adapter.start(makeRunStart(), c.sink);
+    // The SDK ends the iterator itself, racing the teardown the failing
+    // result started: both paths lead to a run end, only one may report it.
+    release();
+    await c.ended;
+    await handle.close();
+    await flushMicrotasks();
+
+    assert.equal(runEndedEvents(c.events).length, 1, "exactly one run_ended");
+    assert.equal(runEndedEvents(c.events)[0].payload.reason, "limit");
+    assert.equal(
+      c.events.filter((e) => "kind" in e && e.kind === "error").length,
+      1,
+      "exactly one error event",
+    );
+  });
+});
+
 describe("Claude adapter: canUseTool", () => {
   it("a tier-1 write is allowed without a question", async () => {
     const { query, options } = makeFakeQuery([]);

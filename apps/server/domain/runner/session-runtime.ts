@@ -49,22 +49,24 @@ import type {
 // instance for it, if one is set.
 export class NoRunnerAvailableError extends Error {}
 
-// session_scope's own graceful-degrade comment above explains why this is
-// wrapped in try/catch the same way: edges/nodes are graph-db tables that
-// simply do not exist in agent mode (no local graph db there), so this
-// resolves to "no organization" rather than failing the whole promotion.
-async function resolveNodeOrgId(nodeId: string): Promise<string | null> {
-  try {
-    const db = getDb();
-    const res = await db.execute({
-      sql: `SELECT e.target_id FROM edges e JOIN nodes n ON n.id = e.target_id
-            WHERE e.source_id = ? AND e.relation = 'belongs_to' AND n.type = 'organization' LIMIT 1`,
-      args: [nodeId],
-    });
-    return res.rows.length > 0 ? String(res.rows[0].target_id) : null;
-  } catch {
-    return null;
-  }
+// Resolves the node's organization -- the key the runner instance's
+// org_defaults are looked up under. Local mode reads the belongs_to edge
+// straight off the graph db; agent mode has no graph db at all, so
+// createAgentSessionRuntime injects the central-backed implementation
+// (#407) instead of silently resolving every node to "no organization".
+// Rejecting is how a failed lookup is reported: resolveTaskDefaults tells
+// a genuine null (the node has no organization) from an error, which is
+// what the warning below is about.
+export type ResolveNodeOrgId = (nodeId: string) => Promise<string | null>;
+
+async function resolveNodeOrgIdLocal(nodeId: string): Promise<string | null> {
+  const db = getDb();
+  const res = await db.execute({
+    sql: `SELECT e.target_id FROM edges e JOIN nodes n ON n.id = e.target_id
+          WHERE e.source_id = ? AND e.relation = 'belongs_to' AND n.type = 'organization' LIMIT 1`,
+    args: [nodeId],
+  });
+  return res.rows.length > 0 ? String(res.rows[0].target_id) : null;
 }
 
 // #375: first match wins -- the thread's own value, then the runner
@@ -81,15 +83,36 @@ export function resolveModelAndEffort(
   };
 }
 
-async function resolveTaskDefaults(nodeId: string): Promise<{ runner: string; instanceId: string | null }> {
+async function resolveTaskDefaults(
+  nodeId: string,
+  resolveNodeOrgId: ResolveNodeOrgId,
+): Promise<{ runner: string; instanceId: string | null }> {
   const detections = await detectAll();
   const usable = detections.find((d) => d.availability.installed && d.availability.logged_in);
   if (!usable) {
     throw new NoRunnerAvailableError("no runner is installed and logged in on this device");
   }
-  const orgId = await resolveNodeOrgId(nodeId);
   const instances = await listInstances();
   const forRunner = instances.filter((i) => i.runner === usable.id);
+
+  let orgId: string | null = null;
+  let failure: string | null = null;
+  try {
+    orgId = await resolveNodeOrgId(nodeId);
+  } catch (err) {
+    // A resolver error degrades to "no organization" -- it never fails the
+    // promotion. It is only worth a line in the log when the fallback is
+    // actually visible to the user: more than one instance to choose from
+    // for this runner, and an organization default configured somewhere.
+    failure = err instanceof Error ? err.message : String(err);
+  }
+  if (failure !== null && forRunner.length >= 2 && forRunner.some((i) => i.org_defaults.length > 0)) {
+    console.warn(
+      `[portuni:runner] node ${nodeId}: could not resolve its organization (${failure}) - ` +
+        `falling back to the runner's own default instance`,
+    );
+  }
+
   const orgDefault = orgId ? forRunner.find((i) => i.org_defaults.includes(orgId)) : undefined;
   return { runner: usable.id, instanceId: orgDefault?.id ?? null };
 }
@@ -117,6 +140,12 @@ export interface CreateSessionRuntimeDeps {
   // domain/runner/suspend-fallback-central.ts's version instead, since
   // agent mode has no graph db to write against.
   suspendFallback?: (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null>;
+  // #407: how a node's organization is resolved when a draft's first
+  // message picks the organization's default runner instance. Defaults to
+  // the local graph-db query; createAgentSessionRuntime supplies the
+  // central-backed one (CentralClient.nodeOrganizationId), since agent
+  // mode has no graph db and would otherwise never apply an org default.
+  resolveNodeOrgId?: ResolveNodeOrgId;
 }
 
 export interface StartTaskInput {
@@ -226,6 +255,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   const { store, registry, provision } = deps;
   const suspendFallback =
     deps.suspendFallback ?? ((sessionId: string, reason: ServerHandoffReason) => suspendSessionServerSide(getDb(), sessionId, reason));
+  const resolveNodeOrgId = deps.resolveNodeOrgId ?? resolveNodeOrgIdLocal;
 
   const liveRuns = new Map<string, LiveRun>();
   // The still-open question for a session, keyed by session id -- captured
@@ -582,7 +612,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     if (session.state !== "draft") throw new Error(`sendMessage: session ${sessionId} has no live run`);
     if (!session.node_id) throw new Error(`sendMessage: draft session ${sessionId} has no anchor node`);
 
-    const { runner, instanceId } = await resolveTaskDefaults(session.node_id);
+    const { runner, instanceId } = await resolveTaskDefaults(session.node_id, resolveNodeOrgId);
     const updated = await store.patchSession(sessionId, {
       state: "running",
       brief: text,

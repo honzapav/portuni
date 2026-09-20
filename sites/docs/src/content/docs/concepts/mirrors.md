@@ -165,6 +165,19 @@ only gets reconciled by an actual sync run. Moves
 and renames leave their own tombstone, so a device that missed one cleans
 up the stale copy at the old path instead of pushing it back.
 
+**On a team (central mode), the remote side is maintained state too.** The
+central server watches each remote's own change feed and keeps the file
+records current — a file a teammate adds, edits or deletes on Drive is
+registered, re-hashed or tombstoned within about a minute, without anyone
+running a sync. Your device then reads it as "ke stažení": the *bytes*
+still arrive only through a deliberate sync, exactly as the mirror watcher
+registers local files but never pushes them. The sidebar shows „Nové na
+remote: N uzlů" when a node you mirror has such records, and Nastavení ›
+Synchronizace shows one line per remote with what the watcher last saw
+(and its error, if it is failing). A local workspace has no remote, so
+neither appears there; a backend without a change feed (a plain filesystem
+remote) is covered by the periodic full sweep instead.
+
 Two situations need a human decision, and the sync run never guesses:
 a **conflict** (both sides changed) and a **deleted_local** file (removed
 locally, still on the remote). The file row in the app shows the choice —

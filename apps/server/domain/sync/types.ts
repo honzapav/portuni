@@ -37,6 +37,32 @@ export const SEARCH_SNIPPET_MAX_CHARS = 200;
 export const SEARCH_HITS_DEFAULT_LIMIT = 20;
 export const SEARCH_HITS_MAX_LIMIT = 50;
 
+// One observed change on the remote, as reported by a backend's change feed
+// (Drive's Changes API). The watcher (domain/sync/remote-watcher.ts) turns
+// these into the same adopt / hash-refresh / delete + tombstone operations a
+// full remoteSweep would apply -- see
+// docs/superpowers/specs/2026-09-12-remote-watcher-design.md.
+//
+// `path` is relative to the remote root, in exactly the form list() reports,
+// so it joins on files.remote_path. A remove carries a null path when the
+// backend no longer knows where the object was (Drive reports a hard delete
+// with no file metadata at all); the file id is always there.
+export type RemoteChange =
+  | { kind: "upsert"; path: string; hash: string | null; modified_at: Date; is_folder: boolean }
+  | { kind: "remove"; path: string | null; file_id: string };
+
+export interface RemoteChanges {
+  // The cursor to hand back on the next call. Persist it only once every
+  // change in this batch has been applied -- a replayed batch is idempotent,
+  // a skipped one is lost.
+  cursor: string;
+  changes: RemoteChange[];
+  // The cursor handed in was invalid or expired; nothing in `changes` is a
+  // complete account of what happened. The caller must run a full sweep and
+  // start again from `cursor`.
+  reset: boolean;
+}
+
 export interface FileAdapter {
   put(path: string, content: Buffer, opts?: { mimeType?: string }): Promise<FileRef>;
   get(path: string): Promise<Buffer>;
@@ -60,6 +86,12 @@ export interface FileAdapter {
   // enough to grep, like fs) implement it; callers skip the others. Returns
   // at most `opts.limit` hits whose path resolves under the remote root.
   search?(query: string, opts?: { limit?: number }): Promise<SearchHit[]>;
+  // Incremental change feed. Optional: only backends with one implement it
+  // (Drive), everything else is kept current by the full sweep alone (spec
+  // rule 3). `cursor` null means "no cursor yet": the backend answers with a
+  // fresh start cursor and no changes, and the caller baselines with a full
+  // sweep.
+  changes?(cursor: string | null): Promise<RemoteChanges>;
 }
 
 export interface RemoteConfig {

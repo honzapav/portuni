@@ -11,12 +11,20 @@ import type {
   RunnerAdapter,
   RunnerAvailability,
   RunnerModel,
+  RunEndReason,
 } from "../types.js";
 
-// A step is either a canonical event/delta to emit, or a pause: the script
-// blocks until the returned RunHandle's send()/answer() is called (whichever
-// kind the step names), simulating a run genuinely waiting on input.
-export type FakeScriptStep = CanonicalEvent | DeltaFrame | { wait: "message" | "answer" };
+// A step is either a canonical event/delta to emit, a pause (the script
+// blocks until the returned RunHandle's send()/answer() is called, whichever
+// kind the step names, simulating a run genuinely waiting on input), or an
+// explicit end: the run stops there with that reason, the way a real
+// adapter reports a provider limit/error (#411) instead of the "completed"
+// a script running to its end reports.
+export type FakeScriptStep =
+  | CanonicalEvent
+  | DeltaFrame
+  | { wait: "message" | "answer" }
+  | { end: RunEndReason };
 
 export interface FakeRunnerAdapterOptions {
   script: readonly FakeScriptStep[];
@@ -29,6 +37,10 @@ export interface FakeRunnerAdapterOptions {
 
 function isWaitStep(step: FakeScriptStep): step is { wait: "message" | "answer" } {
   return "wait" in step;
+}
+
+function isEndStep(step: FakeScriptStep): step is { end: RunEndReason } {
+  return "end" in step;
 }
 
 export class FakeRunnerAdapter implements RunnerAdapter {
@@ -73,7 +85,7 @@ export class FakeRunnerAdapter implements RunnerAdapter {
     let waitingFor: "message" | "answer" | null = null;
     let resumeWaiting: (() => void) | null = null;
 
-    const emitEnded = (reason: "completed" | "interrupted") => {
+    const emitEnded = (reason: RunEndReason) => {
       if (ended) return;
       ended = true;
       sink({ kind: "run_ended", payload: { run_id: run.runId, reason, usage: null } });
@@ -86,6 +98,10 @@ export class FakeRunnerAdapter implements RunnerAdapter {
     const playScript = async () => {
       for (const step of this.script) {
         if (stopped) return;
+        if (isEndStep(step)) {
+          emitEnded(step.end);
+          return;
+        }
         if (isWaitStep(step)) {
           waitingFor = step.wait;
           await new Promise<void>((resolve) => {

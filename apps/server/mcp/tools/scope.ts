@@ -257,7 +257,9 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
               reason:
                 outcome === "unsupported"
                   ? "This client does not support MCP elicitation dialogs; write-scope expansion has no honor-system fallback."
-                  : "The user declined the write-access confirmation dialog.",
+                  : outcome === "timeout"
+                    ? "The write-access confirmation dialog was not answered in time; ask the user and retry."
+                    : "The user declined the write-access confirmation dialog.",
             });
             continue;
           }

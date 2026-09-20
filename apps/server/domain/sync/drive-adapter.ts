@@ -1,4 +1,4 @@
-import type { FileAdapter, FileRef, RemoteConfig, DeviceTokens, SearchHit } from "./types.js";
+import type { FileAdapter, FileRef, RemoteConfig, DeviceTokens, SearchHit, RemoteChange, RemoteChanges } from "./types.js";
 import { parseDriveConfig, parseServiceAccountJson, assertSaDriveConfig, type ServiceAccountKey, type DriveConfig } from "./drive-config.js";
 import { getDriveAccessToken, __setTokenFetchForTests } from "./drive-sa-auth.js";
 import { detectNativeFormat, EXPORT_MIME } from "./native-format.js";
@@ -16,6 +16,13 @@ const SNIPPET_FETCH_MAX_CHARS = 65_536;
 // concurrency cap parallelizes them without hammering the Drive API quota
 // the way an unbounded Promise.all over the whole page would.
 const SNIPPET_FETCH_CONCURRENCY = 5;
+
+// Pages of the Changes API one changes() call walks before handing the
+// unconsumed page token back as the cursor. A tick that finds 5 000 changes
+// (a bulk upload, a first run after a long downtime) applies what it has and
+// resumes from the same place on the next call instead of paging unbounded
+// inside one tick.
+const CHANGES_MAX_PAGES = 50;
 
 // Bounded-concurrency map: workers pull from a shared index, results land in
 // the same positions as the inputs. Mirrors engine.ts's mapWithConcurrency
@@ -64,6 +71,10 @@ export function __setDriveFetchForTests(f: typeof fetch): void {
   });
 }
 
+// One entry of a Drive changes.list page. `file` is absent on a hard
+// delete and on drive-level changes.
+interface DriveChangeItem { fileId?: string; removed?: boolean; file?: DriveFile; }
+
 interface DriveFile { id: string; name: string; mimeType: string; parents?: string[]; size?: string; md5Checksum?: string; modifiedTime?: string; createdTime?: string; trashed?: boolean; }
 
 export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): FileAdapter {
@@ -92,6 +103,11 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
   const warnedDuplicates = new Set<string>();
 
   function invalidatePrefix(prefix: string): void {
+    // The ancestor memo is keyed by id, not by path, so there is nothing to
+    // narrow a prefix against: drop it whole. It is rebuilt one files.get per
+    // distinct ancestor, and every caller of this function has just changed
+    // the tree.
+    folderMemo.clear();
     if (prefix === "") {
       pathCache.clear();
       pathCache.set("", driveRoot);
@@ -176,6 +192,52 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
     const pinned = pathCache.get(walked);
     if (pinned === undefined) return [];
     return [pinned, ...(alternates.get(walked) ?? [])];
+  }
+
+  // Ancestor cache for the reverse direction of pathCache: folder id ->
+  // { name, parent }, so a flat Drive file object (a search hit, a Changes
+  // API entry) can be turned back into a path relative to driveRoot without
+  // walking to the root over the network every time. A null entry marks an
+  // id whose ancestry is unreachable from here (deleted, or not readable by
+  // this account) so it is not re-fetched on every hit.
+  //
+  // Invalidated wholesale by invalidatePrefix: this adapter's own writes are
+  // the only local source of staleness, and they already go through it.
+  const folderMemo = new Map<string, { name: string; parent: string | null } | null>();
+
+  async function folderInfo(id: string): Promise<{ name: string; parent: string | null } | null> {
+    if (folderMemo.has(id)) return folderMemo.get(id)!;
+    const params = withSAD(new URLSearchParams({ fields: "id,name,parents" }));
+    const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, { headers: await authHeaders() });
+    let info: { name: string; parent: string | null } | null;
+    if (res.status === 404) {
+      info = null;
+    } else if (!res.ok) {
+      throw new Error(`Drive get: ${res.status} ${await res.text()}`);
+    } else {
+      const f = (await res.json()) as DriveFile;
+      info = { name: f.name, parent: f.parents?.[0] ?? null };
+    }
+    folderMemo.set(id, info);
+    return info;
+  }
+
+  // Path of `f` relative to driveRoot, or null when its ancestry does not
+  // reach driveRoot (a loose file elsewhere on the drive, or one under a
+  // folder this account cannot read). Bounded so a cyclic/corrupt parent
+  // chain cannot spin forever.
+  async function pathFor(f: DriveFile): Promise<string | null> {
+    const segments: string[] = [f.name];
+    let cursor = f.parents?.[0] ?? null;
+    for (let depth = 0; depth < 64; depth++) {
+      if (cursor === null) return null;
+      if (cursor === driveRoot) return segments.reverse().join("/");
+      const info = await folderInfo(cursor);
+      if (!info) return null;
+      segments.push(info.name);
+      cursor = info.parent;
+    }
+    return null;
   }
 
   async function resolvePathToFileId(path: string): Promise<string | null> {
@@ -524,41 +586,6 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
     async search(query, opts) {
       const limit = Math.max(1, opts?.limit ?? 20);
       const q = `fullText contains '${escapeQ(query)}' and trashed = false`;
-      // Ancestor memo: folder id -> { name, parent } (parent null = top of
-      // the tree without reaching driveRoot, i.e. unreachable).
-      const folderMemo = new Map<string, { name: string; parent: string | null } | null>();
-      async function folderInfo(id: string): Promise<{ name: string; parent: string | null } | null> {
-        if (folderMemo.has(id)) return folderMemo.get(id)!;
-        const params = withSAD(new URLSearchParams({ fields: "id,name,parents" }));
-        const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, { headers: await authHeaders() });
-        let info: { name: string; parent: string | null } | null;
-        if (res.status === 404) {
-          info = null;
-        } else if (!res.ok) {
-          throw new Error(`Drive get: ${res.status} ${await res.text()}`);
-        } else {
-          const f = (await res.json()) as DriveFile;
-          info = { name: f.name, parent: f.parents?.[0] ?? null };
-        }
-        folderMemo.set(id, info);
-        return info;
-      }
-      // Path of a hit relative to driveRoot, or null when its ancestry does
-      // not reach driveRoot. Bounded so a cyclic/corrupt parent chain cannot
-      // spin forever.
-      async function pathFor(f: DriveFile): Promise<string | null> {
-        const segments: string[] = [f.name];
-        let cursor = f.parents?.[0] ?? null;
-        for (let depth = 0; depth < 64; depth++) {
-          if (cursor === null) return null;
-          if (cursor === driveRoot) return segments.reverse().join("/");
-          const info = await folderInfo(cursor);
-          if (!info) return null;
-          segments.push(info.name);
-          cursor = info.parent;
-        }
-        return null;
-      }
       // Bounded prefix of a hit's content to search for the match in --
       // large enough to catch a match near the top of most notes/docs,
       // small enough that a hundred hits stays a cheap round trip each,
@@ -651,6 +678,110 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         // into an unbounded crawl looking for ones under our root.
       } while (pageToken && examined < 500);
       return out;
+    },
+
+    // Incremental change feed over Drive's Changes API. Reports what changed
+    // anywhere on the drive since `cursor`; everything whose ancestry does
+    // not reach driveRoot is dropped here, so a caller only ever sees paths
+    // that join on files.remote_path. `cursor` null answers with a fresh
+    // start page token and no changes -- the caller baselines with a full
+    // sweep (spec: docs/superpowers/specs/2026-09-12-remote-watcher-design.md).
+    async changes(cursor): Promise<RemoteChanges> {
+      const changesParams = (extra: Record<string, string>): URLSearchParams => {
+        const params = withSAD(new URLSearchParams(extra));
+        // changes.list/getStartPageToken take driveId directly; `corpora`
+        // (what withCorpora adds for files.list) is not a parameter here and
+        // Drive rejects the request outright with it.
+        if (cfg.shared_drive_id) params.set("driveId", cfg.shared_drive_id);
+        return params;
+      };
+
+      const startPageToken = async (): Promise<string> => {
+        const res = await driveFetch(
+          `${DRIVE_API}/changes/startPageToken?${changesParams({}).toString()}`,
+          { headers: await authHeaders() },
+        );
+        if (!res.ok) throw new Error(`Drive changes start token: ${res.status} ${await res.text()}`);
+        const b = (await res.json()) as { startPageToken?: string };
+        if (!b.startPageToken) throw new Error("Drive changes start token: response carried no startPageToken");
+        return b.startPageToken;
+      };
+
+      if (cursor === null) return { cursor: await startPageToken(), changes: [], reset: false };
+
+      // A folder in a change batch is the one thing that can make the
+      // ancestor memo wrong: the change itself carries the folder's current
+      // name and parent, so refresh the entry from it instead of dropping
+      // the whole memo and re-walking every ancestor over the network.
+      const rememberFolder = (f: DriveFile): void => {
+        folderMemo.set(f.id, { name: f.name, parent: f.parents?.[0] ?? null });
+      };
+
+      const toRemoteChange = async (c: DriveChangeItem): Promise<RemoteChange | null> => {
+        const fileId = c.fileId ?? c.file?.id;
+        if (!fileId) return null; // a drive-level change, not a file
+        const f = c.file;
+        // A hard delete carries no file metadata at all; a trash carries it
+        // with trashed = true. Both are a remove.
+        if (c.removed === true || f === undefined || f.trashed === true) {
+          if (f !== undefined && isFolder(f)) folderMemo.delete(fileId);
+          const path = f !== undefined ? await pathFor(f) : null;
+          return { kind: "remove", path, file_id: fileId };
+        }
+        const folder = isFolder(f);
+        if (folder) rememberFolder(f);
+        const path = await pathFor(f);
+        if (path === null) return null; // outside driveRoot: not ours
+        return {
+          kind: "upsert",
+          path,
+          hash: f.md5Checksum ?? null,
+          modified_at: f.modifiedTime ? new Date(f.modifiedTime) : new Date(0),
+          is_folder: folder,
+        };
+      };
+
+      const out: RemoteChange[] = [];
+      let pageToken: string | null = cursor;
+      let nextCursor: string | null = null;
+      for (let page = 0; page < CHANGES_MAX_PAGES && pageToken !== null; page++) {
+        const params = changesParams({
+          pageToken,
+          pageSize: "100",
+          includeItemsFromAllDrives: "true",
+          includeRemoved: "true",
+          fields: "newStartPageToken,nextPageToken,changes(fileId,removed,file(id,name,mimeType,parents,md5Checksum,modifiedTime,trashed))",
+        });
+        const res = await driveFetch(`${DRIVE_API}/changes?${params.toString()}`, { headers: await authHeaders() });
+        // Drive answers an expired or otherwise invalid page token with 410
+        // (and 404 for one it has never seen). Nothing in this batch is a
+        // complete account of what happened: hand back a fresh start token
+        // and let the caller full-sweep.
+        if (res.status === 410 || res.status === 404) {
+          return { cursor: await startPageToken(), changes: [], reset: true };
+        }
+        if (!res.ok) throw new Error(`Drive changes: ${res.status} ${await res.text()}`);
+        const b = (await res.json()) as {
+          changes?: DriveChangeItem[];
+          nextPageToken?: string;
+          newStartPageToken?: string;
+        };
+        // Sequential on purpose: the ancestor memo turns a whole page under
+        // one node folder into a single files.get, which only holds when the
+        // entries are resolved one after another.
+        for (const c of b.changes ?? []) {
+          const change = await toRemoteChange(c);
+          if (change) out.push(change);
+        }
+        if (b.nextPageToken) {
+          pageToken = b.nextPageToken;
+          nextCursor = b.nextPageToken; // resume here if the page cap hits
+          continue;
+        }
+        nextCursor = b.newStartPageToken ?? pageToken;
+        pageToken = null;
+      }
+      return { cursor: nextCursor ?? cursor, changes: out, reset: false };
     },
   };
 

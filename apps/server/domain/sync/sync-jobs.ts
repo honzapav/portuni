@@ -18,6 +18,7 @@
 // larger investment than this fix set out to make.
 
 import { ulid } from "ulid";
+import { withPathLock } from "./path-lock.js";
 import type { SyncJobNode, SyncJobSummary, SyncRunResponse } from "../../shared/api-types.js";
 
 const JOB_CONCURRENCY = Math.max(1, Number(process.env.PORTUNI_SYNC_JOB_CONCURRENCY ?? 3));
@@ -33,6 +34,17 @@ interface SyncJob {
   started_at: string;
   finished_at: string | null;
   nodes: SyncJobNode[];
+}
+
+// Serializes every job's per-node work, across jobs and across users: the
+// remote watcher's catch-up sweep (#338) runs through this same pool under
+// its own identity, and a catch-up must never overlap a user-triggered sync
+// of the same node -- the later one waits. path-lock's keyed mutex is
+// exactly that primitive; the key namespace is disjoint from the local
+// paths and `<remote>:<remote_path>` keys the sync engine itself locks on,
+// so a run taking this lock and then a path lock inside cannot deadlock.
+export function withNodeSyncLock<T>(nodeId: string, fn: () => Promise<T>): Promise<T> {
+  return withPathLock(`sync-node:${nodeId}`, fn);
 }
 
 const jobs = new Map<string, SyncJob>();
@@ -105,7 +117,7 @@ async function runJob(job: SyncJob, runNode: (nodeId: string) => Promise<SyncRun
       const n = job.nodes[i];
       n.status = "running";
       try {
-        n.result = await runNode(n.node_id);
+        n.result = await withNodeSyncLock(n.node_id, () => runNode(n.node_id));
         n.status = "done";
       } catch (e) {
         n.status = "error";

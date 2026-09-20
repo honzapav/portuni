@@ -52,6 +52,8 @@ Requires `admin` scope, same tier as deleting any other entity in this API (acto
 
 Body: `{ org_id: string }`. Sets this instance as the given organization's default — membership is exclusive, so the org is removed from every other instance's `org_defaults` first. Requires `write` scope; 404 for an unknown instance id.
 
+The default is applied when a thread is promoted by its first message (there is no instance picker before then): the server resolves the node's organization and, if that organization has a default instance for the runner it picked, the run starts on it. This works in both data modes — a local workspace reads the node's `belongs_to` edge from its own graph db, and a central-mode device asks the central server for it (`GET /nodes/:id`). When the organization cannot be resolved at all, the run falls back to the runner's own default account and the sidecar logs one line saying so.
+
 ### DELETE /runners/org-defaults/:orgId
 
 Clears the given organization's default instance (no instance is the default for it afterwards). Requires `write` scope.

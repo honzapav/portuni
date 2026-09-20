@@ -6,10 +6,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GraphNode } from "../types";
 import { foldForSearch } from "../lib/normalize";
+import { groupNodesByType } from "../lib/node-search";
 import {
   Command,
   CommandDialog,
   CommandEmpty,
+  CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
@@ -59,6 +61,31 @@ export default function NodeCommandPalette({
   }, [open, onQueryChange]);
 
   const matches = useMemo(() => filterNodes(nodes, text), [nodes, text]);
+  // Grouped by node type once the list is long enough to be worth scanning
+  // in sections; a short one stays flat (lib/node-search.ts).
+  const groups = useMemo(() => groupNodesByType(matches), [matches]);
+
+  const row = (n: GraphNode) => (
+    <CommandItem
+      key={n.id}
+      value={n.id}
+      className="gap-3 px-4 py-2.5"
+      onSelect={() => {
+        onPick(n.id);
+        onOpenChange(false);
+      }}
+    >
+      <span
+        className="inline-block size-2 shrink-0 rounded-full"
+        style={{ background: nodeTypeVar(n.type) }}
+        aria-hidden
+      />
+      <span className="min-w-0 flex-1 truncate">{n.name}</span>
+      <span className="ml-auto shrink-0 rounded-md border border-border px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+        {n.type}
+      </span>
+    </CommandItem>
+  );
 
   return (
     <CommandDialog
@@ -66,8 +93,9 @@ export default function NodeCommandPalette({
       onOpenChange={onOpenChange}
       title="Hledat uzel"
       description="Napiš název uzlu a potvrď Enterem."
+      className="sm:max-w-[640px]"
     >
-      <Command shouldFilter={false}>
+      <Command shouldFilter={false} className="p-0">
         <CommandInput
           placeholder="Hledat uzel…"
           value={text}
@@ -75,27 +103,23 @@ export default function NodeCommandPalette({
             setText(v);
             onQueryChange?.(v);
           }}
+          // The wrapper owns the search header's height, padding and the
+          // divider that keeps the field off the first row.
+          wrapperClassName="flex h-12 items-center border-b border-border px-4 py-0"
         />
-        <CommandList>
-          <CommandEmpty>Žádné výsledky</CommandEmpty>
-          {matches.map((n) => (
-            <CommandItem
-              key={n.id}
-              value={n.id}
-              onSelect={() => {
-                onPick(n.id);
-                onOpenChange(false);
-              }}
-            >
-              <span
-                className="inline-block size-2 shrink-0 rounded-full"
-                style={{ background: nodeTypeVar(n.type) }}
-                aria-hidden
-              />
-              <span className="min-w-0 flex-1 truncate">{n.name}</span>
-              <span className="font-mono text-xs text-muted-foreground">{n.type}</span>
-            </CommandItem>
-          ))}
+        <CommandList className="py-2">
+          <CommandEmpty className="px-4 py-6">Žádný uzel</CommandEmpty>
+          {groups
+            ? groups.map((g) => (
+                <CommandGroup
+                  key={g.type}
+                  heading={g.label}
+                  className="p-0 **:[[cmdk-group-heading]]:px-4 **:[[cmdk-group-heading]]:py-1.5"
+                >
+                  {g.nodes.map(row)}
+                </CommandGroup>
+              ))
+            : matches.map(row)}
         </CommandList>
       </Command>
     </CommandDialog>

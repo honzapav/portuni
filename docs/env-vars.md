@@ -39,6 +39,7 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_MAX_SESSIONS` | ditto | Concurrent MCP session cap |
 | `PORTUNI_URL` | derived | Server URL override used in materialized scope configs |
 | `PORTUNI_GUARD_SCRIPT` | `scripts/portuni-guard.sh` | Guard hook path written into mirror settings |
+| `PORTUNI_ELICIT_TIMEOUT_MS` | `240000` (4 min) | How long a scope/write confirmation dialog waits for an answer (`apps/server/mcp/elicit.ts`). Deliberately below the tool-call deadlines clients enforce (claude.ai aborts at 300 s) -- an unanswered dialog comes back as a structured refusal, never a hang. The agent-mode front door's nested relay hop is derived from this (one minute shorter), never configured separately. A value that is not a positive integer is ignored with a warning. |
 
 ## Sync / desktop
 
@@ -50,6 +51,8 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_VARLOCK_WRITE_PROGRAM` / `_ARGS`, `PORTUNI_VARLOCK_DELETE_PROGRAM` / `_ARGS` | varlock CLI | Override commands the varlock token store shells out to |
 | `PORTUNI_STATUS_SCAN_CONCURRENCY` | 8 | statusScan per-file fan-out |
 | `PORTUNI_WATCH_MIRRORS` | on in sidecar, off standalone | Mirror watcher (`apps/server/domain/sync/mirror-watcher.ts`): registers new files and reconciles edits on disk so the UI's file status stays current without agent action. The desktop sidecar (`desktop.ts`) defaults ON; set `=0` to disable. The standalone server (`index.ts`) defaults OFF; set `=1` to enable (keep exactly one watcher per machine — both processes share `.portuni/sync.db`). Solo (env auth) only. |
+| `PORTUNI_REMOTE_WATCH_INTERVAL_MS` | `60000` | Remote watcher (`apps/server/boot/remote-watch.ts`, #338): how often each remote's change feed is polled. Central only (`PORTUNI_AUTH_MODE=google`); the loop never starts anywhere else. Also the base of the failure backoff (60 s → 2 → 4 → … capped at 1 h). A non-positive/non-integer value is ignored with one warning. |
+| `PORTUNI_REMOTE_SWEEP_INTERVAL_MS` | `21600000` (6 h) | Remote watcher: how often the full catch-up `remoteSweep` runs over every node routed to the remote, on top of the sweep at boot and after a change-feed `reset`. Central only. Same validation as above. |
 | `PORTUNI_WORKSPACE_ID` | unset | Desktop sidecar only; the workspace's unique ID as set in `config.json`. Unset in standalone mode. Determines which token env var name the scope materializer generates for per-mirror configs (e.g., `PORTUNI_MCP_TOKEN_<ID>` when set, plain `PORTUNI_MCP_TOKEN` when unset). |
 | `PORTUNI_MCP_TOKEN_<ID>` | unset | Per-workspace MCP token (sensitive), injected into spawned terminal sessions. `<ID>` matches the workspace ID (from `PORTUNI_WORKSPACE_ID`). Each enabled workspace gets its own token env var so mirrors can reference the right one via scope materialization. |
 | `PORTUNI_REMOTE_<NAME>__SERVICE_ACCOUNT_JSON` | unset | Per-remote Google Drive Service Account key (sensitive), read by the `varlock` token store (`token-store-varlock.ts`). `<NAME>` is the remote name upper-cased with `-` → `_`. **Required on the VPS for central-mode file content over the server** (the Drive-direct read/write in `file-content-remote.ts` resolves the adapter via this credential). Sibling fields: `__ACCESS_TOKEN`, `__REFRESH_TOKEN`, `__EXPIRES_AT`. |

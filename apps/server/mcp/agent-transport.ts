@@ -70,7 +70,7 @@ import {
   WRITE_SCOPE_WHY,
   type WriteContext,
 } from "../domain/write-gate.js";
-import { createElicitorFromServer, AGENT_RELAY_ELICIT_TIMEOUT_MS } from "./elicit.js";
+import { createElicitorFromServer, agentRelayElicitTimeoutMs } from "./elicit.js";
 import { CentralHttpError, type CentralClient } from "../domain/sync/central/client.js";
 import { spawnSessionIdFromHeader } from "../domain/sessions.js";
 import { readNodeFileOrPath, type RemoteRawFetch } from "../domain/read-node-file.js";
@@ -249,7 +249,7 @@ function buildAgentServer(
   // openUpstream() just advertised upstream (see extractDownstreamCapabilities).
   if (downstreamCapabilities?.elicitation) {
     upstream.setRequestHandler(ElicitRequestSchema, async (request) =>
-      server.elicitInput(request.params, { timeout: AGENT_RELAY_ELICIT_TIMEOUT_MS }),
+      server.elicitInput(request.params, { timeout: agentRelayElicitTimeoutMs() }),
     );
   }
 
@@ -289,6 +289,7 @@ function buildAgentServer(
         // prompt cannot name the node -- but it still must not show the
         // human the agent-facing expand_scope instructions.
         let elicitationSupported: boolean | undefined;
+        let dialogTimedOut = false;
         if (outcome.kind === "elicit") {
           const dialogOutcome = await elicitor.confirm(
             nodeConsentPrompt("write to", nodeId, { name: null, type: null }, WRITE_SCOPE_WHY),
@@ -302,13 +303,20 @@ function buildAgentServer(
           // call portuni_expand_scope(writable: true), which is refused
           // for it.
           elicitationSupported = dialogOutcome !== "unsupported";
+          // And the same timeout rule (#409): a dialog that went unanswered
+          // until this hop's deadline answers the agent with a retryable
+          // refusal instead of hanging past the client's tool-call timeout.
+          dialogTimedOut = dialogOutcome === "timeout";
         }
         return {
           content: [
             {
               type: "text",
               text: JSON.stringify(
-                writeGuardError(nodeId, outcome.kind, outcome.agentHint, { elicitationSupported }),
+                writeGuardError(nodeId, outcome.kind, outcome.agentHint, {
+                  elicitationSupported,
+                  dialogTimedOut,
+                }),
               ),
             },
           ],

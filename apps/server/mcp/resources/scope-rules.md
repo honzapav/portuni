@@ -115,6 +115,15 @@ so an agent talking to any client -- old or new -- sees a consistent
 contract either way. `headless` sessions never see a dialog, by
 session-type design, regardless of what the connected client declared.
 
+A dialog nobody answers is bounded: after four minutes
+(`PORTUNI_ELICIT_TIMEOUT_MS`, and one minute less for the agent-mode
+relay hop below) the tool answers with the same structured refusal as a
+decline, carrying `dialog_timed_out: true` and a hint saying the
+confirmation went unanswered. Nothing was changed; ask the user and
+retry. The deadline is deliberately shorter than the tool-call timeouts
+clients enforce (claude.ai aborts a tool call after five minutes), so a
+confirmation never turns into a hang.
+
 Agent-mode sessions (the desktop app's central-mode sidecar,
 `apps/server/mcp/agent-transport.ts`) proxy this transparently: the
 sidecar advertises the real connected client's declared capabilities
@@ -215,6 +224,11 @@ dialogs (Claude Code, the Portuni desktop app), or -- for new work --
 create the node from the chat, since connector-created nodes stay
 writable in that user's later connector sessions (see above). Do NOT
 retry `portuni_expand_scope` with `writable: true` after that payload.
+
+A payload carrying `dialog_timed_out: true` is the opposite case: the
+dialog was shown and simply went unanswered in time. Write access can
+still be granted -- ask the user, then retry the tool or call
+`portuni_expand_scope(..., writable: true)`.
 
 ```json
 { "error": "write_refused", "node_id": "...", "hint": "..." }

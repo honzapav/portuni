@@ -233,6 +233,17 @@ device's own mirror (mirrors are a per-device concept in every mode) and
 then patches the session record over the same REST route, instead of
 `session-handoff.ts`'s local-db-only `suspendSessionServerSide`.
 
+The third such counterpart is the organization resolver
+(`CreateSessionRuntimeDeps.resolveNodeOrgId`, #407). Promoting a draft by
+its first message picks the organization's default runner instance, which
+means reading the node's `belongs_to` edge — a graph-db query that has no
+answer on a device. `createAgentSessionRuntime` injects
+`CentralClient.nodeOrganizationId` (`GET /nodes/:id`, the organization peer
+of the outgoing `belongs_to` edge in central's own node detail) in place of
+the local query; a resolver error degrades to "no organization" (the
+runner's own default account) and logs one line, it never fails the
+promotion.
+
 ## An important subtlety: local-mode editing is mirror-local, central is Drive-direct
 
 In **local mode**, `readFileContent` / `writeFileContent`

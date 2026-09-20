@@ -9,6 +9,7 @@ import type {
   SyncRunResponse,
   SyncPendingResponse,
   SyncHealthResponse,
+  SyncWatchResponse,
   SyncJobSummary,
   DetailFile,
   FileContentResponse,
@@ -125,6 +126,15 @@ export async function fetchSyncPending(): Promise<SyncPendingResponse> {
 export async function fetchSyncHealth(): Promise<SyncHealthResponse> {
   const res = await apiFetch(`/sync/health`);
   await throwForStatus(res, "sync-health");
+  return res.json();
+}
+
+// What the remote watcher (#338) is doing, per remote. Central only: a
+// local workspace answers `{remotes: []}` and Nastaveni -> Synchronizace
+// renders no watcher line at all.
+export async function fetchSyncWatch(): Promise<SyncWatchResponse> {
+  const res = await apiFetch(`/sync/watch`);
+  await throwForStatus(res, "sync-watch");
   return res.json();
 }
 

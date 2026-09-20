@@ -83,6 +83,21 @@ The node must have a local mirror on the current device. Run
 `portuni_mirror` first.
 :::
 
+:::caution[Device-only tool]
+`portuni_store` needs this device's own sync registry
+(`{PORTUNI_WORKSPACE_ROOT}/.portuni/sync.db`). A session that has none --
+a connector session (claude.ai, Claude Desktop) talking to the central
+server over HTTP -- gets
+`PORTUNI_WORKSPACE_ROOT must be set for local sync.db` **immediately**,
+the same error [`portuni_status`](#portuni_status) gives there, and before
+any write-scope confirmation dialog: an upload that cannot start must never
+make the agent wait on a human. Upload from the
+desktop app or a CLI running in the mirror instead. For files that
+already exist on the remote, [`portuni_adopt_files`](/reference/sync/#portuni_adopt_files)
+works from a connector session -- it registers remote files and touches
+no local disk.
+:::
+
 ## portuni_pull
 
 Two modes:
@@ -106,6 +121,13 @@ Download mode refuses to overwrite a local file whose content was never
 pushed from this device (or that diverged from the last synced state).
 Push the local changes with `portuni_store` first, or pass
 `force: true` to overwrite them deliberately.
+:::
+
+:::caution[Download mode is device-only]
+Download mode (`file_id`) writes into this device's mirror, so it fails
+fast with the same `PORTUNI_WORKSPACE_ROOT must be set for local sync.db`
+error as `portuni_store` on a session without a local sync registry.
+Preview mode (`node_id`) reads the remote only and works everywhere.
 :::
 
 ## portuni_list_files

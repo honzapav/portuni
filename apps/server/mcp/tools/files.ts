@@ -12,6 +12,7 @@ import {
   deleteFile,
 } from "../../domain/sync/engine.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
+import { requireLocalSyncDb } from "../../domain/sync/local-db.js";
 import { buildNodeRoot, deriveLocalPath } from "../../domain/sync/remote-path.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
@@ -144,6 +145,11 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         .describe("Optional subfolder within the section"),
     },
     async (args) => {
+      // Before the write guard, so a session with no local sync.db (a
+      // connector session on central) fails with the same error
+      // portuni_status gives instead of waiting minutes on a confirmation
+      // dialog for an upload that could never start (#409).
+      requireLocalSyncDb();
       const db = getDb();
       if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return NODE_NOT_FOUND;
@@ -185,6 +191,10 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       }
       const db = getDb();
       if (args.file_id) {
+        // Download mode writes into this device's mirror, so it needs the
+        // local sync.db -- fail fast for the same reason portuni_store does
+        // (#409). Preview mode (node_id) is remote-only and left alone.
+        requireLocalSyncDb();
         const nodeId = await fileNodeId(db, args.file_id);
         if (nodeId) {
           if (!(await nodeVisibleTo(db, ctx.identity, nodeId))) {
