@@ -65,7 +65,7 @@ async function connect(
   ident: RequestIdentity,
   elicit?: Elicitor,
 ): Promise<{ client: McpClient; scope: SessionScope }> {
-  const ctx: SessionCtx = { scope, identity: ident, elicit };
+  const ctx: SessionCtx = { scope, identity: ident, elicit, spillSessionId: "test-spill" };
   const server = new McpServer({ name: "scope-expansion-test", version: "0.0.1" }, {});
   registerNodeTools(server, ctx);
   registerScopeTools(server, ctx);

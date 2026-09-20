@@ -389,14 +389,22 @@ symlink to this file.
   note; both show mirror-watcher errors, unrelated to Drive.
 - **Mirror scope configs are Portuni-managed.** `portuni_mirror` materializes
   `.mcp.json`, `.claude/settings.local.json`, `.codex/config.toml`,
-  `.vibe/config.toml`, `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks
+  `PORTUNI_SCOPE.md` and marker blocks
   in CLAUDE.md/AGENTS.md – don't hand-edit those blocks
-  (`apps/server/domain/scope-materialize.ts`). The per-mirror `.mcp.json` (Claude)
-  and `.vibe/config.toml` (Mistral Vibe) carry `?home_node_id=…` (scope
-  auto-seed) and reference the token via env var – never a literal. The
-  desktop app has no terminal of its own to inject it into (#345) — a shell
-  outside the app exports `PORTUNI_MCP_TOKEN` itself (Settings → Copy token).
-  User-scoped fallbacks for sessions outside any mirror:
+  (`apps/server/domain/scope-materialize.ts`). The per-mirror `.mcp.json`
+  (Claude) carries `?home_node_id=…` (scope auto-seed) and references the
+  token via env var – never a literal, and **no `X-Portuni-Spawn-Id`**
+  (#406: a runner-driven run gets that header from `RunStart.mcp.headers`,
+  and nothing exports `PORTUNI_SPAWN_SESSION_ID` into a hand-opened CLI's
+  shell since #345, so materializing it could only expand to an empty
+  header). The `.vibe/config.toml` and `.cursor/rules` writers are **gone**
+  (#406, finishing #346): both served harnesses the removed embedded
+  terminal launched, so a Vibe/Cursor session now connects through its own
+  user-scoped config, starts unscoped and seeds with
+  `portuni_session_init`. The
+  desktop app has no terminal of its own to inject the token into (#345) — a
+  shell outside the app exports `PORTUNI_MCP_TOKEN` itself (Settings → Copy
+  token). User-scoped fallbacks for sessions outside any mirror:
   `~/.claude.json` (`install_claude_global`), `~/.codex/config.toml`
   (`install_codex_global`), `~/.vibe/config.toml` (`install_vibe_global`).
 - **A `.showtime` file reads as its bundled `preview.html`.** A Showtime deck
@@ -431,13 +439,15 @@ symlink to this file.
   Showtime found, and is disabled without a mirror. Portuni does nothing
   after the link: Showtime creates the bundle, the watcher registers it.
   Spec: `docs/superpowers/specs/2026-09-02-showtime-handoff-design.md`.
-- **Mistral Vibe needs `--trust`.** Vibe only loads the per-mirror
-  `.vibe/config.toml` (and thus auto-seeds) when the folder is trusted, so
-  the desktop "Mistral Vibe" preset launches `vibe --trust`
-  (session-only trust). Without it Vibe falls back to `~/.vibe/config.toml`
-  (no `home_node_id`) and starts unscoped. Vibe merges project over user
-  config (union-merge of `mcp_servers` by `name`), so the per-mirror file is
-  minimal and never clobbers the user's models/providers.
+- **Mistral Vibe connects user-scoped only.** Portuni writes no per-mirror
+  `.vibe/config.toml` any more (#406), and the desktop launch preset that
+  used to run `vibe --trust` went with the embedded terminal (#345), so Vibe
+  reads `~/.vibe/config.toml` (`install_vibe_global`), which carries no
+  `home_node_id` — a Vibe session starts unscoped and seeds with
+  `portuni_session_init`. A hand-written project `.vibe/config.toml` still
+  works, and still needs `vibe --trust` to be loaded at all: Vibe merges
+  project over user config (union-merge of `mcp_servers` by `name`), so such
+  a file is minimal and never clobbers the user's models/providers.
 - **A confirmation dialog must never outlive the client's tool-call
   deadline, and a tool that cannot possibly succeed never opens one
   (#409).** `portuni_store` through the remote connector (claude.ai →
@@ -827,8 +837,8 @@ symlink to this file.
   for a suspended session) is written into `PORTUNI_SCOPE.md`
   instead (`domain/write-scope.ts` `buildOrientationHint`,
   `domain/scope-materialize.ts` `orientationForNode`) — appended there only,
-  never into `.cursor/rules` or the `CLAUDE.md`/`AGENTS.md` marker blocks,
-  which stay on the terser write-scope hint. **Central-mode mirrors get a
+  never into the `CLAUDE.md`/`AGENTS.md` marker blocks, which stay on the
+  terser write-scope hint. **Central-mode mirrors get a
   real orientation section too now (#323 ends the cut):**
   `CentralClient.orientation` (`GET /nodes/:id/orientation`, computed on
   central, which has the real graph db) backs

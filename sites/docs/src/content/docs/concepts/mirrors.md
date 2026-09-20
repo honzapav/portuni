@@ -212,11 +212,13 @@ Every file has one of two statuses:
 
 ## Auto-seed on connect
 
-Each mirror's `.mcp.json`, `.codex/config.toml`, and `.vibe/config.toml`
-(written by `portuni_mirror`) point the MCP URL at the Portuni server with
-`?home_node_id=<id>` baked in. When any MCP-capable harness opens a
-session against that URL from inside the mirror, the server seeds the
-read scope with the home node and its depth-1 neighbors before the
-first tool call -- no hook, no harness-specific glue. See
+Each mirror's `.mcp.json` (written by `portuni_mirror`) points the MCP URL
+at the Portuni server with `?home_node_id=<id>` baked in. When any
+MCP-capable harness opens a session against that URL from inside the
+mirror, the server seeds the read scope with the home node and its depth-1
+neighbors before the first tool call -- no hook, no harness-specific glue.
+A harness with no Portuni-managed project config (Codex, Mistral Vibe)
+connects through its own user-scoped config, which carries no
+`home_node_id`, and seeds with `portuni_session_init` instead. See
 [Scope enforcement -> Session home node](/concepts/scope-enforcement/#session-home-node)
 for the details.

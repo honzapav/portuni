@@ -83,7 +83,7 @@ async function waitUntil(cond: () => boolean | Promise<boolean>, timeoutMs = 200
 // like claude.ai web / mobile today.
 async function connectWithoutElicitation(scope: SessionScope, ident: RequestIdentity): Promise<McpClient> {
   const server = new McpServer({ name: "connector-grants-test", version: "0.0.1" }, {});
-  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server) };
+  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server), spillSessionId: "test-spill" };
   registerNodeTools(server, ctx);
   registerScopeTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

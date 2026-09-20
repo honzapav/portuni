@@ -12,7 +12,8 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
@@ -270,6 +271,9 @@ let localClient: Client;
 before(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-agenttransport-"));
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  // Keeps portuni_read_file's spill root inside the temp tree instead of the
+  // repo checkout (resolveRunnerDataDir's process.cwd() fallback).
+  process.env.PORTUNI_DATA_DIR = join(workspace, "data");
   resetLocalDbForTests();
 
   central = await startStubCentral();
@@ -309,6 +313,7 @@ after(async () => {
   await central.close();
   resetLocalDbForTests();
   delete process.env.PORTUNI_WORKSPACE_ROOT;
+  delete process.env.PORTUNI_DATA_DIR;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -341,6 +346,60 @@ describe("agent MCP front door", () => {
     })) as { content: Array<{ text: string }>; isError?: boolean };
     assert.notEqual(r.isError, true, r.content[0]?.text);
     assert.equal(r.content[0].text, "central-file:01NOMIRROR000000000000000:wip/n.md");
+  });
+
+  it("as_path spills under this transport's own directory and is removed when it closes (#406)", async () => {
+    // Same mirror-less node as the test above, so the bytes come from
+    // CentralClient.getFileRaw. Two independent front-door connections: the
+    // spill area is keyed by the MCP TRANSPORT's session id, so closing one
+    // must not touch the other's files.
+    const spillRoot = join(workspace, "data", "read-file-spill");
+    const open = async (): Promise<{ client: Client; transport: StreamableHTTPClientTransport }> => {
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),
+      );
+      const client = new Client({ name: "agent-spill-test", version: "0.0.0" });
+      await client.connect(transport);
+      return { client, transport };
+    };
+    const spill = async (client: Client, path: string): Promise<string> => {
+      const r = (await client.callTool({
+        name: "portuni_read_file",
+        arguments: { node_id: "01NOMIRROR000000000000000", path, as_path: true },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.notEqual(r.isError, true, r.content[0]?.text);
+      return (JSON.parse(r.content[0].text) as { path: string }).path;
+    };
+
+    const a = await open();
+    const b = await open();
+    try {
+      const aPath = await spill(a.client, "wip/a.md");
+      const bPath = await spill(b.client, "wip/b.md");
+
+      // Bytes came from central, not from a proxied tool call.
+      assert.equal(
+        await readFile(aPath, "utf8"),
+        "central-file:01NOMIRROR000000000000000:wip/a.md",
+      );
+      for (const p of [aPath, bPath]) {
+        assert.ok(p.startsWith(spillRoot + "/"), `${p} must live under ${spillRoot}`);
+      }
+      const bucketOf = (p: string): string => p.slice(spillRoot.length + 1).split("/")[0];
+      assert.equal(bucketOf(aPath), a.transport.sessionId, "keyed by the transport session id");
+      assert.equal(bucketOf(bPath), b.transport.sessionId);
+      assert.notEqual(bucketOf(aPath), bucketOf(bPath));
+
+      // Closing A's transport (DELETE /mcp) fires its onclose on the server.
+      await a.transport.terminateSession();
+      await a.client.close();
+      await waitFor(() => !existsSync(join(spillRoot, bucketOf(aPath))));
+      assert.equal(existsSync(join(spillRoot, bucketOf(aPath))), false, "A's spill is gone");
+      assert.equal(await readFile(bPath, "utf8"), "central-file:01NOMIRROR000000000000000:wip/b.md");
+    } finally {
+      await a.client.close().catch(() => undefined);
+      await b.client.close().catch(() => undefined);
+    }
   });
 
   it("portuni_expand_scope overlays this device's own mirror lookup (#346)", async () => {

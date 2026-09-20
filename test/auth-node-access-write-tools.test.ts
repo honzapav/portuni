@@ -44,7 +44,7 @@ async function connectRawFileTools(identity: RequestIdentity): Promise<McpClient
   // not a valid SessionType and only worked here by accident (test files
   // are outside tsconfig's typecheck).
   const scope = new SessionScope("env");
-  const ctx: SessionCtx = { scope, identity };
+  const ctx: SessionCtx = { scope, identity, spillSessionId: "test-spill" };
   const server = new McpServer({ name: "raw-files-test", version: "0.0.1" }, {});
   registerFileTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

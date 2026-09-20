@@ -28,7 +28,7 @@ const SESSION_TYPES = ["interactive_task", "interactive_chat", "headless", "env"
 // decide whether to bind to the existing row instead of minting a new one.
 const SPAWN_SESSION_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
-export function isSpawnSessionId(value: string): boolean {
+function isSpawnSessionId(value: string): boolean {
   return SPAWN_SESSION_ID_RE.test(value);
 }
 

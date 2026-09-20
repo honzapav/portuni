@@ -224,9 +224,6 @@ class FakeCentral implements CentralClient {
   async nodeOrganizationId(_nodeId: string): Promise<string | null> {
     return null;
   }
-  async nodeNeighbours(_nodeId: string): Promise<string[]> {
-    return [];
-  }
 
   async nodeExists(nodeId: string) {
     return nodeId === NODE_ID;

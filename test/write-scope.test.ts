@@ -2,7 +2,7 @@
 
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,8 +13,6 @@ import {
   buildCodexSandboxConfig,
   buildOrientationHint,
   buildSoftHint,
-  buildVibeMcpToml,
-  VIBE_PROJECT_MARKER,
   classifyWrite,
   commonAncestor,
   findContainingMirror,
@@ -294,40 +292,6 @@ describe("appendHomeNodeIdToUrl", () => {
   });
 });
 
-describe("buildVibeMcpToml", () => {
-  it("emits a portuni mcp_server with seeded url and env-var auth", () => {
-    const toml = buildVibeMcpToml({
-      url: "http://127.0.0.1:47011/mcp",
-      homeNodeId: "01HOME",
-    });
-    assert.ok(toml.includes(VIBE_PROJECT_MARKER));
-    assert.match(toml, /\[\[mcp_servers\]\]/);
-    assert.match(toml, /name = "portuni"/);
-    assert.match(toml, /transport = "streamable-http"/);
-    assert.match(toml, /url = "http:\/\/127\.0\.0\.1:47011\/mcp\?home_node_id=01HOME"/);
-    assert.match(toml, /\[mcp_servers\.auth\]/);
-    assert.match(toml, /type = "static"/);
-    assert.match(toml, /api_key_env = "PORTUNI_MCP_TOKEN"/);
-    assert.match(toml, /api_key_format = "Bearer \{token\}"/);
-  });
-
-  it("omits the query param when no home node is given", () => {
-    const toml = buildVibeMcpToml({ url: "http://x/mcp", homeNodeId: null });
-    assert.match(toml, /url = "http:\/\/x\/mcp"/);
-    assert.ok(!toml.includes("home_node_id"));
-  });
-
-  it("uses the workspace-suffixed api_key_env when PORTUNI_WORKSPACE_ID is set", () => {
-    process.env.PORTUNI_WORKSPACE_ID = "honzapav";
-    try {
-      const toml = buildVibeMcpToml({ url: "http://127.0.0.1:47012/mcp", homeNodeId: "n1" });
-      assert.ok(toml.includes('api_key_env = "PORTUNI_MCP_TOKEN_HONZAPAV"'));
-    } finally {
-      delete process.env.PORTUNI_WORKSPACE_ID;
-    }
-  });
-});
-
 describe("buildClaudeMcpJson", () => {
   it("appends home_node_id to the URL so auto-seed runs on connect", () => {
     const j = buildClaudeMcpJson({
@@ -374,12 +338,14 @@ describe("buildClaudeMcpJson", () => {
     }
   });
 
-  it("carries the spawn session id via env expansion, never a literal (#208 follow-up)", () => {
+  it("does not carry X-Portuni-Spawn-Id: nothing exports it into a hand-opened CLI (#406)", () => {
     const j = buildClaudeMcpJson({ url: "http://127.0.0.1:47011/mcp", homeNodeId: "01ABC" });
     const portuni = (j as { mcpServers: { portuni: { headers?: Record<string, string> } } })
       .mcpServers.portuni;
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
-    assert.equal(portuni.headers?.["X-Portuni-Spawn-Id"], "${PORTUNI_SPAWN_SESSION_ID:-}");
+    // A runner-driven run gets the header from RunStart.mcp.headers instead;
+    // PORTUNI_SPAWN_SESSION_ID went with the embedded terminal (#345/#346),
+    // so materializing it could only ever expand to an empty header.
+    assert.equal(portuni.headers?.["X-Portuni-Spawn-Id"], undefined);
   });
 
   it("does not carry the retired profile/terminal headers (#346)", () => {
@@ -657,13 +623,11 @@ describe("materializeScopeConfig", () => {
       "http://127.0.0.1:47011/mcp?home_node_id=01HOME",
     );
 
-    // Vibe gets a project-scoped .vibe/config.toml with the same seeded URL
-    // so a session launched in the mirror auto-seeds its scope (no expand).
-    const vibe = await readFile(join(cur, ".vibe", "config.toml"), "utf8");
-    assert.ok(vibe.includes(VIBE_PROJECT_MARKER), "carries portuni marker");
-    assert.match(vibe, /url = "http:\/\/127\.0\.0\.1:47011\/mcp\?home_node_id=01HOME"/);
-    assert.match(vibe, /api_key_env = "PORTUNI_MCP_TOKEN"/);
-    assert.ok(!vibe.includes("Bearer ey"), "no literal token in file");
+    // No per-mirror .vibe/config.toml or .cursor/rules any more (#406): both
+    // served harnesses the removed embedded terminal launched. Vibe still
+    // reaches Portuni through the user-scoped ~/.vibe/config.toml.
+    await assert.rejects(() => readFile(join(cur, ".vibe", "config.toml"), "utf8"));
+    await assert.rejects(() => readFile(join(cur, ".cursor", "rules"), "utf8"));
 
     // The Codex per-mirror toml still carries only the sandbox config; its
     // MCP registration lives in the user-scoped ~/.codex/config.toml.
@@ -815,7 +779,7 @@ describe("materializeScopeConfig", () => {
     assert.match(scope, /https:\/\/crm\.example\.com/);
   });
 
-  it("fattens PORTUNI_SCOPE.md with orientation data but leaves .cursor/rules on the soft hint", async () => {
+  it("fattens PORTUNI_SCOPE.md with orientation data but leaves the CLAUDE.md hint block on the soft hint", async () => {
     const dir = await mkdtemp(join(tmpdir(), "portuni-scope-orient-"));
     const cur = join(dir, "a");
     await mkdir(cur, { recursive: true });
@@ -857,9 +821,18 @@ describe("materializeScopeConfig", () => {
     // The base soft hint is still there too, not replaced.
     assert.match(scope, /Portuni write scope/);
 
-    const rules = await readFile(join(cur, ".cursor", "rules"), "utf8");
-    assert.doesNotMatch(rules, /Nasazení/);
-    assert.doesNotMatch(rules, /Node context/);
+    // The CLAUDE.md marker block stays on the terser soft hint. (The file
+    // is only refreshed when it already exists, so seed one first.)
+    await writeFile(join(cur, "CLAUDE.md"), "# Projekt\n");
+    await materializeScopeConfig({
+      currentMirror: cur,
+      otherMirrors: [],
+      portuniRoot: dir,
+      orientation,
+    });
+    const claudeMd = await readFile(join(cur, "CLAUDE.md"), "utf8");
+    assert.doesNotMatch(claudeMd, /Nasazení/);
+    assert.doesNotMatch(claudeMd, /Node context/);
   });
 
   it("omits the orientation section entirely when none is provided", async () => {

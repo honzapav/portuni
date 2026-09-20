@@ -287,8 +287,8 @@ autonomous run.
 to `wip/sessions/<session-id>-handoff.md` -- a normal synced path,
 visible to the team on the routed remote -- stores its hash and the
 underlying CLI's own conversation id, and marks the session
-`suspended`. Call it before the terminal closes: at the end of a task,
-or (for an autonomous loop) between iterations. Requires a home node;
+`suspended`. Call it before your session ends: at the end of a task, or
+(for an autonomous loop) between iterations. Requires a home node;
 `interactive_chat` sessions have no anchor to write into and this tool
 errors for them. Callable again on an already-suspended session to
 refresh the handoff -- the stored hash changes, so a resume can tell a
@@ -296,6 +296,6 @@ human edited it since suspend.
 
 A later resume starts a fresh run in the same mirror and either
 continues the same CLI conversation (when it still exists) or starts
-fresh from the handoff content -- there is no sandbox profile to
-recompute; a node with a local mirror on this device is readable at
+fresh from the handoff content. There is nothing disk-level to
+recompute: a node with a local mirror on this device is readable at
 its real path regardless.

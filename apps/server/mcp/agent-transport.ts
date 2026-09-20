@@ -73,7 +73,11 @@ import {
 import { createElicitorFromServer, agentRelayElicitTimeoutMs } from "./elicit.js";
 import { CentralHttpError, type CentralClient } from "../domain/sync/central/client.js";
 import { spawnSessionIdFromHeader } from "../domain/sessions.js";
-import { readNodeFileOrPath, type RemoteRawFetch } from "../domain/read-node-file.js";
+import {
+  disposeReadFileSpill,
+  readNodeFileOrPath,
+  type RemoteRawFetch,
+} from "../domain/read-node-file.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -87,7 +91,6 @@ interface AgentSessionEntry {
   upstream: Client;
   lastUsedAt: number;
   userId: string;
-  homeNodeId: string | null;
 }
 
 export interface AgentTransportOpts {
@@ -227,6 +230,9 @@ function buildAgentServer(
   identity: RequestIdentity,
   homeNodeId: string | null,
   downstreamCapabilities: ClientCapabilities | undefined,
+  // The transport session id this server is wired to -- keys the read-file
+  // spill directory, removed when that transport closes (#406).
+  spillSessionId: string,
 ): Server {
   const server = new Server(
     { name: "portuni-agent", version: "0.1.0" },
@@ -438,6 +444,7 @@ function buildAgentServer(
         relPath: args.path as string,
         asPath: args.as_path === true,
         remote: fetchRemoteRawViaCentral(opts.client),
+        spillSessionId,
       });
     }
     // expand_scope is otherwise proxied verbatim (falls to the generic
@@ -622,8 +629,12 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
       }
 
       const up = upstream;
+      // Generated up front, not inside sessionIdGenerator: the tools need it
+      // from the first call (it keys this connection's read-file spill
+      // directory, #406), which is before onsessioninitialized fires.
+      const transportSessionId = randomUUID();
       const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
+        sessionIdGenerator: () => transportSessionId,
         onsessioninitialized: (newSessionId) => {
           tracked = true;
           sessions.set(newSessionId, {
@@ -631,7 +642,6 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
             upstream: up,
             lastUsedAt: Date.now(),
             userId: identity.userId,
-            homeNodeId,
           });
         },
       });
@@ -643,9 +653,19 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         const closedSessionId = transport.sessionId;
         if (closedSessionId) sessions.delete(closedSessionId);
         up.close().catch(() => undefined);
+        // #406: this connection's spilled reads go with it. Keyed by the
+        // transport's own id, so a sibling connection keeps its own files.
+        void disposeReadFileSpill(transportSessionId);
       };
 
-      const server = buildAgentServer(opts, up, identity, homeNodeId, downstreamCapabilities);
+      const server = buildAgentServer(
+        opts,
+        up,
+        identity,
+        homeNodeId,
+        downstreamCapabilities,
+        transportSessionId,
+      );
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
 

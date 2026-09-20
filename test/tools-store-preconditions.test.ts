@@ -71,7 +71,7 @@ async function connect(dialogOutcome: ElicitOutcome | null): Promise<Harness> {
       return Promise.resolve(dialogOutcome);
     },
   };
-  const ctx: SessionCtx = { scope, identity: ident, elicit };
+  const ctx: SessionCtx = { scope, identity: ident, elicit, spillSessionId: "test-spill" };
   const server = new McpServer({ name: "store-precondition-test", version: "0.0.1" }, {});
   registerFileTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

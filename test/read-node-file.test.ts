@@ -1,16 +1,20 @@
-// portuni_read_file's disk-read helper: the universal (no-hooks) content
-// channel for ad-hoc nodes not exposed on disk by the seatbelt. Reads the
-// live file from the node's local mirror; the mirror registry is the scope
-// boundary (no mirror on this device => not readable).
+// portuni_read_file's disk-read helper: the universal content channel for a
+// node with no local mirror on this device. Reads the live file from the
+// node's local mirror when there is one; the mirror registry is the scope
+// boundary for that branch (no mirror on this device => read the remote).
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  disposeReadFileSpill,
+  readFileSpillRoot,
   readNodeFileFromMirror,
+  readNodeFileOrPath,
   readNodeFileRaw,
+  sweepReadFileSpillRoot,
   writeBytesToPath,
   mimeFromExtension,
   formatNodeFileContent,
@@ -28,12 +32,18 @@ const NODE = "N000000000000000000000READ";
 let workspace: string;
 let mirror: string;
 let originalRoot: string | undefined;
+let originalDataDir: string | undefined;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-readfile-"));
   mirror = join(workspace, "org", "projects", "p");
   originalRoot = process.env.PORTUNI_WORKSPACE_ROOT;
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  // The spill root is derived from the runner data dir; keep it inside the
+  // per-test temp tree instead of the repo checkout (resolveRunnerDataDir's
+  // process.cwd() fallback).
+  originalDataDir = process.env.PORTUNI_DATA_DIR;
+  process.env.PORTUNI_DATA_DIR = join(workspace, "data");
   resetLocalDbForTests();
   await mkdir(join(mirror, "wip"), { recursive: true });
   await registerMirror(USER, NODE, mirror);
@@ -43,6 +53,8 @@ afterEach(async () => {
   resetLocalDbForTests();
   if (originalRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalRoot;
+  if (originalDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+  else process.env.PORTUNI_DATA_DIR = originalDataDir;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -217,5 +229,160 @@ describe("readNodeFileFromRemote / readNodeFile", () => {
       resetAdapterCacheForTests();
       await rm(shared.remoteRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// readNodeFileOrPath's LOCAL branch (mirror on this device) plus the spill
+// lifecycle that replaced the removed hardlink projection (#346/#406). The
+// remote branch is exercised for real against central in
+// test/agent-transport.test.ts; here it is a plain injected fetch.
+describe("readNodeFileOrPath: local mirror, spill and disposal", () => {
+  const remoteBytes = (bytes: Buffer) => async () => ({ kind: "ok" as const, bytes });
+
+  it("reports the real mirror path (no copy) when as_path is requested", async () => {
+    const abs = join(mirror, "wip", "big.md");
+    await writeFile(abs, "hello\n");
+    const r = await readNodeFileOrPath({
+      userId: USER,
+      nodeId: NODE,
+      relPath: "wip/big.md",
+      asPath: true,
+      remote: async () => {
+        throw new Error("remote must not be consulted for a mirrored node");
+      },
+      spillSessionId: "T-mirror",
+    });
+    assert.notEqual(r.isError, true);
+    const payload = JSON.parse(r.content[0].text) as { path: string; bytes: number; mime: string };
+    assert.equal(payload.path, abs);
+    assert.equal(payload.bytes, 6);
+    assert.equal(payload.mime, "text/markdown");
+    // Nothing was spilled: the real path is the answer.
+    await assert.rejects(() => stat(readFileSpillRoot()));
+  });
+
+  it("reports the real mirror path for a file over the inline cap, without as_path", async () => {
+    const abs = join(mirror, "wip", "huge.txt");
+    await writeFile(abs, "x".repeat(MAX_READ_BYTES + 10));
+    const r = await readNodeFileOrPath({
+      userId: USER,
+      nodeId: NODE,
+      relPath: "wip/huge.txt",
+      asPath: false,
+      remote: async () => {
+        throw new Error("remote must not be consulted for a mirrored node");
+      },
+      spillSessionId: "T-mirror",
+    });
+    assert.notEqual(r.isError, true);
+    assert.equal((JSON.parse(r.content[0].text) as { path: string }).path, abs);
+  });
+
+  it("returns inline content for a small mirrored file", async () => {
+    await writeFile(join(mirror, "wip", "small.md"), "inline\n");
+    const r = await readNodeFileOrPath({
+      userId: USER,
+      nodeId: NODE,
+      relPath: "wip/small.md",
+      asPath: false,
+      remote: async () => {
+        throw new Error("remote must not be consulted for a mirrored node");
+      },
+      spillSessionId: "T-mirror",
+    });
+    assert.equal(r.content[0].text, "inline\n");
+  });
+
+  it("spills into <dataDir>/read-file-spill/<transportSessionId>/ when the node has no mirror", async () => {
+    const r = await readNodeFileOrPath({
+      userId: USER,
+      nodeId: "N0000000000000000000GHOST",
+      relPath: "wip/remote.md",
+      asPath: true,
+      remote: remoteBytes(Buffer.from("from central\n")),
+      spillSessionId: "T-alpha",
+    });
+    const payload = JSON.parse(r.content[0].text) as { path: string; bytes: number };
+    assert.ok(
+      payload.path.startsWith(join(readFileSpillRoot(), "T-alpha") + "/"),
+      `spill path ${payload.path} must live under this transport's own directory`,
+    );
+    assert.equal(payload.bytes, 13);
+    assert.equal(await readFile(payload.path, "utf8"), "from central\n");
+  });
+
+  it("spills a file over the inline cap even without as_path", async () => {
+    const r = await readNodeFileOrPath({
+      userId: USER,
+      nodeId: "N0000000000000000000GHOST",
+      relPath: "wip/huge.bin",
+      asPath: false,
+      remote: remoteBytes(Buffer.alloc(MAX_READ_BYTES + 1, 0x61)),
+      spillSessionId: "T-alpha",
+    });
+    assert.notEqual(r.isError, true);
+    const payload = JSON.parse(r.content[0].text) as { path: string; bytes: number };
+    assert.equal(payload.bytes, MAX_READ_BYTES + 1);
+    assert.ok(payload.path.startsWith(join(readFileSpillRoot(), "T-alpha") + "/"));
+  });
+
+  it("disposal removes only the closing transport's own spill directory", async () => {
+    const alpha = JSON.parse(
+      (
+        await readNodeFileOrPath({
+          userId: USER,
+          nodeId: "N0000000000000000000GHOST",
+          relPath: "wip/a.md",
+          asPath: true,
+          remote: remoteBytes(Buffer.from("a")),
+          spillSessionId: "T-alpha",
+        })
+      ).content[0].text,
+    ).path as string;
+    const beta = JSON.parse(
+      (
+        await readNodeFileOrPath({
+          userId: USER,
+          nodeId: "N0000000000000000000GHOST",
+          relPath: "wip/b.md",
+          asPath: true,
+          remote: remoteBytes(Buffer.from("b")),
+          spillSessionId: "T-beta",
+        })
+      ).content[0].text,
+    ).path as string;
+
+    await disposeReadFileSpill("T-alpha");
+    await assert.rejects(() => stat(alpha));
+    assert.equal(await readFile(beta, "utf8"), "b");
+    // Idempotent: a transport that spilled nothing (or closes twice) is fine.
+    await disposeReadFileSpill("T-alpha");
+    await disposeReadFileSpill("T-never-spilled");
+
+    // The boot sweep clears whatever a crash left behind.
+    await sweepReadFileSpillRoot();
+    await assert.rejects(() => stat(beta));
+    await assert.rejects(() => stat(readFileSpillRoot()));
+  });
+
+  it("refuses to delete anything outside the spill root", async () => {
+    const beta = JSON.parse(
+      (
+        await readNodeFileOrPath({
+          userId: USER,
+          nodeId: "N0000000000000000000GHOST",
+          relPath: "wip/b.md",
+          asPath: true,
+          remote: remoteBytes(Buffer.from("b")),
+          spillSessionId: "T-beta",
+        })
+      ).content[0].text,
+    ).path as string;
+
+    await disposeReadFileSpill("../..");
+    await disposeReadFileSpill(".");
+    await disposeReadFileSpill(workspace);
+    assert.equal(await readFile(beta, "utf8"), "b");
+    await stat(mirror);
   });
 });

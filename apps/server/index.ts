@@ -8,6 +8,7 @@ import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { startRemoteWatcher } from "./boot/remote-watch.js";
 import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
+import { sweepReadFileSpillOnBoot } from "./boot/read-file-spill-sweep.js";
 import {
   startIdleRunSweep,
   sweepStaleDraftSessionsOnBoot,
@@ -37,6 +38,9 @@ async function main() {
   // picture instead of racing it.
   void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
   void sweepStaleDraftSessionsOnBoot();
+  // #406: no MCP transport survives a restart, so every read-file spill
+  // directory left on disk is orphaned.
+  void sweepReadFileSpillOnBoot();
   void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
   // #378: a live run with no activity for PORTUNI_RUN_IDLE_MS gets ended
   // and its summary written -- an interval outside the runtime itself,

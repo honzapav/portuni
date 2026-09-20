@@ -6,9 +6,9 @@
 > (`LOCAL_MODE_NO_REMOTE`, #310/#312) — it tracks files on one machine and
 > shares nothing. Central mode serves file **content** and lifecycle
 > (create / rename / delete) over the central server via a mirror-less,
-> Drive-direct service (`file-content-remote.ts`), and supports agent
-> **terminals** (the local sync agent serves the mirror + sandbox profile; the
-> terminal's agent reaches the local MCP front door, which proxies to central).
+> Drive-direct service (`file-content-remote.ts`), and runs agent **tasks**
+> (the local sync agent serves the mirror and drives the run; the task's
+> agent reaches the local MCP front door, which proxies to central).
 > So a central-mode teammate gets **both** the graph **and** file bytes today.
 > The historical design rationale lives in
 > [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md).
@@ -59,7 +59,7 @@ feature toggle — it is a transport/trust boundary:
   Google **JWT**, so the server can **enforce permissions** (groups, node-access
   in `apps/server/auth/`). The teammate never holds the raw Turso token. The
   desktop still runs a **local sidecar as the sync agent** (`PORTUNI_AGENT_MODE=1`)
-  for mirrors, file sync, and the MCP front door that agent **terminals** use —
+  for mirrors, file sync, and the MCP front door that **agent sessions** use —
   but it never talks to Turso directly (see the agent-mode section below).
 
 In multi-workspace setups, **each workspace can have a different `data_mode`**:
@@ -100,14 +100,16 @@ to `501 {error:"local_only", detail:"sync agent not running"}` in central mode
 (in local mode the gate does not apply at all):
 
 ```
-/scope, /sandbox-profile
-/nodes/:id/mirror, /nodes/:id/sync-status, /nodes/:id/sync, /nodes/:id/sandbox-profile
+/scope
+/sync/pending, /sync/health, /sync/jobs (+ /sync/jobs/:id, /sync/jobs/current)
+/runners (+ /runners/instances..., /runners/:runner/models, /runners/org-defaults/:orgId)
+/nodes/:id/mirror, /nodes/:id/sync-status, /nodes/:id/sync
 /nodes/:id/file
 POST /nodes/:id/files
 DELETE /nodes/:id/files/:fileId
-POST /nodes/:id/files/:fileId/resolve
+POST /nodes/:id/files/:fileId/{resolve,rename,move}
 POST /sessions
-POST /sessions/:id/{messages,interrupt,suspend,resume,close,events}
+/sessions/:id/{messages,interrupt,continue,close,events,signals}
 POST /sessions/:id/questions/:request_id
 ```
 
@@ -163,10 +165,10 @@ forward straight to the central server, which serves them Drive-direct
 caught as `LocalOnlyError` (`apps/web/src/api.ts`) and now reads as "not
 signed in."
 
-### Agent-mode MCP: how terminals work in central mode
+### Agent-mode MCP: how agent sessions work in central mode
 
 The `local_only` gate above is for the **REST** plane the webview drives. MCP
-terminals are served differently: a teammate's "sync agent" sidecar
+sessions are served differently: a teammate's "sync agent" sidecar
 (`PORTUNI_AGENT_MODE=1`, see
 `docs/archive/plans/2026-07-05-agent-mode-mcp-front-door.md`) serves `/mcp`
 itself, and the per-mirror `.mcp.json` in agent mode points at that local front

@@ -12,7 +12,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { bindSessionPersistence, resumeSessionPersistence } from "../apps/server/mcp/session-persistence.js";
+import {
+  bindExistingSessionPersistence,
+  bindSessionPersistence,
+  lookupSpawnSessionForBind,
+  resumeSessionPersistence,
+} from "../apps/server/mcp/session-persistence.js";
 import {
   createSession,
   getSession,
@@ -325,5 +330,121 @@ describe("resumeSessionPersistence: graph-plane reattach on resume (#204)", () =
     await waitUntil(async () => (await getSessionScope(shared.db, suspended.id)).some((r) => r.node_id === other));
     const rows = await getSessionScope(shared.db, suspended.id);
     assert.ok(rows.some((r) => r.node_id === other && r.added_via === "edge"));
+  });
+});
+
+// Runner batch Rule 2 ("the session exists before the runner"): a fresh MCP
+// connection carrying X-Portuni-Spawn-Id binds to the row startTask already
+// created instead of minting a second one. The refusal half is
+// lookupSpawnSessionForBind (the caller checks it first); this function only
+// does the rehydration, taking the SessionRow that lookup returned rather
+// than an identity + id pair of its own.
+describe("bindExistingSessionPersistence: binding a fresh connection to a pre-created row", () => {
+  let workspace: string;
+  let originalRoot: string | undefined;
+
+  beforeEach(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-bind-persist-"));
+    originalRoot = process.env.PORTUNI_WORKSPACE_ROOT;
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+  });
+
+  afterEach(async () => {
+    resetLocalDbForTests();
+    if (originalRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+    else process.env.PORTUNI_WORKSPACE_ROOT = originalRoot;
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("adopts the row's id and node, rehydrates read/write scope, and creates no second row", async () => {
+    const shared = await makeSharedDb();
+    const other = await neighbourNode(shared, "BoundNeighbour");
+    await registerMirror("U1", shared.nodeId, join(workspace, "home"));
+
+    const running = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    await upsertSessionScopeRead(shared.db, running.id, shared.nodeId, "seed", "seed");
+    await upsertSessionScopeRead(shared.db, running.id, other, "elicited", "expand");
+    await setSessionScopeWritable(shared.db, running.id, other);
+
+    const before = await shared.db.execute("SELECT COUNT(*) AS c FROM sessions");
+
+    const lookup = await lookupSpawnSessionForBind(shared.db, { userId: "U1" }, running.id);
+    assert.equal(lookup.kind, "bindable");
+    assert.equal(lookup.kind === "bindable" ? lookup.row.id : null, running.id);
+
+    const scope = new SessionScope("interactive_task");
+    await bindExistingSessionPersistence(
+      shared.db,
+      scope,
+      lookup.kind === "bindable" ? lookup.row : running,
+    );
+
+    // The row IS the session: its id and its anchor node come from the row,
+    // never from the connection URL.
+    assert.equal(scope.sessionId, running.id);
+    assert.equal(scope.homeNodeId, shared.nodeId);
+    assert.ok(scope.has(shared.nodeId));
+    assert.ok(scope.has(other));
+    assert.ok(scope.canWrite(other));
+
+    const after = await shared.db.execute("SELECT COUNT(*) AS c FROM sessions");
+    assert.equal(Number(after.rows[0].c), Number(before.rows[0].c));
+    const row = await getSession(shared.db, running.id);
+    assert.equal(row?.state, "running", "binding does not transition state, unlike a resume");
+  });
+
+  it("mirrors further scope changes into session_scope, same as a fresh session", async () => {
+    const shared = await makeSharedDb();
+    const later = await neighbourNode(shared, "LaterNeighbour");
+    await registerMirror("U1", shared.nodeId, join(workspace, "home"));
+
+    const running = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    const scope = new SessionScope("interactive_task");
+    await bindExistingSessionPersistence(shared.db, scope, running);
+
+    scope.add(later);
+    scope.recordExpansion({
+      at: new Date().toISOString(),
+      node_ids: [later],
+      reason: "user-requested: after bind",
+      triggered_by: "tool",
+    });
+    await waitUntil(async () => {
+      const rows = await getSessionScope(shared.db, running.id);
+      return rows.some((r) => r.node_id === later);
+    });
+  });
+
+  it("refuses a row that is not running, or owned by someone else", async () => {
+    const shared = await makeSharedDb();
+    const suspended = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    await transitionSessionState(shared.db, "U1", suspended.id, "suspended");
+    assert.equal(
+      (await lookupSpawnSessionForBind(shared.db, { userId: "U1" }, suspended.id)).kind,
+      "refused",
+    );
+
+    const mine = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    assert.equal(
+      (await lookupSpawnSessionForBind(shared.db, { userId: "U2" }, mine.id)).kind,
+      "refused",
+    );
+    assert.equal(
+      (await lookupSpawnSessionForBind(shared.db, { userId: "U1" }, ulid())).kind,
+      "not_found",
+    );
   });
 });

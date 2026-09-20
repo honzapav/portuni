@@ -42,11 +42,10 @@
 //
 // Trust boundary for the "env" exemption below (#213, tightening #210
 // point 2): env auth mode resolves EVERY request to the same unscoped solo
-// identity regardless of who sent it (auth/env-adapter.ts) -- including a
-// spawned agent terminal, which holds the exact same loopback bearer token
-// as the desktop webview and can even export X-Portuni-Spawn-Id itself
-// (PORTUNI_SPAWN_SESSION_ID is plain env in that shell). A self-declared
-// marker cannot be trusted to distinguish the two.
+// identity regardless of who sent it (auth/env-adapter.ts) -- including any
+// agent process running on this device, which holds the exact same loopback
+// bearer token as the desktop webview and can set X-Portuni-Spawn-Id itself.
+// A self-declared marker cannot be trusted to distinguish the two.
 //
 // PORTUNI_WEBVIEW_PROXY_SECRET switches env mode's write gate between two
 // postures:

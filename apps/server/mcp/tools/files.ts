@@ -74,6 +74,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         relPath: args.path,
         asPath: args.as_path === true,
         remote: (n, p) => readNodeFileRaw(db, ctx.identity.userId, n, p),
+        spillSessionId: ctx.spillSessionId,
       });
     },
   );

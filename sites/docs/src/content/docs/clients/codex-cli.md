@@ -99,7 +99,7 @@ The default `on-request` is a reasonable middle ground. Only change it if you ha
 
 ## Running more than one Portuni instance
 
-With the desktop app this is the normal state, and the Codex install button handles it: every enabled workspace runs its own sidecar (loopback ports from `47011` up), and the button writes one `[mcp_servers.portuni-<workspace-id>]` block per workspace, each referencing its own `PORTUNI_MCP_TOKEN_<ID>` env var. Terminals spawned inside the app carry all of those variables (plus plain `PORTUNI_MCP_TOKEN` as an alias for the active workspace).
+With the desktop app this is the normal state, and the Codex install button handles it: every enabled workspace runs its own sidecar (loopback ports from `47011` up), and the button writes one `[mcp_servers.portuni-<workspace-id>]` block per workspace, each referencing its own `PORTUNI_MCP_TOKEN_<ID>` env var. Export the one you need in the shell you run Codex from (Settings → MCP server → Copy token); the app has no terminal of its own to export it for you.
 
 If you're running several standalone CLI servers instead (say, personal and team), register each in `~/.codex/config.toml` under its own name:
 
