@@ -6,6 +6,7 @@ import "varlock/auto-load";
 import { ensureSchema } from "./infra/schema.js";
 import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
+import { startRemoteWatcher } from "./boot/remote-watch.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
 import {
@@ -26,6 +27,11 @@ async function main() {
   // sync.db. Design: docs/archive/specs/2026-06-28-deterministic-file-state-design.md.
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS === "1");
   if (watcher) process.on("SIGINT", () => watcher.stop());
+  // Central only (PORTUNI_AUTH_MODE=google): observes each remote's change
+  // feed and keeps `files` current, so a device reads `pull` without anyone
+  // running a sync. #338.
+  const remoteWatcher = startRemoteWatcher();
+  if (remoteWatcher) process.on("SIGINT", () => remoteWatcher.stop());
   void sweepStaleSessionProjectionsOnBoot();
   // Must finish before sweepStaleRunningSessionsOnBoot: this sweep already
   // resolves any 'running' session a runner task was driving, so the other

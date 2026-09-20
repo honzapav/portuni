@@ -24,9 +24,12 @@ export function residualPendingNode(
   // Untracked files are adopted by the run; anything that failed to adopt
   // is already counted through `errors`.
   const untracked = 0;
+  // The run pulled every pull candidate (#339); one that failed is already
+  // counted through `errors` above, so nothing remains to pull.
+  const pull = 0;
   const total = push + untracked;
   const decisions = conflict + deleted_local;
-  if (total === 0 && decisions === 0) return null;
+  if (total === 0 && decisions === 0 && pull === 0) return null;
   return {
     ...prev,
     push,
@@ -34,6 +37,7 @@ export function residualPendingNode(
     untracked,
     remote_missing: skipped("remote_missing"),
     deleted_local,
+    pull,
     total,
     decisions,
   };

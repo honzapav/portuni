@@ -204,6 +204,30 @@ export type SyncHealthResponse = {
   errors: WatcherErrorEntry[];
 };
 
+// GET /sync/watch (#339) -- what the remote watcher (#338) is doing, one
+// entry per remote it knows about. Central only: the loop runs nowhere else
+// (spec rule 5), so a local workspace answers `{remotes: []}` and the UI
+// renders no watcher line at all.
+export type RemoteWatchStatus = {
+  remote_name: string;
+  // false for a backend with no change feed (fs/OpenDAL), or while the
+  // remote is failing -- the periodic full sweep is then all there is.
+  watching: boolean;
+  // When the change-feed cursor was last persisted, i.e. when a batch of
+  // remote changes was last applied end to end. Its age is what the UI
+  // renders as "poslední změna před N min".
+  cursor_updated_at: string | null;
+  last_tick_at: string | null;
+  last_error: string | null;
+  // Set while the remote is backing off after a failed tick; null once the
+  // next attempt is due.
+  backoff_until: string | null;
+  last_full_sweep_at: string | null;
+};
+export type SyncWatchResponse = {
+  remotes: RemoteWatchStatus[];
+};
+
 // Result of triggering a node-wide sync. The endpoint runs storeFile for
 // every push candidate and pullFile for every pull candidate; conflicts
 // and other classes are reported but not auto-resolved (Portuni never
@@ -288,6 +312,13 @@ export type SyncPendingNode = {
   untracked: number;
   remote_missing: number;
   deleted_local: number;
+  // Records whose remote copy is newer than this device's (#339): what the
+  // remote watcher registers on central, read here as the signal outside
+  // the node detail. A deliberate sync run does clear it, but the user did
+  // not create this work -- counting it into `total` would make the
+  // "unsynced local work" badge report someone else's edits -- so it counts
+  // towards neither `total` nor `decisions`.
+  pull: number;
   // Actionable: what a deliberate sync run can actually clear (push +
   // untracked). A run never resolves a conflict, so it is deliberately
   // excluded here -- see `decisions`.
@@ -299,7 +330,7 @@ export type SyncPendingNode = {
   decisions: number;
 };
 export type SyncPendingResponse = {
-  nodes: SyncPendingNode[]; // nodes with total > 0 OR decisions > 0, sorted by total desc
+  nodes: SyncPendingNode[]; // nodes with total > 0, decisions > 0 OR pull > 0, sorted by total desc
   total: number;            // sum of every node's total (actionable only)
   decisions: number;        // sum of every node's decisions
 };

@@ -65,6 +65,9 @@ const fakeCentral: CentralClient = {
   async nodeExists() {
     return false;
   },
+  async nodeOrganizationId() {
+    return null;
+  },
   invalidateSyncInfo() {
     /* no cache */
   },

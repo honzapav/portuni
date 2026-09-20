@@ -280,6 +280,12 @@ class FakeCentral implements CentralClient {
   async nodeExists(nodeId: string): Promise<boolean> {
     return this.nodeVisible.has(nodeId);
   }
+  // #407: the node's organization, as central would answer it -- the
+  // runtime's org-default resolution in this mode goes through here.
+  nodeOrgs = new Map<string, string>();
+  async nodeOrganizationId(nodeId: string): Promise<string | null> {
+    return this.nodeOrgs.get(nodeId) ?? null;
+  }
   async nodeNeighbours(): Promise<string[]> {
     return [];
   }
@@ -431,6 +437,40 @@ describe("agent-router: sessions/tasks", () => {
     assert.notEqual(promoted?.state, "draft");
     assert.equal(promoted?.runner, "fake");
     assert.equal(fake.runs.size, 1);
+  });
+
+  it("a run ending on a provider limit suspends the thread on central too (#411)", async () => {
+    // What the Claude adapter reports when the CLI answers with a spend
+    // limit: one provider error, then the run ends with reason "limit".
+    stubScript([
+      { kind: "error", payload: { class: "provider", message: "You've hit your monthly spend limit" } },
+      { end: "limit" },
+    ]);
+    const res = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    assert.equal(res.status, 201);
+    const { session } = (await res.json()) as { session: SessionRow };
+
+    // createSuspendFallbackCentral is the agent-mode suspend path: the
+    // summary lands in the device's own mirror, the state patch goes to
+    // central over REST.
+    const stored = fake.sessions.get(session.id);
+    assert.equal(stored?.state, "suspended");
+    assert.ok(stored?.handoff_path, "a server-written summary must be recorded on central");
+
+    const run = [...fake.runs.values()][0];
+    assert.equal(run.end_reason, "limit");
+
+    const events = fake.events.get(session.id) ?? [];
+    const error = events.find((e) => e.kind === "error");
+    assert.ok(error, "the provider message must be in the transcript");
+    const payload = JSON.parse(error!.payload) as { class: string; message: string };
+    assert.equal(payload.class, "provider");
+    assert.match(payload.message, /spend limit/);
+    assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
   });
 
   it("POST /sessions 404s for a draft on a node central does not know about", async () => {

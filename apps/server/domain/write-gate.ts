@@ -95,6 +95,20 @@ export function noElicitationWriteHint(nodeId: string): string {
   );
 }
 
+// Hint for an "elicit" outcome whose dialog was really shown but went
+// unanswered until the hop's own deadline (mcp/elicit.ts, #409). Unlike the
+// capability-absent case above, portuni_expand_scope(writable: true) IS
+// available here -- the user simply was not at the keyboard -- so the hint
+// keeps that path and only says what happened.
+export function timedOutWriteHint(nodeId: string): string {
+  return (
+    `The confirmation dialog for write access to node ${nodeId} was not answered in time, so the ` +
+    `write did not happen. Nothing was changed. Ask the user in chat, then either retry the tool ` +
+    `(a new dialog is shown) or call portuni_expand_scope with node_ids: ["${nodeId}"], ` +
+    `writable: true, reason 'user-confirmed-in-chat'.`
+  );
+}
+
 export interface WriteGuardErrorPayload {
   error: string;
   node_id: string;
@@ -104,19 +118,27 @@ export interface WriteGuardErrorPayload {
   // "confirm, then expand_scope" contract cannot be completed from this
   // session. Absent otherwise, so existing payload shapes stay unchanged.
   elicitation_supported?: false;
+  // Present (true) only when a dialog WAS shown and went unanswered until
+  // the hop's deadline (#409): the tool answers instead of hanging past the
+  // client's own tool-call timeout, and the agent can retry.
+  dialog_timed_out?: true;
 }
 
 export function writeGuardError(
   nodeId: string,
   kind: "elicit" | "refused",
   hint: string,
-  opts: { elicitationSupported?: boolean } = {},
+  opts: { elicitationSupported?: boolean; dialogTimedOut?: boolean } = {},
 ): WriteGuardErrorPayload {
+  let hintText = hint;
+  if (opts.elicitationSupported === false) hintText = noElicitationWriteHint(nodeId);
+  else if (opts.dialogTimedOut === true) hintText = timedOutWriteHint(nodeId);
   const payload: WriteGuardErrorPayload = {
     error: kind === "refused" ? "write_refused" : "write_expansion_required",
     node_id: nodeId,
-    hint: opts.elicitationSupported === false ? noElicitationWriteHint(nodeId) : hint,
+    hint: hintText,
   };
   if (opts.elicitationSupported === false) payload.elicitation_supported = false;
+  if (opts.dialogTimedOut === true) payload.dialog_timed_out = true;
   return payload;
 }

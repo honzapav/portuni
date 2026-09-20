@@ -1107,8 +1107,11 @@ export function SyncBar({
   );
 
   return (
-    <div className="mb-3">
-      <div className="flex items-center gap-2">
+    // No margin of its own: the Files action row (DetailPane.tsx) owns the
+    // spacing, so this and "Nový soubor" sit on one line. A column, so the
+    // badges/outcome line stay under the button rather than widening the row.
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex min-w-0 items-center gap-2">
         <Button variant="outline" size="sm" onClick={onRun} disabled={running}>
           <RefreshCw className={running ? "animate-spin" : undefined} />
           {label}

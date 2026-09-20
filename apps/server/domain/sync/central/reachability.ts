@@ -34,11 +34,17 @@ export const BASE_BACKOFF_MS = 10 * 60_000;
 export const MAX_BACKOFF_MS = 60 * 60_000;
 
 // 1 failure -> the normal interval, then doubling up to the cap. Pure so the
-// schedule is unit-testable without timers.
-export function backoffMsFor(consecutiveFailures: number): number {
+// schedule is unit-testable without timers. `baseMs` defaults to the backfill
+// sweep's own 10-minute round; the remote watcher (#338) passes its own tick
+// interval instead (60 s -> 2 -> 4 -> ... -> 1 h), same schedule shape.
+export function backoffMsFor(
+  consecutiveFailures: number,
+  baseMs: number = BASE_BACKOFF_MS,
+  maxMs: number = MAX_BACKOFF_MS,
+): number {
   if (consecutiveFailures <= 0) return 0;
-  const grown = BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1);
-  return Math.min(grown, MAX_BACKOFF_MS);
+  const grown = baseMs * 2 ** (consecutiveFailures - 1);
+  return Math.min(grown, maxMs);
 }
 
 export interface BackoffState {
@@ -55,11 +61,16 @@ export function shouldAttempt(state: BackoffState, now: number): boolean {
   return now >= state.nextAttemptAt;
 }
 
-export function recordUnreachable(state: BackoffState, now: number): BackoffState {
+export function recordUnreachable(
+  state: BackoffState,
+  now: number,
+  baseMs: number = BASE_BACKOFF_MS,
+  maxMs: number = MAX_BACKOFF_MS,
+): BackoffState {
   const consecutiveFailures = state.consecutiveFailures + 1;
   return {
     consecutiveFailures,
-    nextAttemptAt: now + backoffMsFor(consecutiveFailures),
+    nextAttemptAt: now + backoffMsFor(consecutiveFailures, baseMs, maxMs),
   };
 }
 

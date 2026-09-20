@@ -18,6 +18,7 @@ const node = (id: string, total: number, decisions = 0): SyncPendingNode => ({
   untracked: 0,
   remote_missing: 0,
   deleted_local: 0,
+  pull: 0,
   total,
   decisions,
 });

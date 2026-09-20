@@ -1,4 +1,11 @@
 @import "tailwindcss";
+/* Streamdown styles the chat transcript with Tailwind utilities that live
+ * inside its own bundle, not in our sources -- without this @source line
+ * Tailwind v4 never generates them (markdown lists in the transcript lose
+ * their markers the same way the preflight reset takes them from
+ * .md-preview below). The glob covers the chunk files the utilities
+ * actually sit in, per Streamdown's own README. */
+@source "../node_modules/streamdown/dist/*.js";
 /* Inter is bundled: it used to come from fonts.googleapis.com via a
  * render-blocking <link> in index.html — a cross-origin request on the
  * startup path of a local-first desktop app, which on a cold launch with no
@@ -370,6 +377,19 @@ button:focus-visible {
 }
 .md-preview del {
   color: var(--color-text-dim);
+}
+/* Tailwind's preflight resets `ol, ul, menu { list-style: none }`, so the
+ * markers have to be restored explicitly here. Longhand on purpose: the
+ * `list-style: disc` shorthand minifies down to `list-style: outside`
+ * (disc is the property's own initial value), which reads as a no-op. */
+.md-preview ul {
+  list-style-type: disc;
+}
+.md-preview ol {
+  list-style-type: decimal;
+}
+.md-preview ul ul {
+  list-style-type: circle;
 }
 .md-preview ul,
 .md-preview ol {

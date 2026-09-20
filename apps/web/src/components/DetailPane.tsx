@@ -819,11 +819,11 @@ function DetailPaneBody({
           <IdCopy id={node.id} />
           {node.type !== "organization" && (
             <>
-              <span className="text-[var(--color-border-strong)]">·</span>
+              <span className="shrink-0 text-[var(--color-border-strong)]">·</span>
               {node.local_mirror ? (
                 <>
                   <PathCopy path={node.local_mirror.local_path} />
-                  <span className="ml-0.5 inline-flex items-center gap-0.5">
+                  <span className="ml-0.5 inline-flex shrink-0 items-center gap-0.5">
                     {isTauri() && (
                       <Button
                         variant="ghost"
@@ -846,7 +846,7 @@ function DetailPaneBody({
                     error={mirrorError}
                     onCreate={() => void createMirrorAndRefresh()}
                   />
-                  <span className="ml-0.5 inline-flex items-center gap-0.5">
+                  <span className="ml-0.5 inline-flex shrink-0 items-center gap-0.5">
                     <RemoteFolderActions nodeId={node.id} />
                   </span>
                 </>
@@ -1099,32 +1099,36 @@ function DetailPaneBody({
                 onCreate={() => void createMirrorAndRefresh()}
               />
             )}
-            <div className="mb-3 flex items-center justify-between">
-                  {isCentralMode && node.local_mirror ? (
-                    <SyncBar
-                      running={syncRunning}
-                      result={syncRunResult}
-                      error={syncError}
-                      statusLoaded={syncLoaded}
-                      statusMap={syncStatus}
-                      onRun={handleRunSync}
-                    />
-                  ) : (
-                    <span />
-                  )}
-                  <NewFileSplitButton
-                    hasMirror={!!node.local_mirror}
-                    onNewFile={() => {
-                      setPresentationError(null);
-                      setCreatingFile((v) => !v);
-                    }}
-                    onOpenNewFile={() => {
-                      setPresentationError(null);
-                      setCreatingFile(true);
-                    }}
-                    onNewPresentation={handleNewPresentation}
-                  />
-                </div>
+            {/* One row: the sync button and "Nový soubor" on the same line.
+                The row owns the bottom margin (SyncBar has none of its own),
+                otherwise its margin box shifts the button off the row's
+                vertical centre. */}
+            <div className="mb-3 flex items-center justify-between gap-2">
+              {isCentralMode && node.local_mirror ? (
+                <SyncBar
+                  running={syncRunning}
+                  result={syncRunResult}
+                  error={syncError}
+                  statusLoaded={syncLoaded}
+                  statusMap={syncStatus}
+                  onRun={handleRunSync}
+                />
+              ) : (
+                <span />
+              )}
+              <NewFileSplitButton
+                hasMirror={!!node.local_mirror}
+                onNewFile={() => {
+                  setPresentationError(null);
+                  setCreatingFile((v) => !v);
+                }}
+                onOpenNewFile={() => {
+                  setPresentationError(null);
+                  setCreatingFile(true);
+                }}
+                onNewPresentation={handleNewPresentation}
+              />
+            </div>
                 {presentationError && (
                   <div className="mb-3 text-[11px]" style={{ color: "var(--color-danger)" }}>
                     {presentationError}
@@ -1208,6 +1212,7 @@ function DetailPaneBody({
             nodeId={node.id}
             onOpenFile={onOpenFile}
             onOpenChat={onOpenChat ? (sessionId) => onOpenChat(node.id, sessionId) : undefined}
+            onSessionStarted={onSessionStarted}
             liveStates={liveSessionStates}
             canManage={canManage}
             meId={meId}
@@ -3606,13 +3611,16 @@ function PathCopy({ path }: { path: string }) {
       /* clipboard write rejected; skip copied state */
     }
   };
+  // `shrink min-w-0` overrides Button's base `shrink-0`: without it the
+  // button keeps its full intrinsic width, the truncating span never engages
+  // and a long path pushes the trailing icons past the header's right edge.
   return (
     <Button
       variant="ghost"
       size="xs"
       onClick={handle}
       title={`${path}\nKliknutím zkopírujete cestu`}
-      className="group h-auto min-w-0 gap-1.5 px-1 py-0.5 font-mono text-[11.5px] font-normal text-[var(--color-text-muted)] hover:bg-transparent hover:text-[var(--color-text)]"
+      className="group h-auto shrink min-w-0 gap-1.5 px-1 py-0.5 font-mono text-[11.5px] font-normal text-[var(--color-text-muted)] hover:bg-transparent hover:text-[var(--color-text)]"
     >
       <Folder />
       {/* dir="rtl" on the truncating span puts the ellipsis on the LEFT;

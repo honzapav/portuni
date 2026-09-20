@@ -116,6 +116,18 @@ async function migrateFileStateInode(db: DbClient): Promise<void> {
   await db.execute("ALTER TABLE file_state ADD COLUMN cached_dev INTEGER");
 }
 
+// Fails with exactly the error the first local sync.db read would throw,
+// but before anything expensive or interactive happens. A tool that cannot
+// possibly succeed without this device's sync.db (portuni_store, and
+// portuni_pull in download mode) calls it at the top of its handler: on a
+// connector session (claude.ai reaching central over HTTP, no workspace
+// root, no mirror) the write-scope confirmation dialog would otherwise be
+// shown -- and waited on for minutes -- for an upload that can never start
+// (#409).
+export function requireLocalSyncDb(): void {
+  workspaceRoot();
+}
+
 export async function getLocalDb(): Promise<DbClient> {
   const dir = join(workspaceRoot(), ".portuni");
   const path = join(dir, "sync.db");

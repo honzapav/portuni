@@ -72,9 +72,17 @@ export async function computeSyncPending(
     // actually clear. Split so each count means what it says; a node is
     // still included below when it only has decisions, so it isn't hidden
     // from the overview entirely.
+    // `pull` (#339) is the remote side: records the remote watcher on
+    // central has registered or re-hashed, whose bytes this device does not
+    // have yet. It is the signal the sync overview and the sidebar show
+    // outside the node detail, so a node holding only pull records is kept
+    // in the list -- but it counts towards neither `total` nor `decisions`:
+    // the user did not create this work, and the "unsynced local work"
+    // badge must not report someone else's edits.
+    const pull = scan.pull_candidates.length;
     const total = push + untracked;
     const decisions = conflict + deleted_local;
-    if (total === 0 && decisions === 0) return null;
+    if (total === 0 && decisions === 0 && pull === 0) return null;
     return {
       node_id: m.node_id,
       node_name: row.rows[0].name as string,
@@ -84,6 +92,7 @@ export async function computeSyncPending(
       untracked,
       remote_missing,
       deleted_local,
+      pull,
       total,
       decisions,
     };

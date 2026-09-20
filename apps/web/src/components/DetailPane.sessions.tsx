@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Pencil, X } from "lucide-react";
-import type { SessionResumeInfo, SessionSummary } from "../types";
+import type { SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
 import {
   continueSession,
   fetchNodePersistentSessions,
@@ -72,6 +72,11 @@ type Props = {
   // the selector (App.tsx's requestedChatSession). Absent in contexts
   // with no chat surface.
   onOpenChat?: (sessionId: string) => void;
+  // #412: "Navázat" starts a real, running thread -- handed to the app the
+  // same way "Nový úkol" hands over the draft it opens, so the Práce
+  // sidebar gets the row at once instead of waiting for something else to
+  // refetch the node.
+  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
   // #321's access table, echoed client-side for sessionRowAccess (useMe).
   canManage: boolean;
   meId: string | null;
@@ -87,6 +92,7 @@ export function SessionsSection({
   nodeId,
   onOpenFile,
   onOpenChat,
+  onSessionStarted,
   canManage,
   meId,
   liveStates,
@@ -168,7 +174,11 @@ export function SessionsSection({
   // is already closed. Jumps straight to the new thread.
   const handleContinue = async (id: string) => {
     try {
-      const { session } = await continueSession(id);
+      const { session, run } = await continueSession(id);
+      // Before opening the chat: the new thread has to be in the app's own
+      // per-node map, or the sidebar row it should be highlighting is not
+      // there yet (#412).
+      onSessionStarted?.({ session, run });
       onOpenChat?.(session.id);
     } catch (e) {
       setError(String(e));

@@ -85,6 +85,7 @@ import {
   handleRemoteSweep,
   handleResolveFile,
   handleSyncHealth,
+  handleSyncWatch,
   handleSyncPending,
   handleSyncRun,
   handleSyncStatus,
@@ -305,6 +306,10 @@ async function routeSystem(
   }
   if (pathname === "/sync/health" && method === "GET") {
     await handleSyncHealth(req, res, identity);
+    return true;
+  }
+  if (pathname === "/sync/watch" && method === "GET") {
+    await handleSyncWatch(req, res);
     return true;
   }
   if (pathname === "/sync/jobs" && method === "POST") {

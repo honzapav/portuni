@@ -22,6 +22,8 @@ export type {
   SyncJobNodeStatus,
   WatcherErrorEntry,
   SyncHealthResponse,
+  RemoteWatchStatus,
+  SyncWatchResponse,
   UntrackedFile,
   FileContentResponse,
   NodeAccessEntry,

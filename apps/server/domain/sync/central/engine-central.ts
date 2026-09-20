@@ -1467,9 +1467,14 @@ export async function computeSyncPendingCentral(
     // pulls it, so it must not count towards either total. `total`
     // (actionable) vs `decisions` (needs a human): see the local engine's
     // computeSyncPending for the identical split and its rationale.
+    // The remote side (#339): what the remote watcher has registered on
+    // central and this device has not pulled yet. Counts towards neither
+    // total nor decisions -- see the local computeSyncPending for the
+    // identical rule -- but keeps its node in the list on its own.
+    const pull = scan.pull_candidates.length;
     const total = push + untracked;
     const decisions = conflict + deleted_local;
-    if (total === 0 && decisions === 0) return null;
+    if (total === 0 && decisions === 0 && pull === 0) return null;
     return {
       node_id: m.node_id,
       node_name: si.node.name,
@@ -1479,6 +1484,7 @@ export async function computeSyncPendingCentral(
       untracked,
       remote_missing,
       deleted_local,
+      pull,
       total,
       decisions,
     };

@@ -37,7 +37,9 @@ import {
   resolveSandboxScopeForNode,
   ResumeSessionUnauthorizedError,
 } from "../domain/sandbox-profile.js";
-import type { SyncStatusResponse, UntrackedFile } from "../shared/api-types.js";
+import type { SyncStatusResponse, SyncWatchResponse, UntrackedFile } from "../shared/api-types.js";
+import { isLocalWorkspace } from "../infra/server-config.js";
+import { remoteWatchStatus } from "../domain/sync/remote-watch-status.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
@@ -420,6 +422,27 @@ export async function handleSyncHealth(
     respondJson(res, 200, { errors: errors.filter((e) => visibleIds.has(e.node_id)) });
   } catch (err) {
     respondError(res, `${req.method} /sync/health`, err);
+  }
+}
+
+// GET /sync/watch (#339) -- what the remote watcher (#338) is doing, one
+// entry per remote it knows about. Central only (spec rule 5: the loop
+// starts from index.ts when PORTUNI_AUTH_MODE=google and nowhere else), so
+// a local workspace answers an empty list outright rather than a stale or
+// invented one: it has no remote at all (#310) and the UI renders no
+// watcher line for it. Read tier, no per-node visibility to filter -- the
+// state is per remote, not per node.
+export async function handleSyncWatch(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    const payload: SyncWatchResponse = {
+      remotes: isLocalWorkspace() ? [] : remoteWatchStatus(),
+    };
+    respondJson(res, 200, payload);
+  } catch (err) {
+    respondError(res, `${req.method} /sync/watch`, err);
   }
 }
 

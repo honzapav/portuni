@@ -11,7 +11,8 @@ import { setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import { createSessionRuntime, resolveModelAndEffort } from "../apps/server/domain/runner/session-runtime.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
-import { createInstance } from "../apps/server/domain/runner/instances.js";
+import { createInstance, setOrgDefault } from "../apps/server/domain/runner/instances.js";
+import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
 import type { RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
@@ -215,6 +216,38 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     assert.ok(row?.handoff_inline);
     const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
     assert.equal(parseServerHandoffReason(row!.handoff_inline), "idle");
+  });
+
+  it("a run ending on a provider limit suspends the thread with the provider message in its events (#411)", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    // What the Claude adapter reports when the CLI answers with a spend
+    // limit: one provider error, then the run ends with reason "limit".
+    const adapter = new FakeRunnerAdapter({
+      script: [
+        { kind: "error", payload: { class: "provider", message: "You've hit your monthly spend limit" } },
+        { end: "limit" },
+      ],
+    });
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    const row = await store.getSession(session.id);
+    assert.equal(row?.state, "suspended");
+    assert.ok(row?.handoff_inline, "a server-written summary must exist");
+
+    const runs = await store.listRuns(session.id);
+    // withSuspendReason leaves an adapter-reported limit alone -- that IS
+    // the informative reason.
+    assert.equal(runs[0].end_reason, "limit");
+
+    const events = await store.listEvents(session.id);
+    const error = events.find((e) => e.kind === "error");
+    assert.ok(error, "the provider message must be in the transcript");
+    assert.equal(JSON.parse(error!.payload).class, "provider");
+    assert.match(JSON.parse(error!.payload).message, /spend limit/);
+    assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
   });
 
   it("checkIdleRunsOnce is a no-op when nothing is live", async () => {
@@ -631,5 +664,113 @@ describe("session runtime: model/effort resolution end-to-end (startTask)", () =
 
     assert.equal(getRunStart()?.model, null);
     assert.equal(getRunStart()?.effort, null);
+  });
+});
+
+
+// #407: promoting a draft resolves the node's organization and, with it,
+// the organization's default runner instance -- in central mode through an
+// injected resolver (CentralClient.nodeOrganizationId), since there is no
+// graph db on the device to read the belongs_to edge from.
+describe("session runtime: organization default instance on draft promotion", () => {
+  let dataDir: string;
+  const originalDataDir = process.env.PORTUNI_DATA_DIR;
+
+  afterEach(async () => {
+    clearRegistryForTests();
+    if (originalDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+    else process.env.PORTUNI_DATA_DIR = originalDataDir;
+    if (dataDir) await rm(dataDir, { recursive: true, force: true });
+  });
+
+  // Two instances for the same runner, the second one the org default --
+  // "the runner's own default" (no instance at all) must be visibly wrong.
+  async function twoInstances(orgId: string): Promise<{ other: string; orgDefault: string }> {
+    dataDir = await mkdtemp(join(tmpdir(), "portuni-org-default-"));
+    process.env.PORTUNI_DATA_DIR = dataDir;
+    const other = await createInstance({ name: "Osobní", runner: "fake" });
+    const orgDefault = await createInstance({ name: "Tempo", runner: "fake" });
+    await setOrgDefault(orgId, orgDefault.id);
+    return { other: other.id, orgDefault: orgDefault.id };
+  }
+
+  async function promote(
+    deps: { store: DbSessionStore; nodeId: string; resolveNodeOrgId?: (nodeId: string) => Promise<string | null> },
+  ): Promise<string | null> {
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    registerAdapter(adapter);
+    const runtime = createSessionRuntime({
+      store: deps.store,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+      resolveNodeOrgId: deps.resolveNodeOrgId,
+    });
+    const draft = await runtime.createDraft({ userId: "U1", nodeId: deps.nodeId });
+    await runtime.sendMessage(draft.id, "Udělej to");
+    const row = await deps.store.getSession(draft.id);
+    return row?.instance_id ?? null;
+  }
+
+  it("picks the organization's default instance from the local graph db", async () => {
+    const { db, nodeId, orgId } = await sharedDb();
+    const { orgDefault } = await twoInstances(orgId);
+    const instanceId = await promote({ store: new DbSessionStore(db), nodeId });
+    assert.equal(instanceId, orgDefault);
+  });
+
+  it("picks it from an injected (central-mode) resolver too", async () => {
+    const { db, nodeId, orgId } = await sharedDb();
+    const { orgDefault } = await twoInstances(orgId);
+    const instanceId = await promote({
+      store: new DbSessionStore(db),
+      nodeId,
+      resolveNodeOrgId: async () => orgId,
+    });
+    assert.equal(instanceId, orgDefault);
+  });
+
+  it("leaves the instance unset for a node with no organization", async () => {
+    const { db, nodeId, orgId } = await sharedDb();
+    await twoInstances(orgId);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    try {
+      const instanceId = await promote({
+        store: new DbSessionStore(db),
+        nodeId,
+        resolveNodeOrgId: async () => null,
+      });
+      assert.equal(instanceId, null);
+    } finally {
+      console.warn = originalWarn;
+    }
+    // A node that genuinely has no organization is not a fallback worth
+    // logging about.
+    assert.deepEqual(warnings, []);
+  });
+
+  it("degrades to no instance and warns once when the resolver fails", async () => {
+    const { db, nodeId, orgId } = await sharedDb();
+    await twoInstances(orgId);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    let instanceId: string | null = "unset";
+    try {
+      instanceId = await promote({
+        store: new DbSessionStore(db),
+        nodeId,
+        resolveNodeOrgId: async () => {
+          throw new Error("central unreachable");
+        },
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(instanceId, null);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /central unreachable/);
+    assert.match(warnings[0], new RegExp(nodeId));
   });
 });

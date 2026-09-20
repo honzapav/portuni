@@ -15,7 +15,7 @@ import { buildNodeRoot } from "./remote-path.js";
 import { adoptFiles } from "./engine-mutations.js";
 import { sha256Buffer } from "./hash.js";
 import { mapWithConcurrency } from "./engine.js";
-import type { FileRef } from "./types.js";
+import type { FileAdapter, FileRef } from "./types.js";
 import { assertRemoteCapable } from "./types.js";
 import { retryPendingFileOps, type RetryResult } from "./pending-ops.js";
 
@@ -47,13 +47,247 @@ const SECTIONS = new Set<string>(SECTION_NAMES);
 // An organization's root spans its children's subtrees; those paths have a
 // type-plural segment (projects/...) where the section would be and are
 // skipped here -- the child node's own sweep handles them.
-function adoptableSection(nodeRoot: string, remotePath: string): "wip" | "outputs" | "resources" | null {
+export function adoptableSection(nodeRoot: string, remotePath: string): "wip" | "outputs" | "resources" | null {
   const rel = remotePath.startsWith(`${nodeRoot}/`) ? remotePath.slice(nodeRoot.length + 1) : null;
   if (!rel) return null;
   const [section, ...rest] = rel.split("/");
   if (!SECTIONS.has(section) || rest.length === 0) return null;
   if (rest.some((seg) => seg.startsWith("."))) return null;
   return section as "wip" | "outputs" | "resources";
+}
+
+// --- The three per-file operations, extracted so the remote watcher
+// (domain/sync/remote-watcher.ts) applies EXACTLY what a full sweep would
+// (spec rule 4: "no second classification path"). remoteSweep below calls
+// the same three functions over whole-node candidate sets; the watcher
+// calls them over the one path a change touched.
+
+// One `files` row as the steps below need it.
+export interface RemoteRecordRow {
+  id: string;
+  filename: string;
+  remote_path: string;
+  current_remote_hash: string | null;
+  is_native_format: number;
+}
+
+// The row a change/listing entry refers to, if this node tracks it. Both
+// spellings of the path are asked for: remote_path is stored exactly as the
+// backend reported it at registration time, which need not be the NFC form
+// a later listing/change reports (see the NFC normalization the listing map
+// below does for the same reason).
+export async function findRemoteRecord(
+  db: DbClient,
+  a: { nodeId: string; remoteName: string; remotePath: string },
+): Promise<RemoteRecordRow | null> {
+  const r = await db.execute({
+    sql: `SELECT id, filename, remote_path, current_remote_hash, is_native_format
+          FROM files
+          WHERE node_id = ? AND remote_name = ? AND remote_path IN (?, ?)`,
+    args: [a.nodeId, a.remoteName, a.remotePath, a.remotePath.normalize("NFC")],
+  });
+  if (r.rows.length === 0) return null;
+  const row = r.rows[0];
+  return {
+    id: row.id as string,
+    filename: row.filename as string,
+    remote_path: row.remote_path as string,
+    current_remote_hash: row.current_remote_hash as string | null,
+    is_native_format: Number(row.is_native_format),
+  };
+}
+
+// Sweep step 1.5's own rule, as a predicate: an unknown hash is always
+// worth resolving, a known one only when the backend's own listing/change
+// feed proves it stale. A native-format object has no bytes and no hash by
+// construction.
+export function needsHashRefresh(
+  record: { current_remote_hash: string | null; is_native_format: number },
+  listedHash: string | null,
+): boolean {
+  if (Number(record.is_native_format) === 1) return false;
+  if (record.current_remote_hash === null) return true;
+  return listedHash !== null && listedHash !== record.current_remote_hash;
+}
+
+// Sweep step 1: a record whose remote object the caller believes is gone.
+// Each candidate is confirmed with its own stat before the row is destroyed
+// -- a listing can lag a fresh upload, and a change feed can report a move
+// out of the watched root the same way it reports a delete.
+export async function deleteRemovedRecords(
+  db: DbClient,
+  a: {
+    userId: string;
+    nodeId: string;
+    remoteName: string;
+    adapter: FileAdapter;
+    candidates: RemoteRecordRow[];
+  },
+): Promise<{ deleted: RemoteSweepFile[]; errors: Array<{ remote_path: string; error: string }> }> {
+  const deleted: RemoteSweepFile[] = [];
+  const errors: Array<{ remote_path: string; error: string }> = [];
+  const confirmations = await mapWithConcurrency(
+    a.candidates,
+    SWEEP_STAT_CONCURRENCY,
+    async (r) => {
+      try {
+        return { stat: await a.adapter.stat(r.remote_path), error: null as string | null };
+      } catch (e) {
+        return { stat: null, error: (e as Error).message };
+      }
+    },
+  );
+  for (const [i, r] of a.candidates.entries()) {
+    const { stat, error } = confirmations[i];
+    if (error !== null) {
+      errors.push({ remote_path: r.remote_path, error: `stat failed: ${error}` });
+      continue;
+    }
+    if (stat !== null) continue;
+    const now = new Date().toISOString();
+    await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [r.id] });
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+            VALUES (?, ?, 'sync_delete_remote', 'file', ?, ?, ?)`,
+      args: [
+        ulid(),
+        a.userId,
+        r.id,
+        JSON.stringify({
+          node_id: a.nodeId,
+          remote_name: a.remoteName,
+          remote_path: r.remote_path,
+          filename: r.filename,
+          mode: "complete",
+          reason: "remote_sweep",
+          hash: r.current_remote_hash,
+        }),
+        now,
+      ],
+    });
+    deleted.push({ file_id: r.id, filename: r.filename, remote_path: r.remote_path });
+  }
+  return { deleted, errors };
+}
+
+// Sweep step 1.5: current_remote_hash is the only source of remote truth
+// central-mode classification reads, so a record whose hash is unknown or
+// provably stale is refreshed here. `listed_hash` is whatever the backend
+// reported for free (Drive: md5Checksum); null means the backend has none
+// and the bytes have to be fetched and hashed.
+export async function refreshRemoteHashes(
+  db: DbClient,
+  a: {
+    adapter: FileAdapter;
+    candidates: Array<{ id: string; remote_path: string; listed_hash: string | null }>;
+  },
+): Promise<{ refreshed: Array<{ id: string; hash: string }>; errors: Array<{ remote_path: string; error: string }> }> {
+  const refreshed: Array<{ id: string; hash: string }> = [];
+  const errors: Array<{ remote_path: string; error: string }> = [];
+  const results = await mapWithConcurrency(a.candidates, SWEEP_STAT_CONCURRENCY, async (c) => {
+    if (c.listed_hash) return { c, hash: c.listed_hash, error: null as string | null };
+    try {
+      return { c, hash: sha256Buffer(await a.adapter.get(c.remote_path)), error: null };
+    } catch (e) {
+      return { c, hash: null, error: (e as Error).message };
+    }
+  });
+  for (const b of results) {
+    if (b.error !== null) {
+      errors.push({ remote_path: b.c.remote_path, error: `hash refresh failed: ${b.error}` });
+      continue;
+    }
+    if (b.hash === null) continue;
+    await db.execute({
+      sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+      args: [b.hash, b.c.id],
+    });
+    refreshed.push({ id: b.c.id, hash: b.hash });
+  }
+  return { refreshed, errors };
+}
+
+// Sweep step 2: remote files under a tracked section that no record tracks.
+// `refs` are the backend's own listing/change entries, so adoptFiles does
+// not stat each path again.
+export async function adoptRemoteFiles(
+  db: DbClient,
+  a: {
+    userId: string;
+    nodeId: string;
+    nodeRoot: string;
+    adapter: FileAdapter;
+    refs: FileRef[];
+  },
+): Promise<{ adopted: RemoteSweepFile[]; errors: Array<{ remote_path: string; error: string }> }> {
+  const adopted: RemoteSweepFile[] = [];
+  const errors: Array<{ remote_path: string; error: string }> = [];
+  const bySection = new Map<"wip" | "output", string[]>();
+  // adoptFiles echoes back whatever path string it was given as
+  // `remote_path`, so this doubles as a lookup from that path back to the
+  // FileRef -- needed below to tell "this backend never reports hashes"
+  // (fs/OpenDAL) from "this file structurally has no content hash" (a Drive
+  // native Doc/Sheet/Slide).
+  const refsByPath = new Map<string, FileRef>();
+  for (const ref of a.refs) {
+    const section = adoptableSection(a.nodeRoot, ref.path);
+    if (!section) continue;
+    const status = section === "outputs" ? "output" : "wip";
+    if (!bySection.has(status)) bySection.set(status, []);
+    bySection.get(status)!.push(ref.path);
+    refsByPath.set(ref.path, ref);
+  }
+  for (const [status, paths] of bySection) {
+    const res = await adoptFiles(db, {
+      userId: a.userId,
+      nodeId: a.nodeId,
+      paths,
+      status,
+      refs: refsByPath,
+    });
+    const needsBackfill: typeof res.adopted = [];
+    for (const f of res.adopted) {
+      adopted.push({ file_id: f.file_id, filename: f.filename, remote_path: f.remote_path });
+      // adoptFiles records whatever hash the backend's stat() reports, which
+      // for backends without a content-addressable stat (e.g. the fs/OpenDAL
+      // adapter) is null. Backfill it here by hashing the content directly,
+      // so an adopted record carries the same kind of hash storeFile does --
+      // otherwise every later statusScan comparison against it is starved.
+      // Native-format remote objects (Drive Docs/Sheets/Slides) are the
+      // structural exception: they have no bytes `get()` can fetch with
+      // alt=media, `hash: null` is by design, and there is nothing to
+      // backfill.
+      const isNative = refsByPath.get(f.remote_path)?.is_native_format === true;
+      if (!f.hash && !isNative) needsBackfill.push(f);
+    }
+    // Downloading these one after another made a bulk adoption as slow as the
+    // slowest sequence of fetches; they are independent.
+    const backfilled = await mapWithConcurrency(
+      needsBackfill,
+      SWEEP_STAT_CONCURRENCY,
+      async (f) => {
+        try {
+          return { f, hash: sha256Buffer(await a.adapter.get(f.remote_path)), error: null as string | null };
+        } catch (e) {
+          return { f, hash: null, error: (e as Error).message };
+        }
+      },
+    );
+    for (const b of backfilled) {
+      if (b.error !== null) {
+        errors.push({ remote_path: b.f.remote_path, error: `hash backfill failed: ${b.error}` });
+        continue;
+      }
+      await db.execute({
+        sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+        args: [b.hash, b.f.file_id],
+      });
+    }
+    for (const s of res.skipped) {
+      if (s.reason !== "already tracked") errors.push({ remote_path: s.remote_path, error: s.reason });
+    }
+  }
+  return { adopted, errors };
 }
 
 export async function remoteSweep(db: DbClient, a: RemoteSweepArgs): Promise<RemoteSweepResult> {
@@ -113,9 +347,16 @@ export async function remoteSweep(db: DbClient, a: RemoteSweepArgs): Promise<Rem
           FROM files WHERE node_id = ? AND remote_name = ? AND remote_path IS NOT NULL`,
     args: [a.nodeId, remoteName],
   });
-  const missingCandidates = rows.rows.filter((r) => {
-    const hadObject = (r.current_remote_hash as string | null) !== null || Number(r.is_native_format) === 1;
-    return hadObject && !present.has((r.remote_path as string).normalize("NFC"));
+  const records: RemoteRecordRow[] = rows.rows.map((r) => ({
+    id: r.id as string,
+    filename: r.filename as string,
+    remote_path: r.remote_path as string,
+    current_remote_hash: r.current_remote_hash as string | null,
+    is_native_format: Number(r.is_native_format),
+  }));
+  const missingCandidates = records.filter((r) => {
+    const hadObject = r.current_remote_hash !== null || r.is_native_format === 1;
+    return hadObject && !present.has(r.remote_path.normalize("NFC"));
   });
 
   // Some backends (the fs/OpenDAL adapter included) swallow an unreachable
@@ -137,54 +378,15 @@ export async function remoteSweep(db: DbClient, a: RemoteSweepArgs): Promise<Rem
     }
   }
 
-  // A listing can lag a fresh upload, so each candidate is confirmed gone
-  // with its own stat before the record is destroyed. That guard stays --
-  // it is what makes the deletion safe -- but the stats no longer run one
-  // after another: on Drive a folder-sized deletion meant one serial HTTPS
-  // round trip per file. The writes below stay sequential.
-  const confirmations = await mapWithConcurrency(
-    missingCandidates,
-    SWEEP_STAT_CONCURRENCY,
-    async (r) => {
-      try {
-        return { stat: await adapter.stat(r.remote_path as string), error: null as string | null };
-      } catch (e) {
-        return { stat: null, error: (e as Error).message };
-      }
-    },
-  );
-
-  for (const [i, r] of missingCandidates.entries()) {
-    const remotePath = r.remote_path as string;
-    const { stat, error } = confirmations[i];
-    if (error !== null) {
-      out.errors.push({ remote_path: remotePath, error: `stat failed: ${error}` });
-      continue;
-    }
-    if (stat !== null) continue;
-    const now = new Date().toISOString();
-    await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [r.id as string] });
-    await db.execute({
-      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-            VALUES (?, ?, 'sync_delete_remote', 'file', ?, ?, ?)`,
-      args: [
-        ulid(),
-        a.userId,
-        r.id as string,
-        JSON.stringify({
-          node_id: a.nodeId,
-          remote_name: remoteName,
-          remote_path: remotePath,
-          filename: r.filename as string,
-          mode: "complete",
-          reason: "remote_sweep",
-          hash: (r.current_remote_hash as string | null) ?? null,
-        }),
-        now,
-      ],
-    });
-    out.deleted_on_remote.push({ file_id: r.id as string, filename: r.filename as string, remote_path: remotePath });
-  }
+  const removed = await deleteRemovedRecords(db, {
+    userId: a.userId,
+    nodeId: a.nodeId,
+    remoteName,
+    adapter,
+    candidates: missingCandidates,
+  });
+  out.deleted_on_remote.push(...removed.deleted);
+  out.errors.push(...removed.errors);
 
   // 1.5. Hash refresh for tracked, present records whose cached hash is
   // unknown (#273) OR stale (#276). current_remote_hash is the ONLY source
@@ -198,47 +400,28 @@ export async function remoteSweep(db: DbClient, a: RemoteSweepArgs): Promise<Rem
   // track of its hash"). A record whose hash WAS once correct but the
   // object was since edited out of band (a teammate's direct Drive edit)
   // reads as permanently clean instead, so the edit is never pulled by any
-  // device (#276) -- central mode has no other path that ever re-verifies
-  // an already-known hash; local mode's slow scan self-heals this the same
-  // way by statting the remote live on every non-fast scan, central mode
-  // has nothing equivalent.
+  // device (#276).
   //
   // For a backend that reports a content hash on listing (Drive:
   // md5Checksum) both cases are corrected for free -- the sweep already
   // paid for the listing call, no extra remote round trip needed. For a
   // backend that reports none (the fs/OpenDAL test adapter) a NULL hash
   // still falls back to downloading and hashing the content, same as the
-  // adopt path's own backfill below; an already-non-null hash on such a
-  // backend is left alone -- with no free staleness signal, refreshing it
-  // would mean downloading and hashing every tracked file's full content
-  // on every sync run. That is the same structural limit local mode's own
-  // slow scan had for such backends before the local engine lost its remote
-  // half (#312) -- not a new gap this fix introduces.
-  const hashCandidates = rows.rows.filter((r) => {
-    if (Number(r.is_native_format) === 1) return false;
-    const ref = present.get((r.remote_path as string).normalize("NFC"));
-    if (!ref) return false;
-    const cached = r.current_remote_hash as string | null;
-    if (cached === null) return true;
-    return ref.hash !== null && ref.hash !== cached;
-  });
-  const hashBackfills = await mapWithConcurrency(hashCandidates, SWEEP_STAT_CONCURRENCY, async (r) => {
-    const remotePath = r.remote_path as string;
-    const ref = present.get(remotePath.normalize("NFC"))!;
-    if (ref.hash) return { id: r.id as string, hash: ref.hash, error: null as string | null };
-    try {
-      return { id: r.id as string, hash: sha256Buffer(await adapter.get(remotePath)), error: null };
-    } catch (e) {
-      return { id: r.id as string, hash: null, error: (e as Error).message };
-    }
-  });
-  for (const b of hashBackfills) {
-    if (b.error !== null || b.hash === null) continue;
-    await db.execute({
-      sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
-      args: [b.hash, b.id],
-    });
+  // adopt path's own backfill; an already-non-null hash on such a backend
+  // is left alone -- with no free staleness signal, refreshing it would
+  // mean downloading and hashing every tracked file's full content on
+  // every sync run.
+  const hashCandidates: Array<{ id: string; remote_path: string; listed_hash: string | null }> = [];
+  for (const r of records) {
+    const ref = present.get(r.remote_path.normalize("NFC"));
+    if (!ref) continue;
+    if (!needsHashRefresh(r, ref.hash)) continue;
+    hashCandidates.push({ id: r.id, remote_path: r.remote_path, listed_hash: ref.hash });
   }
+  // A hash the sweep could not resolve is not an error worth surfacing: the
+  // record keeps its previous value and the next run tries again (this is
+  // the historical behaviour of step 1.5, unlike the adopt path's backfill).
+  await refreshRemoteHashes(db, { adapter, candidates: hashCandidates });
 
   // 2. New on the remote. Known = any record anywhere under this root (an
   // org mirror lists its children's files too).
@@ -248,75 +431,19 @@ export async function remoteSweep(db: DbClient, a: RemoteSweepArgs): Promise<Rem
     args: [remoteName, `${likePrefix}/%`],
   });
   const knownSet = new Set(known.rows.map((r) => (r.remote_path as string).normalize("NFC")));
-  const bySection = new Map<"wip" | "output", string[]>();
-  // adoptFiles echoes back whatever path string it was given as
-  // `remote_path`, so this doubles as a lookup from that path back to the
-  // FileRef the listing produced for it -- needed below to tell "this
-  // backend never reports hashes" (fs/OpenDAL) from "this file structurally
-  // has no content hash" (a Drive native Doc/Sheet/Slide).
-  const refsByPath = new Map<string, FileRef>();
+  const newRefs: FileRef[] = [];
   for (const [path, ref] of present) {
     if (knownSet.has(path)) continue;
-    const section = adoptableSection(nodeRoot, ref.path);
-    if (!section) continue;
-    const status = section === "outputs" ? "output" : "wip";
-    if (!bySection.has(status)) bySection.set(status, []);
-    bySection.get(status)!.push(ref.path);
-    refsByPath.set(ref.path, ref);
+    newRefs.push(ref);
   }
-  for (const [status, paths] of bySection) {
-    // refsByPath carries the hash and native flag the listing already
-    // reported, so adoptFiles does not stat each path again.
-    const res = await adoptFiles(db, {
-      userId: a.userId,
-      nodeId: a.nodeId,
-      paths,
-      status,
-      refs: refsByPath,
-    });
-    const needsBackfill: typeof res.adopted = [];
-    for (const f of res.adopted) {
-      out.adopted.push({ file_id: f.file_id, filename: f.filename, remote_path: f.remote_path });
-      // adoptFiles records whatever hash the backend's stat() reports, which
-      // for backends without a content-addressable stat (e.g. the fs/OpenDAL
-      // adapter) is null. Backfill it here by hashing the content directly,
-      // so an adopted record carries the same kind of hash storeFile does --
-      // otherwise every later statusScan comparison against it is starved.
-      // Native-format remote objects (Drive Docs/Sheets/Slides) are the
-      // structural exception: they have no bytes `get()` can fetch with
-      // alt=media, `hash: null` is by design, and there is nothing to
-      // backfill -- AdoptFilesResult doesn't carry is_native_format, so look
-      // the listing's FileRef back up by path instead of guessing from the
-      // hash alone.
-      const isNative = refsByPath.get(f.remote_path)?.is_native_format === true;
-      if (!f.hash && !isNative) needsBackfill.push(f);
-    }
-    // Downloading these one after another made a bulk adoption as slow as the
-    // slowest sequence of fetches; they are independent.
-    const backfilled = await mapWithConcurrency(
-      needsBackfill,
-      SWEEP_STAT_CONCURRENCY,
-      async (f) => {
-        try {
-          return { f, hash: sha256Buffer(await adapter.get(f.remote_path)), error: null as string | null };
-        } catch (e) {
-          return { f, hash: null, error: (e as Error).message };
-        }
-      },
-    );
-    for (const b of backfilled) {
-      if (b.error !== null) {
-        out.errors.push({ remote_path: b.f.remote_path, error: `hash backfill failed: ${b.error}` });
-        continue;
-      }
-      await db.execute({
-        sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
-        args: [b.hash, b.f.file_id],
-      });
-    }
-    for (const s of res.skipped) {
-      if (s.reason !== "already tracked") out.errors.push({ remote_path: s.remote_path, error: s.reason });
-    }
-  }
+  const adoptResult = await adoptRemoteFiles(db, {
+    userId: a.userId,
+    nodeId: a.nodeId,
+    nodeRoot,
+    adapter,
+    refs: newRefs,
+  });
+  out.adopted.push(...adoptResult.adopted);
+  out.errors.push(...adoptResult.errors);
   return out;
 }

@@ -449,6 +449,34 @@ symlink to this file.
   (no `home_node_id`) and starts unscoped. Vibe merges project over user
   config (union-merge of `mcp_servers` by `name`), so the per-mirror file is
   minimal and never clobbers the user's models/providers.
+- **A confirmation dialog must never outlive the client's tool-call
+  deadline, and a tool that cannot possibly succeed never opens one
+  (#409).** `portuni_store` through the remote connector (claude.ai →
+  `api.portuni.com/mcp`, no local sync.db) used to return nothing for five
+  minutes: `mcp/tools/files.ts` ran `guardNodeWrite` first, the write-scope
+  dialog waited `ELICIT_TIMEOUT_MS` (8 min, longer than claude.ai's own
+  300 s tool abort), and `storeFile`'s own precondition -- the local sync.db
+  `portuni_status` fails on immediately -- only ran after it. Two halves:
+  `local-db.ts`'s `requireLocalSyncDb()` (the same
+  `PORTUNI_WORKSPACE_ROOT must be set for local sync.db` throw, just
+  earlier) is called at the top of `portuni_store` and of `portuni_pull`'s
+  download branch (`file_id`) -- and only those two; `portuni_adopt_files`
+  is deliberately remote-only (#351) and `portuni_pull(node_id)` is a
+  preview. The agent front door's device-local copies (`agent-tools.ts`'s
+  `LOCAL_TOOLS`) never route through `mcp/tools/files.ts` and always run on
+  a device that has a sync.db, so they are untouched. And the deadlines
+  came down below every common client's: `ELICIT_TIMEOUT_MS` 4 min,
+  `AGENT_RELAY_ELICIT_TIMEOUT_MS` 3 min (the nested front-door hop, derived
+  as outer minus `ELICIT_RELAY_MARGIN_MS` -- the invariant relay < outer is
+  what keeps an on-time answer from being discarded by the outer wait),
+  both overridable through the single `PORTUNI_ELICIT_TIMEOUT_MS` (positive
+  integer ms; anything else is ignored with one warning, and the relay is
+  always derived, never configured separately). `ElicitOutcome` gained
+  `"timeout"`: an unanswered dialog is no longer indistinguishable from a
+  client that has no dialogs at all, so `writeGuardError` answers
+  `write_expansion_required` with `dialog_timed_out: true` and a retryable
+  hint instead of the `elicitation_supported: false` wording that would
+  send the agent down a path it cannot use.
 - **Auto-seed runs on MCP connect** when the URL carries `?home_node_id=...`.
   Failures (DB unreachable, network) return 503 with the underlying reason
   rather than serving an empty-scope session – see `apps/server/mcp/transport.ts`.
@@ -1134,6 +1162,20 @@ symlink to this file.
   registered as a tracked file the way the local path's
   `writeHandoffAndSuspend` does (the next sync run's untracked-file
   discovery picks it up instead of it appearing immediately in Files).
+  **A third seam of the same shape, `CreateSessionRuntimeDeps
+  .resolveNodeOrgId` (#407)**: promoting a draft picks the node's
+  organization's default runner instance, which used to be a direct
+  `belongs_to` graph-db query wrapped in a swallow-everything try/catch —
+  in agent mode that always threw, so an org default never applied in the
+  one mode that actually has several instances. The local default is the
+  same query (no longer swallowing: a failed lookup must be
+  distinguishable from a node that genuinely has no organization);
+  `createAgentSessionRuntime` supplies `CentralClient.nodeOrganizationId`
+  (`GET /nodes/:id`, the outgoing `belongs_to` edge whose peer is an
+  organization — not `nodeNeighbours`, which #406 removes). A resolver
+  error degrades to "no organization" and never fails the promotion; it
+  logs one warning naming the node, but only when the fallback is visible
+  (>= 2 instances for that runner and some org default configured).
   `is_local_only_path` (`apps/desktop/src/lib.rs`) routes the bare
   `POST /sessions` and every per-session action verb
   (`messages`/`interrupt`/`suspend`/`resume`/`close`/`events`/`signals`/
@@ -1190,7 +1232,29 @@ symlink to this file.
   trigger reason before compaction happens; the message translation is a
   fixed `trigger: "auto"` backstop) — accepted as possible double emission
   for a purely cosmetic chat marker, not verified against a real run.
-  `detect()` (`claude --version` / `claude auth status`, 5s timeout each)
+  **A `result` message is also how a provider failure arrives, and it ends
+  the run (#411).** A spend/rate limit reads as `subtype: "success"` with
+  `is_error: true` and the provider's text in `result`; the `error_*`
+  subtypes (`error_during_execution`, `error_max_turns`,
+  `error_max_budget_usd`, …) carry theirs in `errors: string[]`. Neither
+  ends the CLI in streaming-input mode — it waits for the next prompt — so
+  before this the translate loop never completed, no `run_ended` was
+  emitted, and the session stayed `running` with the composer stuck in its
+  stop state forever. `providerResultFailure` (pure, exported) classifies
+  one: `reason: "limit"` when the subtype or `terminal_reason` says
+  budget/limit or the message matches `/limit/i`, `"error"` otherwise. The
+  run then emits ONE `error` event (`class: "provider"`) and ends the
+  prompt queue; `run_ended` carries that reason and is emitted exactly once
+  (`emitRunEnded`, idempotent — the loop's own completion, its catch branch
+  and the teardown all go through it). `endAfterProviderFailure` reuses
+  `close()`'s own escalation (`shutdownProcess`: end stdin, grace, SIGTERM,
+  term window, SIGKILL) as the bound on a child that ignores the end of its
+  stdin, and ends the run itself if the loop still hasn't. Nothing in the
+  runtime changed: `withSuspendReason` already leaves an adapter-reported
+  `limit`/`error` alone, so the non-close path suspends the thread with a
+  server-written summary exactly as for any other end, and the next message
+  resumes-by-writing (#378). `detect()` (`claude --version` / `claude auth
+  status`, 5s timeout each)
   and the whole message-translation surface are tested against an injected
   fake `query`/`exec` (`test/runner-claude-adapter.test.ts`); a real,
   logged-in run is a macOS-only human verification step, not in the gate.
@@ -1320,6 +1384,107 @@ symlink to this file.
     recorded (`recordWatcherError`), never retried inside the chain;
     `MirrorWatcher.sweep()` re-backfills every watched mirror on a 10-minute
     interval (`boot/mirror-watch.ts`) and repairs it.
+  - **Remote change feed**: `FileAdapter.changes?(cursor)` (`domain/sync/
+    types.ts`, `RemoteChange`/`RemoteChanges`) is the optional capability the
+    remote watcher will poll on central
+    (`docs/superpowers/specs/2026-09-12-remote-watcher-design.md`); only the
+    Drive adapter implements it, fs/OpenDAL run on the full `remoteSweep`
+    alone. Drive's implementation pages `changes.list` with the shared
+    drive's `driveId` (no `corpora` -- that parameter belongs to
+    `files.list` and Drive rejects the request with it), reports `removed`
+    or `trashed` as a `remove` (a hard delete carries no metadata, so its
+    `path` is null), and answers a 410/404 page token with `reset: true` plus
+    a fresh start token. Path resolution is `pathFor`/`folderInfo`, promoted
+    out of `search()` to the adapter closure and backed by an adapter-level
+    `folderMemo` (folder id -> name + parent), so a page of changes under one
+    node folder costs one `files.get` per distinct ancestor, not one per
+    change; a folder's OWN change refreshes its entry from the change itself
+    (a rename resolves to the new path with no extra fetch), and every
+    `invalidatePrefix` drops the memo whole.
+  - **Remote watcher (#338): the remote side is observed, not re-derived on
+    read.** `boot/remote-watch.ts`'s `RemoteWatchLoop` runs on **central
+    only** (`index.ts`, `authMode() === "google"` -- an env-mode standalone
+    server, the desktop sidecar and the central-mode sync agent all skip
+    it): every `PORTUNI_REMOTE_WATCH_INTERVAL_MS` (60 s) it calls
+    `changes(cursor)` for each remote that implements the feed and applies
+    the batch through `domain/sync/remote-watcher.ts`. Rule 4 is the
+    load-bearing one -- **there is no second classification path**:
+    `remote-sweep.ts`'s three steps were extracted into exported functions
+    (`adoptRemoteFiles`, `refreshRemoteHashes` + its `needsHashRefresh`
+    predicate, `deleteRemovedRecords`) and both `remoteSweep` and the
+    watcher call the same ones, so one changed file and a whole-node sweep
+    cannot disagree. The one place that is not free is the adopt branch:
+    `RemoteChange` carries no mime field, so the watcher resolves the
+    `FileRef` with its own `adapter.stat(path)` instead of synthesising one
+    (#416). A synthesised ref hard-coded `is_native_format: false`, which
+    read every Drive-native Doc/Sheet/Slide as an ordinary binary -- a
+    native object has no `md5Checksum`, so `adoptRemoteFiles`' hash
+    backfill fetched bytes Drive refuses to serve (403), the batch reported
+    an error, and `cursor_persisted` (which requires an error-free batch)
+    stayed false forever: the same growing batch replayed every tick until
+    `CHANGES_MAX_PAGES` hid new changes entirely. One stat per genuinely
+    new file; a hash refresh and a remove are untouched, and a path whose
+    stat finds nothing (created and deleted between the change and the
+    tick) is skipped the way a listing that no longer shows it would be.
+    `planRemoteChanges` is the pure reducer
+    (`RemoteChange[]` + the watched node roots -> per-file operations; a
+    folder, a pathless hard delete, a path outside every node root and a
+    path outside `wip`/`outputs`/`resources` are dropped, longest node root
+    wins so a child project owns its files rather than its organization,
+    last change per path wins). `applyRemoteChanges` runs each one under
+    the same `withPathLock("<remote>:<remote_path>")` key the adapter-direct
+    central write path uses. **Registration only, never bytes** (rule 2): a
+    device with a mirror reads `pull` on its next status read, because
+    `statusScanCentral` classifies off `files.current_remote_hash` -- which
+    is exactly what the watcher maintains -- and the bytes still arrive
+    through a deliberate sync. The cursor (`remote_cursors`, migration 037 +
+    `PG_BASELINE_DDL`) is persisted **only after every change of a batch
+    applied**; a failed batch leaves it untouched and is replayed, which is
+    safe because each operation is idempotent. Catch-up is the full
+    `remoteSweep` for every node routed to the remote -- at boot, after a
+    feed `reset`, and every `PORTUNI_REMOTE_SWEEP_INTERVAL_MS` (6 h) -- run
+    through `sync-jobs.ts`'s worker pool; that pool now serializes per node
+    (`withNodeSyncLock`, path-lock keyed `sync-node:<id>`), so a catch-up
+    and a user-triggered "Synchronizovat vše" of the same node never
+    overlap, the later one waits. A tick that throws backs off from the tick
+    interval (60 s -> 2 -> 4 -> ... cap 1 h, `backoffMsFor`'s new `baseMs`
+    argument) and leaves the cursor alone. Nothing device-side changed: no
+    `agent-router.ts` route, no `is_local_only_path` entry, no
+    `CentralClient` method, no MCP tool -- the device already reads the
+    maintained state. `remote_folder_cache` is created by the same migration as the
+    persistent backing the spec reserves for the Drive adapter's ancestor
+    cache and is not read yet (#337's in-process `folderMemo` is what fills
+    the role today).
+  - **Watcher state is read through a seam, and its device-side signal is a
+    `pull` count (#339).** `GET /sync/watch` (read tier) answers
+    `{remotes: [{remote_name, watching, cursor_updated_at, last_tick_at,
+    last_error, backoff_until, last_full_sweep_at}]}` -- ISO-8601 UTC
+    throughout, including `cursor_updated_at`, which
+    `isoFromDbTimestamp` normalizes from `remote_cursors.updated_at`'s
+    zone-less `YYYY-MM-DD HH:MM:SS` (a client parsing that bare form would
+    read it in its own zone). `RemoteWatchLoop` registers
+    `() => loop.status()` with `domain/sync/remote-watch-status.ts` at
+    start, and `handleSyncWatch` (`api/nodes.ts`) reads it from there, so
+    the api layer never imports a boot module and a test stubs the loop
+    with one call; a server that never starts one answers `[]`, and
+    `isLocalWorkspace()` short-circuits to the same empty answer before
+    anything is read. **Deliberately not device-local**: no
+    `is_local_only_path` entry, no `agent-router.ts` route, no
+    `CentralClient` method, no MCP tool -- the central-mode desktop reaches
+    it through the normal proxy to central, which is the only process that
+    runs the loop. `SyncPendingNode` gained `pull` (both
+    `computeSyncPending` and `computeSyncPendingCentral`, from the scan's
+    `pull_candidates`): it counts towards neither `total` nor `decisions`
+    -- the unsynced badge and the quit guard must not report a teammate's
+    edits as the user's own backlog -- but a node holding only `pull`
+    records is kept in the aggregate instead of dropped, which is what the
+    Sidebar's „Nové na remote: N uzlů" button (opens the sync overview) and
+    SyncOverview's per-node down-arrow count read. Web helpers are pure and
+    server-tested (`apps/web/src/lib/remote-watch-view.ts`:
+    `remoteWatchLine` -- three states, watching / error + backoff /
+    no-change-feed -- and `pullNodeCount`); Nastavení -> Synchronizace
+    renders one line per remote next to the mirror-watcher errors, and
+    nothing at all on a local workspace.
 - **The update check is scheduled from the hook's mount, not from
   `backend-ready` alone.** `check_update` (`apps/desktop/src/updater.rs`)
   only talks to the GitHub releases endpoint, so it does not depend on the
@@ -1905,13 +2070,44 @@ symlink to this file.
   id needed. **`WorkspaceNodeList.tsx`** renders persistent-session
   sub-rows under each node, fed by `App.tsx`'s `liveOpenSessionsByNode` -- one
   `fetchNodePersistentSessions(id, false)` per entry in `openNodeIds`,
-  refetched whenever that set changes, live-overlaid via
+  refetched whenever that set changes **and on every `session_state` frame
+  whose `node_id` is open (#412)**, live-overlaid via
   `mergeLiveSessionStates` against the SAME app-wide `sessionStates` map
   `countRunningSessions` reads (`sessionsClient.onSessionState`,
   `Set`-backed so multiple listeners coexist -- SessionChat keeps its own
   separate subscription for its own event log, untouched). Threading is
   `App.tsx` -> `Sidebar.tsx` (`workspaceOpenSessionsByNode`/
   `onWorkspaceOpenSessionChat`) -> `WorkspaceNodeList.tsx`.
+
+- **A thread started outside the Práce sidebar lands in it anyway, and the
+  shown one is highlighted (#412).** The per-node map only ever changed
+  when `openNodeIds` did, so a thread started from the node detail (the
+  Relace tab's "Navázat", the detail's "Nový úkol") never got a sub-row,
+  and a draft started there vanished the moment it was promoted -- the
+  promotion frame dropped it from `localDrafts` on the assumption that the
+  server list already had it, which nothing had refetched. Three folds in
+  `lib/session-views.ts` (pure, `test/session-views-helpers.test.ts`)
+  replace that: `mergeSessionIntoNodeMap` (a started, already-running
+  thread straight into `openSessionsByNode`, dedupe by id --
+  `registerSessionStarted`'s non-draft branch, and `SessionsSection`'s
+  "Navázat" now routes through the same `onSessionStarted` prop
+  `NewTaskButton` uses), `applyNodeSessionsRefetch` + `dropPromotedDrafts`
+  (a draft is forgotten only once the refetched list actually carries it,
+  so the row is never missing in between; both return their input
+  unchanged when nothing changed, since effects key on those identities)
+  and `mergeDraftsIntoNodeMap` (drafts overlaid, deduped by id, so the
+  overlap window renders one row). `refreshNodeSessions` (`App.tsx`) is
+  coalesced per node -- a request while one is in flight sets a trailing
+  flag instead of racing a second fetch -- and drops a response for a node
+  closed in the meantime (`openNodeIdsRef`). Server-side nothing changed:
+  `promoteDraftAndStart` already awaits `store.patchSession` before
+  `appendAndPublish`, in both stores (`CentralSessionStore.patchSession`
+  is one awaited REST call, `appendEvents` is coalesced but awaited), so
+  central has the promotion committed before the frame that triggers the
+  refetch goes out. `activeSessionId` (`workspaceOpenSession?.id`)
+  threads `App.tsx` -> `Sidebar.tsx` -> `WorkspaceNodeList.tsx` and marks
+  the shown thread in BOTH arrangements (`NodeTree`'s `TaskRow`, with the
+  node row's own accent rail, and `TaskList`'s grouped rows).
 
 - **`SessionChat.tsx` is built on AI Elements now, not hand-written bubbles
   (#373, phase 1 of `docs/superpowers/specs/2026-09-15-task-surface-

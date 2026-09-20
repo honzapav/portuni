@@ -117,6 +117,9 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/users" && m === "GET") return "write";
   if (pathname === "/sync/pending" && m === "GET") return "read";
   if (pathname === "/sync/health" && m === "GET") return "read";
+  // #339: remote-watcher state per remote. Read-only diagnostics, and
+  // central-only in practice -- a local workspace answers an empty list.
+  if (pathname === "/sync/watch" && m === "GET") return "read";
 
   // --- Device tokens ---
   if (pathname === "/device-tokens" && m === "GET") return "read";
