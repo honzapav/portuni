@@ -21,6 +21,8 @@ const status = (over: Partial<RemoteWatchStatus> = {}): RemoteWatchStatus => ({
   last_error: null,
   backoff_until: null,
   last_full_sweep_at: null,
+  sweep_error: null,
+  sweep_backoff_until: null,
   ...over,
 });
 
@@ -62,6 +64,34 @@ describe("remoteWatchLine", () => {
       line.text,
       "drive: bez sledování změn, jen pravidelná kontrola (naposledy před 6 h)",
     );
+  });
+  it("keeps the feed line and reports the sweep's own error when only the sweep fails (#422)", () => {
+    const line = remoteWatchLine(
+      status({
+        sweep_error: "catch-up sweep failed for N: Drive 403",
+        sweep_backoff_until: "2026-09-19T10:07:00.000Z",
+      }),
+      NOW,
+    );
+    assert.equal(line.tone, "error");
+    assert.match(line.text, /^drive sledován, poslední změna před 2 min/);
+    assert.match(line.text, /pravidelná kontrola hlásí chybu – catch-up sweep failed for N: Drive 403/);
+    assert.equal(line.retry, "další pokus za 2 min");
+  });
+
+  it("a sweep-only backend reports its sweep error in place of the sweep age", () => {
+    const line = remoteWatchLine(
+      status({
+        watching: false,
+        last_full_sweep_at: "2026-09-19T04:05:00.000Z",
+        sweep_error: "catch-up sweep failed for N: EACCES",
+        sweep_backoff_until: "2026-09-19T10:35:00.000Z",
+      }),
+      NOW,
+    );
+    assert.equal(line.tone, "error");
+    assert.equal(line.text, "drive: bez sledování změn, pravidelná kontrola hlásí chybu – catch-up sweep failed for N: EACCES");
+    assert.equal(line.retry, "další pokus za 30 min");
   });
 });
 

@@ -256,10 +256,14 @@ shows up as a pending pull within a minute instead of waiting for the next
 full check. A line reading „sledování hlásí chybu" (optionally with „další
 pokus za …", the watcher's `backoff_until`) means that polling is currently
 failing — Drive changes are **not** being applied live, and the fallback is
-the periodic full sweep every 6 hours. „Bez sledování změn, jen pravidelná
-kontrola" is not an error: that backend has no change feed at all, so the
-6-hour sweep is all there is for it. Mirror-watcher errors (the local
-half — the disk watcher on this device) are listed in the same tab.
+the periodic full sweep every 6 hours. „Sledován, … ; pravidelná kontrola
+hlásí chybu" is the other way round: live changes still land, but the
+periodic full sweep failed on some node (its error is quoted) and is
+waiting for its own „další pokus za …" — files that only the sweep can pick
+up wait with it. „Bez sledování změn, jen pravidelná kontrola" is not an
+error: that backend has no change feed at all, so the 6-hour sweep is all
+there is for it. Mirror-watcher errors (the local half — the disk watcher
+on this device) are listed in the same tab.
 
 ## Recommended daily flow
 

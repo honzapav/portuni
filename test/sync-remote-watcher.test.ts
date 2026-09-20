@@ -1025,22 +1025,171 @@ describe("RemoteWatchLoop", () => {
     assert.equal(sweeps.length, 1);
     assert.ok(sweeps[0].includes(nodeId));
     assert.equal(loop.status()[0].last_full_sweep_at, null, "a job that failed is not a sweep");
-    assert.match(loop.status()[0].last_error ?? "", /Drive 500/);
+    // The sweep's failure is its own: the feed was polled fine, so the
+    // remote is still watched and the tick's error slot stays empty (#422).
+    assert.match(loop.status()[0].sweep_error ?? "", /Drive 500/);
+    assert.equal(loop.status()[0].last_error, null);
+    assert.equal(loop.status()[0].watching, true);
 
-    // The next tick sweeps again instead of waiting out the 6 h interval on
-    // the strength of a job that never worked.
+    // The next tick after the backoff sweeps again instead of waiting out
+    // the 6 h interval on the strength of a job that never worked.
     clock += 60_000;
     await loop.tick();
     await settle();
     assert.equal(sweeps.length, 2);
     assert.equal(loop.status()[0].last_full_sweep_at, new Date(clock).toISOString());
-    assert.equal(loop.status()[0].last_error, null);
+    assert.equal(loop.status()[0].sweep_error, null);
+    assert.equal(loop.status()[0].sweep_backoff_until, null);
 
     // And once one did finish, the interval applies as before.
     clock += 60_000;
     await loop.tick();
     await settle();
     assert.equal(sweeps.length, 2);
+  });
+
+  it("a failed catch-up sweep backs the periodic sweep off while the feed keeps being polled (#422)", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    const sweeps: string[][] = [];
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async (ids) => {
+        sweeps.push(ids);
+        throw new Error("catch-up sweep failed for N: Drive 403 on the node root");
+      },
+    });
+
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1);
+    let st = loop.status()[0];
+    assert.match(st.sweep_error ?? "", /403/);
+    assert.equal(st.sweep_backoff_until, new Date(clock + 60_000).toISOString());
+    // Feed healthy: still watched, no tick error, no tick backoff.
+    assert.equal(st.watching, true);
+    assert.equal(st.last_error, null);
+    assert.equal(st.backoff_until, null);
+
+    // Inside the window: no second sweep, but the change feed IS polled --
+    // a broken sweep is no reason to stop applying live changes.
+    clock += 30_000;
+    const polls = backend.changesCalls.length;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1, "no sweep inside the backoff window");
+    assert.equal(backend.changesCalls.length, polls + 1, "the feed is still polled");
+
+    // Past it: the sweep is retried, and its second failure doubles the wait.
+    clock += 30_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 2);
+    st = loop.status()[0];
+    assert.equal(st.sweep_backoff_until, new Date(clock + 120_000).toISOString());
+
+    clock += 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 2, "still backing off after one interval");
+  });
+
+  it("a sweep that fails and then succeeds resets its backoff and records the sweep", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    let calls = 0;
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("catch-up sweep failed for N: transient");
+      },
+    });
+
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 1);
+    assert.notEqual(loop.status()[0].sweep_backoff_until, null);
+
+    clock += 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 2);
+    const st = loop.status()[0];
+    assert.equal(st.sweep_error, null);
+    assert.equal(st.sweep_backoff_until, null);
+    assert.equal(st.last_full_sweep_at, new Date(clock).toISOString());
+  });
+
+  it("a full sweep the feed asks for during the backoff is deferred to the next allowed tick, not lost", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    let calls = 0;
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async () => {
+        calls += 1;
+        if (calls === 2) throw new Error("catch-up sweep failed for N: Drive 500");
+      },
+    });
+
+    // Boot sweep lands clean: the 6 h clock is set.
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 1);
+    const firstSweepAt = clock;
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(firstSweepAt).toISOString());
+
+    // The feed resets, which asks for a full sweep; that one fails.
+    clock += 60_000;
+    backend.changes = async () => ({ cursor: "fresh", changes: [], reset: true });
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 2);
+    assert.equal(loop.status()[0].sweep_backoff_until, new Date(clock + 60_000).toISOString());
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(firstSweepAt).toISOString());
+
+    // Another reset inside the window: the sweep it asks for cannot start,
+    // so the clock is cleared instead -- the request must survive the wait.
+    clock += 30_000;
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 2, "no sweep inside the backoff window");
+    assert.equal(loop.status()[0].last_full_sweep_at, null);
+
+    // Feed back to normal, backoff over: the deferred sweep runs now, not in
+    // six hours.
+    clock += 30_000;
+    backend.changes = async (cursor) => ({ cursor: cursor ?? "c0", changes: [], reset: false });
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 3);
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(clock).toISOString());
+    assert.equal(loop.status()[0].sweep_error, null);
   });
 
   it("does not start a second sweep while one is still running", async () => {

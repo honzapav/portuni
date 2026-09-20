@@ -74,6 +74,14 @@ interface RemoteState {
   // a folder change's node-scoped sweep (#418) can overlap the periodic one,
   // and the first to finish must not advertise the other as done.
   sweepsInFlight: number;
+  // The sweep's own backoff and error, separate from the tick's (#422). A
+  // node the sweep cannot list is not a feed failure: the feed keeps being
+  // polled and applied, `watching` stays true, and only the sweep waits --
+  // 60 s -> 2 -> 4 -> ... -> 1 h, like the tick. Sharing the tick's slot
+  // would either stop the healthy feed with the sweep, or be wiped by the
+  // very next clean tick and never hold at all.
+  sweepBackoff: BackoffState;
+  sweepError: string | null;
   cursorUpdatedAt: string | null;
 }
 
@@ -141,6 +149,8 @@ export class RemoteWatchLoop {
       last_error: s.lastError,
       backoff_until: s.backoff.nextAttemptAt > this.now() ? iso(s.backoff.nextAttemptAt) : null,
       last_full_sweep_at: iso(s.lastFullSweepAt),
+      sweep_error: s.sweepError,
+      sweep_backoff_until: s.sweepBackoff.nextAttemptAt > this.now() ? iso(s.sweepBackoff.nextAttemptAt) : null,
     }));
   }
 
@@ -228,6 +238,8 @@ export class RemoteWatchLoop {
         lastError: null,
         lastFullSweepAt: null,
         sweepsInFlight: 0,
+        sweepBackoff: initialBackoff(),
+        sweepError: null,
         cursorUpdatedAt: null,
       };
       this.states.set(name, s);
@@ -247,6 +259,7 @@ export class RemoteWatchLoop {
 
   private async maybeFullSweep(remoteName: string, state: RemoteState, now: number): Promise<void> {
     if (state.sweepsInFlight > 0) return;
+    if (!shouldAttempt(state.sweepBackoff, now)) return;
     if (state.lastFullSweepAt !== null && now - state.lastFullSweepAt < this.sweepIntervalMs) return;
     const nodes = await watchedNodesForRemote(this.db, remoteName);
     this.beginCatchUp(state, nodes.map((n) => n.nodeId), true);
@@ -255,9 +268,20 @@ export class RemoteWatchLoop {
   // Start a catch-up sweep and record its OUTCOME when it lands, without
   // holding the tick open for it: the sweep is a whole-workspace job and a
   // tick is a 60 s heartbeat. Only a sweep that finished with no node error
-  // counts as a sweep (#417); a failed one leaves lastFullSweepAt alone, so
-  // the next tick tries again, and surfaces its error in GET /sync/watch.
+  // counts as a sweep (#417); a failed one leaves lastFullSweepAt alone and
+  // backs the sweep off (#422) -- without the backoff a node that always
+  // fails turned the loop into one whole-workspace listing after another,
+  // since sweepsInFlight only keeps two from overlapping.
   private beginCatchUp(state: RemoteState, nodeIds: string[], isFullSweep: boolean): void {
+    if (isFullSweep && !shouldAttempt(state.sweepBackoff, this.now())) {
+      // The feed asked for a full sweep (baseline, reset) while the sweep is
+      // backing off. The request must not be lost, and must not wait out
+      // the 6 h interval either: clearing the clock makes the first tick
+      // past the backoff sweep. A node-scoped sweep (#418) is bounded and
+      // never gated -- a renamed folder's children stay right.
+      state.lastFullSweepAt = null;
+      return;
+    }
     state.sweepsInFlight += 1;
     void Promise.resolve()
       .then(() => this.runCatchUp(nodeIds))
@@ -266,10 +290,13 @@ export class RemoteWatchLoop {
           // Only a whole-workspace sweep resets the 6 h clock; a folder
           // change's node-scoped sweep (#418) leaves it alone.
           if (isFullSweep) state.lastFullSweepAt = this.now();
+          state.sweepBackoff = initialBackoff();
+          state.sweepError = null;
         },
         (e: unknown) => {
-          state.lastError = e instanceof Error ? e.message : String(e);
-          console.warn(`[portuni:remote-watch] catch-up sweep failed: ${state.lastError}`);
+          state.sweepError = e instanceof Error ? e.message : String(e);
+          state.sweepBackoff = recordUnreachable(state.sweepBackoff, this.now(), this.intervalMs, MAX_BACKOFF_MS);
+          console.warn(`[portuni:remote-watch] catch-up sweep failed: ${state.sweepError}`);
         },
       )
       .finally(() => {

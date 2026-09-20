@@ -129,7 +129,7 @@ The cross-mirror aggregate behind the footer badge, the quit guard, and `/sync/j
 ### `GET /sync/watch` — remote watcher state
 
 What the remote watcher is doing, one entry per remote it knows about:
-`{ remotes: [{ remote_name, watching, cursor_updated_at, last_tick_at, last_error, backoff_until, last_full_sweep_at }] }`.
+`{ remotes: [{ remote_name, watching, cursor_updated_at, last_tick_at, last_error, backoff_until, last_full_sweep_at, sweep_error, sweep_backoff_until }] }`.
 Read scope, no body.
 
 The watcher runs on the central server only — Drive credentials live there,
@@ -148,9 +148,16 @@ matters because a partly-applied batch deliberately leaves the cursor
 where it was, so the same batch is what the next tick reads: without the
 backoff, one permanently failing object would be retried once a minute
 forever. `last_full_sweep_at` records a periodic full sweep that actually
-**finished** with no node error — a sweep that failed leaves the field as
-it was and surfaces its error, so the next tick sweeps again rather than
-waiting out the six-hour interval. Every timestamp is ISO-8601 UTC.
+**finished** with no node error. A sweep that failed leaves the field as it
+was and reports `sweep_error` and `sweep_backoff_until` — the sweep's own
+backoff, on the same one-minute-to-one-hour schedule, separate from the
+feed's: a node the sweep cannot list (a Drive folder the service account
+does not see, a 403 on one node's root) is not a feed failure, so
+`watching` stays true and live changes keep being applied while only the
+sweep waits. Once the wait is over the next tick sweeps again, rather than
+waiting out the six-hour interval; a sweep the feed itself asks for during
+that wait (a baseline or a reset) runs on the first tick after it. Every
+timestamp is ISO-8601 UTC.
 
 What the watcher registers for one changed file is exactly what a full
 sweep would register for it, including a Google Doc/Sheet/Slide created

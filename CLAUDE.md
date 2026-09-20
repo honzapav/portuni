@@ -1395,8 +1395,18 @@ symlink to this file.
     `beginCatchUp` runs that detached (a tick is a 60 s heartbeat, a sweep
     is a whole-workspace job -- `RemoteState.sweepsInFlight` is what keeps
     the next tick from starting a second one) and sets `lastFullSweepAt`
-    only on a clean finish, so a failed sweep is retried on the next tick
-    instead of in 6 h and its error shows up in `GET /sync/watch`.
+    only on a clean finish. **A failed sweep backs off on its own schedule
+    (#422)**: `RemoteState.sweepBackoff`/`sweepError` are separate from the
+    tick's `backoff`/`lastError`, since a node the sweep cannot list is not
+    a feed failure -- the feed keeps being polled, `watching` stays true,
+    and `GET /sync/watch` reports `sweep_error` + `sweep_backoff_until`
+    (60 s -> 1 h, same `recordUnreachable` schedule) next to the feed's
+    fields; sharing the tick's slot would be wiped by the next clean tick.
+    `maybeFullSweep` honours it; a full sweep the feed asks for
+    (baseline/reset) while backing off clears `lastFullSweepAt` instead of
+    starting, so the first tick past the backoff sweeps. Node-scoped sweeps
+    (#418) are never gated. Without this, one permanently failing node ran
+    whole-workspace sweeps back to back forever.
     Device-side: `agent-router.ts`'s single-node sync route took the same
     lock, nothing else changed -- no new `is_local_only_path` entry, no
     `CentralClient` method, no MCP tool; the device already reads the

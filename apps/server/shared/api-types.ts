@@ -223,6 +223,11 @@ export type RemoteWatchStatus = {
   // next attempt is due.
   backoff_until: string | null;
   last_full_sweep_at: string | null;
+  // The catch-up sweep's own failure, kept apart from the feed's: a node the
+  // sweep cannot list leaves the change feed healthy and `watching` true,
+  // and only the periodic sweep backs off (#422).
+  sweep_error: string | null;
+  sweep_backoff_until: string | null;
 };
 export type SyncWatchResponse = {
   remotes: RemoteWatchStatus[];
