@@ -43,10 +43,8 @@ export function parseHomeNodeIdFromUrl(
 }
 
 // Extract `resume_session_id` from a raw MCP connection URL, same shape as
-// parseHomeNodeIdFromUrl. Set only when the app respawns a terminal for a
-// suspended session (#204, spec "Lifecycle" / "Resume") -- the query param
-// name matches the one the disk-plane sandbox-profile endpoints already use
-// (api/nodes.ts, api/write-scope.ts) so both planes resume off the same id.
+// parseHomeNodeIdFromUrl. Set only when a run resumes a suspended session
+// (#204, spec "Lifecycle" / "Resume").
 export function parseResumeSessionIdFromUrl(
   rawUrl: string | undefined | null,
 ): string | null {

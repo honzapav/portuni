@@ -16,7 +16,6 @@ import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { registerFileTools } from "../apps/server/mcp/tools/files.js";
 import type { Elicitor, ElicitOutcome } from "../apps/server/mcp/elicit.js";
 import type { SessionCtx } from "../apps/server/mcp/server.js";
@@ -72,8 +71,7 @@ async function connect(dialogOutcome: ElicitOutcome | null): Promise<Harness> {
       return Promise.resolve(dialogOutcome);
     },
   };
-  const projector = createDiskProjector({ userId: ident.userId, scope });
-  const ctx: SessionCtx = { scope, identity: ident, projector, elicit };
+  const ctx: SessionCtx = { scope, identity: ident, elicit };
   const server = new McpServer({ name: "store-precondition-test", version: "0.0.1" }, {});
   registerFileTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

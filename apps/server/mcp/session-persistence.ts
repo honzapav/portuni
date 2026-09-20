@@ -31,7 +31,6 @@ import {
   setSessionScopeWritable,
   touchSession,
 } from "../domain/sessions.js";
-import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { filterVisibleNodeIds, type GroupIdentityView } from "../auth/node-access.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { SessionRow } from "../shared/types.js";
@@ -138,10 +137,6 @@ function wireOngoingSync(
 // new connection (createMcpServer) -- never for a resumed connection, see
 // resumeSessionPersistence.
 //
-// profileId comes from the X-Portuni-Profile header (Claude only for now,
-// see buildClaudeMcpJson) -- null for every other CLI/connection, which is
-// indistinguishable from "no profile used" and treated the same way.
-//
 // homeNodeId is the connection's `?home_node_id` value, read explicitly
 // rather than off `scope.homeNodeId`: this function's async body is kicked
 // off (fire-and-forget) by createMcpServer BEFORE the caller's subsequent
@@ -151,21 +146,13 @@ function wireOngoingSync(
 // the raw query value sidesteps the race; omitting the parameter (existing
 // test harnesses that set `scope.homeNodeId` by hand before calling this)
 // falls back to the property for compatibility.
-// spawnSessionId is the X-Portuni-Spawn-Id header (transport.ts): the id the
-// Seatbelt profile's projection grant was already narrowed to at spawn time
-// (domain/sandbox-profile.ts), sent only by Claude Code connections whose
-// per-mirror .mcp.json carries the ${PORTUNI_SPAWN_SESSION_ID:-} header
-// expansion -- absent/empty for every other CLI, a plain shell outside a
-// mirror, or a resumed connection (resumeSessionPersistence reuses the
-// already-known resumeSessionId instead and never calls this function).
-// Passing it through to createSession makes the session row's own id match
-// what the kernel already granted, so the disk projector's per-session
-// subdirectory (<projectionRoot>/<sessionId>/) lines up with the narrowed
-// Seatbelt allow instead of a second, unrelated id.
-// terminalId is the X-Portuni-Terminal header (transport.ts, #218): the
-// desktop PTY that spawned this connection's CLI, when known -- stored on
-// the session row so POST /terminals/:terminal_id/exit can close it when
-// that PTY exits.
+// spawnSessionId is the X-Portuni-Spawn-Id header (transport.ts): the
+// runner-minted session id a fresh run's own MCP connection carries so it
+// binds to the row session-runtime.ts already created (Rule 2, "the session
+// exists before the runner") instead of creating a second one -- see
+// lookupSpawnSessionForBind below. Absent for a hand-opened CLI or any
+// connection with no pre-existing row; a resumed connection reuses the
+// already-known resumeSessionId instead and never calls this function.
 // cli (#272) is the short name derived from the MCP handshake's own
 // `initialize` params.clientInfo.name (transport.ts's extractClientName /
 // stdio-entry.ts's getClientVersion) -- read from the protocol itself
@@ -175,10 +162,8 @@ export function bindSessionPersistence(
   db: DbClient,
   scope: SessionScope,
   identity: Pick<RequestIdentity, "userId">,
-  profileId: string | null = null,
   homeNodeId?: string | null,
   spawnSessionId?: string | null,
-  terminalId?: string | null,
   cli?: string | null,
 ): void {
   const resolvedHomeNodeId = (homeNodeId !== undefined ? homeNodeId : scope.homeNodeId) ?? null;
@@ -190,8 +175,6 @@ export function bindSessionPersistence(
         {
           node_id: resolvedHomeNodeId,
           session_type: scope.sessionType,
-          instance_id: profileId,
-          terminal_id: terminalId ?? null,
           cli: cli ?? null,
         },
         spawnSessionId,
@@ -211,10 +194,8 @@ export function bindSessionPersistence(
 // Resume (#204, "Resume restores the disk plane but not the graph plane"):
 // attach a fresh MCP connection to an EXISTING suspended session row instead
 // of minting a new one, and rehydrate the in-memory SessionScope from the
-// persisted session_scope rows -- otherwise the sandbox grants the
-// accumulated mirrors (sandbox-profile.ts's restart consolidation) while
-// guardNodeRead refuses exactly those nodes, because a fresh in-memory scope
-// starts empty.
+// persisted session_scope rows -- otherwise guardNodeRead refuses every
+// previously-accumulated node, because a fresh in-memory scope starts empty.
 //
 // Unlike bindSessionPersistence this is AWAITED by the caller (transport.ts,
 // before auto-seed and before the connection is allowed to proceed) rather
@@ -243,17 +224,7 @@ export async function resumeSessionPersistence(
 
   const accumulated = await getSessionScope(db, row.id);
   for (const scopeRow of accumulated) {
-    // Nodes still mirrored on this device get their real path re-granted by
-    // resolveSandboxScopeForNode's restart consolidation (readMirrors widened
-    // with resumeSessionId) -- mark them seed so read tools return the real
-    // mirror and the disk projector does not also hardlink them. Nodes with
-    // no local mirror here have no disk grant either way (spec, "Disk
-    // contract": "a node with no local mirror on this device has no
-    // projection either way") -- plain add() keeps them in read scope for
-    // portuni_read_file / graph tools.
-    const hasLocalMirror = (await getMirrorPath(identity.userId, scopeRow.node_id)) !== null;
-    if (hasLocalMirror) scope.addSeed(scopeRow.node_id);
-    else scope.add(scopeRow.node_id);
+    scope.add(scopeRow.node_id);
     if (scopeRow.writable) scope.addWritable(scopeRow.node_id);
   }
   if (accumulated.length > 0) {
@@ -285,7 +256,6 @@ export async function resumeSessionPersistence(
 export async function bindExistingSessionPersistence(
   db: DbClient,
   scope: SessionScope,
-  identity: Pick<RequestIdentity, "userId">,
   row: SessionRow,
 ): Promise<void> {
   scope.sessionId = row.id;
@@ -293,9 +263,7 @@ export async function bindExistingSessionPersistence(
 
   const accumulated = await getSessionScope(db, row.id);
   for (const scopeRow of accumulated) {
-    const hasLocalMirror = (await getMirrorPath(identity.userId, scopeRow.node_id)) !== null;
-    if (hasLocalMirror) scope.addSeed(scopeRow.node_id);
-    else scope.add(scopeRow.node_id);
+    scope.add(scopeRow.node_id);
     if (scopeRow.writable) scope.addWritable(scopeRow.node_id);
   }
   if (accumulated.length > 0) {

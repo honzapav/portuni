@@ -7,7 +7,6 @@ import { ensureSchema } from "./infra/schema.js";
 import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { startRemoteWatcher } from "./boot/remote-watch.js";
-import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
 import {
   startIdleRunSweep,
@@ -32,7 +31,6 @@ async function main() {
   // running a sync. #338.
   const remoteWatcher = startRemoteWatcher();
   if (remoteWatcher) process.on("SIGINT", () => remoteWatcher.stop());
-  void sweepStaleSessionProjectionsOnBoot();
   // Must finish before sweepStaleRunningSessionsOnBoot: this sweep already
   // resolves any 'running' session a runner task was driving, so the other
   // sweep's own query for stale 'running' rows sees an already-correct

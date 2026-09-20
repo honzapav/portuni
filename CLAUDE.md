@@ -293,19 +293,8 @@ symlink to this file.
   batch register, so the same pairing applies there too instead of always
   producing a fresh duplicate record. `StatusResult.moved` (a bucket nothing
   ever populated, by design — pairing happens at reconcile time, not scan
-  time) was removed rather than kept as a permanently-empty field. The
-  watcher's projection relink (`relinkProjectedFile`) walks a directory
-  event the same way (`relinkTree`), so a moved subtree shows up in every
-  live session projection too. **That walk must never re-create a link that is
-  already current**: on macOS `link(src, dest)` fires an fs.watch event for
-  the SOURCE file's parent directory even though `dest` lies outside the
-  watched mirror (unlink alone fires nothing), so a relink that redoes
-  links it just made produces exactly the directory event that triggers
-  the next walk -- an expanded 121-file node was rebuilt every ~1 s with
-  the sidecar pinned at 80-94 % CPU (v0.13.10, Asana 1218416968309091).
-  `isCurrentLink` (same inode + device) short-circuits both `relinkTree`
-  and `relinkOne`; only a missing dest or a replaced inode (atomic save)
-  relinks. A push (`storeFile`/`storeFileCentral`)
+  time) was removed rather than kept as a permanently-empty field. A push
+  (`storeFile`/`storeFileCentral`)
   stats the file before reading the bytes it uploads and re-stats after;
   if the identity moved mid-upload it caches the CURRENT content hash, not
   the pushed one — fast status trusts `cached_local_hash` outright, so an
@@ -405,8 +394,8 @@ symlink to this file.
   (`apps/server/domain/scope-materialize.ts`). The per-mirror `.mcp.json` (Claude)
   and `.vibe/config.toml` (Mistral Vibe) carry `?home_node_id=…` (scope
   auto-seed) and reference the token via env var – never a literal. The
-  desktop app injects `PORTUNI_MCP_TOKEN` into spawned terminals; manual
-  shells outside the app must export it themselves (Settings → Copy token).
+  desktop app has no terminal of its own to inject it into (#345) — a shell
+  outside the app exports `PORTUNI_MCP_TOKEN` itself (Settings → Copy token).
   User-scoped fallbacks for sessions outside any mirror:
   `~/.claude.json` (`install_claude_global`), `~/.codex/config.toml`
   (`install_codex_global`), `~/.vibe/config.toml` (`install_vibe_global`).
@@ -690,18 +679,22 @@ symlink to this file.
   workspace at all yet. No capability entry needed — the plugin registers
   no invokable commands, only a Rust-side lifecycle hook.
 
-- **The embedded terminal is gone (#345, runner batch phase 4).** There is
-  no PTY, no xterm, no Seatbelt profile fetched by the desktop, no spawn
-  profiles registry and no terminal branch in the window close guard —
-  `apps/desktop/src/pty.rs`, `TerminalPane.tsx`/`TerminalTabs.tsx`,
-  `lib/session-suspend.ts`, `lib/prompt.ts`, `lib/profiles.ts` and the
-  `AGENT_PRESETS`/`TERMINAL_PRESETS` settings were deleted. An agent runs
-  only as a task (`POST /sessions`, `SessionChat`), per
-  `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`; the
-  server-side leftovers of the terminal model (`X-Portuni-Terminal`,
-  `POST /terminals/:id/exit`, `sandbox-profile.ts`, the hardlink
-  projection) are #346's removal and still exist until then, with nothing
-  on the desktop calling them. What survived from `pty.rs`:
+- **The embedded terminal is gone (#345, runner batch phase 4), and its
+  server-side half followed in #346.** There is no PTY, no xterm, no
+  Seatbelt profile fetched by the desktop, no spawn profiles registry and no
+  terminal branch in the window close guard — `apps/desktop/src/pty.rs`,
+  `TerminalPane.tsx`/`TerminalTabs.tsx`, `lib/session-suspend.ts`,
+  `lib/prompt.ts`, `lib/profiles.ts` and the `AGENT_PRESETS`/
+  `TERMINAL_PRESETS` settings were deleted (#345). An agent runs only as a
+  task (`POST /sessions`, `SessionChat`), per
+  `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`. #346
+  removed the server-side leftovers: `domain/sandbox-profile.ts`,
+  `domain/session-projection.ts`, `mcp/disk-projection.ts`,
+  `mcp/read-file-spill.ts`, `boot/session-projection-sweep.ts`,
+  `scripts/portuni-run.sh`, the `X-Portuni-Profile`/`X-Portuni-Terminal`
+  headers, and `POST /terminals/:id/exit`/`GET /sandbox-profile`/
+  `GET /nodes/:id/sandbox-profile`. See the disk-read-scope bullet below for
+  the model that replaced hardlink projection. What survived from `pty.rs`:
   `auth::ensure_device_token` (the central-mode sync agent's device token,
   label "Sync agent") and `shell_path::login_shell_path` (the sidecar
   needs a login shell's PATH to find `claude`).
@@ -773,170 +766,60 @@ symlink to this file.
   dev loop and the whole test suite) keeps the legacy behavior: every
   env-mode REST write allowed, unchanged. The packaged desktop app's Tauri
   host always sets this itself (fresh per launch, never on disk, never
-  exported into a spawned terminal) — the hardened posture is always on
-  there. The central-mode sync agent (`api/agent-router.ts`) applies the
+  exported into a spawned agent's own env) — the hardened posture is always
+  on there. The central-mode sync agent (`api/agent-router.ts`) applies the
   same posture through `guardAgentRestWrite` on every mutating REST route
   it serves (file create/delete/resolve, `PUT /nodes/:id/file`, sync run,
   mirror create): it has no graph db or session table to resolve a spawn
   id against, so a proven `X-Portuni-Webview-Proxy` header is the only
-  accepted proof once the secret is set — a spawned terminal mutates
+  accepted proof once the secret is set — a spawned agent mutates
   through the MCP tools, which central write-gates. Doesn't affect MCP
   tool calls either way — those keep `env`'s
   existing unscoped-write behavior, out of scope for this gate. See
   `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md` and
   the scope-enforcement docs page.
-- **Disk read scope = the session scope, on REAL paths for the seed set, a
-  hardlink projection for everything else.** (Server-side model from the
-  terminal era; the desktop no longer fetches a sandbox profile or spawns
-  under Seatbelt since #345, and #346 removes this whole layer. Kept here
-  verbatim until then.) The MCP `SessionScope` is the single source of
-  truth. The Seatbelt profile grants rw on the home mirror
-  and **read-only on the REAL mirrors of the depth-1 neighbour set** (the
-  stable spawn scope), computed at spawn — locally from the graph, in central
-  mode from `CentralClient.nodeNeighbours` (`sandbox-profile.ts`
-  `readMirrors` / `resolveNeighbourReadMirrors`). It also grants read-only on
-  a per-node **projection parent**, `<portuniRoot>/.portuni-sessions/
-  <homeNodeId>/` (`SandboxScope.projectionRoot` /
-  `resolveProjectionRootForNode`), narrowed further to
-  `<projectionRoot>/<sessionId>/` when the session id is already known
-  (`SandboxScope.sessionId`, #208 follow-up) — a fresh spawn mints one in
-  `resolveSandboxScopeForNode` (central mode, `db` absent, always mints
-  fresh rather than trusting an unvalidated caller-supplied
-  `resumeSessionId`) and returns it as `session_id` on the sandbox-profile
-  REST response; a resume reuses its already-validated `resumeSessionId`.
-  Threaded to the spawned shell as `PORTUNI_SPAWN_SESSION_ID`
-  (`pty_spawn`'s `spawn_session_id`), then to the MCP connection via a
-  `X-Portuni-Spawn-Id` header (`buildClaudeMcpJson`, Claude-only like
-  `X-Portuni-Profile`) that `mcp/transport.ts` hands to
-  `domain/sessions.ts`'s `createSession` as a pre-assigned id, so the
-  session row's own id matches what the kernel already granted. **Non-relaying
-  CLIs (#211 fix):** a real spawn always mints a `sessionId`, so the kernel
-  cannot tell in advance which CLI is about to connect and grant only the
-  narrow subdirectory for it — `buildSeatbeltProfile` grants BOTH
-  `<projectionRoot>/<sessionId>/` (works when the connecting CLI relays that
-  id back, Claude only today) AND a second, fixed
-  `<projectionRoot>/_shared/` bucket (`session-projection.ts`'s
-  `UNNARROWED_PROJECTION_ID`) unconditionally — neither is an ancestor of
-  the other, so isolation between different sessions' own narrow
-  subdirectories still holds. `mcp/scope.ts`'s `SessionScope
-  .projectionSessionId` (set synchronously by `createMcpServer`, before any
-  tool call could race a persisted session id) resolves to the resumed
-  session's own id, the relayed spawn id, or the shared bucket, in that
-  order — the disk projector and `disposeSessionProjection` key off this,
-  not off the persisted `sessionId`. **Ad-hoc nodes** (deeper than depth-1,
-  added mid-session by `expand_scope` or an auto-allowed edge traversal) get
-  hardlinked there — `<projectionRoot>/<projectionSessionId>/<nodeId>/`, no
-  data duplication, always current — by the disk projector
-  (`mcp/disk-projection.ts` `DiskProjector`, `domain/session-projection.ts`)
-  the first time a read tool touches them; the mirror-watcher re-links/
-  removes the hardlink on every create/delete in the source mirror, and a
-  narrow (non-shared) session's own subdirectory is cleaned up when its MCP
-  session closes (`disposeSessionProjection`) — the shared bucket is never
-  torn down purely because one session's own close happens to key off it,
-  since other concurrent non-relaying sessions on the same node may still be
-  reading it. It IS bounded (#214, closing the leak #211 left): removed
-  outright once nothing is `running` on that home node anymore (checked both
-  at every session close and, as a backstop, in the boot sweep
-  `sweepStaleSessionProjections`), and reconciled in place while at least
-  one session is still running (hardlinks whose source mirror file is gone
-  are pruned, same "source is gone" condition `relinkProjectedFile` already
-  handles for the live/watched path). Relaying the spawn id for Codex/Vibe
-  the way Claude's header does — so they'd land in the narrow per-session
-  directory instead of `_shared` at all — turned out not to be
-  implementable with either CLI's current config format: Codex has no
-  per-mirror MCP registration whatsoever (global `~/.codex/config.toml`
-  only, scope-materialize.ts's `.codex/config.toml` is sandbox-only), and
-  Vibe's per-mirror `url`/`headers` fields are static strings materialized
-  once at mirror creation with no runtime env-var expansion outside the
-  auth-token-specific fields (`api_key_env` et al.) — confirmed against
-  Mistral's own docs — so a literal session id embedded there would go
-  stale after the very first spawn on that mirror. `_shared` staying
-  bounded rather than actually narrowed is the accepted outcome for those
-  two CLIs; see the #214 issue comment for the full reasoning and a
-  possible follow-up (rematerializing the per-mirror config synchronously
-  from the sandbox-profile endpoint on every spawn) — the agent never
-  manages any of this cleanup.
-  Read tools (`get_node`/`get_context`/`list_files`) and
-  `portuni_expand_scope` return that path via `readableMirrorRoot`; a node
-  with **no local mirror on this device** has no projection either way — read
-  it with **`portuni_read_file(node_id, path)`** (`read-node-file.ts`), the
-  universal no-hooks channel that always works. **Restart consolidation**: a
-  resumed session passes `?resume_session_id=<id>` on either sandbox-profile
-  REST endpoint so `readMirrors` also widens with that session's accumulated
-  read set (real mirrors, not re-projected) — local mode only, central mode
-  is inert here (`NO_DB`). The old `.portuni-scope/`
-  copy staging and its `ScopeReconciler` sweeper are fully retired (no
-  successor of that name — `disk-projection.ts` is a clean rename, not a
-  continuation). Remaining gap: `onclose` cleanup only runs on a graceful
-  session end, so a crashed process leaves its hardlinks behind until the
-  next boot; `sweepStaleSessionProjections` (`session-projection.ts`), run
-  once at boot from both entry points (`boot/session-projection-sweep.ts`),
-  removes any `<sessionId>/` subdirectory whose session is not `running` in
-  the durable `sessions` table. The kernel actually refusing a second
-  session's read into the first's narrowed `<sessionId>/` grant is macOS-only
-  verification territory (a live `sandbox-exec` run) — the plumbing above is
-  covered by tests, that live check is not. Model:
-  `docs/architecture/scope-disk-projection.md`; plan:
-  `docs/superpowers/plans/2026-07-06-scope-real-paths.md`.
-  **Seed/grant skew and central-mode projection (#252).** `readableMirrorRoot`
-  used to trust `scope.isSeed()` outright and return the real depth-1 mirror
-  path -- but that in-memory seed set is recomputed at MCP *connect* (after
-  the Seatbelt profile is already frozen at spawn), so a mirror registered or
-  an edge created in that gap could make a node look seed-granted without the
-  kernel ever having granted its real path. `DiskProjector.projectNode` now
-  hardlinks EVERY non-home in-scope node, seed or ad-hoc (only the home node
-  is skipped, reason `seed_granted`), and `readableMirrorRoot` prefers that
-  projection over the real mirror for a seed node too (falling back to the
-  real path only when nothing was projected yet) -- cost is a hardlink, nil.
-  `projectNode` returns a `ProjectOutcome` (`{kind:"projected",dir,files}` or
-  `{kind:"not_projected",reason}`, reasons `seed_granted | no_mirror |
-  out_of_scope | no_projection_root | central`) instead of a bare nullable object; every
-  caller (`get-node.ts`, `context.ts`, `files.ts`'s `list_files`,
-  `expand_scope`) unwraps it, and `expand_scope` surfaces the reason map as
-  `not_projected` alongside `projected`. **Central/agent mode now projects
-  too**: `agent-transport.ts` builds its own tiny `ProjectorScope` per local
-  MCP session (home node id from `?home_node_id=`, `has` always true since
-  central's own `guardNodeRead` already ran, `projectionSessionId` the spawn
-  id relayed in `X-Portuni-Spawn-Id` -- the same header `transport.ts` reads
-  in local mode; both accept it only as a well-formed ULID
-  (`spawnSessionIdFromHeader`), since the value becomes a path segment that
-  is `rm -rf`'d on close, and `sessionProjectionDir`/`nodeProjectionDir`
-  refuse any non-single-segment key outright -- or `_shared` when the CLI
-  cannot relay one; NEVER the
-  transport's own random MCP session id, since the Seatbelt profile was
-  frozen at spawn around exactly `<projectionRoot>/<spawn id>/` and
-  `_shared/`, so any other key would be a directory the kernel never granted)
-  and a real `DiskProjector` over it: `portuni_expand_scope`'s
-  `projected`/`not_projected` are overlaid with this device's own result
-  (central's own is structurally useless, no device filesystem), and
+- **Disk read scope = real mirror path or nothing; no sandbox, no
+  projection (#346).** The runner spawns Claude Code unsandboxed (no
+  Seatbelt, no kernel-enforced boundary) and enforces permissions in the
+  adapter's own `canUseTool` callback (`domain/write-scope.ts`'s
+  `classifyWrite`, see the Claude adapter bullet above) — there is nothing
+  left for a disk-level sandbox to do. A node with a local mirror on this
+  device is fully readable at that real path regardless of home/neighbour/
+  ad-hoc status: `portuni_get_node`/`portuni_get_context`/`portuni_list_files`
+  return it as `readable_path`/`local_path` (null when this device has no
+  mirror of the node), and `portuni_expand_scope` returns a `readable`
+  map (`node_id` → real mirror path) for each newly accepted node that has
+  one. `portuni_read_file(node_id, path)` is the universal channel for a
+  node with **no local mirror on this device** (central/remote-only, or a
+  session with no local workspace at all) — it reads the mirror when one
+  exists, otherwise fetches the routed remote directly
+  (`domain/read-node-file.ts`'s `readNodeFileOrPath`). Past the 1 MB inline
+  cap (`MAX_READ_BYTES`, unchanged) or on `as_path: true`, a file WITH a
+  local mirror reports that real path directly (no copy); one with none is
+  fetched once and written to a plain, uniquely-named temp file under the
+  runner data dir (`PORTUNI_DATA_DIR`-derived, same base
+  `domain/runner/data-dir.ts`'s `resolveRunnerDataDir` gives run pid files
+  and `runners.json`) — still no chunked-read (`offset`/`length`) parameter,
+  since there is no server-side grep and the agent would just page blindly
+  through a large file; read the path with your own Read/Grep instead.
+  Central/agent mode mirrors this exactly: `agent-transport.ts`'s
   `enrichGetNodeResult`/`enrichGetContextResult` (`agent-tools.ts`) fill
-  `readable_path`/`local_path` the same way for ANY node with a local mirror
-  here, not just the depth-1 seed set (`files[].local_path` is derived under
-  that same readable root, and `get_context`'s wire shape is the flat
-  `[root, ...connected]` array, not `{root, connected}`). Cleanup rides on the local transport's
-  own `onclose` (`disposeAgentProjection`): a projection directory is
-  removed only once no other live session in this process's session map
-  keys off the same id under the same home node — true for `_shared`, and
-  for a spawn id too, since a CLI reconnect inside one terminal carries the
-  same `X-Portuni-Spawn-Id` (the device has no durable `sessions` table to
-  consult the way `disposeSessionProjection` does). The projection registry
-  (`session-projection.ts`) is keyed by target directory, not session id:
-  two `_shared` sessions under different home roots projecting the same
-  node are two live projections, and both keep receiving watcher relinks. **`portuni_get_node` gained
-  `readable_path`** (the same value as `local_path`'s per-file derivation,
-  promoted to the top level) -- `local_mirror` stays registration metadata,
-  not a read path. **`portuni_read_file` gained `as_path`**: past the 1 MB
-  cap (`MAX_READ_BYTES`, unchanged and still enforced) or on request, it
-  spills to a path inside the session's projection directory instead of
-  inline content -- `{path, bytes, mime}` (`mcp/read-file-spill.ts`; the
-  spill path is validated with `ensureUnderRoot` like the inline read, so a
-  traversal `path` is `not_found`, never a stat of a host file) -- no
-  chunked-read (`offset`/`length`) parameter, since there is no server-side
-  grep and the agent would just page blindly through a large file; read the
-  path with your own Read/Grep instead. A node WITH a local mirror here
-  reuses the same hardlink projection (no copy); one with none downloads the
-  bytes once (`CentralClient.getFileRaw` over REST in agent mode, since that
-  front door has no graph db) and writes a real copy into the same directory.
+  `readable_path`/`local_path` from this device's own mirror registry for
+  ANY node that has one, and its own `portuni_expand_scope` overlay fills
+  `readable` the same way — central's own answer is structurally useless
+  here (no device filesystem). The retired model (Seatbelt profile frozen
+  at spawn, `<portuniRoot>/.portuni-sessions/<homeNodeId>/` hardlink
+  projection, `X-Portuni-Spawn-Id`-keyed session subdirectories, the
+  `_shared` bucket for Codex/Vibe) is gone along with `domain/
+  sandbox-profile.ts`, `domain/session-projection.ts`,
+  `mcp/disk-projection.ts`, `mcp/read-file-spill.ts` and
+  `boot/session-projection-sweep.ts` — see the embedded-terminal bullet
+  above and `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`.
+  `X-Portuni-Spawn-Id` itself survives, repurposed: it is now how a fresh
+  run's own MCP connection binds to the session row `session-runtime.ts`'s
+  `startTask` already created (runner batch Rule 2, "the session exists
+  before the runner") — see `mcp/session-persistence.ts`'s
+  `lookupSpawnSessionForBind`.
 
 - **No automatic orientation message.** A hand-opened CLI in a mirror
   starts with nothing sent by Portuni; what an orientation prompt used to
@@ -968,17 +851,19 @@ symlink to this file.
   expands to `$HOME` only when `getInstanceEnv` reads the value for a run.
   The session row's `instance_id` column (renamed from `profile_id` by
   migration 034) is where a run's instance lands; the desktop's old
-  `config.json` profiles registry and the `X-Portuni-Profile` header
-  threading are gone (#345) — an old config.json that still carries a
-  `profiles` key loads fine, the key is ignored and dropped on save.
-- **`sessions.terminal_id` and `POST /terminals/:terminal_id/exit` are
-  dead on the desktop side.** They carried the embedded terminal's exit
-  signal (a Claude Code connection threaded `PORTUNI_TERMINAL_ID` through
-  `X-Portuni-Terminal`; the PTY reader thread POSTed the exit). Nothing
-  sets the header or calls the route since #345; the column, the route and
-  `closeSessionsByTerminalId` stay until #346 removes them server-side. A
-  hand-opened CLI's row is still resolved by the MCP transport's idle GC
-  (`transport.ts`'s `onclose`), which suspends it (#329).
+  `config.json` profiles registry is gone (#345), and the server-side
+  `X-Portuni-Profile` header it used to send followed in #346 — an old
+  config.json that still carries a `profiles` key loads fine, the key is
+  ignored and dropped on save.
+- **`sessions.terminal_id` is fully retired (#345/#346).** It carried the
+  embedded terminal's exit signal (a Claude Code connection threaded
+  `PORTUNI_TERMINAL_ID` through `X-Portuni-Terminal`; the PTY reader thread
+  POSTed `POST /terminals/:terminal_id/exit`). #346 removed the header, the
+  route, the handler and `domain/sessions.ts`'s `closeSessionsByTerminalId`;
+  the column itself stays, permanently null for every new row, until a
+  later migration drops it. A hand-opened CLI's row is still resolved by
+  the MCP transport's idle GC (`transport.ts`'s `onclose`), which suspends
+  it (#329).
 - **A `sessions` row exists once a task is started OR a handshake completes
   (runner batch, Rule 2 "The session exists before the runner").** A task
   started through `POST /sessions` (`domain/runner/session-runtime.ts`'s
@@ -1036,8 +921,8 @@ symlink to this file.
   can report `generated_by: "server"` and the reason (the Relace row shows
   e.g. "pozastaveno serverem (nečinnost 30 min)") instead of looking like an
   ordinary agent-written handoff. `domain/sessions.ts`'s
-  `closeSessionIfRunning`/`closeSessionsByTerminalId`/
-  `closeStaleRunningSessionsOnBoot` kept their names and call sites (a
+  `closeSessionIfRunning`/`closeStaleRunningSessionsOnBoot` kept their names
+  and call sites (`closeSessionsByTerminalId` is gone entirely, #346; a
   transport-close reason of `disconnect` vs `idle` is decided by
   `mcp/transport.ts` itself, since its own idle-GC timer and a genuine
   client disconnect both fire the same `transport.onclose` handler) but now

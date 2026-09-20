@@ -1,9 +1,7 @@
 // Short CLI identifier (#272) derived from the MCP handshake's own
 // `initialize` clientInfo.name, not a custom header -- Codex and Vibe have
-// no per-mirror config mechanism that can relay a header at all (see
-// CLAUDE.md's scope-disk-projection gotcha for the same limitation on
-// X-Portuni-Spawn-Id), but every MCP client sends clientInfo as part of the
-// protocol's own handshake.
+// no per-mirror config mechanism that can relay a header at all, but every
+// MCP client sends clientInfo as part of the protocol's own handshake.
 
 // Normalizes a raw clientInfo.name into the short, stable label the UI
 // displays (DetailPane's Relace list) -- substring match rather than an

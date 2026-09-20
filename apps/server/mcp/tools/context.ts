@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
-import { listUserMirrors, getMirrorPath } from "../../domain/sync/mirror-registry.js";
-import { readableMirrorRoot } from "../disk-projection.js";
+import { listUserMirrors } from "../../domain/sync/mirror-registry.js";
 import type { DbClient, InValue } from "../../infra/db.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardNodeRead } from "../scope.js";
@@ -601,41 +600,10 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
           });
         }
 
-        // Rewrite local_path for non-home in-scope nodes to the disk path
-        // the Seatbelt sandbox actually allows reading: the real mirror for
-        // seed nodes, this session's hardlink projection for ad-hoc ones.
-        // Await projection first so the links are complete before the agent
-        // acts on the path: a node discovered for the FIRST time in this
-        // call has its onAdd projection still in flight, so a follow-up
-        // Read could hit a partially-linked dir. The projector's in-flight
-        // dedup means this joins the projection onAdd already started (no
-        // double work). Scoped to the nodes this get_context call surfaces
-        // — not the whole session scope.
-        const allPayloadNodes: Array<{ id: string; local_path: string | null }> = [
-          payload.root,
-          ...payload.connected,
-        ];
-        const projectionByNode = new Map<string, string | null>();
-        await Promise.all(
-          allPayloadNodes
-            .filter((n) => n.id !== scope.homeNodeId && scope.has(n.id))
-            .map(async (n) => {
-              const outcome = await ctx.projector.projectNode(n.id);
-              projectionByNode.set(n.id, outcome.kind === "projected" ? outcome.dir : null);
-            }),
-        );
-        const homeMirror = scope.homeNodeId
-          ? await getMirrorPath(ctx.identity.userId, scope.homeNodeId)
-          : null;
-        for (const n of allPayloadNodes) {
-          n.local_path = readableMirrorRoot({
-            scope,
-            nodeId: n.id,
-            homeMirror,
-            realMirror: n.local_path,
-            projectionDir: projectionByNode.get(n.id) ?? null,
-          });
-        }
+        // local_path is already the node's real mirror path (buildContextPayload's
+        // mirrorMap, from listUserMirrors) -- every in-scope node with a
+        // local mirror on this device is fully readable at it (#346), so
+        // nothing more to derive here.
 
         return {
           content: [

@@ -124,7 +124,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_expand_scope",
-    "Add one or more nodes to the current MCP session's read-scope set. Required when a read tool returned {error: scope_expansion_required, ...}: surface the request to the user, get confirmation, then call this. reason: 'user-requested: <quoted prompt fragment>' when the user named the node in the prompt; 'user-confirmed-in-chat' after a chat confirmation. Each accepted node is classified server-side and returned in added_via: 'edge' when it was reachable via a graph edge from the current scope (most calls -- a plain read tool already auto-expands these without needing this tool), 'disconnected' when it was reached only via search/name with no edge path -- the classification is computed by the server, never taken from your reason text. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) need confirmed_hard_floor=true backed by explicit user confirmation; headless sessions cannot override hard floors at all, confirmed_hard_floor is ignored. Pass writable: true to also grant WRITE access (not just read) to the accepted nodes — required before a mutating tool call on a node outside the write set (home node + session-created nodes); impossible for headless sessions, whose write set cannot expand mid-run. Every expansion is audited and surfaced in portuni_session_log. Accepted nodes with a local mirror on this device are hardlinked into this session's projection directory and listed in `projected` (node_id -> readable path); nodes with no local mirror here appear in `not_projected` (node_id -> reason) — read those with portuni_read_file instead. See portuni://scope-rules.",
+    "Add one or more nodes to the current MCP session's read-scope set. Required when a read tool returned {error: scope_expansion_required, ...}: surface the request to the user, get confirmation, then call this. reason: 'user-requested: <quoted prompt fragment>' when the user named the node in the prompt; 'user-confirmed-in-chat' after a chat confirmation. Each accepted node is classified server-side and returned in added_via: 'edge' when it was reachable via a graph edge from the current scope (most calls -- a plain read tool already auto-expands these without needing this tool), 'disconnected' when it was reached only via search/name with no edge path -- the classification is computed by the server, never taken from your reason text. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) need confirmed_hard_floor=true backed by explicit user confirmation; headless sessions cannot override hard floors at all, confirmed_hard_floor is ignored. Pass writable: true to also grant WRITE access (not just read) to the accepted nodes — required before a mutating tool call on a node outside the write set (home node + session-created nodes); impossible for headless sessions, whose write set cannot expand mid-run. Every expansion is audited and surfaced in portuni_session_log. Accepted nodes with a local mirror on this device are listed in `readable` (node_id -> real mirror path) and can be Read/Grep'd directly at that path; nodes with no local mirror here have no entry — read those with portuni_read_file instead. See portuni://scope-rules.",
     {
       node_ids: z
         .array(z.string())
@@ -299,18 +299,15 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         });
       }
 
-      // Project accepted nodes into this session's hardlink projection
-      // directory (domain/session-projection.ts) when they have a local
-      // mirror on this device -- the Seatbelt sandbox already grants read
-      // access to that directory (domain/sandbox-profile.ts), so the agent
-      // can read them directly, not only via portuni_read_file.
-      const projected: Record<string, string> = {};
-      const not_projected: Record<string, string> = {};
+      // Accepted nodes with a local mirror on this device are fully
+      // readable at that real path (#346) -- no sandbox narrows the read
+      // set anymore, so surface it directly instead of routing everything
+      // through portuni_read_file.
+      const readable: Record<string, string> = {};
       await Promise.all(
         accepted.map(async (id) => {
-          const outcome = await ctx.projector.projectNode(id);
-          if (outcome.kind === "projected") projected[id] = outcome.dir;
-          else not_projected[id] = outcome.reason;
+          const mirror = await getMirrorPath(ctx.identity.userId, id);
+          if (mirror) readable[id] = mirror;
         }),
       );
 
@@ -327,14 +324,13 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
               refused_hard_floor,
               refused_write,
               scope_size: scope.size(),
-              projected,
-              not_projected,
+              readable,
               hint: overridableRefusals
                 ? "Re-call portuni_expand_scope with confirmed_hard_floor=true only after the user explicitly authorises the hard-floor node."
                 : refused_write.length > 0
                   ? "Write-access grants require the user to accept a real elicitation dialog; see refused_write for why each node was not granted."
                   : accepted.length > 0
-                    ? "Nodes listed in 'projected' are readable at that directory; nodes in 'not_projected' (see the reason) have no local mirror on this device — read them with portuni_read_file (node_id + path)."
+                    ? "Nodes listed in 'readable' can be Read/Grep'd directly at that path; the rest have no local mirror on this device — read them with portuni_read_file (node_id + path)."
                     : undefined,
             }),
           },

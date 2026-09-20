@@ -46,8 +46,8 @@ authentication path -- it is never self-declared by the client or
 agent:
 
 - **`interactive_task`**: the connection carries `?home_node_id`
-  (desktop-spawned terminal, mirror `.mcp.json`). Anchor = the task
-  node.
+  (a runner-started task, or a hand-opened CLI in a mirror via
+  `.mcp.json`). Anchor = the task node.
 - **`interactive_chat`**: a connector session (claude.ai, Claude
   Desktop chat, Claude Code added as a connector). No anchor, no
   in-memory scope set, no edge-reachability or expand_scope dance:
@@ -126,10 +126,11 @@ confirmation never turns into a hang.
 
 Agent-mode sessions (the desktop app's central-mode sidecar,
 `apps/server/mcp/agent-transport.ts`) proxy this transparently: the
-sidecar advertises the real terminal client's declared capabilities
+sidecar advertises the real connected client's declared capabilities
 upstream to central, and relays a server-initiated elicitation request
-from central back down to that same real client, so the dialog appears
-in the terminal exactly as it would for a direct central session.
+from central back down to that same client, so the dialog appears
+wherever that client renders it, exactly as it would for a direct
+central session.
 
 ## Expansion semantics
 
@@ -293,7 +294,8 @@ errors for them. Callable again on an already-suspended session to
 refresh the handoff -- the stored hash changes, so a resume can tell a
 human edited it since suspend.
 
-A later resume respawns the terminal in the same mirror, recomputes
-the sandbox profile from the session's accumulated read set, and either
-continues the same CLI conversation (when it still exists under the
-resumed profile) or starts fresh from the handoff content.
+A later resume starts a fresh run in the same mirror and either
+continues the same CLI conversation (when it still exists) or starts
+fresh from the handoff content -- there is no sandbox profile to
+recompute; a node with a local mirror on this device is readable at
+its real path regardless.

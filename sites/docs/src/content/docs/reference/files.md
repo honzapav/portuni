@@ -136,13 +136,11 @@ List files across all nodes with optional filtering. Each row includes a
 **derived** `local_path` (from the current mirror + `remote_path` +
 `sync_key`); it is `null` when the node has no mirror on this device.
 
-`local_path` is the node's **real** mirror for the home node. For any
-other in-scope node with a local mirror on this device — including a
-depth-1 neighbour — it is that node's session-local hardlink projection
-directory instead (preferred over the real mirror even for a depth-1
-neighbour, see [disk read scope](/concepts/scope-enforcement/)). A node
-with no local mirror on this device has `local_path: null` either way —
-read their content with `portuni_read_file` (below).
+`local_path` is the node's **real** mirror path whenever this device has
+one, regardless of the node's relation to the home node (see [disk read
+scope](/concepts/scope-enforcement/)). A node with no local mirror on this
+device has `local_path: null` — read their content with `portuni_read_file`
+(below).
 
 Scope gating: with `node_id` the node must be in session scope (out of
 scope returns `scope_expansion_required`). Without `node_id` results are
@@ -165,17 +163,14 @@ Returns: Array of files, each with: `id`, `node_id`, `node_name`,
 
 ## portuni_read_file
 
-Read a file's content from an in-scope node the seatbelt does not expose on
-its **real** mirror path — an ad-hoc node reached by deeper graph traversal
-(beyond the home node and its depth-1 neighbours, whose folders you read
-natively via the `local_path` returned by `portuni_get_context` /
-`portuni_get_node`). Such a node, if it has a local mirror on this device,
-is also readable natively at its hardlink projection directory (same
-`local_path` field, created on first touch — see [disk read
-scope](/concepts/scope-enforcement/)); `portuni_read_file` is the channel
-that works regardless, since it has no dependency on a local mirror at all.
-The server reads the live file from the node's local mirror when one
-exists — no stale copy — and otherwise, when the serving machine holds
+Read a file's content from an in-scope node. A node with a local mirror on
+this device is directly readable natively via the `local_path` returned by
+`portuni_get_context` / `portuni_get_node` (see [disk read
+scope](/concepts/scope-enforcement/)); `portuni_read_file` is mainly for a
+node with **no local mirror on this device** — it has no dependency on a
+local mirror at all. The server reads the live file from the node's local
+mirror when one exists — no stale copy — and otherwise, when the serving
+machine holds
 **no mirror** of the node (the central server, or a remote client such as
 Claude Desktop against `https://…/mcp` with a device token, with no local
 workspace), reads straight from the node's routed remote (Google Drive),
@@ -190,11 +185,12 @@ its own mirror first and proxies the call to central when it has none.
 
 Returns the file content as UTF-8 text, or `[binary file, N bytes, base64]`
 followed by base64 for non-text files, up to the 1 MB inline limit. A file
-over that limit — or any call with `as_path: true` — is instead **spilled to
-a disk path**: `{ path, bytes, mime }`, a location inside this session's disk
-projection (see [disk read scope](/concepts/scope-enforcement/)) that your
-own Read/Grep tools can use directly. There is no chunked-read parameter
-(`offset`/`length`) — read the returned path yourself. Scope-gated exactly
+over that limit — or any call with `as_path: true` — instead returns
+`{ path, bytes, mime }`: the node's real mirror path when this device has
+one, or (when it doesn't) a plain temp file written under the runner's own
+data directory (see [disk read scope](/concepts/scope-enforcement/)) — your
+own Read/Grep tools can use either directly. There is no chunked-read
+parameter (`offset`/`length`) — read the returned path yourself. Scope-gated exactly
 like `portuni_get_node`: reading a node not yet in scope returns
 `scope_expansion_required` (call `portuni_expand_scope` first). Errors when
 the file does not exist, the file is a native Google format (Doc/Sheet/Slides

@@ -22,7 +22,6 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { guardWrite, type WriteContext } from "../apps/server/domain/write-gate.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { createElicitor } from "../apps/server/mcp/elicit.js";
 import { registerNodeTools } from "../apps/server/mcp/tools/nodes.js";
 import { registerGetNodeTool } from "../apps/server/mcp/tools/get-node.js";
@@ -95,8 +94,7 @@ function payloadOf(result: ToolResult): Record<string, unknown> {
 }
 
 async function connect(scope: SessionScope, ident: RequestIdentity): Promise<McpClient> {
-  const projector = createDiskProjector({ userId: ident.userId, scope });
-  const ctx: SessionCtx = { scope, identity: ident, projector };
+  const ctx: SessionCtx = { scope, identity: ident };
   const server = new McpServer({ name: "write-gate-test", version: "0.0.1" }, {});
   registerNodeTools(server, ctx);
   registerScopeTools(server, ctx);
@@ -115,9 +113,8 @@ async function connectWithElicitation(
   ident: RequestIdentity,
   dialogAnswer: "accept" | "decline" | undefined,
 ): Promise<McpClient> {
-  const projector = createDiskProjector({ userId: ident.userId, scope });
   const server = new McpServer({ name: "write-gate-elicit-test", version: "0.0.1" }, {});
-  const ctx: SessionCtx = { scope, identity: ident, projector, elicit: createElicitor(server) };
+  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server) };
   registerNodeTools(server, ctx);
   registerGetNodeTool(server, ctx);
   registerScopeTools(server, ctx);
@@ -144,9 +141,8 @@ async function connectCapturingDialogs(
   ident: RequestIdentity,
   seen: string[],
 ): Promise<McpClient> {
-  const projector = createDiskProjector({ userId: ident.userId, scope });
   const server = new McpServer({ name: "write-gate-dialog-test", version: "0.0.1" }, {});
-  const ctx: SessionCtx = { scope, identity: ident, projector, elicit: createElicitor(server) };
+  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server) };
   registerNodeTools(server, ctx);
   registerGetNodeTool(server, ctx);
   registerScopeTools(server, ctx);
@@ -205,7 +201,7 @@ describe("write gate wired into portuni_update_node", () => {
   it("headless session: updating the home node succeeds", async () => {
     const scope = new SessionScope("headless");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     const client = await connect(scope, identity({ via: "device_token", headless: true }));
     const r = (await client.callTool({
       name: "portuni_update_node",
@@ -217,7 +213,7 @@ describe("write gate wired into portuni_update_node", () => {
   it("headless session: updating a non-home node is refused outright", async () => {
     const scope = new SessionScope("headless");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId); // in read scope, but not write scope
     const client = await connect(scope, identity({ via: "device_token", headless: true }));
     const r = (await client.callTool({
@@ -233,7 +229,7 @@ describe("write gate wired into portuni_update_node", () => {
   it("interactive_task session: updating a non-home node elicits rather than refuses", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
     const client = await connect(scope, identity({ via: "device_token" }));
     const r = (await client.callTool({
@@ -264,7 +260,7 @@ describe("portuni_expand_scope writable flag", () => {
   it("grants write access via a real elicitation dialog, letting a subsequent mutation on a previously-refused node succeed", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
 
     // First, a capability-absent connection: portuni_update_node on otherId
@@ -300,7 +296,7 @@ describe("portuni_expand_scope writable flag", () => {
   it("refuses the write grant, without self-granting, when the dialog is declined", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
     const client = await connectWithElicitation(scope, identity({ via: "device_token" }), "decline");
 
@@ -321,7 +317,7 @@ describe("portuni_expand_scope writable flag", () => {
   it("refuses the write grant outright when the client has no elicitation capability -- no honor-system fallback for writes", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
     const client = await connect(scope, identity({ via: "device_token" }));
 
@@ -348,7 +344,7 @@ describe("portuni_expand_scope writable flag", () => {
   it("is rejected outright for headless sessions -- write-set expansion is impossible mid-run", async () => {
     const scope = new SessionScope("headless");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
     const client = await connect(scope, identity({ via: "device_token", headless: true }));
 
@@ -371,7 +367,7 @@ describe("write gate: protocol elicitation", () => {
   it("capability-present, user accepts: grants write access and the mutation succeeds", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
     const client = await connectWithElicitation(scope, identity({ via: "device_token" }), "accept");
     const r = (await client.callTool({
@@ -385,7 +381,7 @@ describe("write gate: protocol elicitation", () => {
   it("capability-present, user declines: falls back to write_expansion_required", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
     const client = await connectWithElicitation(scope, identity({ via: "device_token" }), "decline");
     const r = (await client.callTool({
@@ -400,7 +396,7 @@ describe("write gate: protocol elicitation", () => {
   it("capability-absent client: ctx.elicit is set but the client never declared elicitation, so it falls back", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
     const client = await connectWithElicitation(scope, identity({ via: "device_token" }), undefined);
     const r = (await client.callTool({
@@ -421,7 +417,7 @@ describe("write gate: protocol elicitation", () => {
   it("capability-present, user declines: the payload keeps the expand_scope hint and no elicitation_supported flag", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
     const client = await connectWithElicitation(scope, identity({ via: "device_token" }), "decline");
     const r = (await client.callTool({
@@ -437,7 +433,7 @@ describe("write gate: protocol elicitation", () => {
   it("headless sessions never see a dialog, even when ctx.elicit and client capability are both present", async () => {
     const scope = new SessionScope("headless");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(otherId);
     const client = await connectWithElicitation(scope, identity({ via: "device_token", headless: true }), "accept");
     const r = (await client.callTool({
@@ -453,7 +449,7 @@ describe("read gate: protocol elicitation", () => {
   it("capability-present, user accepts a disconnected-jump read: auto-adds the node, addedVia elicited", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     const client = await connectWithElicitation(scope, identity({ via: "device_token" }), "accept");
     const r = (await client.callTool({
       name: "portuni_get_node",
@@ -468,7 +464,7 @@ describe("read gate: protocol elicitation", () => {
   it("capability-present, user declines: still returns scope_expansion_required", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     const client = await connectWithElicitation(scope, identity({ via: "device_token" }), "decline");
     const r = (await client.callTool({
       name: "portuni_get_node",
@@ -499,7 +495,7 @@ describe("write dialogs are written for the human answering them", () => {
     const targetId = await freshNode("Tempo akademie");
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(targetId);
     const seen: string[] = [];
     const client = await connectCapturingDialogs(scope, identity({ via: "device_token" }), seen);
@@ -520,7 +516,7 @@ describe("write dialogs are written for the human answering them", () => {
     const targetId = await freshNode("Rozpočet 2026");
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
-    scope.addSeed(homeId);
+    scope.add(homeId);
     scope.add(targetId);
     const seen: string[] = [];
     const client = await connectCapturingDialogs(scope, identity({ via: "device_token" }), seen);

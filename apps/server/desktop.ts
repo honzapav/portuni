@@ -26,7 +26,6 @@ import { createAgentSessionRuntime, getSessionRuntime } from "./boot/session-run
 import { createAgentSessionsWsDeps, createSessionsWsServer } from "./api/sessions-ws.js";
 import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
-import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepOrphanedRunsOnBoot, sweepOrphanedRunsOnBootCentral } from "./boot/run-sweep.js";
 import { CentralSessionStore } from "./domain/runner/store-central.js";
 import {
@@ -362,7 +361,6 @@ async function main(): Promise<void> {
   // Design: docs/archive/specs/2026-06-28-deterministic-file-state-design.md.
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS !== "0");
 
-  void sweepStaleSessionProjectionsOnBoot();
   // Must finish before sweepStaleRunningSessionsOnBoot: this sweep already
   // resolves any 'running' session a runner task was driving, so the other
   // sweep's own query for stale 'running' rows sees an already-correct

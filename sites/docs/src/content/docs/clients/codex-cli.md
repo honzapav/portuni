@@ -21,7 +21,7 @@ startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
 
-The `url` key tells Codex this is a Streamable HTTP server. Don't mix `url` with the stdio-style `command` key in the same block – one or the other. The token has to come through env-var indirection: Codex's Streamable HTTP transport rejects a literal `bearer_token` field (the whole config fails to load). Export `PORTUNI_MCP_TOKEN` in your shell, or launch Codex from a terminal the desktop app spawned – those get the token variables injected. The standalone server requires the bearer header whenever `PORTUNI_AUTH_TOKEN` is set; the desktop sidecar always requires it.
+The `url` key tells Codex this is a Streamable HTTP server. Don't mix `url` with the stdio-style `command` key in the same block – one or the other. The token has to come through env-var indirection: Codex's Streamable HTTP transport rejects a literal `bearer_token` field (the whole config fails to load). Export `PORTUNI_MCP_TOKEN` in your shell (Settings → MCP Server → Copy token in the desktop app). The standalone server requires the bearer header whenever `PORTUNI_AUTH_TOKEN` is set; the desktop sidecar always requires it.
 
 For the full list of options, see OpenAI's [configuration reference](https://developers.openai.com/codex/config-reference).
 

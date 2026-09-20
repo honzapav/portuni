@@ -30,7 +30,7 @@ import {
 import { handleHealth } from "./health.js";
 import { handleGraph } from "./graph.js";
 import { handleGetOverview } from "./overview.js";
-import { handleSandboxProfileByCwd, handleWriteScope } from "./write-scope.js";
+import { handleWriteScope } from "./write-scope.js";
 import { handleListUsers } from "./users.js";
 import {
   handleCreateActor,
@@ -79,7 +79,6 @@ import {
   handleGetNode,
   handleGetNodeOrientation,
   handleMoveNode,
-  handleNodeSandboxProfile,
   handlePatchNode,
   handlePositions,
   handleRemoteSweep,
@@ -128,7 +127,6 @@ import {
   handleSendSessionMessage,
   handleStartSession,
   handleListSessions,
-  handleTerminalExit,
   handleTransitionSessionState,
 } from "./sessions.js";
 import {
@@ -290,10 +288,6 @@ async function routeSystem(
   }
   if (pathname === "/scope" && method === "GET") {
     await handleWriteScope(req, res, identity, url);
-    return true;
-  }
-  if (pathname === "/sandbox-profile" && method === "GET") {
-    await handleSandboxProfileByCwd(req, res, identity, url);
     return true;
   }
   if (pathname === "/users" && method === "GET") {
@@ -623,11 +617,6 @@ async function routeNodes(
     await handleCreateNodeMirror(req, res, identity, decodeURIComponent(mirrorMatch[1]));
     return true;
   }
-  const sandboxProfileMatch = pathname.match(/^\/nodes\/([^/]+)\/sandbox-profile$/);
-  if (sandboxProfileMatch && method === "GET") {
-    await handleNodeSandboxProfile(req, res, identity, decodeURIComponent(sandboxProfileMatch[1]));
-    return true;
-  }
   const moveMatch = pathname.match(/^\/nodes\/([^/]+)\/move$/);
   if (moveMatch && method === "POST") {
     await handleMoveNode(req, res, identity, decodeURIComponent(moveMatch[1]));
@@ -755,11 +744,6 @@ async function routeSessions(
   identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
-  const terminalExitMatch = pathname.match(/^\/terminals\/([^/]+)\/exit$/);
-  if (terminalExitMatch && method === "POST") {
-    await handleTerminalExit(req, res, identity, decodeURIComponent(terminalExitMatch[1]));
-    return true;
-  }
   // Every mutating /sessions route below is a session action or the central
   // record half; under the hardened posture (#213) only the app itself may
   // call them over REST -- a spawned terminal drives its session through

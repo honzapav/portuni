@@ -14,7 +14,7 @@ Portuni is a plain HTTP server that speaks MCP – which means any AI client tha
 
 If you're using something else that speaks MCP, the same ideas apply – you just have to hunt down the equivalent settings yourself.
 
-The [desktop app](/clients/desktop-app/) sits on both sides of this picture: it's a Portuni client in its own right, and its embedded sidecar is the server the CLIs above usually connect to. The client landscape is also a bit wider than the four pages here – `portuni_mirror` writes a `.cursor/rules` file into every mirror (the same scope hint that lands in `PORTUNI_SCOPE.md`), and the desktop app's terminal ships launch presets for Cursor Agent and OpenCode alongside the four clients above.
+The [desktop app](/clients/desktop-app/) sits on both sides of this picture: it's a Portuni client in its own right, and its embedded sidecar is the server the CLIs above usually connect to. The client landscape is also a bit wider than the four pages here – `portuni_mirror` writes a `.cursor/rules` file into every mirror (the same scope hint that lands in `PORTUNI_SCOPE.md`), so Cursor Agent and other MCP-speaking clients can connect to the same mirror alongside the four clients above.
 
 ## One URL, four different habits around your files
 

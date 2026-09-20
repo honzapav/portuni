@@ -54,7 +54,7 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
     bindSessionPersistence(shared.db, scope, { userId: "U1" });
     // Fires synchronously, immediately after construction -- exercises the
     // catch-up path: this add happens before createSession's INSERT settles.
-    scope.addSeed(shared.nodeId);
+    scope.add(shared.nodeId);
     scope.recordExpansion({
       at: new Date().toISOString(),
       node_ids: [shared.nodeId],
@@ -77,52 +77,14 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
     assert.equal(rows[0].added_via, "seed");
   });
 
-  it("stores the profile id (phase 3, spawn UX) when the caller passes one", async () => {
-    const shared = await makeSharedDb();
-    const scope = new SessionScope("interactive_task");
-    scope.homeNodeId = shared.nodeId;
-
-    bindSessionPersistence(shared.db, scope, { userId: "U1" }, "work");
-    scope.addSeed(shared.nodeId);
-    scope.recordExpansion({
-      at: new Date().toISOString(),
-      node_ids: [shared.nodeId],
-      reason: "session_init seed (home + depth-1)",
-      triggered_by: "init",
-    });
-
-    await waitUntil(() => scope.sessionId !== null);
-    const sessionRow = await getSession(shared.db, scope.sessionId!);
-    assert.equal(sessionRow!.instance_id, "work");
-  });
-
-  it("stores the terminal id (#218) when the caller passes one", async () => {
-    const shared = await makeSharedDb();
-    const scope = new SessionScope("interactive_task");
-    scope.homeNodeId = shared.nodeId;
-
-    bindSessionPersistence(shared.db, scope, { userId: "U1" }, null, undefined, undefined, "term-1");
-    scope.addSeed(shared.nodeId);
-    scope.recordExpansion({
-      at: new Date().toISOString(),
-      node_ids: [shared.nodeId],
-      reason: "session_init seed (home + depth-1)",
-      triggered_by: "init",
-    });
-
-    await waitUntil(() => scope.sessionId !== null);
-    const sessionRow = await getSession(shared.db, scope.sessionId!);
-    assert.equal(sessionRow!.terminal_id, "term-1");
-  });
-
   it("reuses a pre-assigned spawnSessionId (#208 follow-up) instead of minting a new one", async () => {
     const shared = await makeSharedDb();
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = shared.nodeId;
     const preassigned = ulid();
 
-    bindSessionPersistence(shared.db, scope, { userId: "U1" }, null, undefined, preassigned);
-    scope.addSeed(shared.nodeId);
+    bindSessionPersistence(shared.db, scope, { userId: "U1" }, undefined, preassigned);
+    scope.add(shared.nodeId);
     scope.recordExpansion({
       at: new Date().toISOString(),
       node_ids: [shared.nodeId],
@@ -142,7 +104,7 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = shared.nodeId;
     bindSessionPersistence(shared.db, scope, { userId: "U1" });
-    scope.addSeed(shared.nodeId);
+    scope.add(shared.nodeId);
     await waitUntil(() => scope.sessionId !== null);
     const sessionId = scope.sessionId!;
     await waitUntil(async () => (await getSessionScope(shared.db, sessionId)).length === 1);
@@ -170,7 +132,7 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = shared.nodeId;
     bindSessionPersistence(shared.db, scope, { userId: "U1" });
-    scope.addSeed(shared.nodeId);
+    scope.add(shared.nodeId);
     await waitUntil(() => scope.sessionId !== null);
     const sessionId = scope.sessionId!;
     await waitUntil(async () => (await getSessionScope(shared.db, sessionId)).length === 1);
@@ -204,8 +166,8 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
     const shared = await makeSharedDb();
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = shared.nodeId;
-    bindSessionPersistence(shared.db, scope, { userId: "U1" }, null, shared.nodeId);
-    scope.addSeed(shared.nodeId);
+    bindSessionPersistence(shared.db, scope, { userId: "U1" }, shared.nodeId);
+    scope.add(shared.nodeId);
     await waitUntil(() => scope.sessionId !== null);
     const sessionId = scope.sessionId!;
     await waitUntil(async () => (await getSessionWriteCount(shared.db, sessionId)) === 1);
@@ -271,13 +233,12 @@ describe("resumeSessionPersistence: graph-plane reattach on resume (#204)", () =
     assert.ok(scope.has(shared.nodeId));
     assert.ok(scope.has(other));
     assert.ok(scope.canWrite(other));
-    assert.ok(scope.isSeed(other), "a node with a local mirror on this device is treated as seed");
 
     const row = await getSession(shared.db, suspended.id);
     assert.equal(row?.state, "running");
   });
 
-  it("marks a node with no local mirror on this device as in-scope but not seed", async () => {
+  it("rehydrates a node into scope regardless of whether it has a local mirror on this device", async () => {
     const shared = await makeSharedDb();
     const noMirrorNode = await neighbourNode(shared, "NoMirror");
     await registerMirror("U1", shared.nodeId, join(workspace, "home"));
@@ -293,7 +254,6 @@ describe("resumeSessionPersistence: graph-plane reattach on resume (#204)", () =
     await resumeSessionPersistence(shared.db, scope, { userId: "U1" }, suspended.id, shared.nodeId);
 
     assert.ok(scope.has(noMirrorNode));
-    assert.ok(!scope.isSeed(noMirrorNode));
   });
 
   it("returns null and leaves the session row untouched when the resume id is unauthorized", async () => {

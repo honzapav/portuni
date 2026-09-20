@@ -1,7 +1,7 @@
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
-import { join, posix, sep } from "node:path";
+import { join, posix } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
@@ -435,49 +435,6 @@ describe("agent router over HTTP", () => {
     assert.equal(r501.status, 501);
     const body = (await r501.json()) as { error: string };
     assert.equal(body.error, "agent_mode");
-  });
-
-  it("GET /nodes/:id/sandbox-profile 409 without mirror, 200 with one", async () => {
-    const r409 = await fetch(`${base}/nodes/${NODE_ID}/sandbox-profile`);
-    assert.equal(r409.status, 409);
-
-    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
-    await registerMirror(SOLO_USER, NODE_ID, mirrorRoot);
-    const r200 = await fetch(`${base}/nodes/${NODE_ID}/sandbox-profile`);
-    assert.equal(r200.status, 200);
-    const body = (await r200.json()) as {
-      profile: string;
-      home_mirror: string;
-      session_id: string | null;
-    };
-    assert.ok(body.profile.includes("(deny default)") || body.profile.length > 0);
-    assert.ok(body.session_id, "session_id is minted even in central mode (#208 follow-up)");
-
-    // Central mode has no db, so it must never trust a caller-supplied
-    // resumeSessionId for the narrowing -- every call mints its own fresh id.
-    const r200Again = await fetch(`${base}/nodes/${NODE_ID}/sandbox-profile`);
-    const bodyAgain = (await r200Again.json()) as { session_id: string | null };
-    assert.notEqual(body.session_id, bodyAgain.session_id);
-  });
-
-  it("grants central depth-1 neighbour real mirrors in the sandbox profile", async () => {
-    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
-    await registerMirror(SOLO_USER, NODE_ID, mirrorRoot);
-    // A neighbour node with a local mirror, reported by central node-detail.
-    const neighbourId = "N0000000000000000000NEIGH";
-    const neighbourDir = join(workspace, "workflow", "areas", "lidi");
-    await mkdir(neighbourDir, { recursive: true });
-    await registerMirror(SOLO_USER, neighbourId, neighbourDir);
-    fake.neighbours = [neighbourId];
-
-    const res = await fetch(`${base}/nodes/${NODE_ID}/sandbox-profile`);
-    assert.equal(res.status, 200);
-    const body = (await res.json()) as { profile: string };
-    // The neighbour's REAL mirror is granted read-only, after the deny line.
-    const denyIdx = body.profile.indexOf("(deny file-read*");
-    const neighIdx = body.profile.indexOf(`${sep}lidi"`);
-    assert.ok(denyIdx >= 0 && neighIdx > denyIdx, "neighbour real mirror granted after deny");
-    assert.match(body.profile, /\(allow file-read\* \(subpath "[^"]*lidi"\)\)/);
   });
 
   it("GET /nodes/:id/mirror returns the registered device mirror", async () => {

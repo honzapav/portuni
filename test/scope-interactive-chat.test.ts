@@ -22,7 +22,6 @@ import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { registerEventTools } from "../apps/server/mcp/tools/events.js";
 import { registerFileTools } from "../apps/server/mcp/tools/files.js";
 import { registerGetNodeTool } from "../apps/server/mcp/tools/get-node.js";
@@ -57,8 +56,7 @@ async function connect(
   scope: SessionScope,
   ident: RequestIdentity,
 ): Promise<{ client: McpClient; scope: SessionScope }> {
-  const projector = createDiskProjector({ userId: ident.userId, scope });
-  const ctx: SessionCtx = { scope, identity: ident, projector };
+  const ctx: SessionCtx = { scope, identity: ident };
   const server = new McpServer({ name: "chat-scope-test", version: "0.0.1" }, {});
   registerEventTools(server, ctx);
   registerFileTools(server, ctx);

@@ -14,7 +14,6 @@
 // served the call.
 
 import type { CentralClient } from "../domain/sync/central/client.js";
-import type { DiskProjector } from "./disk-projection.js";
 import { CentralHttpError } from "../domain/sync/central/client.js";
 import {
   createMirrorForNodeCentral,
@@ -347,17 +346,13 @@ type ToolTextResult = {
 // an agent in central mode sees the same paths a local session would.
 //
 // - local_mirror: from getLocalMirror (registration metadata for any node).
-// - readable_path: the real mirror for the home node, this session's
-//   hardlink projection directory (projector, #252) for any other node with
-//   a local mirror here, null otherwise. By the time this runs, `id` has
-//   already passed central's own guardNodeRead (a scope refusal is an error
-//   result, returned above before this point), so no scope re-check is
-//   needed here -- only "is there a local mirror to read it from".
-// - files[].local_path: derived under the SAME readable root as
-//   readable_path (the real mirror for home, the projection directory for
-//   any other node -- the projection preserves the mirror's relative
-//   layout, so the derivation is identical). Never the real mirror of a
-//   non-home node: that path is not granted by the sandbox.
+// - readable_path: the node's real mirror path when this device has one
+//   (#346: no sandbox narrows this to the home node anymore), null
+//   otherwise. By the time this runs, `id` has already passed central's own
+//   guardNodeRead (a scope refusal is an error result, returned above before
+//   this point), so no scope re-check is needed here -- only "is there a
+//   local mirror to read it from".
+// - files[].local_path: derived under that same readable_path.
 //
 // Defensive: any shape it does not recognise passes through unchanged (error
 // result, no text block, non-JSON text, no string id). A syncInfo failure
@@ -365,8 +360,6 @@ type ToolTextResult = {
 export async function enrichGetNodeResult<T extends ToolTextResult>(
   client: CentralClient,
   userId: string,
-  homeNodeId: string | null,
-  projector: DiskProjector,
   result: T,
 ): Promise<T> {
   if (result.isError) return result;
@@ -393,16 +386,7 @@ export async function enrichGetNodeResult<T extends ToolTextResult>(
   const mirrorPath =
     (node.local_mirror as { local_path?: string } | null)?.local_path ?? null;
   if (!node.readable_path) {
-    let readablePath: string | null = null;
-    if (mirrorPath) {
-      readablePath =
-        id === homeNodeId
-          ? mirrorPath
-          : await projector
-              .projectNode(id)
-              .then((o) => (o.kind === "projected" ? o.dir : null));
-    }
-    node.readable_path = readablePath;
+    node.readable_path = mirrorPath;
   }
   const readableRoot = typeof node.readable_path === "string" ? node.readable_path : null;
   if (readableRoot && Array.isArray(node.files)) {
@@ -438,20 +422,18 @@ export async function enrichGetNodeResult<T extends ToolTextResult>(
   };
 }
 
-// Overlay device-local `local_path` (each node's readable mirror root) onto a
+// Overlay device-local `local_path` (each node's real mirror path) onto a
 // proxied portuni_get_context result. Central serves every node's local_path
-// null; fill it with the home node's own real mirror, or (#252) this
-// session's hardlink projection directory for any other node that has a
-// local mirror here -- every node in the payload already passed central's
-// own guardNodeRead to get there, so no scope re-check is needed here. Any
-// shape it does not recognise passes through unchanged.
+// null; fill it with this device's own mirror for any node that has one
+// (#346: no sandbox narrows this to the home node anymore) -- every node in
+// the payload already passed central's own guardNodeRead to get there, so no
+// scope re-check is needed here. Any shape it does not recognise passes
+// through unchanged.
 export async function enrichGetContextResult<T extends ToolTextResult>(
   userId: string,
-  homeNodeId: string | null,
-  projector: DiskProjector,
   result: T,
 ): Promise<T> {
-  if (result.isError || !homeNodeId) return result;
+  if (result.isError) return result;
   const first = result.content.find(
     (c) => c.type === "text" && typeof c.text === "string",
   );
@@ -478,15 +460,8 @@ export async function enrichGetContextResult<T extends ToolTextResult>(
     if (!n || typeof n !== "object") return;
     const node = n as Record<string, unknown>;
     if (typeof node.id !== "string" || node.local_path) return;
-    if (node.id === homeNodeId) {
-      const p = await getMirrorPath(userId, node.id);
-      if (p) node.local_path = p;
-      return;
-    }
     const mirrorPath = await getMirrorPath(userId, node.id);
-    if (!mirrorPath) return;
-    const outcome = await projector.projectNode(node.id);
-    if (outcome.kind === "projected") node.local_path = outcome.dir;
+    if (mirrorPath) node.local_path = mirrorPath;
   };
   for (const n of nodes) await fill(n);
   const text = JSON.stringify(payload, null, 2);

@@ -144,13 +144,10 @@ export const INDEX_OAUTH_CODES_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oau
 // "durable core outlives every CLI's transcript retention by design".
 // terminal_id (#218, phase 0 of docs/superpowers/specs/
 // 2026-09-01-desktop-multi-window-design.md, "Sessions follow PTY exit"):
-// correlates a durable session row with the desktop PTY that spawned its
-// CLI (PORTUNI_TERMINAL_ID -> X-Portuni-Terminal header, Claude only for
-// now -- see buildClaudeMcpJson). NULL for every non-Claude/non-desktop
-// connection. POST /terminals/:terminal_id/exit closes every 'running'
-// session sharing a terminal_id when that PTY exits, closing the "rows
-// stuck in running" gap the 30-minute idle GC used to be the only backstop
-// for.
+// historical -- correlated a durable session row with the desktop PTY that
+// spawned its CLI, back when the embedded terminal existed. Nothing writes
+// a non-null value anymore since its removal (#345/#346); the column stays
+// for old rows until a later migration drops it.
 // brief/runner/host_id/waiting_since (runner batch, migration 034,
 // docs/superpowers/specs/2026-09-12-runner-and-session-design.md): a
 // session is now the task record -- the brief it was given, the runner
