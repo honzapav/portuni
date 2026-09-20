@@ -140,7 +140,17 @@ sweep is all there is for it) and while a remote is failing;
 `cursor_updated_at` is when a batch of remote changes was last applied end
 to end, which is what Nastavení › Synchronizace shows as „poslední změna
 před 2 min". A failing remote reports `last_error` and, while it is backing
-off, `backoff_until`. Every timestamp is ISO-8601 UTC.
+off, `backoff_until` — a tick that fails outright (the change feed itself
+refusing) and a tick whose batch could not be fully applied (one object
+answering 429/5xx on a stat or a download) both back off the same way,
+exponentially from the one-minute tick interval up to an hour. That
+matters because a partly-applied batch deliberately leaves the cursor
+where it was, so the same batch is what the next tick reads: without the
+backoff, one permanently failing object would be retried once a minute
+forever. `last_full_sweep_at` records a periodic full sweep that actually
+**finished** with no node error — a sweep that failed leaves the field as
+it was and surfaces its error, so the next tick sweeps again rather than
+waiting out the six-hour interval. Every timestamp is ISO-8601 UTC.
 
 What the watcher registers for one changed file is exactly what a full
 sweep would register for it, including a Google Doc/Sheet/Slide created

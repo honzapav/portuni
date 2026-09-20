@@ -36,7 +36,7 @@ import type { SyncStatusResponse, SyncWatchResponse, UntrackedFile } from "../sh
 import { isLocalWorkspace } from "../infra/server-config.js";
 import { remoteWatchStatus } from "../domain/sync/remote-watch-status.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
-import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
+import { startSyncJob, getSyncJob, getCurrentSyncJob, withNodeSyncLock } from "../domain/sync/sync-jobs.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { orientationForNode } from "../domain/scope-materialize.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
@@ -724,7 +724,13 @@ export async function handleSyncRun(
       return;
     }
     if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
-    const result = await runNodeSync(db, { userId: identity.userId, nodeId });
+    // The same per-node lock the background job pool takes (#417): this
+    // route and the remote watcher's catch-up sweep of the same node would
+    // otherwise interleave (double adopt, double tombstone, unique-
+    // constraint errors). The later caller waits.
+    const result = await withNodeSyncLock(nodeId, () =>
+      runNodeSync(db, { userId: identity.userId, nodeId }),
+    );
     respondJson(res, 200, result);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync`, err);
@@ -747,7 +753,14 @@ export async function handleRemoteSweep(
       return;
     }
     if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
-    respondJson(res, 200, await remoteSweep(db, { userId: identity.userId, nodeId }));
+    // Same node lock as the sync run above and the job pool (#417) -- an
+    // agent-mode device asking for this sweep must not overlap the
+    // watcher's own catch-up of that node.
+    respondJson(
+      res,
+      200,
+      await withNodeSyncLock(nodeId, () => remoteSweep(db, { userId: identity.userId, nodeId })),
+    );
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync/remote-sweep`, err);
   }

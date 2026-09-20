@@ -77,6 +77,7 @@ interface FakeBackend extends FileAdapter {
   native: Set<string>;
   hashless: Set<string>;
   getFails: Set<string>;
+  statFails: Set<string>;
   feed: RemoteChanges[];
   statCalls: string[];
   getCalls: string[];
@@ -91,6 +92,7 @@ function fakeBackend(): FakeBackend {
   const native = new Set<string>();
   const hashless = new Set<string>();
   const getFails = new Set<string>();
+  const statFails = new Set<string>();
   const feed: RemoteChanges[] = [];
   const statCalls: string[] = [];
   const getCalls: string[] = [];
@@ -107,6 +109,7 @@ function fakeBackend(): FakeBackend {
     native,
     hashless,
     getFails,
+    statFails,
     feed,
     statCalls,
     getCalls,
@@ -125,6 +128,7 @@ function fakeBackend(): FakeBackend {
     },
     async stat(path) {
       statCalls.push(path);
+      if (statFails.has(path)) throw new Error(`Drive stat: 429 rate limited for ${path}`);
       const b = objects.get(path);
       return b ? refFor(path, b) : null;
     },
@@ -640,6 +644,176 @@ describe("RemoteWatchLoop", () => {
     await loop.tick();
     assert.equal(sweeps.length, 1);
     assert.equal((await getRemoteCursor(db, "test-fs")), null);
+  });
+
+  // Flush the detached catch-up sweep's own promise chain. beginCatchUp
+  // deliberately does not hold the tick open for the sweep, so its outcome
+  // lands a few microtasks later -- no timer, no sleep.
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
+  };
+
+  it("an apply error backs the remote off instead of replaying the batch every minute", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    const path = `${NODE_ROOT}/wip/a.md`;
+    backend.objects.set(path, Buffer.from("v1"));
+    // Drive answering 429 on the adopt's own stat: the batch cannot apply,
+    // the cursor stays put, and the very same batch is what the next tick
+    // would read again.
+    backend.statFails.add(path);
+    const batch = (): RemoteChanges => ({
+      cursor: "c2",
+      reset: false,
+      changes: [upsert(path, null)],
+    });
+    backend.feed.push(batch(), batch(), batch());
+    let clock = 1_000_000;
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: () => undefined,
+    });
+
+    await loop.tick();
+    assert.match(loop.status()[0].last_error ?? "", /429/);
+    assert.equal(loop.status()[0].backoff_until, new Date(clock + 60_000).toISOString());
+    assert.equal((await getRemoteCursor(db, "test-fs"))?.cursor, "c1");
+    assert.equal(loop.status()[0].last_tick_at, new Date(clock).toISOString());
+
+    // Inside the backoff window nothing is asked of the remote at all.
+    clock += 30_000;
+    const calls = backend.changesCalls.length;
+    await loop.tick();
+    assert.equal(backend.changesCalls.length, calls);
+
+    // Past it, one more failing batch doubles the wait.
+    clock += 40_000;
+    await loop.tick();
+    assert.equal(loop.status()[0].backoff_until, new Date(clock + 120_000).toISOString());
+
+    // The remote recovers: a clean tick clears the error and persists the
+    // cursor the failed batches never advanced.
+    clock += 200_000;
+    backend.statFails.delete(path);
+    await loop.tick();
+    assert.equal(loop.status()[0].last_error, null);
+    assert.equal(loop.status()[0].backoff_until, null);
+    assert.equal((await getRemoteCursor(db, "test-fs"))?.cursor, "c2");
+  });
+
+  it("a failed hash fetch backs the remote off the same way a failed stat does", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    const path = `${NODE_ROOT}/wip/b.md`;
+    backend.objects.set(path, Buffer.from("v1"));
+    // A backend that reports no hash on the change: the adopt fetches the
+    // bytes to hash them, and that GET is what fails.
+    backend.hashless.add(path);
+    backend.getFails.add(path);
+    backend.feed.push({ cursor: "c2", reset: false, changes: [upsert(path, null)] });
+    const clock = 1_000_000;
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: () => undefined,
+    });
+
+    await loop.tick();
+    assert.match(loop.status()[0].last_error ?? "", /get refused/);
+    assert.equal(loop.status()[0].backoff_until, new Date(clock + 60_000).toISOString());
+    assert.equal((await getRemoteCursor(db, "test-fs"))?.cursor, "c1");
+  });
+
+  it("records a catch-up sweep only once it finished clean, and retries a failed one", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    const sweeps: string[][] = [];
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async (ids) => {
+        sweeps.push(ids);
+        if (sweeps.length === 1) throw new Error("catch-up sweep failed for N: Drive 500");
+      },
+    });
+
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1);
+    assert.ok(sweeps[0].includes(nodeId));
+    assert.equal(loop.status()[0].last_full_sweep_at, null, "a job that failed is not a sweep");
+    assert.match(loop.status()[0].last_error ?? "", /Drive 500/);
+
+    // The next tick sweeps again instead of waiting out the 6 h interval on
+    // the strength of a job that never worked.
+    clock += 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 2);
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(clock).toISOString());
+    assert.equal(loop.status()[0].last_error, null);
+
+    // And once one did finish, the interval applies as before.
+    clock += 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 2);
+  });
+
+  it("does not start a second sweep while one is still running", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const sweeps: string[][] = [];
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async (ids) => {
+        sweeps.push(ids);
+        await gate;
+      },
+    });
+
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1);
+    clock += 6 * 60 * 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1, "the first sweep is still running");
+    release();
+    await settle();
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(clock).toISOString());
   });
 
   it("runs the catch-up sweep at boot and again after the sweep interval, not before", async () => {

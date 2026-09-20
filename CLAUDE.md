@@ -1338,14 +1338,33 @@ symlink to this file.
     safe because each operation is idempotent. Catch-up is the full
     `remoteSweep` for every node routed to the remote -- at boot, after a
     feed `reset`, and every `PORTUNI_REMOTE_SWEEP_INTERVAL_MS` (6 h) -- run
-    through `sync-jobs.ts`'s worker pool; that pool now serializes per node
+    through `sync-jobs.ts`'s worker pool; that pool serializes per node
     (`withNodeSyncLock`, path-lock keyed `sync-node:<id>`), so a catch-up
     and a user-triggered "Synchronizovat vše" of the same node never
-    overlap, the later one waits. A tick that throws backs off from the tick
-    interval (60 s -> 2 -> 4 -> ... cap 1 h, `backoffMsFor`'s new `baseMs`
-    argument) and leaves the cursor alone. Nothing device-side changed: no
-    `agent-router.ts` route, no `is_local_only_path` entry, no
-    `CentralClient` method, no MCP tool -- the device already reads the
+    overlap, the later one waits. **The pool is not the only caller of that
+    lock (#417)**: `api/nodes.ts`'s `handleSyncRun` (`POST /nodes/:id/sync`
+    -- the single-node button and the MCP tools) and `handleRemoteSweep`
+    (`POST /nodes/:id/sync/remote-sweep`, what an agent-mode device asks
+    central for) take it in the handler, as does `agent-router.ts`'s own
+    device-side `POST /nodes/:id/sync`; without it a user-triggered sync and
+    the watcher's catch-up of the same node still interleaved (double adopt,
+    double tombstone, unique-constraint errors). **A tick that throws AND a
+    tick whose batch did not fully apply both back off (#417)** from the
+    tick interval (60 s -> 2 -> 4 -> ... cap 1 h, `backoffMsFor`'s `baseMs`
+    argument) and leave the cursor alone -- an apply error is what keeps the
+    cursor unpersisted, so without the backoff the same batch replayed once
+    a minute forever against a remote already answering 429. **A sweep is
+    recorded when it finishes, not when it starts (#417)**: the default
+    `runCatchUp` awaits the job through `sync-jobs.ts`'s new
+    `awaitSyncJob(jobId)` and throws on the first node error;
+    `beginCatchUp` runs that detached (a tick is a 60 s heartbeat, a sweep
+    is a whole-workspace job -- `RemoteState.sweepInFlight` is what keeps
+    the next tick from starting a second one) and sets `lastFullSweepAt`
+    only on a clean finish, so a failed sweep is retried on the next tick
+    instead of in 6 h and its error shows up in `GET /sync/watch`.
+    Device-side: `agent-router.ts`'s single-node sync route took the same
+    lock, nothing else changed -- no new `is_local_only_path` entry, no
+    `CentralClient` method, no MCP tool; the device already reads the
     maintained state. `remote_folder_cache` is created by the same migration as the
     persistent backing the spec reserves for the Drive adapter's ancestor
     cache and is not read yet (#337's in-process `folderMemo` is what fills

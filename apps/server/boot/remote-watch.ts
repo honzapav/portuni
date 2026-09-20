@@ -20,7 +20,7 @@ import { SOLO_USER } from "../infra/schema.js";
 import { authMode } from "../infra/server-config.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
 import { listRemotes } from "../domain/sync/routing.js";
-import { startSyncJob } from "../domain/sync/sync-jobs.js";
+import { awaitSyncJob, startSyncJob } from "../domain/sync/sync-jobs.js";
 import {
   catchUpSweepNode,
   getRemoteCursor,
@@ -65,7 +65,12 @@ interface RemoteState {
   backoff: BackoffState;
   lastTickAt: number | null;
   lastError: string | null;
+  // When the last catch-up sweep FINISHED clean. A sweep that is still
+  // running, or one that ended with a node error, leaves this untouched, so
+  // the next tick sweeps again instead of waiting out the 6 h interval on
+  // the strength of a job that never worked (#417).
   lastFullSweepAt: number | null;
+  sweepInFlight: boolean;
   cursorUpdatedAt: string | null;
 }
 
@@ -76,9 +81,10 @@ export interface RemoteWatchOptions {
   sweepIntervalMs?: number;
   now?: () => number;
   schedule?: (fn: () => void, ms: number) => { unref?: () => void };
-  // Runs the catch-up sweep for these nodes. Defaults to the sync-jobs
-  // worker pool, which is what keeps a catch-up from overlapping a
-  // user-triggered sync of the same node.
+  // Runs the catch-up sweep for these nodes and resolves once it has
+  // actually finished; it rejects when a node of the sweep failed. Defaults
+  // to the sync-jobs worker pool, which is what keeps a catch-up from
+  // overlapping a user-triggered sync of the same node.
   runCatchUp?: (nodeIds: string[]) => Promise<void> | void;
 }
 
@@ -104,13 +110,21 @@ export class RemoteWatchLoop {
     this.schedule = opts.schedule ?? ((fn, ms) => setTimeout(fn, ms));
     this.runCatchUp =
       opts.runCatchUp ??
-      ((nodeIds) => {
+      (async (nodeIds) => {
         if (nodeIds.length === 0) return;
-        startSyncJob({
+        const started = startSyncJob({
           userId: this.userId,
           nodeIds,
           runNode: (nodeId) => catchUpSweepNode(this.db, { userId: this.userId, nodeId }),
         });
+        // Starting the job is not evidence that it worked: wait for it and
+        // surface the first node error, so a failed sweep is not recorded
+        // as a successful one and retried only 6 h later (#417).
+        const finished = await awaitSyncJob(started.id);
+        const errored = finished?.nodes.find((n) => n.status === "error");
+        if (errored) {
+          throw new Error(`catch-up sweep failed for ${errored.node_id}: ${errored.error ?? "unknown error"}`);
+        }
       });
   }
 
@@ -157,21 +171,33 @@ export class RemoteWatchLoop {
         }
         state.hasFeed = true;
         try {
+          // The tick's own baseline/reset branches ask for a sweep; a tick
+          // that did keeps its hands off maybeFullSweep below, so one pass
+          // never starts two.
+          let sweptByTick = false;
           const res = await runRemoteWatchTick(this.db, {
             remoteName: remote.name,
             userId: this.userId,
             adapter,
             fullSweep: (nodeIds) => {
-              state.lastFullSweepAt = this.now();
-              return this.runCatchUp(nodeIds);
+              sweptByTick = true;
+              this.beginCatchUp(state, nodeIds);
             },
           });
-          state.lastTickAt = this.now();
-          state.backoff = initialBackoff();
-          state.lastError =
-            res.applied.errors.length > 0 ? res.applied.errors[0].error : null;
           state.cursorUpdatedAt = (await getRemoteCursor(this.db, remote.name))?.updated_at ?? null;
-          await this.maybeFullSweep(remote.name, state, this.now());
+          if (res.applied.errors.length > 0) {
+            // A per-file error (Drive 429/5xx on stat/get, a dropped
+            // connection) leaves the cursor unpersisted by design, so the
+            // SAME batch replays next tick. Without a backoff that is one
+            // replay a minute forever against a remote that is already
+            // refusing (#417) -- treat it exactly like a thrown tick.
+            this.fail(state, new Error(res.applied.errors[0].error));
+          } else {
+            state.lastTickAt = this.now();
+            state.backoff = initialBackoff();
+            state.lastError = null;
+            if (!sweptByTick) await this.maybeFullSweep(remote.name, state, this.now());
+          }
         } catch (e) {
           this.fail(state, e);
         }
@@ -190,6 +216,7 @@ export class RemoteWatchLoop {
         lastTickAt: null,
         lastError: null,
         lastFullSweepAt: null,
+        sweepInFlight: false,
         cursorUpdatedAt: null,
       };
       this.states.set(name, s);
@@ -210,10 +237,33 @@ export class RemoteWatchLoop {
   }
 
   private async maybeFullSweep(remoteName: string, state: RemoteState, now: number): Promise<void> {
+    if (state.sweepInFlight) return;
     if (state.lastFullSweepAt !== null && now - state.lastFullSweepAt < this.sweepIntervalMs) return;
-    state.lastFullSweepAt = now;
     const nodes = await watchedNodesForRemote(this.db, remoteName);
-    await this.runCatchUp(nodes.map((n) => n.nodeId));
+    this.beginCatchUp(state, nodes.map((n) => n.nodeId));
+  }
+
+  // Start a catch-up sweep and record its OUTCOME when it lands, without
+  // holding the tick open for it: the sweep is a whole-workspace job and a
+  // tick is a 60 s heartbeat. Only a sweep that finished with no node error
+  // counts as a sweep (#417); a failed one leaves lastFullSweepAt alone, so
+  // the next tick tries again, and surfaces its error in GET /sync/watch.
+  private beginCatchUp(state: RemoteState, nodeIds: string[]): void {
+    state.sweepInFlight = true;
+    void Promise.resolve()
+      .then(() => this.runCatchUp(nodeIds))
+      .then(
+        () => {
+          state.lastFullSweepAt = this.now();
+        },
+        (e: unknown) => {
+          state.lastError = e instanceof Error ? e.message : String(e);
+          console.warn(`[portuni:remote-watch] catch-up sweep failed: ${state.lastError}`);
+        },
+      )
+      .finally(() => {
+        state.sweepInFlight = false;
+      });
   }
 
   // Fire the first tick immediately, then reschedule one interval after each

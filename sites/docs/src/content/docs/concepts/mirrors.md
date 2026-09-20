@@ -178,6 +178,16 @@ Synchronizace shows one line per remote with what the watcher last saw
 neither appears there; a backend without a change feed (a plain filesystem
 remote) is covered by the periodic full sweep instead.
 
+The watcher's own catch-up sweep and a sync you start yourself never run
+over the same node at once: every entry point — the single-node
+„Synchronizovat", „Synchronizovat vše", the MCP tools and the watcher's
+sweep — takes the same per-node lock, so the later one waits instead of
+racing the other's adoptions and tombstones. A remote that starts refusing
+(rate limits, an outage) backs the watcher off exponentially instead of
+being retried every minute, and Nastavení › Synchronizace says when the
+next attempt is due; until it recovers, changes on that remote arrive with
+the next successful tick or the periodic full sweep.
+
 Two situations need a human decision, and the sync run never guesses:
 a **conflict** (both sides changed) and a **deleted_local** file (removed
 locally, still on the remote). The file row in the app shows the choice —
