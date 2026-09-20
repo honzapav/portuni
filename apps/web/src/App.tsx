@@ -36,6 +36,7 @@ import { deriveWorkspaceNodeRows } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
 import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
+import { pullNodeCount } from "./lib/remote-watch-view";
 import { pluralFiles } from "./lib/plural-files";
 import SyncOverview from "./components/SyncOverview";
 import { Button } from "@/components/ui/button";
@@ -995,6 +996,8 @@ export default function App() {
           onWorkspaceCloseTask={workspaceCloseTask}
           onWorkspaceOpenNode={openNode}
           onWorkspaceCreateNode={workspaceCreateNode}
+          pullNodeCount={pullNodeCount(syncPending.nodes)}
+          onOpenSyncOverview={() => setSyncOverviewOpen(true)}
         />
       )}
 

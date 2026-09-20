@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { Plus, Search, Sun, Moon, Settings, Waypoints, MessagesSquare, LayoutDashboard } from "lucide-react";
+import { Plus, Search, Sun, Moon, Settings, Waypoints, MessagesSquare, LayoutDashboard, ArrowDown } from "lucide-react";
 import type { GraphPayload, SessionSummary } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
@@ -83,6 +83,11 @@ type Props = {
   // its own "Nový uzel" button; the workspace view needs its own. Secondary
   // to the search-first picker -- a quiet "Nebo vytvoř nový uzel…" link.
   onWorkspaceCreateNode: () => void;
+  // #339: how many nodes hold records the remote watcher registered on
+  // central and this device has not pulled yet -- the signal that follows
+  // the watcher outside the node detail. 0 renders nothing.
+  pullNodeCount: number;
+  onOpenSyncOverview: () => void;
 };
 
 function nodeTypeVar(type: string): string {
@@ -149,6 +154,8 @@ function Sidebar({
   onWorkspaceOpenSessionChat,
   onWorkspaceRenameTask,
   onWorkspaceCloseTask,
+  pullNodeCount,
+  onOpenSyncOverview,
 }: Props) {
   const isMac =
     typeof navigator !== "undefined" &&
@@ -264,6 +271,26 @@ function Sidebar({
         </Button>
       </div>
 
+      {/* #339: the remote watcher keeps `files` current on central, so a
+          teammate's edit shows up as a pull record without anyone running a
+          sync. Without a signal here it would only ever be visible inside
+          the node's Files tab. Opens the same overview the footer badge
+          does. */}
+      {pullNodeCount > 0 && (
+        <div className="px-4 pt-2.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onOpenSyncOverview}
+            className="w-full justify-start font-normal text-[var(--color-text-muted)]"
+            title="Remote watcher našel novější verze souborů. Otevřít přehled synchronizace."
+          >
+            <ArrowDown />
+            Nové na remote: {pullNodeCount} {pullNodeWord(pullNodeCount)}
+          </Button>
+        </div>
+      )}
+
       <NodeCommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -329,6 +356,13 @@ function Sidebar({
       )}
     </aside>
   );
+}
+
+// Czech counts the noun by the number: 1 uzel, 2-4 uzly, 0 and 5+ uzlů.
+function pullNodeWord(n: number): string {
+  if (n === 1) return "uzel";
+  if (n >= 2 && n <= 4) return "uzly";
+  return "uzlů";
 }
 
 const MANAGE_WORKSPACES = "__manage__";

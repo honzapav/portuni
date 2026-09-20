@@ -374,6 +374,39 @@ For deleted_local entries, resolve with `portuni_pull(file_id)` (restore) or
 a plain pull and refuses (409) to clobber unpushed local changes.
 ```
 
+### Remote watcher and `GET /sync/watch`
+
+On central (`PORTUNI_AUTH_MODE=google`) a loop polls every remote that
+implements `changes()` and applies each batch through the same
+adopt / hash-refresh / delete+tombstone functions `remoteSweep` uses -- the
+remote side of file state becomes maintained state, the way the mirror
+watcher already maintains the local side. Registration only: a device with
+a mirror then reads the record as `pull`, and the bytes still arrive
+through a deliberate sync run (`boot/remote-watch.ts`,
+`domain/sync/remote-watcher.ts`; spec
+`docs/superpowers/specs/2026-09-12-remote-watcher-design.md`).
+
+`GET /sync/watch` (read scope) reports that loop's live state, one entry
+per remote: `{ remote_name, watching, cursor_updated_at, last_tick_at,
+last_error, backoff_until, last_full_sweep_at }`, timestamps ISO-8601 UTC.
+The route reads the loop through `domain/sync/remote-watch-status.ts`, a
+one-function seam the loop registers itself with at start -- a server that
+never starts one (an env-mode standalone server, the desktop sidecar in
+either mode) answers an empty list, and `isLocalWorkspace()` short-circuits
+to the same empty answer before anything is read, since a local workspace
+has no remote at all (#310). It is NOT a device-local path: the central-mode
+desktop reaches it through the normal proxy to central, like any other
+central route.
+
+The device-side signal that follows the watcher is `GET /sync/pending`'s
+per-node `pull` count (`computeSyncPending` / `computeSyncPendingCentral`,
+from the scan's `pull_candidates`). It counts towards neither `total`
+(actionable local work) nor `decisions` (needs a human) -- the unsynced
+badge and the quit guard must not report a teammate's edits as the user's
+own backlog -- but it keeps its node in the aggregate on its own, which is
+what the sidebar's „Nové na remote: N uzlů" button and the sync overview's
+per-node down-arrow count read.
+
 ### Deliberate sync run
 
 `POST /nodes/:id/sync` ("Synchronizovat" in the UI; `handleSyncRun` in

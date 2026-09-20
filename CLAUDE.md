@@ -1438,11 +1438,40 @@ symlink to this file.
     argument) and leaves the cursor alone. Nothing device-side changed: no
     `agent-router.ts` route, no `is_local_only_path` entry, no
     `CentralClient` method, no MCP tool -- the device already reads the
-    maintained state. `GET /sync/watch` and the UI that follows the watcher
-    are #339; `remote_folder_cache` is created by the same migration as the
+    maintained state. `remote_folder_cache` is created by the same migration as the
     persistent backing the spec reserves for the Drive adapter's ancestor
     cache and is not read yet (#337's in-process `folderMemo` is what fills
     the role today).
+  - **Watcher state is read through a seam, and its device-side signal is a
+    `pull` count (#339).** `GET /sync/watch` (read tier) answers
+    `{remotes: [{remote_name, watching, cursor_updated_at, last_tick_at,
+    last_error, backoff_until, last_full_sweep_at}]}` -- ISO-8601 UTC
+    throughout, including `cursor_updated_at`, which
+    `isoFromDbTimestamp` normalizes from `remote_cursors.updated_at`'s
+    zone-less `YYYY-MM-DD HH:MM:SS` (a client parsing that bare form would
+    read it in its own zone). `RemoteWatchLoop` registers
+    `() => loop.status()` with `domain/sync/remote-watch-status.ts` at
+    start, and `handleSyncWatch` (`api/nodes.ts`) reads it from there, so
+    the api layer never imports a boot module and a test stubs the loop
+    with one call; a server that never starts one answers `[]`, and
+    `isLocalWorkspace()` short-circuits to the same empty answer before
+    anything is read. **Deliberately not device-local**: no
+    `is_local_only_path` entry, no `agent-router.ts` route, no
+    `CentralClient` method, no MCP tool -- the central-mode desktop reaches
+    it through the normal proxy to central, which is the only process that
+    runs the loop. `SyncPendingNode` gained `pull` (both
+    `computeSyncPending` and `computeSyncPendingCentral`, from the scan's
+    `pull_candidates`): it counts towards neither `total` nor `decisions`
+    -- the unsynced badge and the quit guard must not report a teammate's
+    edits as the user's own backlog -- but a node holding only `pull`
+    records is kept in the aggregate instead of dropped, which is what the
+    Sidebar's „Nové na remote: N uzlů" button (opens the sync overview) and
+    SyncOverview's per-node down-arrow count read. Web helpers are pure and
+    server-tested (`apps/web/src/lib/remote-watch-view.ts`:
+    `remoteWatchLine` -- three states, watching / error + backoff /
+    no-change-feed -- and `pullNodeCount`); Nastavení -> Synchronizace
+    renders one line per remote next to the mirror-watcher errors, and
+    nothing at all on a local workspace.
 - **The update check is scheduled from the hook's mount, not from
   `backend-ready` alone.** `check_update` (`apps/desktop/src/updater.rs`)
   only talks to the GitHub releases endpoint, so it does not depend on the

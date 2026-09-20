@@ -4,16 +4,23 @@
 // credentials or routes to a remote (#310), so there is nothing to connect
 // here anymore. Drive access on central mode is configured once, via the
 // service account (`portuni_setup_remote`, MCP-only) -- no UI needed. This
-// tab keeps its slot for the watcher-error panel below, which is unrelated
-// to Drive connection state.
+// tab keeps its slot for the watcher-error panel below and for the remote
+// watcher's own per-remote line (#339), neither of which is about Drive
+// connection state.
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useDataMode } from "../lib/central";
 import { useSyncHealth } from "../lib/use-sync-health";
+import { useSyncWatch } from "../lib/use-sync-watch";
+import { remoteWatchLine } from "../lib/remote-watch-view";
 
 export default function SyncSection() {
   const dataMode = useDataMode();
   const { health: syncHealth } = useSyncHealth();
+  // The remote watcher (#338/#339) runs on central only, so a local
+  // workspace gets an empty list here and renders no watcher line at all.
+  const { watch } = useSyncWatch();
+  const now = Date.now();
 
   return (
     <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
@@ -44,6 +51,31 @@ export default function SyncSection() {
             )}
           </AlertDescription>
         </Alert>
+      )}
+
+      {watch.remotes.length > 0 && (
+        <ul className="mb-4 flex flex-col gap-1">
+          {watch.remotes.map((r) => {
+            const line = remoteWatchLine(r, now);
+            return (
+              <li
+                key={line.remote_name}
+                className={`flex flex-wrap items-baseline gap-x-2 text-[12.5px] ${
+                  line.tone === "error"
+                    ? "text-[var(--color-danger)]"
+                    : line.tone === "ok"
+                      ? "text-[var(--color-text-muted)]"
+                      : "text-[var(--color-text-dim)]"
+                }`}
+              >
+                <span>{line.text}</span>
+                {line.retry && (
+                  <span className="text-[var(--color-text-dim)]">({line.retry})</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
 
       {dataMode?.mode === "central" ? (

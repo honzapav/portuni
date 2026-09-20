@@ -17,6 +17,7 @@ import {
   Check,
   AlertTriangle,
   ArrowUp,
+  ArrowDown,
   CirclePlus,
   CircleSlash,
   Trash2,
@@ -24,6 +25,7 @@ import {
 import type { SyncPendingResponse, SyncRunResponse, SyncJobSummary } from "../types";
 import { runNodeSync, startSyncJob, fetchSyncJob, fetchCurrentSyncJob } from "../api";
 import { useDataMode } from "../lib/central";
+import { pullNodeCount } from "../lib/remote-watch-view";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -147,6 +149,11 @@ export default function SyncOverview({
   // Only these can be cleared by a run at all -- so they alone decide
   // whether "Synchronizovat vse" has anything to do.
   const actionable = pending.nodes.filter((n) => n.total > 0);
+  // The remote side (#339): what the remote watcher registered on central
+  // and this device has not pulled yet. Not actionable work the user
+  // created, so it is reported next to the counts rather than folded into
+  // them -- "Synchronizovat" does clear it, node by node.
+  const pullNodes = pullNodeCount(pending.nodes);
 
   return (
     <Dialog
@@ -188,6 +195,14 @@ export default function SyncOverview({
               <span className="tabular-nums text-[var(--color-text)]">{pending.total}</span>{" "}
               {fileWord(pending.total)} k synchronizaci
             </span>
+            {pullNodes > 0 && (
+              <span
+                title="Uzly, kde remote watcher zaregistroval novější verzi než má tento počítač. Stáhne je sync run."
+              >
+                <span className="tabular-nums text-[var(--color-text)]">{pullNodes}</span>{" "}
+                {nodeWord(pullNodes)} s novinkami z remote
+              </span>
+            )}
             {pending.decisions > 0 && (
               <span
                 className="text-[var(--color-danger)]"
@@ -232,6 +247,7 @@ export default function SyncOverview({
                       deleted_local rendered as a "DEL" tofu box. */}
                   <span className="flex shrink-0 items-center gap-2.5">
                     <Count icon={ArrowUp} n={n.push} label="K odeslání" />
+                    <Count icon={ArrowDown} n={n.pull} label="Nové na remote — ke stažení" />
                     <Count icon={CirclePlus} n={n.untracked} label="Neregistrováno" />
                     <Count icon={CircleSlash} n={n.remote_missing} label="Chybí na remote" />
                     <Count icon={AlertTriangle} n={n.conflict} label="Konflikt — vyžaduje rozhodnutí" danger />
@@ -318,6 +334,13 @@ function Count({
       {n}
     </span>
   );
+}
+
+// Czech counts the noun by the number: 1 uzel, 2-4 uzly, 0 and 5+ uzlů.
+function nodeWord(n: number): string {
+  if (n === 1) return "uzel";
+  if (n >= 2 && n <= 4) return "uzly";
+  return "uzlů";
 }
 
 // Czech counts the noun by the number: 1 soubor, 2-4 soubory, 0 and 5+ souborů.

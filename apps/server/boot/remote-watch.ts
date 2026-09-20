@@ -27,6 +27,11 @@ import {
   runRemoteWatchTick,
   watchedNodesForRemote,
 } from "../domain/sync/remote-watcher.js";
+import type { RemoteWatchStatus } from "../shared/api-types.js";
+import {
+  isoFromDbTimestamp,
+  setRemoteWatchStatusSource,
+} from "../domain/sync/remote-watch-status.js";
 import {
   backoffMsFor,
   initialBackoff,
@@ -49,17 +54,9 @@ function positiveIntEnv(name: string, fallback: number): number {
   return n;
 }
 
-// What GET /sync/watch (#339) reports per remote. Kept here because the loop
-// is the only thing that knows it.
-export interface RemoteWatchStatus {
-  remote_name: string;
-  watching: boolean;
-  cursor_updated_at: string | null;
-  last_tick_at: string | null;
-  last_error: string | null;
-  backoff_until: string | null;
-  last_full_sweep_at: string | null;
-}
+// What GET /sync/watch (#339) reports per remote; the shape itself lives in
+// shared/api-types.ts, since it is a REST response the web reads too.
+export type { RemoteWatchStatus } from "../shared/api-types.js";
 
 interface RemoteState {
   // false for a backend with no change feed (fs/OpenDAL): the periodic full
@@ -122,7 +119,7 @@ export class RemoteWatchLoop {
     return Array.from(this.states.entries()).map(([remote_name, s]) => ({
       remote_name,
       watching: s.hasFeed && s.lastError === null,
-      cursor_updated_at: s.cursorUpdatedAt,
+      cursor_updated_at: isoFromDbTimestamp(s.cursorUpdatedAt),
       last_tick_at: iso(s.lastTickAt),
       last_error: s.lastError,
       backoff_until: s.backoff.nextAttemptAt > this.now() ? iso(s.backoff.nextAttemptAt) : null,
@@ -242,6 +239,10 @@ export class RemoteWatchLoop {
 export function startRemoteWatcher(): RemoteWatchLoop | null {
   if (authMode() !== "google") return null;
   const loop = new RemoteWatchLoop();
+  // GET /sync/watch reads the loop's live state through this seam; nothing
+  // registers it on a server that never starts the loop, so the route
+  // answers an empty list there.
+  setRemoteWatchStatusSource(() => loop.status());
   loop.start();
   console.log("[portuni:remote-watch] remote watcher active");
   return loop;

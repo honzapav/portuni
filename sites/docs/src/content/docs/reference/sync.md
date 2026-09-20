@@ -122,7 +122,25 @@ The cross-mirror aggregate behind the footer badge, the quit guard, and `/sync/j
 - **`total`** — actionable: `push` + untracked file count. This is exactly what a sync run (or a background job) can clear.
 - **`decisions`** — needs a human: `conflict` + `deleted_local`. A run leaves both untouched by design (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)), so counting them into `total` used to make the badge/quit guard warn about work "Synchronizovat vše" could never actually finish. A node with decisions but no actionable work still appears in the overview (not hidden), just with `total: 0` — and its row offers "Rozhodnout", which opens the node, rather than "Synchronizovat": a run on such a node would report nothing and change nothing. "Synchronizovat vše" likewise covers only nodes with `total > 0`.
 
+- **`pull`** — the remote side: records whose remote copy is newer than this device's. On central the [remote watcher](#get-syncwatch--remote-watcher-state) keeps these current without anyone running a sync, so a teammate's edit shows up here on its own. A run *does* clear them, but the work is not the caller's own, so `pull` counts towards neither `total` nor `decisions` — the "unsynced local work" badge would otherwise report someone else's edits. A node holding only `pull` records still appears in the overview (and is what the sidebar's „Nové na remote" signal counts).
+
 `remote_missing` is reported per node but counted in neither — a run does not push or pull it either, and (per the remote-sweep hash backfill above) most `remote_missing` misclassifications now self-correct on the next sweep instead of needing a decision at all. In central mode a device also falls back to a remote hash it observed first-hand on an earlier push or pull when central's record carries none, so a file it has provably reached stops reading as `remote_missing` even before the next sweep.
+
+### `GET /sync/watch` — remote watcher state
+
+What the remote watcher is doing, one entry per remote it knows about:
+`{ remotes: [{ remote_name, watching, cursor_updated_at, last_tick_at, last_error, backoff_until, last_full_sweep_at }] }`.
+Read scope, no body.
+
+The watcher runs on the central server only — Drive credentials live there,
+and a local workspace has no remote at all — so a local workspace answers
+`{ "remotes": [] }` and the desktop renders no watcher line. `watching` is
+false for a backend with no change feed (fs, OpenDAL: the periodic full
+sweep is all there is for it) and while a remote is failing;
+`cursor_updated_at` is when a batch of remote changes was last applied end
+to end, which is what Nastavení › Synchronizace shows as „poslední změna
+před 2 min". A failing remote reports `last_error` and, while it is backing
+off, `backoff_until`. Every timestamp is ISO-8601 UTC.
 
 ## Destructive operations
 
