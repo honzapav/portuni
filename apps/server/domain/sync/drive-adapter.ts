@@ -349,6 +349,10 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       modified_at: f.modifiedTime ? new Date(f.modifiedTime) : new Date(0),
       is_native_format: native.is_native_format,
       native_format: native.native_format,
+      // Drive's own stable id, persisted as files.remote_file_id so a later
+      // rename/move/hard delete can be correlated with the record even
+      // though its path changed (#418).
+      remote_file_id: f.id,
     };
   }
 
@@ -738,6 +742,10 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
           hash: f.md5Checksum ?? null,
           modified_at: f.modifiedTime ? new Date(f.modifiedTime) : new Date(0),
           is_folder: folder,
+          // Same id the record carries as remote_file_id (#418): a rename or
+          // move arrives as an upsert at a NEW path under the SAME id, which
+          // is the only thing that tells it apart from a brand-new file.
+          file_id: fileId,
         };
       };
 

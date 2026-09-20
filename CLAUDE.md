@@ -1323,12 +1323,40 @@ symlink to this file.
     tick) is skipped the way a listing that no longer shows it would be.
     `planRemoteChanges` is the pure reducer
     (`RemoteChange[]` + the watched node roots -> per-file operations; a
-    folder, a pathless hard delete, a path outside every node root and a
-    path outside `wip`/`outputs`/`resources` are dropped, longest node root
+    path outside every node root and a path outside
+    `wip`/`outputs`/`resources` are dropped, longest node root
     wins so a child project owns its files rather than its organization,
     last change per path wins). `applyRemoteChanges` runs each one under
     the same `withPathLock("<remote>:<remote_path>")` key the adapter-direct
-    central write path uses. **Registration only, never bytes** (rule 2): a
+    central write path uses. **A change is correlated with a record by the
+    backend's own object id, not by path alone (#418).** `files
+    .remote_file_id` (migration 038 + `PG_BASELINE_DDL`, index
+    `(remote_name, remote_file_id)` in `DDL_AFTER_MIGRATIONS` -- never in
+    the DDL replay, which runs BEFORE the migration pass) carries Drive's
+    file id; `FileRef.remote_file_id` is where it comes from and every path
+    that proves an object's identity persists it through
+    `remote-sweep.ts`'s `persistRemoteFileId` (adopt, `storeFile`'s upsert,
+    `createFileRemote`, `writeFileBytesRemote`, the sweep's hash refresh,
+    `backfillRemoteHash`); fs/OpenDAL report none and the column stays
+    NULL. `RemoteChange`'s `upsert` carries `file_id` too. That turns the
+    three events the old path-only correlation degraded to "wait for the
+    6 h sweep" into same-tick work: a **hard delete** (`removed: true`, no
+    metadata at all) is planned as `remove_by_id` and `findRecordByRemoteFileId`
+    finds the row, which `deleteRemovedRecords` then confirms and
+    tombstones as usual; a **rename/move** arrives as an upsert at a new
+    path whose id already belongs to a record, so the record is
+    RELOCATED (`writeRelocatedRecord`, the same call `moveFile` makes, plus
+    a `sync_move` audit tombstone -- which is what makes a device drop its
+    stale copy at the old path instead of re-adopting and pushing it back)
+    rather than a second row adopted; a **folder rename/move** reports the
+    folder and nothing for its children, so the reducer resolves it to its
+    node and returns `sweepNodeIds`, which the tick hands to
+    `RemoteWatchTickArgs.sweepNodes` -- a bounded catch-up sweep of exactly
+    those nodes, deliberately NOT recorded as the periodic whole-workspace
+    sweep (`beginCatchUp(..., isFullSweep)`, and `RemoteState.sweepsInFlight`
+    is a counter now, since a node sweep can overlap the periodic one).
+    `planRemoteChanges` drops a change as `no_path` only when it carries
+    neither a path nor a file id. **Registration only, never bytes** (rule 2): a
     device with a mirror reads `pull` on its next status read, because
     `statusScanCentral` classifies off `files.current_remote_hash` -- which
     is exactly what the watcher maintains -- and the bytes still arrive
@@ -1358,14 +1386,18 @@ symlink to this file.
     `runCatchUp` awaits the job through `sync-jobs.ts`'s new
     `awaitSyncJob(jobId)` and throws on the first node error;
     `beginCatchUp` runs that detached (a tick is a 60 s heartbeat, a sweep
-    is a whole-workspace job -- `RemoteState.sweepInFlight` is what keeps
+    is a whole-workspace job -- `RemoteState.sweepsInFlight` is what keeps
     the next tick from starting a second one) and sets `lastFullSweepAt`
     only on a clean finish, so a failed sweep is retried on the next tick
     instead of in 6 h and its error shows up in `GET /sync/watch`.
     Device-side: `agent-router.ts`'s single-node sync route took the same
     lock, nothing else changed -- no new `is_local_only_path` entry, no
     `CentralClient` method, no MCP tool; the device already reads the
-    maintained state. `remote_folder_cache` is created by the same migration as the
+    maintained state. #418 needed nothing there either: the watcher is
+    central-only, `remote_file_id` never leaves central (`SyncInfo.files`
+    does not carry it and classification does not read it), and a
+    relocation reaches a device through the `sync_move` tombstone the
+    sync-info tombstone query already ships. `remote_folder_cache` is created by the same migration as the
     persistent backing the spec reserves for the Drive adapter's ancestor
     cache and is not read yet (#337's in-process `folderMemo` is what fills
     the role today).

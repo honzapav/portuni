@@ -779,8 +779,8 @@ export async function adoptFiles(
     // between the pre-check above and this INSERT degrades to a skip
     // instead of a duplicate row (idx_files_unique_remote).
     const inserted = await db.execute({
-      sql: `INSERT INTO files (id, node_id, filename, status, remote_name, remote_path, current_remote_hash, is_native_format, last_pushed_by, last_pushed_at, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      sql: `INSERT INTO files (id, node_id, filename, status, remote_name, remote_path, remote_file_id, current_remote_hash, is_native_format, last_pushed_by, last_pushed_at, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
             DO NOTHING
             RETURNING id`,
@@ -791,6 +791,9 @@ export async function adoptFiles(
         a.status ?? "wip",
         remoteName,
         p,
+        // The backend's own object id, when it reports one (#418) -- what
+        // lets a later rename/move/hard delete find this record.
+        stat.remote_file_id ?? null,
         stat.hash,
         stat.is_native_format ? 1 : 0,
         a.userId,

@@ -70,7 +70,10 @@ interface RemoteState {
   // the next tick sweeps again instead of waiting out the 6 h interval on
   // the strength of a job that never worked (#417).
   lastFullSweepAt: number | null;
-  sweepInFlight: boolean;
+  // How many catch-up sweeps are running right now. A counter, not a flag:
+  // a folder change's node-scoped sweep (#418) can overlap the periodic one,
+  // and the first to finish must not advertise the other as done.
+  sweepsInFlight: number;
   cursorUpdatedAt: string | null;
 }
 
@@ -181,7 +184,15 @@ export class RemoteWatchLoop {
             adapter,
             fullSweep: (nodeIds) => {
               sweptByTick = true;
-              this.beginCatchUp(state, nodeIds);
+              this.beginCatchUp(state, nodeIds, true);
+            },
+            // A folder rename/move invalidated these nodes' recorded paths
+            // (#418). Bounded to those nodes and NOT recorded as the
+            // periodic whole-workspace sweep -- otherwise one renamed
+            // folder would push the 6 h interval forward for every other
+            // node on the remote.
+            sweepNodes: (nodeIds) => {
+              this.beginCatchUp(state, nodeIds, false);
             },
           });
           state.cursorUpdatedAt = (await getRemoteCursor(this.db, remote.name))?.updated_at ?? null;
@@ -216,7 +227,7 @@ export class RemoteWatchLoop {
         lastTickAt: null,
         lastError: null,
         lastFullSweepAt: null,
-        sweepInFlight: false,
+        sweepsInFlight: 0,
         cursorUpdatedAt: null,
       };
       this.states.set(name, s);
@@ -237,10 +248,10 @@ export class RemoteWatchLoop {
   }
 
   private async maybeFullSweep(remoteName: string, state: RemoteState, now: number): Promise<void> {
-    if (state.sweepInFlight) return;
+    if (state.sweepsInFlight > 0) return;
     if (state.lastFullSweepAt !== null && now - state.lastFullSweepAt < this.sweepIntervalMs) return;
     const nodes = await watchedNodesForRemote(this.db, remoteName);
-    this.beginCatchUp(state, nodes.map((n) => n.nodeId));
+    this.beginCatchUp(state, nodes.map((n) => n.nodeId), true);
   }
 
   // Start a catch-up sweep and record its OUTCOME when it lands, without
@@ -248,13 +259,15 @@ export class RemoteWatchLoop {
   // tick is a 60 s heartbeat. Only a sweep that finished with no node error
   // counts as a sweep (#417); a failed one leaves lastFullSweepAt alone, so
   // the next tick tries again, and surfaces its error in GET /sync/watch.
-  private beginCatchUp(state: RemoteState, nodeIds: string[]): void {
-    state.sweepInFlight = true;
+  private beginCatchUp(state: RemoteState, nodeIds: string[], isFullSweep: boolean): void {
+    state.sweepsInFlight += 1;
     void Promise.resolve()
       .then(() => this.runCatchUp(nodeIds))
       .then(
         () => {
-          state.lastFullSweepAt = this.now();
+          // Only a whole-workspace sweep resets the 6 h clock; a folder
+          // change's node-scoped sweep (#418) leaves it alone.
+          if (isFullSweep) state.lastFullSweepAt = this.now();
         },
         (e: unknown) => {
           state.lastError = e instanceof Error ? e.message : String(e);
@@ -262,7 +275,7 @@ export class RemoteWatchLoop {
         },
       )
       .finally(() => {
-        state.sweepInFlight = false;
+        state.sweepsInFlight -= 1;
       });
   }
 

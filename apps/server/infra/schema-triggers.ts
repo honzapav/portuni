@@ -389,6 +389,7 @@ export const DDL = [
     filename TEXT NOT NULL,
     remote_name TEXT,
     remote_path TEXT,
+    remote_file_id TEXT,
     current_remote_hash TEXT,
     last_pushed_by TEXT,
     last_pushed_at DATETIME,
@@ -759,4 +760,11 @@ export const DDL_MIGRATION_006 = [
 //
 // Same reasoning as migration 013's sync_key triggers, which are likewise
 // kept out of the DDL replay -- see the comment in ensureSchemaOn.
-export const DDL_AFTER_MIGRATIONS: string[] = [INDEX_SESSIONS_TERMINAL];
+// The backend's own stable object id (Drive's file id), added by migration
+// 038 (#418). Same DDL_AFTER_MIGRATIONS reasoning as the index above: on an
+// existing database the column only exists once the migration pass has run,
+// so an index on it must not be part of the DDL replay that runs before it.
+export const INDEX_FILES_REMOTE_FILE_ID =
+  `CREATE INDEX IF NOT EXISTS idx_files_remote_file_id ON files(remote_name, remote_file_id)`;
+
+export const DDL_AFTER_MIGRATIONS: string[] = [INDEX_SESSIONS_TERMINAL, INDEX_FILES_REMOTE_FILE_ID];

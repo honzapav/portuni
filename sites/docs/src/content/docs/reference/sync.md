@@ -160,6 +160,38 @@ by construction — the watcher asks the backend what the file is rather
 than guessing from the change feed, and never tries to download bytes
 Drive does not serve for a Docs-editors file.
 
+### What the watcher applies live, and what waits for the sweep
+
+The watcher correlates a change with a record by the backend's own object
+id (Drive's file id), not by path alone, so the three events a path could
+never explain are applied within a tick instead of waiting out the
+six-hour sweep:
+
+- **A file created or edited on the remote** — adopted, or its recorded
+  hash refreshed. Devices read it as `pull` on their next status read.
+- **A file renamed or moved** (still under `wip/`, `outputs/` or
+  `resources/` of a node) — the record *moves*: same row, same id, new
+  path, and a move tombstone so a device drops its stale copy at the old
+  path instead of pushing it back. Before this it landed as a delete and
+  an unrelated add, potentially hours apart.
+- **A file deleted outright** (emptied from the trash, so Drive reports
+  only the id) — the record is found by that id, its absence confirmed
+  with a stat, and the record deleted and tombstoned.
+- **A folder renamed or moved** — Drive reports the folder and nothing for
+  its children, so the watcher asks for a catch-up sweep of **that node
+  only** and the children land at their new paths in the same tick. It is
+  not the periodic whole-workspace sweep and does not reset its clock.
+
+Still the sweep's job: anything the change feed cannot report at all — a
+remote the feed skipped while the cursor was expired (a `reset`, which
+triggers a full sweep of its own), a backend with no change feed (fs,
+OpenDAL), and the periodic six-hour catch-up that re-verifies everything
+regardless.
+
+The watcher never moves bytes (a rename does not re-download the file);
+it only maintains what the remote holds, and the bytes still arrive
+through a deliberate sync.
+
 ## Destructive operations
 
 All three operations below are confirm-first. The first call returns a preview without acting; show the preview to the user, then call again with `confirmed: true` to execute. Best-effort ordered (remote, then local, then DB) — a partial failure returns `repair_needed` with a hint, and the operation's intent is recorded so the next sync run retries it automatically until it completes.

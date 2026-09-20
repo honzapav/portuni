@@ -15,6 +15,13 @@ export interface FileRef {
   modified_at: Date;
   is_native_format: boolean;
   native_format?: NativeFormat;
+  // The backend's own stable id for this object, when it has one (Drive's
+  // file id). Persisted as files.remote_file_id, which is what lets the
+  // remote watcher correlate a change with a record whose path has moved --
+  // a rename/move on the remote reports the SAME id at a new path, and a
+  // hard delete reports the id and nothing else (#418). Backends without a
+  // stable id (fs/OpenDAL) omit it and the column stays NULL.
+  remote_file_id?: string | null;
 }
 
 // One hit of a content search on a backend. `path` is the object's path
@@ -47,8 +54,21 @@ export const SEARCH_HITS_MAX_LIMIT = 50;
 // so it joins on files.remote_path. A remove carries a null path when the
 // backend no longer knows where the object was (Drive reports a hard delete
 // with no file metadata at all); the file id is always there.
+//
+// An upsert carries the backend's own file id too when it has one (#418):
+// path alone cannot tell a rename/move from a brand-new file, so a change
+// whose id already belongs to a record relocates that record instead of
+// adopting a second one. Optional -- a backend with no stable id leaves it
+// out and every consumer falls back to path correlation, as before.
 export type RemoteChange =
-  | { kind: "upsert"; path: string; hash: string | null; modified_at: Date; is_folder: boolean }
+  | {
+      kind: "upsert";
+      path: string;
+      hash: string | null;
+      modified_at: Date;
+      is_folder: boolean;
+      file_id?: string | null;
+    }
   | { kind: "remove"; path: string | null; file_id: string };
 
 export interface RemoteChanges {

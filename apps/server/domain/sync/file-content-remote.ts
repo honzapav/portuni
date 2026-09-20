@@ -39,6 +39,7 @@ import { FileContentError } from "./file-content.js";
 import { enqueuePendingOp, completePendingOp, failPendingOp } from "./pending-ops.js";
 import { withPathLock } from "./path-lock.js";
 import { relocateRemoteObject, writeRelocatedRecord } from "./file-relocation.js";
+import { persistRemoteFileId } from "./remote-sweep.js";
 
 const SECTIONS = ["wip", "outputs", "resources"] as const;
 
@@ -175,8 +176,13 @@ async function backfillRemoteHash(
   db: DbClient,
   record: { id: string; currentRemoteHash: string | null } | null,
   observedHash: string | null,
+  observedFileId?: string | null,
 ): Promise<void> {
-  if (!record || observedHash === null || record.currentRemoteHash === observedHash) return;
+  if (!record) return;
+  // The same observation that proves the hash proves WHICH backend object
+  // this is (#418); persist it even when the hash needs no write.
+  await persistRemoteFileId(db, record.id, observedFileId);
+  if (observedHash === null || record.currentRemoteHash === observedHash) return;
   await db.execute({
     sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
     args: [observedHash, record.id],
@@ -373,7 +379,7 @@ export async function readFileBytesRemote(
   // it -- persist that onto a tracked-but-hashless record so it stops
   // reading as remote_missing (#273). A genuinely untracked path (no
   // `record` at all) has nothing to backfill.
-  await backfillRemoteHash(db, record, canonicalHash);
+  await backfillRemoteHash(db, record, canonicalHash, stat.remote_file_id);
   return {
     bytes: buf,
     version: sha256Buffer(buf),
@@ -424,7 +430,7 @@ export async function writeFileBytesRemote(
         // The object's presence -- and, when the backend reports one on
         // stat, its hash -- is proven right here; persist it before throwing
         // so this record does not stay stuck as remote_missing forever (#273).
-        await backfillRemoteHash(db, record, stat.hash?.toLowerCase() ?? null);
+        await backfillRemoteHash(db, record, stat.hash?.toLowerCase() ?? null, stat.remote_file_id);
         throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS");
       }
       if (a.baseCanonicalHash && stat) {
@@ -441,7 +447,7 @@ export async function writeFileBytesRemote(
         // Persist the freshly observed hash regardless of whether it matches
         // the precondition below -- either way this device just proved what
         // the remote's canonical hash actually is right now (#273).
-        await backfillRemoteHash(db, record, current);
+        await backfillRemoteHash(db, record, current, stat.remote_file_id);
         if (current !== a.baseCanonicalHash.toLowerCase()) {
           throw new FileContentError(
             "file changed on the remote since the last sync",
@@ -486,6 +492,7 @@ export async function writeFileBytesRemote(
               WHERE id = ?`,
         args: [remoteName, canonicalHash, a.userId, now, now, record.id],
       });
+      await persistRemoteFileId(db, record.id, ref.remote_file_id);
     }
 
     return { version: sha256Buffer(a.bytes), canonical_hash: canonicalHash };
@@ -602,9 +609,9 @@ export async function createFileRemote(
   // row (idx_files_unique_remote).
   const inserted = await db.execute({
     sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
-                             remote_name, remote_path, current_remote_hash, is_native_format,
+                             remote_name, remote_path, remote_file_id, current_remote_hash, is_native_format,
                              last_pushed_by, last_pushed_at, created_by, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
           DO NOTHING
           RETURNING id`,
@@ -616,6 +623,7 @@ export async function createFileRemote(
       mt,
       remoteName,
       remotePath,
+      ref.remote_file_id ?? null,
       canonicalHash,
       ref.is_native_format ? 1 : 0,
       a.userId,
