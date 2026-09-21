@@ -1,7 +1,7 @@
 // MCP server section on the Settings page. Surfaces:
-// - server status (URL, port, has-auth flag) read from /mcp/info in local
-//   mode; in central mode the local front door URL built from the active
-//   workspace's mcp_port (apiFetch goes to the central server there, whose
+// - server status (URL, port, has-auth flag) read from /mcp/info in a
+//   personal workspace; in a team workspace the device front door URL built
+//   from the active workspace's mcp_port (apiFetch goes to the central server there, whose
 //   /mcp/info would show the central URL -- not what the installed configs
 //   point at, see workspace::global_front_door_url in apps/desktop)
 // - the bearer token from Keychain (on demand, hidden by default)
@@ -306,10 +306,10 @@ export default function McpServerSection() {
 
           {dataMode?.mode === "central" && (
             <div className="text-[12px] text-[var(--color-text-dim)]">
-              Lokální front door: nástroje grafu se proxují na{" "}
+              Front door na tomto zařízení: nástroje grafu se proxují na{" "}
               <span className="font-mono">{dataMode.server_url ?? "centrální server"}</span>,
               nástroje pro soubory a složky běží na tomto zařízení. Token
-              patří lokálnímu front dooru; device token pro centrální server
+              patří front dooru na tomto zařízení; device token pro centrální server
               se spravuje v sekci Účet.
             </div>
           )}

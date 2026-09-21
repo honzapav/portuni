@@ -17,9 +17,9 @@
 //       * initialize   -- handled by the Server constructor (server info
 //         {name:"portuni-agent"} + the shared INSTRUCTIONS string).
 //       * tools/list    -- `upstream.listTools()` verbatim (central registry
-//         is the source of truth; LOCAL_TOOLS names exist there with
+//         is the source of truth; DEVICE_LOCAL_TOOLS names exist there with
 //         identical schemas since it is the same codebase).
-//       * tools/call    -- LOCAL_TOOLS.has(name) -> callLocalTool on-device;
+//       * tools/call    -- DEVICE_LOCAL_TOOLS.has(name) -> callLocalTool on-device;
 //         else `upstream.callTool` verbatim.
 //       * resources/list + resources/read -- proxy upstream (static markdown
 //         on central; no local divergence).
@@ -52,7 +52,7 @@ import { INSTRUCTIONS } from "./server.js";
 import { parseHomeNodeIdFromUrl } from "./auto-seed.js";
 import { nodeConsentPrompt, type SessionType } from "./scope.js";
 import {
-  LOCAL_TOOLS,
+  DEVICE_LOCAL_TOOLS,
   callLocalTool,
   enrichGetNodeResult,
   enrichGetContextResult,
@@ -169,7 +169,7 @@ async function openUpstream(
   return client;
 }
 
-// Session type for the LOCAL_TOOLS write gate below. This is deliberately
+// Session type for the DEVICE_LOCAL_TOOLS write gate below. This is deliberately
 // NOT mcp/scope.ts's deriveSessionType(identity, homeNodeId): that function
 // treats identity.via === "env" as the exempt, unscoped solo-desktop-UI
 // case -- but every connection reaching THIS front door is, by construction,
@@ -180,7 +180,7 @@ async function openUpstream(
 // to PORTUNI_AUTH_MODE=env for agent mode too, so identity.via is "env"
 // here regardless of what actually spawned the connection. Falling through
 // to deriveSessionType's "env" case would make guardWrite allow every
-// LOCAL_TOOLS write unconditionally -- the gate above would never fire in
+// DEVICE_LOCAL_TOOLS write unconditionally -- the gate above would never fire in
 // production. headless/oauth_grant are kept for forward compatibility (a
 // future auth mode that resolves real identities for this front door) but
 // are not reachable today.
@@ -220,7 +220,7 @@ function fetchRemoteRawViaCentral(client: CentralClient): RemoteRawFetch {
 }
 
 // Low-level server wired to proxy tools/list + resources/* upstream and to
-// route tools/call by LOCAL_TOOLS membership. tools/call must convert any
+// route tools/call by DEVICE_LOCAL_TOOLS membership. tools/call must convert any
 // uncaught throw from callLocalTool (e.g. "no local mirror" from
 // storeFileCentral, which is a plain Error callLocalTool does not catch) into
 // an isError result -- the same contract McpServer gives central sessions.
@@ -259,7 +259,7 @@ function buildAgentServer(
     );
   }
 
-  // Write context for the LOCAL_TOOLS gate below. Built once per session
+  // Write context for the DEVICE_LOCAL_TOOLS gate below. Built once per session
   // (this function runs once per local MCP session -- see
   // createAgentMcpTransport) rather than once per tool call, so writableNodes
   // accumulates accepted elicitation grants across the session's lifetime:
@@ -278,8 +278,8 @@ function buildAgentServer(
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-    if (LOCAL_TOOLS.has(name)) {
-      // LOCAL_TOOLS never reach apps/server/mcp/tools/*.ts (they dispatch
+    if (DEVICE_LOCAL_TOOLS.has(name)) {
+      // DEVICE_LOCAL_TOOLS never reach apps/server/mcp/tools/*.ts (they dispatch
       // straight to CentralClient/REST from here), so the domain-layer write
       // gate every other mutating tool goes through has to be applied here
       // instead -- otherwise it is bypassed.

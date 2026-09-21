@@ -406,7 +406,7 @@ export function AccessSection({
   // ACL -- whether the rows are its own or inherited from an ancestor --
   // shows as "Skupina" even though `visibility` (the node's own column)
   // may still read "team"/"private" (the common case for a default child
-  // of a group-restricted parent). `editingGroup` layers a local-only peek
+  // of a group-restricted parent). `editingGroup` layers a client-side peek
   // on top so a manager can open the group editor on an otherwise
   // unrestricted node without persisting anything yet.
   const effectiveMode: VisibilityMode = restricted ? "group" : visibility;

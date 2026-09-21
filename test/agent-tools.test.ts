@@ -8,7 +8,7 @@ import { test } from "node:test";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
 import { CentralHttpError } from "../apps/server/domain/sync/central/client.js";
 import {
-  LOCAL_TOOLS,
+  DEVICE_LOCAL_TOOLS,
   callLocalTool,
   enrichGetNodeResult,
   enrichGetContextResult,
@@ -202,9 +202,9 @@ async function setupMirror(): Promise<void> {
   await registerMirror("U1", NODE_ID, mirrorRoot);
 }
 
-test("LOCAL_TOOLS contains exactly the device-local set", () => {
+test("DEVICE_LOCAL_TOOLS contains exactly the device-local set", () => {
   assert.deepEqual(
-    [...LOCAL_TOOLS].sort(),
+    [...DEVICE_LOCAL_TOOLS].sort(),
     ["portuni_adopt_files", "portuni_mirror", "portuni_pull", "portuni_status", "portuni_store"],
   );
 });
@@ -295,7 +295,7 @@ describe("portuni_store", () => {
   it("is unaffected by the connector-session precondition: still registers and pushes (#409)", async () => {
     // mcp/tools/files.ts's portuni_store now fails fast without a local
     // sync.db (a connector session reaching central over HTTP). The agent
-    // front door never routes through that module -- LOCAL_TOOLS dispatch
+    // front door never routes through that module -- DEVICE_LOCAL_TOOLS dispatch
     // straight into this device's own sync engine, and a device always has
     // a sync.db -- so the same call still registers the row, writes
     // file_state and pushes the bytes.

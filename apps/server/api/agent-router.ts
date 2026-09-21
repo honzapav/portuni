@@ -50,7 +50,7 @@ import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob, withNodeSyncLock } from "../domain/sync/sync-jobs.js";
 import { createAgentSessionRuntime } from "../boot/session-runtime.js";
-import { StartSessionBody } from "./sessions.js";
+import { SetSessionModelBody, StartSessionBody } from "./sessions.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -116,7 +116,7 @@ function respondAgentSessionError(res: ServerResponse, err: unknown): boolean {
 
 // --- File content over the device mirror -------------------------------
 //
-// GET/PUT /nodes/:id/file route HERE in central mode (Rust is_local_only_path)
+// GET/PUT /nodes/:id/file route HERE in a team workspace (Rust is_device_local_path)
 // so the editor/preview works on files that exist only on this device --
 // registered-but-unpushed or untracked mirror files are absent on the remote,
 // and the central Drive-direct read would 404 them. A node with a local
@@ -439,7 +439,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       return true;
     }
 
-    // Sessions/tasks (runner batch, #323): local-only per is_local_only_path
+    // Sessions/tasks (runner batch, #323): device-local per is_device_local_path
     // (apps/desktop/src/lib.rs) -- PATCH /sessions/:id, GET /nodes/:id/
     // sessions and /overview stay central (unaffected here). The bare
     // POST /sessions is deliberately the ONLY session path this router
@@ -546,6 +546,27 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         respondJson(res, 202, { ok: true });
       } catch (err) {
         respondError(res, `POST /sessions/${sessionId}/questions/${requestId}`, err);
+      }
+      return true;
+    }
+
+    // #426: the composer's model/effort change. The live half (the running
+    // Query's own model) only exists in THIS process -- central's runtime
+    // never drives a run -- so the desktop routes the verb here; the record
+    // half rides along through the runtime's CentralSessionStore, i.e. a
+    // PATCH /sessions/:id on central.
+    const sessionModelMatch = pathname.match(/^\/sessions\/([^/]+)\/model$/);
+    if (sessionModelMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionModelMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(req, res, SetSessionModelBody);
+      if (!body) return true;
+      try {
+        const session = await sessionRuntime.setModelAndEffort(sessionId, body);
+        respondJson(res, 200, session);
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `POST /sessions/${sessionId}/model`, err);
       }
       return true;
     }
@@ -859,7 +880,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     // non-agent-mode move hits, whose own local disk step no-ops since the
     // central server has no mirror), but only THIS device can relocate the
     // mirror copy. Without this handler the desktop sent the move straight
-    // to central (is_local_only_path never matched it), central moved the
+    // to central (is_device_local_path never matched it), central moved the
     // record + remote object, and the device's local file just sat at the
     // old path forever -- the next slow sync then saw the new path as
     // deleted_local and the old path as untracked, adopting/pushing the
@@ -986,7 +1007,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         // actually belong to THIS node before anything is touched. A file on
         // a node this device has no mirror for is not found here at all --
         // that is not an error: the route is local-only for every node
-        // (is_local_only_path), so it forwards to central's own delete
+        // (is_device_local_path), so it forwards to central's own delete
         // exactly as a non-agent-mode delete would, with no local step.
         const found = await findEntryByFileId(client, identity.userId, fileId);
         if (found && found.nodeId !== nodeId) {
@@ -1154,7 +1175,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
 
     // Read-only device mirror lookup. Central serves node-detail with
     // local_mirror:null (no device state), so the web overlays this. Rust's
-    // is_local_only_path already routes /nodes/:id/mirror here for any method.
+    // is_device_local_path already routes /nodes/:id/mirror here for any method.
     const mirrorReadMatch = pathname.match(/^\/nodes\/([^/]+)\/mirror$/);
     if (mirrorReadMatch && method === "GET") {
       const nodeId = decodeURIComponent(mirrorReadMatch[1]);

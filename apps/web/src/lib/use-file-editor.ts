@@ -1,5 +1,6 @@
 // Shared load/save/conflict state for the editor shells (pane + fullscreen).
-// Save is local-only (PUT writes the mirror; the user pushes via Synchronizovat).
+// Save stays on the device (PUT writes the mirror; the user pushes via
+// Synchronizovat).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchFileContent, saveFileContent, FileConflictError } from "../api";
 

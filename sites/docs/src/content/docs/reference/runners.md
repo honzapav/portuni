@@ -60,13 +60,19 @@ Clears the given organization's default instance (no instance is the default for
 
 ## Model and reasoning effort
 
-`POST /sessions` and `PATCH /sessions/:id` both accept `model` (a runner-defined model id/alias, free text) and `effort` (`"low" | "medium" | "high" | "xhigh" | "max"`), and `SessionSummary` carries both back. Either is a per-thread override; when unset, the value resolves at the start of every run, first match wins:
+`POST /sessions` accepts `model` (a runner-defined model id/alias, free text) and `effort` (`"low" | "medium" | "high" | "xhigh" | "max"`) at creation, `POST /sessions/:id/model` changes either afterwards, and `SessionSummary` carries both back. Either is a per-thread override; when unset, the value resolves at the start of every run, first match wins:
 
-1. The thread's own `sessions.model` / `sessions.effort` (set at creation or by a later `PATCH`).
+1. The thread's own `sessions.model` / `sessions.effort` (set at creation or by a later `POST /sessions/:id/model`).
 2. The runner instance's own `defaults`, when the thread has one.
 3. Unset — the runner's own default (for Claude Code, whatever the `claude` binary defaults to).
 
-Setting `model` on a thread with a live run also switches that run's live process immediately, no restart — the Claude adapter forwards it to the SDK's `Query.setModel`. Reasoning effort has no equivalent: the SDK only accepts it when a run starts, so a change there applies from the *next* run, never the current one. The task chat's composer has a picker for both (see below); either can also be set directly through this REST surface or an instance's `defaults`.
+### POST /sessions/:id/model
+
+Body `{ model?, effort? }`, at least one of the two; `null` clears the override. Answers the patched session row. Requires `write` scope and ownership of the thread.
+
+Setting `model` on a thread with a live run also switches that run's live process immediately, no restart — the Claude adapter forwards it to the SDK's `Query.setModel`. Reasoning effort has no equivalent: the SDK only accepts it when a run starts, so a change there applies from the *next* run, never the current one.
+
+This works the same in a personal workspace and in a team workspace: the route is served by the machine that actually drives the run (in a team workspace that is your own device's sync agent, not the central server), which applies the live change and then writes the columns on the central server for the next run and for your other devices. The task chat's composer has a picker for both (see below); either can also be set through this route or an instance's `defaults`.
 
 ### GET /runners/:runner/models
 

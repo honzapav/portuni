@@ -31,7 +31,7 @@ import type { StatusFileEntry, StatusResult, NewLocalEntry } from "../domain/syn
 import type { NodeSyncInfo } from "../domain/sync/sync-remote-api.js";
 import { type StatusClass, filterStatusResult } from "../domain/sync/status-filter.js";
 
-export const LOCAL_TOOLS: ReadonlySet<string> = new Set([
+export const DEVICE_LOCAL_TOOLS: ReadonlySet<string> = new Set([
   "portuni_mirror",
   "portuni_status",
   "portuni_store",
@@ -104,8 +104,8 @@ export async function findEntryByFileId(
   return null;
 }
 
-// Write-target node id(s) for a LOCAL_TOOLS call, for agent-transport.ts's
-// write-gate check. LOCAL_TOOLS never reach apps/server/mcp/tools/*.ts (they
+// Write-target node id(s) for a DEVICE_LOCAL_TOOLS call, for agent-transport.ts's
+// write-gate check. DEVICE_LOCAL_TOOLS never reach apps/server/mcp/tools/*.ts (they
 // dispatch straight to CentralClient/REST from here), so without this the
 // device-local path would route around the domain-layer write gate that
 // every other mutating tool goes through -- see domain/write-gate.ts.
@@ -483,7 +483,7 @@ export async function callLocalTool(
     const result = await handler(client, userId, args);
     // No pretty-print indent: portuni_status on a large node can serialize
     // to hundreds of KB, and the indentation alone is a large fraction of
-    // that. The other LOCAL_TOOLS payloads are small enough that this is
+    // that. The other DEVICE_LOCAL_TOOLS payloads are small enough that this is
     // just a minor win, not a behavior change either way.
     return { content: [{ type: "text", text: JSON.stringify(result) }] };
   } catch (e) {

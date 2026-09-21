@@ -569,6 +569,23 @@ export async function getSessionWriteCount(db: DbClient, sessionId: string): Pro
   return Number(res.rows[0].c);
 }
 
+// The host of the session's latest run that names one (#428). The session
+// row carries a host too, but it is the host the session was *created* for;
+// a thread resumed on another machine has its truth on the run. Null when no
+// run names a host -- an old row, a draft, or a hand-opened CLI session.
+export async function getLatestRunHostId(db: DbClient, sessionId: string): Promise<string | null> {
+  const res = await db.execute({
+    sql: `SELECT host_id FROM session_runs
+          WHERE session_id = ? AND host_id IS NOT NULL
+          ORDER BY started_at DESC, id DESC
+          LIMIT 1`,
+    args: [sessionId],
+  });
+  if (res.rows.length === 0) return null;
+  const host = res.rows[0].host_id;
+  return typeof host === "string" && host.length > 0 ? host : null;
+}
+
 // --- Suspend (phase 2, "Lifecycle" / "Handoff") ---
 
 export interface SuspendSessionInput {

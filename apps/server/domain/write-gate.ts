@@ -2,7 +2,7 @@
 // shared by every mutation entry point. Putting this in the domain layer
 // rather than the MCP tool layer is deliberate: a check embedded only in
 // tools/*.ts would be bypassed by any other entry point reaching the same
-// mutation -- specifically the five agent-mode LOCAL_TOOLS (portuni_mirror,
+// mutation -- specifically the five agent-mode DEVICE_LOCAL_TOOLS (portuni_mirror,
 // portuni_store, portuni_pull, portuni_adopt_files; portuni_status is
 // read-only) that dispatch straight to CentralClient/REST from
 // agent-transport.ts, never touching apps/server/mcp/tools/*.ts at all. See

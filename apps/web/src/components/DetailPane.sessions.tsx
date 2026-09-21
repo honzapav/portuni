@@ -17,7 +17,13 @@ import {
   renamePersistentSession,
   transitionPersistentSessionState,
 } from "../api";
-import { mergeLiveSessionStates, sessionRowAccess, sessionRowChip, type SessionRowAccess } from "../lib/session-views";
+import {
+  hostDisplayName,
+  mergeLiveSessionStates,
+  sessionRowAccess,
+  sessionRowChip,
+  type SessionRowAccess,
+} from "../lib/session-views";
 import type { SessionStateMessage } from "../lib/sessions-client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -333,6 +339,7 @@ function SessionRow({
   };
 
   const chip = sessionRowChip(session.state, session.waiting_since);
+  const host = hostDisplayName(session);
 
   return (
     <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">
@@ -404,7 +411,9 @@ function SessionRow({
         <span>
           {session.runner ?? session.cli ?? "neznámý"}
           {session.instance_id ? ` · ${session.instance_id}` : ""}
-          {session.host_id ? ` · ${session.host_id}` : ""}
+          {/* #428: which host ran it -- the label when central knows one,
+              otherwise the host id. Hidden when neither exists. */}
+          {host ? ` · ${host}` : ""}
         </span>
         {ownerName && <span>Vlastník: {ownerName}</span>}
         <span title="Počet uzlů v zápisovém rozsahu této relace">
