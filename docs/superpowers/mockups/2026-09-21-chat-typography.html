@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Písmo v chatu — porovnání</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Sans+3:wght@400;500;600&family=Source+Code+Pro:wght@400;500&family=Atkinson+Hyperlegible+Next:wght@400;500;600&family=Atkinson+Hyperlegible+Mono:wght@400;500&family=Inter:wght@400;500;600&family=Source+Serif+4:wght@400;500;600&display=swap">
+<style>
+/* Tokens copied from apps/web/src/index.css. Light block on :root, dark
+ * block follows the system theme. */
+:root {
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-surface-2: #e2e8f0;
+  --color-border: #cbd5e1;
+  --color-border-strong: #94a3b8;
+  --color-text: #0f172a;
+  --color-text-muted: #334155;
+  --color-text-dim: #475569;
+  --color-accent: #0284c7;
+  --color-accent-soft: rgba(2, 132, 199, 0.12);
+  --color-node-project: #7c3aed;
+  --color-node-process: #d97706;
+  --color-status-active: #059669;
+  --color-danger: #b91c1c;
+  --sans-a: "DM Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono-a: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0a0b0d;
+    --color-surface: #16171b;
+    --color-surface-2: #26282e;
+    --color-border: #3a3c43;
+    --color-border-strong: #545761;
+    --color-text: #f1f2f5;
+    --color-text-muted: #d0d4dc;
+    --color-text-dim: #a6acb8;
+    --color-accent: #76d9ff;
+    --color-accent-soft: rgba(118, 217, 255, 0.14);
+    --color-node-project: #a78bfa;
+    --color-node-process: #fbbf24;
+    --color-status-active: #34d399;
+    --color-danger: #fca5a5;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--sans-a);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.ico { width: 14px; height: 14px; flex: none; }
+.ico.sm { width: 12px; height: 12px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- page chrome ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 20px; background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+.topbar h1 { font-size: 14px; font-weight: 600; margin: 0 8px 0 0; letter-spacing: -0.005em; }
+.seg { display: inline-flex; border: 1px solid var(--color-border); border-radius: 7px; overflow: hidden; background: var(--color-bg); }
+.seg button { padding: 4px 11px; font-size: 12px; color: var(--color-text-dim); }
+.seg button + button { border-left: 1px solid var(--color-border); }
+.seg button.on { background: var(--color-surface-2); color: var(--color-text); font-weight: 500; }
+.seg button:hover:not(.on) { color: var(--color-text); }
+.picker { display: inline-flex; gap: 6px; }
+.picker button {
+  min-width: 28px; height: 26px; padding: 0 8px; border-radius: 6px; font-size: 12px;
+  border: 1px solid var(--color-border); color: var(--color-text-dim); background: var(--color-bg);
+}
+.picker button.on { border-color: var(--color-accent); color: var(--color-accent); background: var(--color-accent-soft); font-weight: 500; }
+.picker button:hover:not(.on) { border-color: var(--color-border-strong); color: var(--color-text); }
+.picker button kbd { font: inherit; font-size: 10.5px; color: var(--color-text-dim); margin-left: 5px; }
+.hint { font-size: 11.5px; color: var(--color-text-dim); margin-left: auto; }
+.stage[data-view="side"] .picker { display: none; }
+
+.stage { padding: 20px; }
+.stage[data-view="side"] { display: flex; gap: 24px; overflow-x: auto; align-items: flex-start; }
+.stage[data-view="side"] .variant { width: 1000px; flex: none; }
+.stage[data-view="one"] .variant { display: none; max-width: 1280px; margin: 0 auto; }
+.stage[data-view="one"] .variant.on { display: block; }
+
+.vhead { display: flex; align-items: baseline; gap: 10px; margin: 0 0 8px 2px; }
+.vkey {
+  display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px;
+  background: var(--color-surface-2); color: var(--color-text); font-size: 12px; font-weight: 600;
+}
+.vname { font-size: 13px; font-weight: 500; color: var(--color-text-muted); }
+.cap { font-size: 11.5px; color: var(--color-text-dim); margin: 8px 2px 0; line-height: 1.5; max-width: 96ch; }
+
+/* ---------- per-variant typography (defaults = A) ---------- */
+.variant {
+  --sans: var(--sans-a);
+  --mono: var(--mono-a);
+  --lh-body: 1.5;
+  --fs-answer: 14px;   --lh-answer: 1.6;
+  --fs-prompt: 13px;
+  --fs-activity: 12.5px;
+  --fs-composer: 13px;
+  --fs-node: 13px;
+  --fs-sub: 12.5px;
+  --ls-heading: 0;
+  --fs-body: 13px;
+}
+.variant[data-v="B"] {
+  --sans: "Source Sans 3", ui-sans-serif, system-ui, sans-serif; --mono: "Source Code Pro", ui-monospace, Menlo, monospace;
+  --fs-body: 13.5px; --fs-answer: 14.5px; --fs-prompt: 13.5px; --fs-activity: 13px; --fs-composer: 13.5px; --fs-node: 13.5px; --fs-sub: 13px;
+}
+.variant[data-v="C"] { --sans: "Atkinson Hyperlegible Next", ui-sans-serif, system-ui, sans-serif; --mono: "Atkinson Hyperlegible Mono", ui-monospace, Menlo, monospace; }
+.variant[data-v="D"] {
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --fs-answer: 15.5px; --lh-answer: 1.6;
+  --fs-prompt: 14.5px;
+  --fs-composer: 14.5px;
+}
+.variant[data-v="D"] .answer, .variant[data-v="D"] .prompt, .variant[data-v="D"] .ta { font-family: var(--serif); }
+.variant[data-v="D"] .answer code, .variant[data-v="D"] .answer pre { font-family: var(--mono); }
+.frame {
+  display: flex; min-height: 640px;
+  border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden;
+  background: var(--color-bg);
+  font-family: var(--sans); font-size: var(--fs-body); line-height: var(--lh-body);
+}
+.frame code, .frame pre, .frame .mono { font-family: var(--mono); }
+
+/* ---------- left column ---------- */
+.side { width: 300px; flex: none; border-right: 1px solid var(--color-border); background: var(--color-surface); padding: 10px 0; }
+.side-h {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+  color: var(--color-text-dim); padding: 4px 12px 8px;
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; }
+.noderow { display: flex; align-items: center; gap: 8px; padding: 6px 12px; }
+.nodename { font-size: var(--fs-node); font-weight: 500; letter-spacing: var(--ls-heading); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text); }
+.thread { display: flex; align-items: center; padding: 5px 12px 5px 25px; font-size: var(--fs-sub); color: var(--color-text-muted); border-left: 2px solid transparent; }
+.thread .tlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread.active { background: var(--color-surface-2); border-left-color: var(--color-accent); color: var(--color-text); }
+
+/* ---------- chat ---------- */
+.chat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.col { width: min(80%, 768px); margin-left: auto; margin-right: auto; }
+.chat-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; padding: 6px 16px; border-bottom: 1px solid var(--color-border); }
+.chat-h-l { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-h-r { display: flex; align-items: center; gap: 6px; flex: none; }
+.chat-name { font-size: 13.5px; font-weight: 500; letter-spacing: var(--ls-heading); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { font-size: 12px; color: var(--color-text-dim); flex: none; }
+.ctx { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; font-size: 12px; color: var(--color-node-process); }
+.ring { width: 16px; height: 16px; }
+.hbtn {
+  height: 28px; padding: 0 10px; border-radius: 6px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text);
+  white-space: nowrap;
+}
+.hbtn:hover { background: var(--color-surface-2); }
+.hbtn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-bg); }
+.pulse { animation: pl 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+@keyframes pl { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.notice {
+  display: flex; align-items: flex-start; gap: 8px; margin-top: 8px;
+  border: 1px solid var(--color-border); background: var(--color-surface); border-radius: 6px;
+  padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--color-text-muted);
+}
+.notice-t { flex: 1; }
+.notice-x { color: var(--color-text-dim); margin-top: 1px; }
+.notice-x:hover { color: var(--color-text); }
+
+.conv { flex: 1; display: flex; flex-direction: column; gap: 20px; padding: 16px 0; }
+.prompt-wrap { display: flex; justify-content: flex-end; }
+.prompt {
+  max-width: 80%; background: var(--color-accent-soft); border: 1px solid var(--color-border);
+  border-radius: 8px; padding: 10px 14px; font-size: var(--fs-prompt); line-height: 1.5; color: var(--color-text);
+}
+.activity { display: flex; align-items: center; gap: 8px; font-size: var(--fs-activity); color: var(--color-text-muted); cursor: pointer; }
+.activity .atext { flex: 1; min-width: 0; }
+.activity .chev { color: var(--color-text-dim); }
+.activity.failed, .activity.failed .chev { color: var(--color-danger); }
+.activity:hover .atext { color: var(--color-text); }
+
+.answer { font-size: var(--fs-answer); line-height: var(--lh-answer); color: var(--color-text); }
+.answer p { margin: 0 0 0.9em; }
+.answer p:last-child { margin-bottom: 0; }
+.answer ul { margin: 0 0 0.9em; padding-left: 1.4em; }
+.answer li { margin: 0 0 0.25em; }
+.answer strong { font-weight: 600; }
+.answer a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
+.answer code { font-size: 0.86em; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 4px; padding: 0.1em 0.35em; }
+.answer pre.code {
+  margin: 0 0 0.9em; padding: 10px 12px; overflow-x: auto;
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px;
+  font-size: 0.86em; line-height: 1.6; color: var(--color-text-muted); white-space: pre;
+}
+.code .c { color: var(--color-text-dim); }
+.code .k { color: var(--color-node-project); }
+.code .s { color: var(--color-status-active); }
+
+.working { display: flex; align-items: center; gap: 8px; font-size: var(--fs-activity); color: var(--color-text-dim); }
+.spin {
+  width: 14px; height: 14px; border-radius: 50%; flex: none;
+  border: 2px solid var(--color-border-strong); border-top-color: var(--color-text);
+  animation: sp 0.9s linear infinite;
+}
+@keyframes sp { to { transform: rotate(360deg); } }
+.wlabel {
+  background: linear-gradient(90deg, var(--color-text-dim) 0%, var(--color-text) 45%, var(--color-text-dim) 90%);
+  background-size: 260% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: sh 1.5s linear infinite;
+}
+@keyframes sh { from { background-position: 160% 0; } to { background-position: -60% 0; } }
+
+/* ---------- composer ---------- */
+.composer-wrap { border-top: 1px solid var(--color-border); padding: 12px 0; }
+.composer { border: 1px solid var(--color-border-strong); background: var(--color-surface); border-radius: 10px; }
+.composer .ta { padding: 10px 12px 2px; min-height: 46px; font-size: var(--fs-composer); line-height: 1.5; color: var(--color-text-dim); }
+.crow1 { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 6px; }
+.sel {
+  display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px; border-radius: 6px;
+  font-size: 12px; color: var(--color-text-muted); border: 1px solid transparent;
+}
+.sel:hover { background: var(--color-surface-2); }
+.sel.flat { height: 24px; padding: 0 6px; font-size: 11.5px; color: inherit; }
+.send { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; background: var(--color-accent); color: var(--color-bg); }
+.send .ico { width: 15px; height: 15px; }
+.crow2 { display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 6px 6px; font-size: 11.5px; color: var(--color-text-dim); }
+
+@media (max-width: 720px) {
+  .stage { padding: 12px; }
+  .stage[data-view="one"] .frame { flex-direction: column; min-height: 0; }
+  .stage[data-view="one"] .side { width: auto; border-right: 0; border-bottom: 1px solid var(--color-border); }
+  .col { width: calc(100% - 24px); }
+  .hbtn.primary { display: none; }
+}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <h1>Písmo v chatu — porovnání</h1>
+  <div class="seg" role="group" aria-label="Zobrazení">
+    <button data-view="side">Vedle sebe</button>
+    <button data-view="one">Jedno</button>
+  </div>
+  <div class="picker" role="group" aria-label="Varianta">
+    <button data-pick="A">A · DM Sans<kbd>1</kbd></button>
+    <button data-pick="B">B · Source Sans<kbd>2</kbd></button>
+    <button data-pick="C">C · Atkinson<kbd>3</kbd></button>
+    <button data-pick="D">D · Inter + Source Serif<kbd>4</kbd></button>
+  </div>
+  <span class="hint">Klávesy 1–4 přepínají variantu. Stránka sleduje systémové téma.</span>
+</header>
+<main class="stage" id="stage" data-view="one">
+
+<section class="variant" data-v="A" aria-label="Varianta A">
+  <div class="vhead"><span class="vkey">A</span><span class="vname">DM Sans + JetBrains Mono</span></div>
+  <div class="frame">
+    <aside class="side">
+      <div class="side-h">Otevřené</div>
+      <div class="noderow"><span class="dot" style="background:var(--color-node-project)"></span><span class="nodename">Konektor – Asana adopce</span></div>
+      <div class="thread active"><span class="tlabel">Konektor – Asana adopce · <span class="num">2026-09-15 15:41</span></span></div>
+      <div class="thread"><span class="tlabel">Nový úkol</span></div>
+    </aside>
+    <div class="chat">
+      <div class="chat-h">
+        <div class="chat-h-l">
+          <span class="dot pulse" style="background:var(--color-status-active)"></span>
+          <span class="chat-name">Konektor – Asana adopce</span>
+          <span class="chip">Běží</span>
+        </div>
+        <div class="chat-h-r">
+          <span class="ctx" title="Využití kontextového okna"><svg class="ring" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="var(--color-border-strong)" stroke-width="2.4"/><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="50.27" stroke-dashoffset="8.04" transform="rotate(-90 10 10)"/></svg><span class="num">84 %</span></span>
+          <button class="hbtn primary">Pokračovat v nové session</button>
+          <button class="hbtn">Uzavřít</button>
+        </div>
+      </div>
+      <div class="col notice">
+        <span class="notice-t">Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě jednou.</span>
+        <button class="notice-x" aria-label="Zavřít"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </div>
+      <div class="conv col">
+        <div class="prompt-wrap"><div class="prompt">zveřejnit diagram na public tempo</div></div>
+
+        <div class="activity"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg><span class="atext">Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval <span class="num">12 s</span></span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+        <div class="activity failed"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg><span class="atext">Bash · selhal</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+
+        <div class="answer">
+          <p>Diagram je venku. Stránka běží z veřejného bucketu, odkaz jde poslat komukoli bez přihlášení a nic dalšího na tempo.ooo se neměnilo.</p>
+          <p><strong>Zdroj:</strong> <code>wip/260915-konektor-organizacni-struktura.html</code>, publikováno jako objekt se stejným názvem. Veřejná adresa je <a href="https://storage.googleapis.com/tempo-share-public/konektor-organizacni-struktura.html">https://storage.googleapis.com/tempo-share-public/konektor-organizacni-struktura.html</a>.</p>
+          <ul>
+            <li>Soubor prošel kontrolou odkazů, všech 14 cílů odpovídá (žádný nevede na interní doménu).</li>
+            <li>Cache je nastavená na <code>max-age=60</code>, takže se změna projeví do minuty.</li>
+            <li>Diagram nemá vlastní písmo ani obrázky, načte se jako jeden soubor o velikosti 12 kB.</li>
+          </ul>
+          <pre class="code"><span class="c"># publish.sh – jeden objekt do veřejného bucketu</span>
+<span class="k">set</span> -euo pipefail
+SRC=<span class="s">"wip/260915-konektor-organizacni-struktura.html"</span>
+DST=<span class="s">"gs://tempo-share-public/konektor-organizacni-struktura.html"</span>
+gsutil -h <span class="s">"Cache-Control:public, max-age=60"</span> cp <span class="s">"$SRC"</span> <span class="s">"$DST"</span>
+<span class="k">echo</span> <span class="s">"https://storage.googleapis.com/${DST#gs://}"</span></pre>
+          <p>Aktualizace na stejném odkazu: znovu <code>publish.sh</code> se stejným názvem objektu — 21. 9. 2026, 3 soubory, 12 kB.</p>
+        </div>
+
+        <div class="working"><span class="spin" aria-hidden="true"></span><span class="wlabel">Přemýšlím…</span><span class="num">14 s</span></div>
+      </div>
+      <div class="composer-wrap">
+        <div class="col">
+          <div class="composer">
+            <div class="ta">Napiš zprávu…</div>
+            <div class="crow1">
+              <span class="sel">Model (výchozí)<svg class="ico sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+              <button class="send" aria-label="Odeslat"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
+            </div>
+            <div class="crow2"><span class="sel flat">claude · výchozí instance (výchozí)<svg class="ico sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span><span>· Honzův MacBook</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="cap">DM Sans 400/500/600, mono JetBrains Mono. Geometrický, širší a kulatější grotesk; nejvíc „produktový" z výběru. Tělo 13 px / 1.5, odpověď 14 px / 1.6, bublina 13 px, aktivita 12.5 px, composer 13 px, levý sloupec 13 px a 12.5 px.</p>
+</section>
+
+<section class="variant" data-v="B" aria-label="Varianta B">
+  <div class="vhead"><span class="vkey">B</span><span class="vname">Source Sans 3 + Source Code Pro</span></div>
+  <div class="frame">
+    <aside class="side">
+      <div class="side-h">Otevřené</div>
+      <div class="noderow"><span class="dot" style="background:var(--color-node-project)"></span><span class="nodename">Konektor – Asana adopce</span></div>
+      <div class="thread active"><span class="tlabel">Konektor – Asana adopce · <span class="num">2026-09-15 15:41</span></span></div>
+      <div class="thread"><span class="tlabel">Nový úkol</span></div>
+    </aside>
+    <div class="chat">
+      <div class="chat-h">
+        <div class="chat-h-l">
+          <span class="dot pulse" style="background:var(--color-status-active)"></span>
+          <span class="chat-name">Konektor – Asana adopce</span>
+          <span class="chip">Běží</span>
+        </div>
+        <div class="chat-h-r">
+          <span class="ctx" title="Využití kontextového okna"><svg class="ring" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="var(--color-border-strong)" stroke-width="2.4"/><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="50.27" stroke-dashoffset="8.04" transform="rotate(-90 10 10)"/></svg><span class="num">84 %</span></span>
+          <button class="hbtn primary">Pokračovat v nové session</button>
+          <button class="hbtn">Uzavřít</button>
+        </div>
+      </div>
+      <div class="col notice">
+        <span class="notice-t">Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě jednou.</span>
+        <button class="notice-x" aria-label="Zavřít"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </div>
+      <div class="conv col">
+        <div class="prompt-wrap"><div class="prompt">zveřejnit diagram na public tempo</div></div>
+
+        <div class="activity"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg><span class="atext">Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval <span class="num">12 s</span></span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+        <div class="activity failed"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg><span class="atext">Bash · selhal</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+
+        <div class="answer">
+          <p>Diagram je venku. Stránka běží z veřejného bucketu, odkaz jde poslat komukoli bez přihlášení a nic dalšího na tempo.ooo se neměnilo.</p>
+          <p><strong>Zdroj:</strong> <code>wip/260915-konektor-organizacni-struktura.html</code>, publikováno jako objekt se stejným názvem. Veřejná adresa je <a href="https://storage.googleapis.com/tempo-share-public/konektor-organizacni-struktura.html">https://storage.googleapis.com/tempo-share-public/konektor-organizacni-struktura.html</a>.</p>
+          <ul>
+            <li>Soubor prošel kontrolou odkazů, všech 14 cílů odpovídá (žádný nevede na interní doménu).</li>
+            <li>Cache je nastavená na <code>max-age=60</code>, takže se změna projeví do minuty.</li>
+            <li>Diagram nemá vlastní písmo ani obrázky, načte se jako jeden soubor o velikosti 12 kB.</li>
+          </ul>
+          <pre class="code"><span class="c"># publish.sh – jeden objekt do veřejného bucketu</span>
+<span class="k">set</span> -euo pipefail
+SRC=<span class="s">"wip/260915-konektor-organizacni-struktura.html"</span>
+DST=<span class="s">"gs://tempo-share-public/konektor-organizacni-struktura.html"</span>
+gsutil -h <span class="s">"Cache-Control:public, max-age=60"</span> cp <span class="s">"$SRC"</span> <span class="s">"$DST"</span>
+<span class="k">echo</span> <span class="s">"https://storage.googleapis.com/${DST#gs://}"</span></pre>
+          <p>Aktualizace na stejném odkazu: znovu <code>publish.sh</code> se stejným názvem objektu — 21. 9. 2026, 3 soubory, 12 kB.</p>
+        </div>
+
+        <div class="working"><span class="spin" aria-hidden="true"></span><span class="wlabel">Přemýšlím…</span><span class="num">14 s</span></div>
+      </div>
+      <div class="composer-wrap">
+        <div class="col">
+          <div class="composer">
+            <div class="ta">Napiš zprávu…</div>
+            <div class="crow1">
+              <span class="sel">Model (výchozí)<svg class="ico sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+              <button class="send" aria-label="Odeslat"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
+            </div>
+            <div class="crow2"><span class="sel flat">claude · výchozí instance (výchozí)<svg class="ico sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span><span>· Honzův MacBook</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="cap">Source Sans 3 400/500/600, mono Source Code Pro. Humanistický, užší, s menší výškou minusek, proto všechny velikosti o 0,5 px větší než A: tělo 13.5 px, odpověď 14.5 px, bublina 13.5 px, aktivita 13 px, composer 13.5 px, levý sloupec 13.5 px a 13 px.</p>
+</section>
+
+<section class="variant" data-v="C" aria-label="Varianta C">
+  <div class="vhead"><span class="vkey">C</span><span class="vname">Atkinson Hyperlegible Next + Atkinson Hyperlegible Mono</span></div>
+  <div class="frame">
+    <aside class="side">
+      <div class="side-h">Otevřené</div>
+      <div class="noderow"><span class="dot" style="background:var(--color-node-project)"></span><span class="nodename">Konektor – Asana adopce</span></div>
+      <div class="thread active"><span class="tlabel">Konektor – Asana adopce · <span class="num">2026-09-15 15:41</span></span></div>
+      <div class="thread"><span class="tlabel">Nový úkol</span></div>
+    </aside>
+    <div class="chat">
+      <div class="chat-h">
+        <div class="chat-h-l">
+          <span class="dot pulse" style="background:var(--color-status-active)"></span>
+          <span class="chat-name">Konektor – Asana adopce</span>
+          <span class="chip">Běží</span>
+        </div>
+        <div class="chat-h-r">
+          <span class="ctx" title="Využití kontextového okna"><svg class="ring" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="var(--color-border-strong)" stroke-width="2.4"/><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="50.27" stroke-dashoffset="8.04" transform="rotate(-90 10 10)"/></svg><span class="num">84 %</span></span>
+          <button class="hbtn primary">Pokračovat v nové session</button>
+          <button class="hbtn">Uzavřít</button>
+        </div>
+      </div>
+      <div class="col notice">
+        <span class="notice-t">Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě jednou.</span>
+        <button class="notice-x" aria-label="Zavřít"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </div>
+      <div class="conv col">
+        <div class="prompt-wrap"><div class="prompt">zveřejnit diagram na public tempo</div></div>
+
+        <div class="activity"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg><span class="atext">Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval <span class="num">12 s</span></span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+        <div class="activity failed"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg><span class="atext">Bash · selhal</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+
+        <div class="answer">
+          <p>Diagram je venku. Stránka běží z veřejného bucketu, odkaz jde poslat komukoli bez přihlášení a nic dalšího na tempo.ooo se neměnilo.</p>
+          <p><strong>Zdroj:</strong> <code>wip/260915-konektor-organizacni-struktura.html</code>, publikováno jako objekt se stejným názvem. Veřejná adresa je <a href="https://storage.googleapis.com/tempo-share-public/konektor-organizacni-struktura.html">https://storage.googleapis.com/tempo-share-public/konektor-organizacni-struktura.html</a>.</p>
+          <ul>
+            <li>Soubor prošel kontrolou odkazů, všech 14 cílů odpovídá (žádný nevede na interní doménu).</li>
+            <li>Cache je nastavená na <code>max-age=60</code>, takže se změna projeví do minuty.</li>
+            <li>Diagram nemá vlastní písmo ani obrázky, načte se jako jeden soubor o velikosti 12 kB.</li>
+          </ul>
+          <pre class="code"><span class="c"># publish.sh – jeden objekt do veřejného bucketu</span>
+<span class="k">set</span> -euo pipefail
+SRC=<span class="s">"wip/260915-konektor-organizacni-struktura.html"</span>
+DST=<span class="s">"gs://tempo-share-public/konektor-organizacni-struktura.html"</span>
+gsutil -h <span class="s">"Cache-Control:public, max-age=60"</span> cp <span class="s">"$SRC"</span> <span class="s">"$DST"</span>
+<span class="k">echo</span> <span class="s">"https://storage.googleapis.com/${DST#gs://}"</span></pre>
+          <p>Aktualizace na stejném odkazu: znovu <code>publish.sh</code> se stejným názvem objektu — 21. 9. 2026, 3 soubory, 12 kB.</p>
+        </div>
+
+        <div class="working"><span class="spin" aria-hidden="true"></span><span class="wlabel">Přemýšlím…</span><span class="num">14 s</span></div>
+      </div>
+      <div class="composer-wrap">
+        <div class="col">
+          <div class="composer">
+            <div class="ta">Napiš zprávu…</div>
+            <div class="crow1">
+              <span class="sel">Model (výchozí)<svg class="ico sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+              <button class="send" aria-label="Odeslat"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
+            </div>
+            <div class="crow2"><span class="sel flat">claude · výchozí instance (výchozí)<svg class="ico sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span><span>· Honzův MacBook</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="cap">Atkinson Hyperlegible Next 400/500/600, mono Atkinson Hyperlegible Mono. Navržený pro rozlišitelnost znaků (I/l/1, O/0), výrazné tvary. Stejné velikosti jako A.</p>
+</section>
+
+<section class="variant" data-v="D" aria-label="Varianta D">
+  <div class="vhead"><span class="vkey">D</span><span class="vname">Inter v rozhraní, Source Serif 4 v konverzaci</span></div>
+  <div class="frame">
+    <aside class="side">
+      <div class="side-h">Otevřené</div>
+      <div class="noderow"><span class="dot" style="background:var(--color-node-project)"></span><span class="nodename">Konektor – Asana adopce</span></div>
+      <div class="thread active"><span class="tlabel">Konektor – Asana adopce · <span class="num">2026-09-15 15:41</span></span></div>
+      <div class="thread"><span class="tlabel">Nový úkol</span></div>
+    </aside>
+    <div class="chat">
+      <div class="chat-h">
+        <div class="chat-h-l">
+          <span class="dot pulse" style="background:var(--color-status-active)"></span>
+          <span class="chat-name">Konektor – Asana adopce</span>
+          <span class="chip">Běží</span>
+        </div>
+        <div class="chat-h-r">
+          <span class="ctx" title="Využití kontextového okna"><svg class="ring" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="var(--color-border-strong)" stroke-width="2.4"/><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="50.27" stroke-dashoffset="8.04" transform="rotate(-90 10 10)"/></svg><span class="num">84 %</span></span>
+          <button class="hbtn primary">Pokračovat v nové session</button>
+          <button class="hbtn">Uzavřít</button>
+        </div>
+      </div>
+      <div class="col notice">
+        <span class="notice-t">Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě jednou.</span>
+        <button class="notice-x" aria-label="Zavřít"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </div>
+      <div class="conv col">
+        <div class="prompt-wrap"><div class="prompt">zveřejnit diagram na public tempo</div></div>
+
+        <div class="activity"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg><span class="atext">Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval <span class="num">12 s</span></span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+        <div class="activity failed"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg><span class="atext">Bash · selhal</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+
+        <div class="answer">
+          <p>Diagram je venku. Stránka běží z veřejného bucketu, odkaz jde poslat komukoli bez přihlášení a nic dalšího na tempo.ooo se neměnilo.</p>
+          <p><strong>Zdroj:</strong> <code>wip/260915-konektor-organizacni-struktura.html</code>, publikováno jako objekt se stejným názvem. Veřejná adresa je <a href="https://storage.googleapis.com/tempo-share-public/konektor-organizacni-struktura.html">https://storage.googleapis.com/tempo-share-public/konektor-organizacni-struktura.html</a>.</p>
+          <ul>
+            <li>Soubor prošel kontrolou odkazů, všech 14 cílů odpovídá (žádný nevede na interní doménu).</li>
+            <li>Cache je nastavená na <code>max-age=60</code>, takže se změna projeví do minuty.</li>
+            <li>Diagram nemá vlastní písmo ani obrázky, načte se jako jeden soubor o velikosti 12 kB.</li>
+          </ul>
+          <pre class="code"><span class="c"># publish.sh – jeden objekt do veřejného bucketu</span>
+<span class="k">set</span> -euo pipefail
+SRC=<span class="s">"wip/260915-konektor-organizacni-struktura.html"</span>
+DST=<span class="s">"gs://tempo-share-public/konektor-organizacni-struktura.html"</span>
+gsutil -h <span class="s">"Cache-Control:public, max-age=60"</span> cp <span class="s">"$SRC"</span> <span class="s">"$DST"</span>
+<span class="k">echo</span> <span class="s">"https://storage.googleapis.com/${DST#gs://}"</span></pre>
+          <p>Aktualizace na stejném odkazu: znovu <code>publish.sh</code> se stejným názvem objektu — 21. 9. 2026, 3 soubory, 12 kB.</p>
+        </div>
+
+        <div class="working"><span class="spin" aria-hidden="true"></span><span class="wlabel">Přemýšlím…</span><span class="num">14 s</span></div>
+      </div>
+      <div class="composer-wrap">
+        <div class="col">
+          <div class="composer">
+            <div class="ta">Napiš zprávu…</div>
+            <div class="crow1">
+              <span class="sel">Model (výchozí)<svg class="ico sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+              <button class="send" aria-label="Odeslat"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
+            </div>
+            <div class="crow2"><span class="sel flat">claude · výchozí instance (výchozí)<svg class="ico sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span><span>· Honzův MacBook</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="cap">Rozhraní (levý sloupec, hlavička, aktivita, composer chrome) zůstává v Interu, text konverzace (prompt, odpověď, pole pro psaní) je Source Serif 4 400/500/600, kód ui-monospace. Odpověď 15.5 px / 1.6, bublina a composer 14.5 px; serif potřebuje o stupeň větší velikost.</p>
+</section>
+</main>
+<script>
+(function () {
+  var stage = document.getElementById("stage");
+  var segs = document.querySelectorAll(".seg button");
+  var picks = document.querySelectorAll(".picker button");
+  var variants = document.querySelectorAll(".variant");
+  var KEY = "portuni:mockup:chat-typography";
+  var state = { view: "one", pick: "A" };
+
+  function load() {
+    try {
+      var raw = localStorage.getItem(KEY);
+      if (raw) {
+        var s = JSON.parse(raw);
+        if (s.view === "side" || s.view === "one") state.view = s.view;
+        if (["A", "B", "C", "D"].indexOf(s.pick) >= 0) state.pick = s.pick;
+      }
+    } catch (e) {}
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+  }
+  function render() {
+    stage.setAttribute("data-view", state.view);
+    segs.forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-view") === state.view); });
+    picks.forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-pick") === state.pick); });
+    variants.forEach(function (v) { v.classList.toggle("on", v.getAttribute("data-v") === state.pick); });
+  }
+  segs.forEach(function (b) {
+    b.addEventListener("click", function () { state.view = b.getAttribute("data-view"); save(); render(); });
+  });
+  picks.forEach(function (b) {
+    b.addEventListener("click", function () { state.pick = b.getAttribute("data-pick"); state.view = "one"; save(); render(); });
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var map = { "1": "A", "2": "B", "3": "C", "4": "D" };
+    if (map[e.key]) { state.pick = map[e.key]; state.view = "one"; save(); render(); }
+  });
+  load();
+  render();
+})();
+</script>
+</body>
+</html>
