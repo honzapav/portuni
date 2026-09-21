@@ -10,6 +10,7 @@ import {
   applySessionStateFrame,
   pickOpenChatSession,
   hostDisplayName,
+  requestChatSession,
   mergeSessionIntoNodeMap,
   applyNodeSessionsRefetch,
   dropPromotedDrafts,
@@ -200,6 +201,24 @@ describe("pickOpenChatSession", () => {
   it("finds a requested draft", () => {
     const list = [s("d1", "draft")];
     assert.equal(pickOpenChatSession(list, "d1")?.id, "d1");
+  });
+});
+
+// A thread started while the node already shows another one ("Nový úkol"
+// in the detail aside): the fresh thread is what the node must show, so
+// starting one requests it by id. Without that the next pick still
+// prefers the thread requested before and the chat snaps back to it.
+describe("requestChatSession", () => {
+  const s = (id: string, state: "running" | "draft") => ({ id, state });
+  it("makes a freshly started thread the node's shown chat", () => {
+    const next = requestChatSession({ n1: "old" }, { id: "d1", node_id: "n1" });
+    assert.equal(next.n1, "d1");
+    const list = [s("old", "running"), s("d1", "draft")];
+    assert.equal(pickOpenChatSession(list, next.n1)?.id, "d1");
+  });
+
+  it("leaves the map alone for a session with no node", () => {
+    assert.deepEqual(requestChatSession({ n1: "old" }, { id: "s2", node_id: null }), { n1: "old" });
   });
 });
 
