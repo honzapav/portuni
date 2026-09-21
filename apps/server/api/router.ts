@@ -117,12 +117,14 @@ import {
   handleDeleteSession,
   handleGetSession,
   handleGetSessionResumeInfo,
+  handleGetSessionScope,
   handleGetSessionSignals,
   handleInterruptSession,
   handleListNodeSessions,
   handleListSessionEvents,
   handleListSessionRuns,
   handlePatchSession,
+  handleSetSessionModel,
   handlePatchSessionRun,
   handleSendSessionMessage,
   handleStartSession,
@@ -782,6 +784,14 @@ async function routeSessions(
     await handleGetSessionSignals(req, res, identity, decodeURIComponent(signalsMatch[1]));
     return true;
   }
+  // Central record half (#427): the session's read/write set, read by the
+  // sync agent's suspend fallback -- a central route, never device-local
+  // (the device is exactly the side that has no session_scope table).
+  const scopeMatch = pathname.match(/^\/sessions\/([^/]+)\/scope$/);
+  if (scopeMatch && method === "GET") {
+    await handleGetSessionScope(req, res, identity, decodeURIComponent(scopeMatch[1]));
+    return true;
+  }
   const messagesMatch = pathname.match(/^\/sessions\/([^/]+)\/messages$/);
   if (messagesMatch && method === "POST") {
     await handleSendSessionMessage(req, res, identity, decodeURIComponent(messagesMatch[1]));
@@ -796,6 +806,15 @@ async function routeSessions(
       decodeURIComponent(questionMatch[1]),
       decodeURIComponent(questionMatch[2]),
     );
+    return true;
+  }
+  // #426: the thread's model/effort override -- a device-local route, so
+  // the live half of a model change lands on the device driving the run
+  // (apps/server/api/agent-router.ts serves the same verb in sync-agent
+  // mode); PATCH /sessions/:id stays the record half.
+  const modelMatch = pathname.match(/^\/sessions\/([^/]+)\/model$/);
+  if (modelMatch && method === "POST") {
+    await handleSetSessionModel(req, res, identity, decodeURIComponent(modelMatch[1]));
     return true;
   }
   const interruptMatch = pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);

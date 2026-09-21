@@ -1,11 +1,11 @@
-// Central-mode login gate. In central data_mode the whole graph is served by
-// the remote server behind a per-user session JWT — so before login there is
+// Team-workspace login gate. In a team workspace the whole graph is served
+// by the central server behind a per-user session JWT — so before login there is
 // literally nothing to render. Without this gate the app tries to load the
 // graph, fails with "not logged in (no session JWT)", and dead-ends on an
 // error card with no way to reach Settings → Účet. A fresh teammate would be
 // stuck. This gate short-circuits that: central + logged-out → a login screen.
 //
-// Local mode (or a plain browser) passes straight through — no gating.
+// A personal workspace (or a plain browser) passes straight through — no gating.
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { isTauri, getDataMode, authStatus, googleLogin } from "../lib/central";
@@ -119,7 +119,7 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
 
         {status.kind === "not-configured" ? (
           <div className="text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-            Centrální režim je aktivní, ale chybí konfigurace. Doplň{" "}
+            Tohle je týmový workspace, ale chybí konfigurace. Doplň{" "}
             <code className="font-mono text-[12px]">server_url</code> a{" "}
             <code className="font-mono text-[12px]">google_client_id</code> do{" "}
             <code className="font-mono text-[12px]">config.json</code>.

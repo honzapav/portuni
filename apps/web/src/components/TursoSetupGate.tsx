@@ -182,7 +182,7 @@ export default function TursoSetupGate({ children }: Props) {
 
             <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
               <div className="text-[13px] font-medium text-[var(--color-text)]">
-                Začít lokálně
+                Osobní workspace
               </div>
               <div className="mt-1 text-[12px] text-[var(--color-text-dim)]">
                 Jen na tomto Macu, žádný účet. Vhodné pro vyzkoušení.
@@ -193,7 +193,7 @@ export default function TursoSetupGate({ children }: Props) {
                   disabled={saving}
                   onClick={() => void handleStartLocal()}
                 >
-                  Pokračovat lokálně
+                  Vytvořit osobní workspace
                 </Button>
               </div>
             </div>

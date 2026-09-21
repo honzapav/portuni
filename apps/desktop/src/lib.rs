@@ -1176,7 +1176,7 @@ fn open_external(url: String) -> Result<(), String> {
 /// (`test/agent-router-route-parity.test.ts`), so a route added in one place
 /// without the other fails the gate. Method-agnostic on purpose: routing is
 /// decided per path, the router decides per method.
-const LOCAL_ONLY_ROUTES_JSON: &str = include_str!("../../server/shared/device-local-routes.json");
+const DEVICE_LOCAL_ROUTES_JSON: &str = include_str!("../../server/shared/device-local-routes.json");
 
 /// One `device_local` pattern, split into segments; `{name}` matches any
 /// single non-empty segment.
@@ -1185,10 +1185,10 @@ enum RouteSegment {
     Param,
 }
 
-fn local_only_patterns() -> &'static [Vec<RouteSegment>] {
+fn device_local_patterns() -> &'static [Vec<RouteSegment>] {
     static PATTERNS: std::sync::OnceLock<Vec<Vec<RouteSegment>>> = std::sync::OnceLock::new();
     PATTERNS.get_or_init(|| {
-        let doc: serde_json::Value = serde_json::from_str(LOCAL_ONLY_ROUTES_JSON)
+        let doc: serde_json::Value = serde_json::from_str(DEVICE_LOCAL_ROUTES_JSON)
             .expect("device-local-routes.json is valid JSON");
         doc["device_local"]
             .as_array()
@@ -1219,10 +1219,10 @@ fn local_only_patterns() -> &'static [Vec<RouteSegment>] {
 /// the central server: graph reads and writes, the session record half
 /// (`/sessions/<id>`, `/state`, `/resume-info`, `/runs...`, `/sessions/record`),
 /// `/nodes/<id>/file-url` and `/nodes/<id>/folder-url`.
-pub(crate) fn is_local_only_path(path: &str) -> bool {
+pub(crate) fn is_device_local_path(path: &str) -> bool {
     let p = path.split('?').next().unwrap_or(path);
     let segments: Vec<&str> = p.split('/').filter(|seg| !seg.is_empty()).collect();
-    local_only_patterns().iter().any(|pattern| {
+    device_local_patterns().iter().any(|pattern| {
         pattern.len() == segments.len()
             && pattern.iter().zip(&segments).all(|(want, got)| match want {
                 RouteSegment::Param => true,
@@ -2051,7 +2051,7 @@ pub(crate) fn webview_proxy_secret(app: &AppHandle, ws_id: &str) -> Option<Strin
 //
 // In central data_mode the command routes to server_url instead of the
 // local sidecar:
-//   - LOCAL_ONLY paths (mirror, sync, file content, write-scope) → 501
+//   - device-local paths (mirror, sync, file content, write-scope) → 501
 //   - everything else → do_central_request with JWT + silent 401 refresh
 #[tauri::command]
 async fn api_request(
@@ -2067,10 +2067,10 @@ async fn api_request(
     let (ws_id, cfg) = ws_and_config(&app, &window)?;
     let is_central = workspace::is_central(&cfg);
 
-    // In a team workspace, LOCAL_ONLY paths (mirror/sync/scope) are
+    // In a team workspace, device-local paths (mirror/sync/scope) are
     // served by the LOCAL sync agent — fall through to the local proxy
     // below. Everything else goes to the central server.
-    if is_central && !is_local_only_path(&path) {
+    if is_central && !is_device_local_path(&path) {
         // Route to the central server using the JWT + silent refresh logic.
         let server_url = cfg
             .server_url
@@ -2135,7 +2135,7 @@ async fn api_request(
     }
 
     // Local proxy: the bundled sidecar (local mode) or the sync agent
-    // (team workspace, LOCAL_ONLY paths).
+    // (team workspace, device-local paths).
     // Snapshot port + token from state, then drop the guard before
     // awaiting — holding a std::sync::Mutex across .await deadlocks
     // the executor on contention.
@@ -2147,7 +2147,7 @@ async fn api_request(
             // stay parked.
             return Ok(ApiResponse {
                 status: 501,
-                body: "{\"error\":\"local_only\",\"detail\":\"sync agent not running\"}"
+                body: "{\"error\":\"sync_agent_down\",\"detail\":\"sync agent not running\"}"
                     .to_string(),
             });
         }
@@ -3772,8 +3772,8 @@ mod fallback_should_fire_tests {
 }
 
 #[cfg(test)]
-mod local_only_path_tests {
-    use super::is_local_only_path;
+mod device_local_path_tests {
+    use super::is_device_local_path;
 
     // The shared contract with the server: every route the webview must
     // reach on THIS device's sidecar in a team workspace, and the record-half /
@@ -3781,10 +3781,10 @@ mod local_only_path_tests {
     // checked against the same file by test/agent-router-route-parity
     // .test.ts, so a route added on one side without the other fails the
     // gate on whichever side is missing.
-    const LOCAL_ONLY_ROUTES: &str = include_str!("../../server/shared/device-local-routes.json");
+    const DEVICE_LOCAL_ROUTES: &str = include_str!("../../server/shared/device-local-routes.json");
 
     fn route_examples(section: &str) -> Vec<(String, String)> {
-        let doc: serde_json::Value = serde_json::from_str(LOCAL_ONLY_ROUTES).expect("valid json");
+        let doc: serde_json::Value = serde_json::from_str(DEVICE_LOCAL_ROUTES).expect("valid json");
         doc[section]
             .as_array()
             .expect("array")
@@ -3799,13 +3799,13 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn every_shared_device_local_route_is_local_only() {
+    fn every_shared_device_local_route_is_device_local() {
         let routes = route_examples("device_local");
         assert!(routes.len() >= 30, "the shared list looks truncated");
         for (pattern, example) in routes {
             assert!(
-                is_local_only_path(&example),
-                "{pattern} ({example}) is listed as device-local in device-local-routes.json but is_local_only_path says central"
+                is_device_local_path(&example),
+                "{pattern} ({example}) is listed as device-local in device-local-routes.json but is_device_local_path says central"
             );
         }
     }
@@ -3814,192 +3814,192 @@ mod local_only_path_tests {
     fn every_shared_central_route_stays_central() {
         for (pattern, example) in route_examples("central") {
             assert!(
-                !is_local_only_path(&example),
-                "{pattern} ({example}) is listed as central in device-local-routes.json but is_local_only_path routes it to the sidecar"
+                !is_device_local_path(&example),
+                "{pattern} ({example}) is listed as central in device-local-routes.json but is_device_local_path routes it to the sidecar"
             );
         }
     }
 
     #[test]
-    fn scope_is_local_only() {
-        assert!(is_local_only_path("/scope"));
+    fn scope_is_device_local() {
+        assert!(is_device_local_path("/scope"));
     }
 
     #[test]
-    fn node_file_content_is_local_only() {
+    fn node_file_content_is_device_local() {
         // File CONTENT (GET/PUT /nodes/:id/file) routes to the local sync
         // agent so unsynced device-mirror files open in the editor; the agent
         // falls back to central itself when there is no mirror.
-        assert!(is_local_only_path("/nodes/abc123/file"));
-        assert!(is_local_only_path("/nodes/abc123/file?path=wip%2Fa.md"));
+        assert!(is_device_local_path("/nodes/abc123/file"));
+        assert!(is_device_local_path("/nodes/abc123/file?path=wip%2Fa.md"));
     }
 
     #[test]
-    fn node_files_create_is_local_only() {
+    fn node_files_create_is_device_local() {
         // Create (#266): the device writes the file into its own mirror
         // and registers it without waiting on the Drive upload; a device
         // with no mirror for the node still forwards to central via the
         // agent-router handler's own fallback.
-        assert!(is_local_only_path("/nodes/abc123/files"));
+        assert!(is_device_local_path("/nodes/abc123/files"));
     }
 
     #[test]
-    fn node_files_rename_is_local_only() {
+    fn node_files_rename_is_device_local() {
         // POST /nodes/:id/files/:fileId/rename: central keeps the record +
         // remote step, but the device has to rename its own mirror copy.
-        assert!(is_local_only_path("/nodes/abc123/files/somefileid/rename"));
-        assert!(is_local_only_path("/nodes/abc123/files/somefileid/rename?x=1"));
+        assert!(is_device_local_path("/nodes/abc123/files/somefileid/rename"));
+        assert!(is_device_local_path("/nodes/abc123/files/somefileid/rename?x=1"));
     }
 
     #[test]
-    fn node_files_move_is_local_only() {
+    fn node_files_move_is_device_local() {
         // POST /nodes/:id/files/:fileId/move (#278): central keeps the
         // record + remote step, but only the device can relocate its own
         // mirror copy -- without this it went straight to central and the
         // local file was left stranded at the old path.
-        assert!(is_local_only_path("/nodes/abc123/files/somefileid/move"));
-        assert!(is_local_only_path("/nodes/abc123/files/somefileid/move?x=1"));
+        assert!(is_device_local_path("/nodes/abc123/files/somefileid/move"));
+        assert!(is_device_local_path("/nodes/abc123/files/somefileid/move?x=1"));
     }
 
     #[test]
-    fn node_files_delete_is_local_only() {
+    fn node_files_delete_is_device_local() {
         // DELETE /nodes/:id/files/:fileId (#254): the device runs the local
         // disk-cleanup step the central server cannot do itself.
-        assert!(is_local_only_path("/nodes/abc123/files/somefileid"));
+        assert!(is_device_local_path("/nodes/abc123/files/somefileid"));
     }
 
     #[test]
-    fn node_files_resolve_is_local_only() {
+    fn node_files_resolve_is_device_local() {
         // POST /nodes/:id/files/:fileId/resolve (#264): the agent-router
         // already resolves conflicts against the device's own mirror
         // correctly; this route just never reached it before.
-        assert!(is_local_only_path("/nodes/abc123/files/somefileid/resolve"));
-        assert!(is_local_only_path("/nodes/abc123/files/somefileid/resolve?x=1"));
+        assert!(is_device_local_path("/nodes/abc123/files/somefileid/resolve"));
+        assert!(is_device_local_path("/nodes/abc123/files/somefileid/resolve?x=1"));
     }
 
     #[test]
-    fn node_mirror_is_local_only() {
-        assert!(is_local_only_path("/nodes/abc123/mirror"));
+    fn node_mirror_is_device_local() {
+        assert!(is_device_local_path("/nodes/abc123/mirror"));
     }
 
     #[test]
-    fn node_sync_status_is_local_only() {
-        assert!(is_local_only_path("/nodes/abc123/sync-status"));
+    fn node_sync_status_is_device_local() {
+        assert!(is_device_local_path("/nodes/abc123/sync-status"));
     }
 
     #[test]
-    fn node_sync_run_is_local_only() {
-        assert!(is_local_only_path("/nodes/abc123/sync"));
+    fn node_sync_run_is_device_local() {
+        assert!(is_device_local_path("/nodes/abc123/sync"));
     }
 
     #[test]
-    fn sync_pending_is_local_only() {
+    fn sync_pending_is_device_local() {
         // The cross-mirror unsynced aggregate (footer indicator + quit
         // guard) is device-local state: the central server has no mirrors
         // and answers an empty aggregate, so this must hit the local agent.
-        assert!(is_local_only_path("/sync/pending"));
+        assert!(is_device_local_path("/sync/pending"));
     }
 
     #[test]
-    fn sync_health_is_local_only() {
+    fn sync_health_is_device_local() {
         // The mirror-watcher error buffer (#202) is in-process state on this
         // device's sidecar; the central server never runs a watcher against
         // this device's mirrors and would answer an empty/wrong result.
-        assert!(is_local_only_path("/sync/health"));
+        assert!(is_device_local_path("/sync/health"));
     }
 
     #[test]
-    fn sync_jobs_is_local_only() {
+    fn sync_jobs_is_device_local() {
         // #273: the background multi-node sync job fans out into per-node
         // POST /nodes/:id/sync calls, already device-local above -- the job
         // itself (start, poll by id, poll "current") must run on the same
         // device or it would drive central-side syncRunCentral calls with
         // no device mirror context at all.
-        assert!(is_local_only_path("/sync/jobs"));
-        assert!(is_local_only_path("/sync/jobs/current"));
-        assert!(is_local_only_path("/sync/jobs/01ABCDEF"));
-        assert!(is_local_only_path("/sync/jobs/01ABCDEF?x=1"));
+        assert!(is_device_local_path("/sync/jobs"));
+        assert!(is_device_local_path("/sync/jobs/current"));
+        assert!(is_device_local_path("/sync/jobs/01ABCDEF"));
+        assert!(is_device_local_path("/sync/jobs/01ABCDEF?x=1"));
     }
 
     #[test]
-    fn runners_registry_is_local_only() {
+    fn runners_registry_is_device_local() {
         // runners.json lives on this device's sidecar; the Runnery tab in
         // team workspace must read and write it there, not on central.
-        assert!(is_local_only_path("/runners"));
-        assert!(is_local_only_path("/runners/instances"));
-        assert!(is_local_only_path("/runners/instances/01ABCDEF"));
-        assert!(is_local_only_path("/runners/instances/01ABCDEF/org-default"));
-        assert!(is_local_only_path("/runners/org-defaults/01ORG"));
-        assert!(!is_local_only_path("/runnersx"));
+        assert!(is_device_local_path("/runners"));
+        assert!(is_device_local_path("/runners/instances"));
+        assert!(is_device_local_path("/runners/instances/01ABCDEF"));
+        assert!(is_device_local_path("/runners/instances/01ABCDEF/org-default"));
+        assert!(is_device_local_path("/runners/org-defaults/01ORG"));
+        assert!(!is_device_local_path("/runnersx"));
     }
 
     #[test]
-    fn graph_is_not_local_only() {
-        assert!(!is_local_only_path("/graph"));
+    fn graph_is_not_device_local() {
+        assert!(!is_device_local_path("/graph"));
     }
 
     #[test]
-    fn nodes_get_is_not_local_only() {
-        assert!(!is_local_only_path("/nodes/abc123"));
+    fn nodes_get_is_not_device_local() {
+        assert!(!is_device_local_path("/nodes/abc123"));
     }
 
     #[test]
-    fn folder_url_is_not_local_only() {
-        assert!(!is_local_only_path("/nodes/abc123/folder-url"));
+    fn folder_url_is_not_device_local() {
+        assert!(!is_device_local_path("/nodes/abc123/folder-url"));
     }
 
     #[test]
-    fn file_url_is_not_local_only() {
+    fn file_url_is_not_device_local() {
         // "file-url" must not be swallowed by the "files" prefix check; it is
         // a central Drive-URL lookup.
-        assert!(!is_local_only_path("/nodes/abc123/file-url"));
-        assert!(!is_local_only_path("/nodes/abc123/file-url?file_id=F1"));
+        assert!(!is_device_local_path("/nodes/abc123/file-url"));
+        assert!(!is_device_local_path("/nodes/abc123/file-url?file_id=F1"));
     }
 
     #[test]
-    fn actors_is_not_local_only() {
-        assert!(!is_local_only_path("/actors"));
+    fn actors_is_not_device_local() {
+        assert!(!is_device_local_path("/actors"));
     }
 
     #[test]
-    fn health_is_not_local_only() {
-        assert!(!is_local_only_path("/health"));
+    fn health_is_not_device_local() {
+        assert!(!is_device_local_path("/health"));
     }
 
     #[test]
     fn query_string_stripped_before_matching() {
-        assert!(is_local_only_path("/scope?cwd=/foo/bar"));
-        assert!(is_local_only_path("/nodes/abc/sync-status?fast=1"));
-        assert!(!is_local_only_path("/graph?filter=all"));
+        assert!(is_device_local_path("/scope?cwd=/foo/bar"));
+        assert!(is_device_local_path("/nodes/abc/sync-status?fast=1"));
+        assert!(!is_device_local_path("/graph?filter=all"));
         // file-url stays central even though it shares the /file prefix.
-        assert!(!is_local_only_path("/nodes/abc/file-url?file_id=xyz"));
-        assert!(is_local_only_path("/nodes/abc/files/fileid?confirmed=true"));
+        assert!(!is_device_local_path("/nodes/abc/file-url?file_id=xyz"));
+        assert!(is_device_local_path("/nodes/abc/files/fileid?confirmed=true"));
     }
 
     // Sessions/tasks (runner batch, #323).
     #[test]
-    fn bare_post_sessions_is_local_only() {
-        assert!(is_local_only_path("/sessions"));
+    fn bare_post_sessions_is_device_local() {
+        assert!(is_device_local_path("/sessions"));
     }
 
     #[test]
-    fn session_action_verbs_are_local_only() {
-        assert!(is_local_only_path("/sessions/abc123/messages"));
-        assert!(is_local_only_path("/sessions/abc123/interrupt"));
+    fn session_action_verbs_are_device_local() {
+        assert!(is_device_local_path("/sessions/abc123/messages"));
+        assert!(is_device_local_path("/sessions/abc123/interrupt"));
         // #378: closes this session and starts a new one on the same node.
-        assert!(is_local_only_path("/sessions/abc123/continue"));
-        assert!(is_local_only_path("/sessions/abc123/close"));
-        assert!(is_local_only_path("/sessions/abc123/events"));
-        assert!(is_local_only_path("/sessions/abc123/events?after=5"));
+        assert!(is_device_local_path("/sessions/abc123/continue"));
+        assert!(is_device_local_path("/sessions/abc123/close"));
+        assert!(is_device_local_path("/sessions/abc123/events"));
+        assert!(is_device_local_path("/sessions/abc123/events?after=5"));
         // The restart indicator (#342) reads the local SessionRuntime's own
         // in-memory live-run state (liveRuns/runStartScopeSize) -- there is
         // nothing for the central server to answer this from.
-        assert!(is_local_only_path("/sessions/abc123/signals"));
+        assert!(is_device_local_path("/sessions/abc123/signals"));
     }
 
     #[test]
-    fn session_question_answer_is_local_only() {
-        assert!(is_local_only_path("/sessions/abc123/questions/req-1"));
+    fn session_question_answer_is_device_local() {
+        assert!(is_device_local_path("/sessions/abc123/questions/req-1"));
     }
 
     #[test]
@@ -4007,12 +4007,12 @@ mod local_only_path_tests {
         // Bare record fetch/patch, state, resume-info, record-create and
         // run records are all central record-half routes, deliberately NOT
         // matched here (see api/sessions.ts's header comment).
-        assert!(!is_local_only_path("/sessions/abc123"));
-        assert!(!is_local_only_path("/sessions/abc123/state"));
-        assert!(!is_local_only_path("/sessions/abc123/resume-info"));
-        assert!(!is_local_only_path("/sessions/abc123/runs"));
-        assert!(!is_local_only_path("/sessions/abc123/runs/run1"));
-        assert!(!is_local_only_path("/sessions/record"));
+        assert!(!is_device_local_path("/sessions/abc123"));
+        assert!(!is_device_local_path("/sessions/abc123/state"));
+        assert!(!is_device_local_path("/sessions/abc123/resume-info"));
+        assert!(!is_device_local_path("/sessions/abc123/runs"));
+        assert!(!is_device_local_path("/sessions/abc123/runs/run1"));
+        assert!(!is_device_local_path("/sessions/record"));
     }
 }
 

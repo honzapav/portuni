@@ -9,6 +9,9 @@
 //   POST  /sessions/:id/state              write   -> state transition (owner or manage)
 //   GET   /sessions/:id/resume-info        read    -> conversation-resumable? handoff changed?
 //   GET   /sessions/:id/signals            read    -> restart indicator (run age, read/write set)
+//   GET   /sessions/:id/scope              read    -> central record half (#427): the session's
+//                                                      read/write set by node id, for the sync
+//                                                      agent's own suspend fallback
 //   POST  /sessions                        write   -> start a task (session + first run)
 //   POST  /sessions/record                 write   -> central record half (#323): create the row
 //                                                      only, no run -- the agent-mode sidecar's own
@@ -62,7 +65,9 @@ import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../
 import {
   createDraftSession,
   deleteDraftSession,
+  getLatestRunHostId,
   getSession,
+  getSessionScope,
   getSessionWriteCount,
   listSessions,
   renameSession,
@@ -75,12 +80,19 @@ import { getSessionRuntime } from "../boot/session-runtime.js";
 import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
+import { resolveHostLabel } from "../domain/runner/hosts.js";
 import { DbSessionStore } from "../domain/runner/store.js";
 import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
-import type { SessionResumeInfo, SessionSummary } from "../shared/api-types.js";
+import type { SessionResumeInfo, SessionScopeRecord, SessionSummary } from "../shared/api-types.js";
 
 export async function toSummary(row: SessionRow): Promise<SessionSummary> {
+  // #428: the host is the latest run's, not the session row's -- the row's
+  // own is where the thread started, the run's is where it last ran. Both
+  // Relace rows and the chat header read it off the summary, so neither
+  // needs a per-row GET /sessions/:id/runs.
+  const db = getDb();
+  const hostId = (await getLatestRunHostId(db, row.id)) ?? row.host_id;
   return {
     id: row.id,
     node_id: row.node_id,
@@ -91,13 +103,14 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
     terminal_id: row.terminal_id,
     brief: row.brief,
     runner: row.runner,
-    host_id: row.host_id,
+    host_id: hostId,
+    host_label: resolveHostLabel(hostId),
     waiting_since: row.waiting_since,
     state: row.state,
     name: row.name,
     name_is_custom: row.name_is_custom === 1,
     handoff_path: row.handoff_path,
-    write_count: await getSessionWriteCount(getDb(), row.id),
+    write_count: await getSessionWriteCount(db, row.id),
     model: row.model,
     effort: row.effort,
     created_at: row.created_at,
@@ -297,14 +310,11 @@ export async function handlePatchSession(
       respondJson(res, 200, await toSummary(updated));
       return;
     }
-    // #375: a model change reaches a LIVE run's Query directly (no
-    // restart) -- the column write below is what the NEXT run reads, and
-    // is the only effect for a session with no live run right now. This is
-    // local-process state (session-runtime.ts's in-memory liveRuns), so it
-    // only ever does something on the device actually driving the run.
-    if (body.model !== undefined) {
-      await getSessionRuntime().setModel(sessionId, body.model);
-    }
+    // #426: the live half of a model change (session-runtime.ts's in-memory
+    // liveRuns) belongs to POST /sessions/:id/model, which the desktop
+    // routes to the device driving the run; this route is the record half
+    // only -- in sync-agent mode it IS central, where no run ever lives, so
+    // calling setModel here could never reach one.
     // Central record half (#323): raw SessionRow, same reasoning as
     // handleGetSession above -- the caller is CentralSessionStore, which
     // needs every column back, not the curated summary.
@@ -324,6 +334,40 @@ export async function handlePatchSession(
     respondJson(res, 200, updated);
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}`, err);
+  }
+}
+
+// #426: the thread's model/effort override. A device-local route
+// (apps/server/shared/device-local-routes.json): the live half of a model
+// change only exists in the process that drives the run, which in a team
+// workspace is this device's sync agent, never the central server -- so the
+// desktop sends it here and the record half rides along through the
+// runtime's own store (DbSessionStore locally, CentralSessionStore in
+// sync-agent mode). `effort` carries the same way but has no live setter,
+// so for it this is a plain column write that the next run reads.
+export const SetSessionModelBody = z
+  .object({
+    model: z.string().nullable().optional(),
+    effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+  })
+  .refine((b) => Object.keys(b).length > 0, "model or effort is required");
+
+export async function handleSetSessionModel(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
+    if (!existing) return;
+    const body = await parseJsonBody(req, res, SetSessionModelBody);
+    if (!body) return;
+    const updated = await getSessionRuntime().setModelAndEffort(sessionId, body);
+    respondJson(res, 200, updated);
+  } catch (err) {
+    respondError(res, `POST /sessions/${sessionId}/model`, err);
   }
 }
 
@@ -408,6 +452,41 @@ export async function handleGetSessionSignals(
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/signals`, err);
   }
+}
+
+// #427: the session's persisted scope, by node id, plus the anchor node's
+// name -- everything domain/session-handoff.ts's local suspend path reads
+// off the graph db to fill a summary's "Zápisový rozsah" / "Čtecí rozsah"
+// sections. A sync agent has neither table, so its suspend fallback
+// (domain/runner/suspend-fallback-central.ts) reads them here instead of
+// writing an empty-scope summary. A pure read of the record half, so it
+// follows the same read-tier gate resume-info and signals do.
+export async function handleGetSessionScope(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "read");
+    if (!existing) return;
+    const scope = await getSessionScope(db, sessionId);
+    const payload: SessionScopeRecord = {
+      session_id: existing.id,
+      node_name: existing.node_id ? await sessionNodeName(db, existing.node_id) : null,
+      write_set: scope.filter((s) => s.writable === 1).map((s) => s.node_id),
+      read_set: scope.map((s) => s.node_id),
+    };
+    respondJson(res, 200, payload);
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}/scope`, err);
+  }
+}
+
+async function sessionNodeName(db: DbClient, nodeId: string): Promise<string | null> {
+  const res = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [nodeId] });
+  return res.rows.length > 0 ? String(res.rows[0].name) : null;
 }
 
 // --- Tasks (runner batch): starting a session's task and driving its run --

@@ -27,6 +27,7 @@ import type { SessionRow } from "../../shared/types.js";
 import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
 import { detectAll } from "./registry.js";
 import { getInstanceDefaults, getInstanceEnv, listInstances, type InstanceDefaults } from "./instances.js";
+import { localHostId } from "./hosts.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
@@ -162,6 +163,13 @@ export interface StartTaskInput {
   effort?: string | null;
 }
 
+// #426: the body of POST /sessions/:id/model -- at least one of the two,
+// `null` meaning "no override, fall back to the instance/runner default".
+export interface SetModelAndEffortInput {
+  model?: string | null;
+  effort?: string | null;
+}
+
 export interface CreateDraftInput {
   userId: string;
   nodeId: string;
@@ -207,10 +215,15 @@ export interface SessionRuntime {
   // prompt queue and the run all stay alive; a message right after is
   // ordinary. Ending the run is close()'s job alone.
   interrupt(sessionId: string): Promise<void>;
-  // #375: forwards a model change to a live run's Query (no restart) --
-  // a no-op when the session has no live run, since the REST handler's own
-  // plain column write already persists the choice for the NEXT run.
-  setModel(sessionId: string, model: string | null): Promise<void>;
+  // #375/#426: the thread's own model/effort override, both halves in one
+  // call -- a model change is forwarded to a live run's Query (no restart,
+  // and a no-op when the session has no live run) and the columns are
+  // written through the store. Both halves run on the device that drives
+  // the run, so the store decides where the record lands: the local graph
+  // db in a personal workspace, central in sync-agent mode (rule 1, "one
+  // implementation"). `effort` has no live setter; it applies from the
+  // next run only.
+  setModelAndEffort(sessionId: string, patch: SetModelAndEffortInput): Promise<SessionRow>;
   closeSession(sessionId: string): Promise<SessionRow>;
   // #378: closes THIS session (summary written from what's in the log,
   // used to seed the new one -- not from a fresh suspend, since Uzavřít-
@@ -543,7 +556,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       brief: input.brief,
       runner: input.runner,
       instance_id: instanceId,
-      host_id: null,
+      host_id: localHostId(),
       model: input.model ?? null,
       effort: input.effort ?? null,
     });
@@ -559,7 +572,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       session_id: session.id,
       runner: input.runner,
       instance_id: instanceId,
-      host_id: null,
+      host_id: localHostId(),
     });
 
     const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
@@ -640,7 +653,12 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       sessionId,
       resume: null,
     });
-    const run = await store.createRun({ session_id: sessionId, runner, instance_id: instanceId, host_id: null });
+    const run = await store.createRun({
+      session_id: sessionId,
+      runner,
+      instance_id: instanceId,
+      host_id: localHostId(),
+    });
     const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
 
     await startRun(updated, run, provisioned, instanceEnv, {
@@ -693,7 +711,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       session_id: sessionId,
       runner,
       instance_id: instanceId,
-      host_id: session.host_id,
+      host_id: localHostId(),
       resumed_from_run_id: lastRun?.id ?? null,
       agent_session_id: runStartResume?.agentSessionId ?? null,
     });
@@ -747,15 +765,26 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     await drain(sessionId);
   }
 
-  // #375: the one setting the SDK allows to change mid-run, no restart --
-  // reasoning effort has no equivalent and only ever applies from the next
-  // run, so there is no setEffort here. The column write (source of truth
-  // for the next run, and for a session with no live run right now) is the
-  // REST handler's own job via the ordinary patchSession call.
-  async function setModel(sessionId: string, model: string | null): Promise<void> {
-    const live = liveRuns.get(sessionId);
-    if (!live) return;
-    await live.handle.setModel(model);
+  // #375/#426: model is the one setting the SDK allows to change mid-run,
+  // no restart -- reasoning effort has no equivalent and only ever applies
+  // from the next run, so nothing is forwarded for it. The column write
+  // (source of truth for the next run, and the only effect for a session
+  // with no live run right now) goes through the store, which is what puts
+  // the record on central in sync-agent mode: the live half can only be
+  // done by the device driving the run, so the whole call lives here
+  // rather than in the REST handler (#426).
+  // Record first, live run second: the record half is the one that can be
+  // refused (in a team workspace it is a PATCH on the central server), and a
+  // refused write must not leave the live run on a model the record never
+  // took. The live half cannot fail the same way -- it is an in-process
+  // call on the run this sidecar drives.
+  async function setModelAndEffort(sessionId: string, patch: SetModelAndEffortInput): Promise<SessionRow> {
+    const row = await store.patchSession(sessionId, { model: patch.model, effort: patch.effort });
+    if (patch.model !== undefined) {
+      const live = liveRuns.get(sessionId);
+      if (live) await live.handle.setModel(patch.model);
+    }
+    return row;
   }
 
   // #378: the only action that actually ends a live run's process (besides
@@ -850,7 +879,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       brief: null,
       runner,
       instance_id: oldSession.instance_id,
-      host_id: oldSession.host_id,
+      host_id: localHostId(),
       model: oldSession.model,
       effort: oldSession.effort,
     });
@@ -871,7 +900,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       session_id: newSession.id,
       runner,
       instance_id: oldSession.instance_id,
-      host_id: oldSession.host_id,
+      host_id: localHostId(),
     });
     const instanceEnv = oldSession.instance_id ? ((await getInstanceEnv(oldSession.instance_id)) ?? {}) : {};
 
@@ -933,7 +962,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     sendMessage,
     answer,
     interrupt,
-    setModel,
+    setModelAndEffort,
     closeSession,
     continueSession,
     pendingQuestion,

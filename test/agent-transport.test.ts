@@ -1,5 +1,5 @@
 // Agent MCP front-door transport. Verifies the routing contract:
-// LOCAL_TOOLS are served on-device (and must NOT reach central), everything
+// DEVICE_LOCAL_TOOLS are served on-device (and must NOT reach central), everything
 // else is proxied to the central MCP server verbatim. Harness:
 //   - a stub upstream McpServer over StreamableHTTP on an ephemeral port,
 //     exposing a graph tool (portuni_get_node -> "central-marker") and a
@@ -289,12 +289,12 @@ before(async () => {
   const addr = agentServer.address() as AddressInfo;
   agentBase = `http://127.0.0.1:${addr.port}`;
 
-  // home_node_id matches the node id the LOCAL_TOOLS tests below target
+  // home_node_id matches the node id the DEVICE_LOCAL_TOOLS tests below target
   // (portuni_mirror, portuni_store) so those calls clear the write gate and
   // reach callLocalTool exactly as before deriveAgentSessionType stopped
   // treating this front door's "env" identity as unscoped/exempt -- the
   // write-gate-specific behavior (refusal on a NON-home node) is exercised
-  // separately below in "write gate on LOCAL_TOOLS".
+  // separately below in "write gate on DEVICE_LOCAL_TOOLS".
   localClient = new Client({ name: "agent-transport-test", version: "0.0.0" });
   await localClient.connect(
     new StreamableHTTPClientTransport(
@@ -531,14 +531,14 @@ describe("agent MCP front door", () => {
   });
 });
 
-// The five LOCAL_TOOLS (portuni_mirror, portuni_status, portuni_store,
+// The five DEVICE_LOCAL_TOOLS (portuni_mirror, portuni_status, portuni_store,
 // portuni_pull, portuni_adopt_files) dispatch straight to CentralClient from
 // this transport -- they never reach apps/server/mcp/tools/*.ts, so the
 // domain-layer write gate (guardWrite in domain/write-gate.ts) has to be
 // applied here too, or it is bypassed for exactly this path. See
 // docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
 // ("Enforcement points").
-describe("agent MCP front door: write gate on LOCAL_TOOLS", () => {
+describe("agent MCP front door: write gate on DEVICE_LOCAL_TOOLS", () => {
   const HOME = "01HOMENODE00000000000000A";
   const OTHER = "01OTHERNODE0000000000000B";
 

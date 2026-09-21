@@ -47,6 +47,8 @@ rest are optional tunables with code defaults. Grep check:
 |---|---|---|
 | `PORTUNI_ROOT` | unset | Write-scope tier root for agent file writes (`apps/server/domain/write-scope.ts`) — **distinct from** `PORTUNI_WORKSPACE_ROOT` |
 | `PORTUNI_DATA_DIR` | app-data dir | DB location for sidecar/stdio mode. Also the device-local runner data dir (`runners.json`, run pid files, and `portuni_read_file`'s `read-file-spill/` scratch area); falls back to `process.cwd()` when unset. |
+| `PORTUNI_HOST_ID` | machine name, slugified | The id this device stamps on the sessions and runs it starts (`domain/runner/hosts.ts`, #428), shown as "which host ran it" on Relace rows and in the chat header. Defaults to `os.hostname()` up to the first dot, lowercased to `[a-z0-9-]` (`Honzas-MacBook-Pro.local` -> `honzas-macbook-pro`), or `local` when the hostname is empty. Set it when several agents share one machine. |
+| `PORTUNI_HOST_LABEL` | machine name | Display name for this device's host id. Defaults to `os.hostname()` up to the first dot, case intact. Only the machine asking can resolve a label until the `hosts` registry exists; elsewhere the id is shown. |
 | `PORTUNI_TOKEN_STORE` | per-OS | Token store backend: `keychain` \| `varlock` \| `file` |
 | `PORTUNI_VARLOCK_WRITE_PROGRAM` / `_ARGS`, `PORTUNI_VARLOCK_DELETE_PROGRAM` / `_ARGS` | varlock CLI | Override commands the varlock token store shells out to |
 | `PORTUNI_STATUS_SCAN_CONCURRENCY` | 8 | statusScan per-file fan-out |

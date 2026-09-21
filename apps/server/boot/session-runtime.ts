@@ -51,7 +51,7 @@ export function createAgentSessionRuntime(client: CentralClient): SessionRuntime
     store,
     registry: { getAdapter },
     provision: createProvisionRunCentral(client),
-    suspendFallback: createSuspendFallbackCentral(store),
+    suspendFallback: createSuspendFallbackCentral(store, client),
     // #407: the belongs_to edge lives on central's graph db, so the
     // organization default instance is resolved there too -- without this
     // the runtime's local query would throw here and every task in this

@@ -1,5 +1,5 @@
 {
-  "$comment": "Routes the desktop webview's api_request sends to THIS device's sidecar in a team workspace instead of the central server (is_local_only_path in apps/desktop/src/lib.rs), and that apps/server/api/agent-router.ts must therefore serve. is_local_only_path embeds this file (include_str!) and matches request paths against the device_local patterns ({name} is one path segment, the query string is ignored); test/agent-router-route-parity.test.ts asserts the agent router handles every device_local entry and lists no route this file does not; the central examples are asserted to stay central. Adding a route here is what routes it to the sidecar; the router has to serve it or the gate fails.",
+  "$comment": "Routes the desktop webview's api_request sends to THIS device's sidecar in a team workspace instead of the central server (is_device_local_path in apps/desktop/src/lib.rs), and that apps/server/api/agent-router.ts must therefore serve. is_device_local_path embeds this file (include_str!) and matches request paths against the device_local patterns ({name} is one path segment, the query string is ignored); test/agent-router-route-parity.test.ts asserts the agent router handles every device_local entry and lists no route this file does not; the central examples are asserted to stay central. Adding a route here is what routes it to the sidecar; the router has to serve it or the gate fails.",
   "device_local": [
     { "method": "GET", "pattern": "/scope", "example": "/scope?cwd=/tmp&target=/tmp/a" },
     { "method": "GET", "pattern": "/sync/pending", "example": "/sync/pending" },
@@ -28,6 +28,7 @@
     { "method": "POST", "pattern": "/nodes/{id}/files/{fileId}/move", "example": "/nodes/abc123/files/F1/move" },
     { "method": "POST", "pattern": "/sessions", "example": "/sessions" },
     { "method": "POST", "pattern": "/sessions/{id}/messages", "example": "/sessions/abc123/messages" },
+    { "method": "POST", "pattern": "/sessions/{id}/model", "example": "/sessions/abc123/model" },
     { "method": "POST", "pattern": "/sessions/{id}/interrupt", "example": "/sessions/abc123/interrupt" },
     { "method": "POST", "pattern": "/sessions/{id}/continue", "example": "/sessions/abc123/continue" },
     { "method": "POST", "pattern": "/sessions/{id}/close", "example": "/sessions/abc123/close" },
@@ -49,6 +50,7 @@
     { "method": "PATCH", "pattern": "/sessions/{id}", "example": "/sessions/abc123" },
     { "method": "GET", "pattern": "/sessions/{id}/state", "example": "/sessions/abc123/state" },
     { "method": "GET", "pattern": "/sessions/{id}/resume-info", "example": "/sessions/abc123/resume-info" },
+    { "method": "GET", "pattern": "/sessions/{id}/scope", "example": "/sessions/abc123/scope" },
     { "method": "GET", "pattern": "/sessions/{id}/runs", "example": "/sessions/abc123/runs" },
     { "method": "PATCH", "pattern": "/sessions/{id}/runs/{runId}", "example": "/sessions/abc123/runs/run1" },
     { "method": "POST", "pattern": "/sessions/record", "example": "/sessions/record" },

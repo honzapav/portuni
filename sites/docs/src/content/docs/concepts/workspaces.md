@@ -82,4 +82,4 @@ for them to go. The two planes are explained in
 | personal workspace | `data_mode: "local"` |
 | central server | `PORTUNI_AUTH_MODE=google`, the `server_url` in a team workspace's settings |
 | sync agent | `PORTUNI_AGENT_MODE=1`, the sidecar of a team workspace |
-| device-local | the `local_only` answer (HTTP 501) when the sync agent is not running yet: sign in |
+| device-local | the `sync_agent_down` answer (HTTP 501) when the sync agent is not running yet: sign in |

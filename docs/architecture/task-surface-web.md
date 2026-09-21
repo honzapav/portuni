@@ -36,23 +36,50 @@ collapsible right aside.
   `scopedKey`; all windows share one origin, so an unscoped key leaks
   between workspaces.
 - `SessionChat` is lazy-loaded (`lazy(() => import("./SessionChat"))` +
-  `Suspense`) and mounted with `key={openSession.id}`, so switching threads
-  remounts it.
+  `Suspense`).
+- **Every open thread keeps a mounted chat** (#429). `WorkspaceView` takes
+  `mountedSessions` -- one pane per thread, each keyed on its session id --
+  and only flips which pane is visible. Switching threads therefore keeps
+  each thread's transcript, its scroll position, its streaming delta
+  buffers and its composer, and re-subscribes nothing: `SessionChat`'s
+  subscribe effect is keyed on `session.id`, and a keyed child React keeps
+  mounted never re-runs it.
+- A hidden pane is hidden with `visibility: hidden` plus `inert`, not
+  `display: none` (which the design spec wrote before the scroll
+  requirement): `display: none` destroys the layout box and with it the
+  transcript's scroll offset, which is the thing keeping the pane mounted
+  is for. `inert` keeps a hidden pane out of the tab order and out of
+  reach of the pointer.
+- The mounted set is `mountedChatSessions(liveOpenSessionsByNode,
+  openNodeIds, workspaceOpenSession)` (`lib/session-views.ts`): every
+  chat-eligible thread of an open node, in open-node order, plus the shown
+  thread when the per-node map has not caught up with it yet (a fresh local
+  draft). Closing a node or a thread drops it from the set, which is what
+  unmounts its chat and unsubscribes it.
+- With several chats mounted, `onSessionUpdated` matches by id
+  (`updateWorkspaceOpenSession` in `App.tsx`): a hidden thread reporting
+  its own state must not replace the shown one.
 
 ### SessionChat (`SessionChat.tsx`)
 
 The chat for one thread. Header: status chip (`sessionStatusChip`), name,
-runner, instance, host, and the thread's own model and effort when set;
+runner, instance, host and the thread's own model and effort when set;
 "Pokračovat v nové session" and "Uzavřít" as the only header actions. Below
 the header: the restart hint line, the suspended-thread notice bar, the
 transcript, the open question's confirmation block, the composer.
+
+Host (#428): both surfaces render `hostDisplayName(session)`
+(`lib/session-views.ts`) -- `host_label` when the server resolved one,
+otherwise `host_id`, and nothing at all when the summary carries neither.
+The summary is the only source; neither surface fetches a session's runs.
+See `sessions-and-runner.md`, "Runs, events, pid files and the boot sweep".
 
 ### Relace tab (`DetailPane.sessions.tsx`)
 
 REST-only list of the node's persistent sessions
 (`fetchNodePersistentSessions`), archived rows behind a filter. Each row
-shows `sessionRowChip`, the brief's first line, the owner's name when the
-row is not the caller's own (`fetchUsers()`, which returns `[]` below manage
+shows `sessionRowChip`, the brief's first line, runner, instance and host,
+the owner's name when the row is not the caller's own (`fetchUsers()`, which returns `[]` below manage
 scope, so a plain teammate sees no name), and `resumeInfo` as information
 only. Actions: "Otevřít chat" (`onOpenChat`), "Uzavřít" behind a confirm
 `Dialog` (`closeConfirm`), and on a closed row "Navázat" (`continueSession`
@@ -314,16 +341,8 @@ there first.
 
 ## Known gaps
 
-- Switching threads remounts `SessionChat` (`key={openSession.id}`) and
-  replays the log; open threads are not kept mounted, so scroll position
-  does not survive a switch (#429).
 - No context-usage ring next to "Pokračovat v nové session": there is no
   token accounting to drive it.
-- The Relace tab shows no host label; `host_id` lives on the run, not the
-  summary (#428).
-- A model change reaches a live run only on the device driving it; in
-  team workspace `PATCH /sessions/:id` goes to the central server, which runs nothing
-  (#426, see `sessions-and-runner.md`).
 
 ## See also
 

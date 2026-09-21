@@ -174,8 +174,9 @@ export default function WorkspacesSection() {
           Workspaces
         </div>
         <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          Každý workspace má vlastní sidecar, port a data (lokální Turso nebo
-          centrální server). Zdraví workspace bez otevřeného okna se dá
+          Každý workspace má vlastní sidecar, port a data (osobní workspace
+          vlastní Turso databázi, týmový workspace centrální server). Zdraví
+          workspace bez otevřeného okna se dá
           zjistit jen tady – stavové eventy backendu chodí jen do okna daného
           workspace.
         </p>
@@ -233,7 +234,7 @@ export default function WorkspacesSection() {
                 <tr className="border-b border-[var(--color-border)] text-left text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
                   <th className="pb-2 pr-4 font-semibold">Název</th>
                   <th className="pb-2 pr-4 font-semibold">ID</th>
-                  <th className="pb-2 pr-4 font-semibold">Režim</th>
+                  <th className="pb-2 pr-4 font-semibold">Druh</th>
                   <th className="pb-2 pr-4 font-semibold">Port</th>
                   <th className="pb-2 pr-4 font-semibold">Stav</th>
                   <th className="pb-2 font-semibold"></th>
@@ -275,7 +276,7 @@ export default function WorkspacesSection() {
                         {w.id}
                       </td>
                       <td className="py-2 pr-4 font-mono text-[var(--color-text-muted)]">
-                        {w.data_mode === "central" ? "centrální" : "lokální"}
+                        {w.data_mode === "central" ? "týmový" : "osobní"}
                       </td>
                       <td className="py-2 pr-4 font-mono text-[var(--color-text-muted)]">
                         {w.mcp_port ?? "—"}
@@ -475,21 +476,21 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
         </div>
 
         <div>
-          <Label className={FIELD_LABEL}>Režim</Label>
+          <Label className={FIELD_LABEL}>Druh workspace</Label>
           <RadioGroup
             value={mode}
             onValueChange={(v) => setMode(v as typeof mode)}
             disabled={busy}
             className="flex gap-4"
-            aria-label="Režim workspace"
+            aria-label="Druh workspace"
           >
             <Label className="gap-1.5 font-normal text-[13px] text-[var(--color-text-muted)]">
               <RadioGroupItem value="local" />
-              Lokální (Turso)
+              Osobní workspace
             </Label>
             <Label className="gap-1.5 font-normal text-[13px] text-[var(--color-text-muted)]">
               <RadioGroupItem value="central" />
-              Centrální server
+              Týmový workspace
             </Label>
           </RadioGroup>
         </div>

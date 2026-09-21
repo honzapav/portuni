@@ -107,7 +107,7 @@ import {
   renameFile,
   deleteFile,
   resolveFileSync,
-  LocalOnlyError,
+  SyncAgentDownError,
 } from "../api";
 import type { ResolveAction } from "../api";
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
@@ -407,9 +407,10 @@ function DetailPaneBody({
   // The lastIdRef gate ignores responses that arrive after the user has
   // already navigated away, so a slow sync on node A does not paint
   // results into node B's pane.
-  // Central mode: the local sync agent serves this route (teammate
-  // mirrors), so no mode gate — a 501 local_only just means the agent is
-  // not running yet (pre-login) and surfaces as a sync error.
+  // In a team workspace the device's sync agent serves this route (teammate
+  // mirrors), so no gate on the kind of workspace — a 501 sync_agent_down
+  // just means the agent is not running yet (pre-login) and surfaces as a
+  // sync error.
   const handleRunSync = async () => {
     setSyncRunning(true);
     setSyncError(null);
@@ -473,7 +474,7 @@ function DetailPaneBody({
       }
     } catch (e) {
       if (lastIdRef.current !== requestNodeId) return;
-      setMirrorError(e instanceof LocalOnlyError ? e.message : String(e));
+      setMirrorError(e instanceof SyncAgentDownError ? e.message : String(e));
     } finally {
       if (lastIdRef.current === requestNodeId) {
         setCreatingMirror(false);
@@ -506,10 +507,10 @@ function DetailPaneBody({
       setWatcherErrors(res.watcher_errors ?? []);
     } catch (e) {
       if (lastIdRef.current !== requestNodeId) return;
-      // Central mode before login: the sync agent is not up yet and the
-      // proxy answers 501 local_only. Not an error worth a banner — badges
+      // Team workspace before login: the sync agent is not up yet and the
+      // proxy answers 501 sync_agent_down. Not an error worth a banner — badges
       // simply stay absent until the agent is running.
-      if (e instanceof LocalOnlyError) {
+      if (e instanceof SyncAgentDownError) {
         setSyncLoaded(true);
         return;
       }
@@ -1085,10 +1086,10 @@ function DetailPaneBody({
 
         {tab === "files" && (
           <div className="px-5 py-4">
-            {/* Central mode uses the same full files UI: file content and
-                lifecycle go to the central server, sync + mirrors to the
-                local sync agent (teammate mirrors). */}
-            {/* Rendered here (not inside SyncBar) so the local-workspace
+            {/* A team workspace uses the same full files UI: file content
+                and lifecycle go to the central server, sync + mirrors to the
+                device's sync agent (teammate mirrors). */}
+            {/* Rendered here (not inside SyncBar) so the personal-workspace
                 hint shows even on a node with no files yet. */}
             <LocalWorkspaceFilesBanner />
             <WatcherErrorBanner errors={watcherErrors} />

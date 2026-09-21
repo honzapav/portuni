@@ -32,7 +32,7 @@ Each `PORTUNI_GROUPS_*` value is a comma-separated list of group emails.
 A personal workspace has one unscoped identity; the tiers only bite on
 central. The sync-agent front door does not evaluate tiers itself: every
 proxied call is authorized on the central server under the device token's identity,
-and the device-local tools (`LOCAL_TOOLS`, below) apply the same local
+and the device-local tools (`DEVICE_LOCAL_TOOLS`, below) apply the same local
 write-guard posture the REST agent router does.
 
 ## Connect and auto-seed
@@ -202,7 +202,7 @@ Per mode:
 - Agent-mode device: the front door advertises the connected client's
   own capabilities upstream and relays the central server's elicitation request back
   down to that client, under the shorter relay timeout. The device-local
-  tools in `LOCAL_TOOLS` (`portuni_mirror`, `portuni_status`,
+  tools in `DEVICE_LOCAL_TOOLS` (`portuni_mirror`, `portuni_status`,
   `portuni_store`, `portuni_pull`, `portuni_adopt_files`) never pass
   through `mcp/tools/files.ts`; they always run on a device that has a
   `sync.db`, so invariant 2 is satisfied by construction there.
