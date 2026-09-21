@@ -4,8 +4,11 @@ import { contextRingState, latestContextUsage, formatTokens } from "../apps/web/
 import type { ChatEvent } from "../apps/web/src/lib/session-chat.js";
 
 describe("contextRingState", () => {
-  it("is null with nothing recorded", () => {
+  it("is null with nothing recorded, undefined or a non-number", () => {
     assert.equal(contextRingState(null, null), null);
+    assert.equal(contextRingState(undefined, undefined), null);
+    assert.equal(contextRingState(Number.NaN, 100), null);
+    assert.equal(contextRingState(10, undefined)?.label, "10 tokenů");
   });
   it("percent under the threshold is not a warning; at 80 % it is", () => {
     assert.deepEqual(contextRingState(79_000, 100_000), {

@@ -33,8 +33,17 @@ export function formatTokens(n: number): string {
   return `${text} k`;
 }
 
-// null = no ring at all (a draft, a session that never reported usage).
-export function contextRingState(used: number | null, max: number | null): ContextRingState | null {
+const finite = (n: number | null | undefined): number | null =>
+  typeof n === "number" && Number.isFinite(n) ? n : null;
+
+// null = no ring at all (a draft, a session that never reported usage, a
+// summary built somewhere the counters are not set at all).
+export function contextRingState(
+  usedInput: number | null | undefined,
+  maxInput: number | null | undefined,
+): ContextRingState | null {
+  const used = finite(usedInput);
+  const max = finite(maxInput);
   if (used === null) return null;
   if (max === null || max <= 0) {
     return { used, max: null, fraction: null, warn: false, label: `${formatTokens(used)} tokenů` };
