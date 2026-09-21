@@ -112,6 +112,8 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
     write_count: await getSessionWriteCount(db, row.id),
     model: row.model,
     effort: row.effort,
+    context_used_tokens: row.context_used_tokens,
+    context_max_tokens: row.context_max_tokens,
     created_at: row.created_at,
     last_active_at: row.last_active_at,
     closed_at: row.closed_at,
@@ -286,6 +288,10 @@ const PatchSessionBody = z
     // #375: the thread's own model/effort override.
     model: z.string().nullable().optional(),
     effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+    // v2 context ring: the runtime folds each context_usage event here
+    // (CentralSessionStore.patchSession in a team workspace).
+    context_used_tokens: z.number().int().nullable().optional(),
+    context_max_tokens: z.number().int().nullable().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, "at least one field is required");
 
@@ -337,6 +343,8 @@ export async function handlePatchSession(
       name_is_custom: body.name_is_custom,
       model: body.model,
       effort: body.effort,
+      context_used_tokens: body.context_used_tokens,
+      context_max_tokens: body.context_max_tokens,
     });
     respondJson(res, 200, updated);
   } catch (err) {

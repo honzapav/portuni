@@ -400,6 +400,16 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const canonical = event as CanonicalEvent;
     await appendAndPublish(sessionId, runId, [canonical]);
 
+    if (canonical.kind === "context_usage") {
+      // The ring's counters on the row (v2 spec): lists and the header
+      // read them without the log; the event itself stays the record.
+      await store.patchSession(sessionId, {
+        context_used_tokens: canonical.payload.used_tokens,
+        context_max_tokens: canonical.payload.max_tokens,
+      });
+      return;
+    }
+
     if (canonical.kind === "question") {
       pendingQuestions.set(sessionId, canonical.payload);
       await store.patchSession(sessionId, { waiting_since: new Date().toISOString() });

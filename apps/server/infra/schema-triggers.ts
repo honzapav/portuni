@@ -183,6 +183,11 @@ export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     -- effort is checked against the SDK's own enum.
     model TEXT,
     effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
+    -- v2 task surface: the latest context_usage event's counters, so a
+    -- list row and the chat header render the ring without reading the
+    -- event log (migration 039).
+    context_used_tokens INTEGER,
+    context_max_tokens INTEGER,
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
     closed_at DATETIME

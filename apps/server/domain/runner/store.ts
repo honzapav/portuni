@@ -151,6 +151,9 @@ export interface PatchSessionInput {
   // (this column write alone would never reach an already-running process).
   model?: string | null;
   effort?: string | null;
+  // v2 context ring: written by the runtime on every context_usage event.
+  context_used_tokens?: number | null;
+  context_max_tokens?: number | null;
 }
 
 export interface CreateRunInput {
@@ -266,6 +269,14 @@ export class DbSessionStore implements SessionStore {
     if (patch.effort !== undefined) {
       sets.push("effort = ?");
       args.push(patch.effort);
+    }
+    if (patch.context_used_tokens !== undefined) {
+      sets.push("context_used_tokens = ?");
+      args.push(patch.context_used_tokens);
+    }
+    if (patch.context_max_tokens !== undefined) {
+      sets.push("context_max_tokens = ?");
+      args.push(patch.context_max_tokens);
     }
     if (sets.length > 0) {
       args.push(id);

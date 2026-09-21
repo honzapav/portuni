@@ -110,6 +110,27 @@ export interface ErrorEvent {
   payload: { class: ErrorClass; message: string };
 }
 
+// v2 task surface (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md,
+// "The context ring"): emitted by the adapter after every provider
+// assistant message and every result. used_tokens is what the model's
+// context currently holds (input + cache creation + cache read of the
+// latest assistant usage); max_tokens is the model's window from the
+// latest result, null until one arrived. Persisted like every event, so a
+// replay rebuilds the ring; the runtime also folds the latest one onto
+// sessions.context_used_tokens / context_max_tokens.
+export interface ContextUsageEvent {
+  kind: "context_usage";
+  payload: {
+    run_id: string;
+    model: string | null;
+    used_tokens: number;
+    max_tokens: number | null;
+    input_tokens: number;
+    cached_tokens: number;
+    output_tokens: number;
+  };
+}
+
 export type CanonicalEvent =
   | RunStartedEvent
   | RunEndedEvent
@@ -122,7 +143,8 @@ export type CanonicalEvent =
   | CompactionEvent
   | HandoffEvent
   | StateChangedEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | ContextUsageEvent;
 
 export type CanonicalEventKind = CanonicalEvent["kind"];
 

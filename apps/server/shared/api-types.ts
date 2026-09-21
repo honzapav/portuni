@@ -526,6 +526,11 @@ export type SessionSummary = {
   // never a resolved/effective value.
   model: string | null;
   effort: string | null;
+  // v2 context ring: the latest context_usage event's counters, so the
+  // header and a list row render the ring without reading the log. Both
+  // null until a run reported any; max null until the first result.
+  context_used_tokens: number | null;
+  context_max_tokens: number | null;
   created_at: string;
   last_active_at: string;
   closed_at: string | null;

@@ -295,6 +295,37 @@ describe("task REST endpoints under /sessions", () => {
     assert.ok(!listBody.sessions.some((s) => s.id === body.session.id));
   });
 
+  // v2 context ring: the runtime folds each context_usage event's counters
+  // onto the session row, so a list row carries them without the log.
+  test("a context_usage event folds its counters into the session summary", async () => {
+    installRuntime([
+      {
+        kind: "context_usage",
+        payload: {
+          run_id: "ignored",
+          model: "m",
+          used_tokens: 1234,
+          max_tokens: 200000,
+          input_tokens: 1000,
+          cached_tokens: 234,
+          output_tokens: 9,
+        },
+      },
+      { wait: "message" },
+    ]);
+    const res = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId, brief: "go", runner: "fake" });
+    assert.equal(res.statusCode, 201);
+    const { session } = JSON.parse(res.body) as { session: SessionSummary };
+    const listRes = await call(makeIdentity("U1"), "GET", `/nodes/${dbFixture.nodeId}/sessions`);
+    const row = (JSON.parse(listRes.body) as { sessions: SessionSummary[] }).sessions.find((s) => s.id === session.id);
+    assert.ok(row);
+    assert.equal(row.context_used_tokens, 1234);
+    assert.equal(row.context_max_tokens, 200000);
+    const eventsRes = await call(makeIdentity("U1"), "GET", `/sessions/${session.id}/events`);
+    const kinds = (JSON.parse(eventsRes.body) as { events: SessionEventRow[] }).events.map((e) => e.kind);
+    assert.ok(kinds.includes("context_usage"));
+  });
+
   // v2 rule 5: promotion keeps what the draft row says -- here an instance
   // patched onto the draft after creation -- instead of re-resolving the
   // organisation's default.
