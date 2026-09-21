@@ -32,6 +32,7 @@ Files are identified by their content hash (SHA-256 computed locally, MD5 pulled
 - **Conflict detection is deterministic.** Compare current local hash, current remote hash, and last-seen hash from local cache. Four outcomes, no ambiguity, no timestamp skew.
 - **Moves and renames are free.** A file moved locally still has the same hash – the system recognizes it and can propose remote rename instead of re-upload.
 - **Works across backends.** Every storage backend exposes some checksum (Drive: md5Checksum, Dropbox: content_hash, S3: ETag, FS: computed SHA). The adapter normalizes to one field.
+- **Names compare in NFC.** Portuni computes every path in NFC; an object whose backend name is the NFD spelling of that path (a Mac upload from before normalization) is the same file. The Drive adapter retries a missed `name =` lookup in the other form and `stat` compares names normalized, so such a file never reads as absent.
 
 ### 2. Two-layer state
 

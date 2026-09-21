@@ -159,8 +159,21 @@ export function createDriveAdapter(
   }
 
   // Children of `parentId` named `name`, oldest first (Drive returns
-  // same-name siblings in arbitrary order otherwise).
+  // same-name siblings in arbitrary order otherwise). Drive's `name =`
+  // compares code points, and an object uploaded from a Mac before names
+  // were normalized carries the NFD spelling of the NFC path Portuni
+  // computes for it (or the other way round). A miss on a name that
+  // decomposes is retried in the other form before it counts as absent.
   async function childrenNamed(parentId: string, name: string, foldersOnly: boolean): Promise<DriveFile[]> {
+    const found = await childrenNamedExact(parentId, name, foldersOnly);
+    if (found.length > 0) return found;
+    const nfc = name.normalize("NFC");
+    const nfd = name.normalize("NFD");
+    if (nfc === nfd) return found;
+    return childrenNamedExact(parentId, name === nfc ? nfd : nfc, foldersOnly);
+  }
+
+  async function childrenNamedExact(parentId: string, name: string, foldersOnly: boolean): Promise<DriveFile[]> {
     const mime = foldersOnly ? " and mimeType = 'application/vnd.google-apps.folder'" : "";
     const q = `name = '${escapeQ(name)}' and '${parentId}' in parents${mime} and trashed = false`;
     const params = withCorpora(withSAD(new URLSearchParams({
@@ -452,9 +465,12 @@ export function createDriveAdapter(
           throw new Error(`Drive stat: ${res.status} ${await res.text()}`);
         }
         const file = (await res.json()) as DriveFile;
+        // Same spelling in either normalization form is the same name.
         const stale =
           file.trashed === true ||
-          (expectedName !== null && file.name !== undefined && file.name !== expectedName);
+          (expectedName !== null &&
+            file.name !== undefined &&
+            file.name.normalize("NFC") !== expectedName.normalize("NFC"));
         if (!stale) return fileRefFrom(file, path);
         // The object behind this path is not the one the path names. Drop
         // the cached mapping (and anything under it, if this is a folder)

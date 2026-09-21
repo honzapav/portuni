@@ -393,3 +393,80 @@ describe("DriveAdapter search (fullText contains)", () => {
     assert.ok(maxInFlight <= 5, `expected the concurrency cap to hold, saw max ${maxInFlight} in flight`);
   });
 });
+
+// A file uploaded from a Mac before Portuni normalized names carries an
+// NFD name on Drive ("u" + combining ring), while its record -- and every
+// path Portuni computes since -- is NFC. Drive's `name =` query compares
+// code points, so the NFC lookup misses and the file reads as gone (a
+// central 404 on every pull). The adapter has to find it in either form.
+describe("DriveAdapter Unicode normalization of names", () => {
+  const NFC_NAME = "SCANquilt OFG Lůžkoviny 2008 Zadání k výzkumu.docx.md".normalize("NFC");
+  const NFD_NAME = NFC_NAME.normalize("NFD");
+
+  function fakeDrive(files: Map<string, Record<string, unknown>>, calls: string[]) {
+    __setDriveFetchForTests(async (url) => {
+      const u = url.toString();
+      if (u.includes("oauth2.googleapis.com/token")) {
+        return new Response(JSON.stringify({ access_token: "A", expires_in: 3600 }), { status: 200 });
+      }
+      calls.push(u);
+      if (u.includes("/files?q=")) {
+        const q = decodeURIComponent(new URL(u).searchParams.get("q") ?? "");
+        const name = /name = '([^']*)'/.exec(q)?.[1];
+        const parent = /'([^']*)' in parents/.exec(q)?.[1];
+        // Byte-exact, as Drive compares.
+        const hits = [...files.entries()]
+          .filter(([, f]) => f.name === name && f.parent === parent && f.trashed !== true)
+          .map(([id, f]) => ({ id, name: f.name, mimeType: f.mimeType, createdTime: f.createdTime }));
+        return new Response(JSON.stringify({ files: hits }), { status: 200 });
+      }
+      const idMatch = /\/files\/([^?]+)/.exec(u);
+      const f = idMatch ? files.get(idMatch[1]) : undefined;
+      if (!f) return new Response("{}", { status: 404 });
+      if (u.includes("alt=media")) return new Response("bytes", { status: 200 });
+      return new Response(JSON.stringify({ id: idMatch![1], ...f }), { status: 200 });
+    });
+  }
+
+  beforeEach(() => {
+    resetSaTokenCacheForTests();
+  });
+
+  it("stat and get find a file stored under the NFD form of an NFC path", async () => {
+    assert.notEqual(NFC_NAME, NFD_NAME, "precondition: the name decomposes");
+    const files = new Map<string, Record<string, unknown>>([
+      ["resId", { name: "resources", mimeType: "application/vnd.google-apps.folder", parent: "0AXy" }],
+      ["fileId", { name: NFD_NAME, mimeType: "text/markdown", parent: "resId", md5Checksum: "abc" }],
+    ]);
+    const calls: string[] = [];
+    fakeDrive(files, calls);
+    const adapter = createDriveAdapter(remote, tokens);
+    const ref = await adapter.stat(`resources/${NFC_NAME}`);
+    assert.ok(ref, "the NFD-named object is the file the NFC path names");
+    assert.equal(ref!.hash, "abc");
+    assert.equal(ref!.path, `resources/${NFC_NAME}`, "the ref carries the caller's path, not Drive's spelling");
+    assert.equal((await adapter.get(`resources/${NFC_NAME}`)).toString(), "bytes");
+  });
+
+  it("stat finds a file stored under the NFC form of an NFD path", async () => {
+    const files = new Map<string, Record<string, unknown>>([
+      ["resId", { name: "resources", mimeType: "application/vnd.google-apps.folder", parent: "0AXy" }],
+      ["fileId", { name: NFC_NAME, mimeType: "text/markdown", parent: "resId", md5Checksum: "abc" }],
+    ]);
+    fakeDrive(files, []);
+    const adapter = createDriveAdapter(remote, tokens);
+    assert.ok(await adapter.stat(`resources/${NFD_NAME}`));
+  });
+
+  it("does not issue a second lookup for a name with nothing to decompose", async () => {
+    const files = new Map<string, Record<string, unknown>>([
+      ["resId", { name: "resources", mimeType: "application/vnd.google-apps.folder", parent: "0AXy" }],
+    ]);
+    const calls: string[] = [];
+    fakeDrive(files, calls);
+    const adapter = createDriveAdapter(remote, tokens);
+    assert.equal(await adapter.stat("resources/plain.md"), null);
+    const nameQueries = calls.filter((c) => (new URL(c).searchParams.get("q") ?? "").includes("name = 'plain.md'"));
+    assert.equal(nameQueries.length, 1);
+  });
+});
