@@ -6,16 +6,18 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GraphNode } from "../types";
 import { foldForSearch } from "../lib/normalize";
-import { groupNodesByType } from "../lib/node-search";
+import { groupNodesByType, nodeTypeLabel } from "../lib/node-search";
 import {
   Command,
   CommandDialog,
   CommandEmpty,
+  CommandFooter,
   CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 
 const MAX_RESULTS = 50;
 
@@ -65,25 +67,22 @@ export default function NodeCommandPalette({
   // in sections; a short one stays flat (lib/node-search.ts).
   const groups = useMemo(() => groupNodesByType(matches), [matches]);
 
-  const row = (n: GraphNode) => (
+  // A row: the type dot in a 20 px icon slot, the name, and the type name
+  // muted on the right -- empty under a group heading that already names it.
+  const row = (n: GraphNode, grouped: boolean) => (
     <CommandItem
       key={n.id}
       value={n.id}
-      className="gap-3 px-4 py-2.5"
       onSelect={() => {
         onPick(n.id);
         onOpenChange(false);
       }}
     >
-      <span
-        className="inline-block size-2 shrink-0 rounded-full"
-        style={{ background: nodeTypeVar(n.type) }}
-        aria-hidden
-      />
-      <span className="min-w-0 flex-1 truncate">{n.name}</span>
-      <span className="ml-auto shrink-0 rounded-md border border-border px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
-        {n.type}
+      <span className="inline-flex size-5 shrink-0 items-center justify-center" aria-hidden>
+        <span className="inline-block size-2 rounded-full" style={{ background: nodeTypeVar(n.type) }} />
       </span>
+      <span className="min-w-0 flex-1 truncate">{n.name}</span>
+      {!grouped && <span className="ml-auto shrink-0 text-muted-foreground">{nodeTypeLabel(n.type)}</span>}
     </CommandItem>
   );
 
@@ -95,7 +94,7 @@ export default function NodeCommandPalette({
       description="Napiš název uzlu a potvrď Enterem."
       className="sm:max-w-[640px]"
     >
-      <Command shouldFilter={false} className="p-0">
+      <Command shouldFilter={false}>
         <CommandInput
           placeholder="Hledat uzel…"
           value={text}
@@ -103,24 +102,32 @@ export default function NodeCommandPalette({
             setText(v);
             onQueryChange?.(v);
           }}
-          // The wrapper owns the search header's height, padding and the
-          // divider that keeps the field off the first row.
-          wrapperClassName="flex h-12 items-center border-b border-border px-4 py-0"
         />
-        <CommandList className="py-2">
-          <CommandEmpty className="px-4 py-6">Žádný uzel</CommandEmpty>
+        <CommandList>
+          <CommandEmpty>Žádný uzel</CommandEmpty>
           {groups
             ? groups.map((g) => (
-                <CommandGroup
-                  key={g.type}
-                  heading={g.label}
-                  className="p-0 **:[[cmdk-group-heading]]:px-4 **:[[cmdk-group-heading]]:py-1.5"
-                >
-                  {g.nodes.map(row)}
+                <CommandGroup key={g.type} heading={g.label}>
+                  {g.nodes.map((n) => row(n, true))}
                 </CommandGroup>
               ))
-            : matches.map(row)}
+            : matches.map((n) => row(n, false))}
         </CommandList>
+        <CommandFooter>
+          <KbdGroup className="gap-1.5">
+            <Kbd>↑</Kbd>
+            <Kbd>↓</Kbd>
+            <span>Navigace</span>
+          </KbdGroup>
+          <KbdGroup className="gap-1.5">
+            <Kbd>Enter</Kbd>
+            <span>Otevřít</span>
+          </KbdGroup>
+          <KbdGroup className="gap-1.5">
+            <Kbd>Esc</Kbd>
+            <span>Zavřít</span>
+          </KbdGroup>
+        </CommandFooter>
       </Command>
     </CommandDialog>
   );
