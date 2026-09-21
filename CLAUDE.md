@@ -139,7 +139,7 @@ osobní / týmový" section is mandatory); a batch's tracking issue uses
 `tracking.md`, whose "Pravidla" block is the loop's contract.
 
 The verification gate for agents and humans alike is `scripts/agent-gate.sh`
-(server qa, `npm run test:pglite`, web typecheck + build, `cargo test` +
+(server qa, web typecheck + build, `cargo test` +
 `cargo clippy -D warnings`, docs site build), the same checks `ci.yml` runs.
 `AGENTS.md` is a symlink to this file.
 
@@ -287,8 +287,10 @@ One line each; the linked doc carries the mechanism and the reasoning.
   lenient `GROUP BY` or SQL-side relative dates in runtime code.
 - Timestamps read back as `YYYY-MM-DD HH:MM:SS` UTC text on every driver.
 - Tests open their db with `openTestDb()`; only migration and libsql-DDL
-  tests pin `"libsql"`. `npm test` and `npm run test:pglite` both must pass;
-  no fixed sleeps, wait for a signal or an injected clock.
+  tests pin `"libsql"`. `npm test` runs in the gate; `npm run test:pglite`
+  runs in CI on every PR and by hand before a schema or query change is
+  claimed green on both drivers. No fixed sleeps, wait for a signal or an
+  injected clock.
 
 ### Desktop (`desktop-shell.md`)
 
