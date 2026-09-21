@@ -52,6 +52,7 @@ import {
   type WorkingPhase,
 } from "../lib/session-chat";
 import { useNowTick } from "../lib/use-now-tick";
+import { contextRingState, latestContextUsage } from "../lib/context-ring";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectGroup, SelectLabel } from "@/components/ui/select";
@@ -83,6 +84,16 @@ import {
 import { Checkpoint, CheckpointIcon } from "@/components/ai-elements/checkpoint";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Loader } from "@/components/ai-elements/loader";
+import {
+  Context,
+  ContextCacheUsage,
+  ContextContent,
+  ContextContentBody,
+  ContextContentHeader,
+  ContextInputUsage,
+  ContextOutputUsage,
+  ContextTrigger,
+} from "@/components/ai-elements/context";
 import {
   ChainOfThought,
   ChainOfThoughtContent,
@@ -363,6 +374,14 @@ export default function SessionChat({
   }, [liveRunId]);
 
   const rows = useMemo(() => deriveTranscriptRows(events, liveRunId), [events, liveRunId]);
+  // The context ring: the transcript's latest context_usage while the log
+  // is here, else the summary's counters (a list row, a reload before the
+  // replay). Absent entirely for a draft or a session that never reported.
+  const liveUsage = useMemo(() => latestContextUsage(events), [events]);
+  const ring = contextRingState(
+    liveUsage?.used ?? session.context_used_tokens,
+    liveUsage?.max ?? session.context_max_tokens,
+  );
   const openQuestion = latestQuestionEvent(events);
   const isWaiting = live.state === "running" && live.waiting_since !== null;
   const runIsLive = liveRunId !== null;
@@ -454,11 +473,45 @@ export default function SessionChat({
             (phase 4) and the two thread actions. Runner, instance, host,
             model and effort live in the composer's rows. */}
         <div className="flex shrink-0 items-center gap-1.5 text-[12px] text-[var(--color-text-dim)]">
+          {ring && (
+            <Context
+              usedTokens={ring.used}
+              maxTokens={ring.max}
+              label={ring.label}
+              usage={
+                liveUsage
+                  ? { inputTokens: liveUsage.input, cachedInputTokens: liveUsage.cached, outputTokens: liveUsage.output }
+                  : undefined
+              }
+            >
+              <ContextTrigger
+                className="h-7 gap-1.5 px-1.5 text-[12px]"
+                style={{ color: ring.warn ? "var(--color-node-process)" : "var(--color-text-dim)" }}
+                title="Využití kontextového okna"
+              />
+              <ContextContent align="end">
+                <ContextContentHeader />
+                {liveUsage && (
+                  <ContextContentBody className="space-y-1">
+                    <ContextInputUsage />
+                    <ContextCacheUsage />
+                    <ContextOutputUsage />
+                  </ContextContentBody>
+                )}
+              </ContextContent>
+            </Context>
+          )}
           {/* #378: Přerušit/Pozastavit are gone -- stopping a turn is the
               composer's own stop button (+ Esc) below, and a run no longer
               needs an explicit suspend, ever. */}
           {(live.state === "running" || live.state === "suspended") && access.canResume && (
-            <HeaderButton disabled={actionPending !== null} onClick={() => void handleContinue()}>
+            <HeaderButton
+              disabled={actionPending !== null}
+              onClick={() => void handleContinue()}
+              // From 80 % of the window the fresh session is the advice,
+              // so the button steps up to the filled variant.
+              variant={ring?.warn ? "default" : "outline"}
+            >
               {actionPending === "continue" ? "Pokračuji…" : "Pokračovat v nové session"}
             </HeaderButton>
           )}
@@ -689,13 +742,15 @@ function HeaderButton({
   onClick,
   disabled,
   children,
+  variant = "outline",
 }: {
   onClick: () => void;
   disabled?: boolean;
   children: React.ReactNode;
+  variant?: "outline" | "default";
 }) {
   return (
-    <Button variant="outline" size="sm" onClick={onClick} disabled={disabled}>
+    <Button variant={variant} size="sm" onClick={onClick} disabled={disabled}>
       {children}
     </Button>
   );
