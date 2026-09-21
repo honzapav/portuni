@@ -1763,6 +1763,31 @@ git add docs CLAUDE.md sites/docs
 git commit -m "docs: task surface v2 -- rows, composer, context ring, palette, draft runner"
 ```
 
+---
+
+## Phase 5 — Přehled
+
+### Task 18: Counter strip, row cap, threads only
+
+**Files:**
+- Create: `apps/web/src/lib/overview-view.ts` (pure: `overviewCounters`, `capRows`, `splitThreadsAndCli`)
+- Modify: `apps/web/src/components/OverviewView.tsx` (width, strip, cards with the cap footer)
+- Test: `test/overview-view-helpers.test.ts`
+
+**Interfaces:**
+
+```ts
+export const OVERVIEW_ROW_CAP = 8;
+export function capRows<T>(rows: readonly T[], expanded: boolean): { shown: T[]; hidden: number };
+export function splitThreadsAndCli(rows: readonly OverviewSessionRow[]): { threads: OverviewSessionRow[]; cli: { total: number; running: number } };
+export function overviewCounters(payload: { running: OverviewSessionRow[]; suspended: OverviewSessionRow[]; attention: number; unsynced: number }, meId: string | null): { waiting: number; running: number; attention: number; unsynced: number };
+```
+
+- [ ] **Step 1: Tests** for the three helpers (cap at 8 with `hidden`, expanded shows all; CLI rows split by `cli !== null || session_type !== "interactive_task"`, running counted; counters restricted to the caller's own sessions like `sortInboxSessions`).
+- [ ] **Step 2: Implement the helpers**, run the tests.
+- [ ] **Step 3: The view**: `max-w-[1400px] px-6 py-6`; a `grid grid-cols-2 gap-4 lg:grid-cols-4` strip of `Card`s (number 24 px semibold, label 12 px dim, whole card a button); each list card takes `expanded` state, renders `capRows(...).shown`, and a footer `Button variant="link" size="xs"` "Zobrazit všech N" when `hidden > 0`; `SessionsCard` lists `threads` and prints the CLI line in its footer; the unsynced count comes from `useSyncPending` (check `apps/web/src/lib/use-sync-pending.ts` for the hook's shape) and the counter opens the existing Nesynchronizováno dialog via a new `onOpenSyncOverview` prop wired in `App.tsx`.
+- [ ] **Step 4: Verify** in the browser at 1400 px and 1000 px; typecheck; commit `feat(web): Přehled with a counter strip, an 8-row cap per card and threads only in Relace`.
+
 ### Final gate
 
 - [ ] `scripts/agent-gate.sh` green. Open a PR from `feat/task-surface-v2` to `main` titled `feat(web,runner,server): task surface v2 — the conversation is the content` with the phases as the body and the spec linked.

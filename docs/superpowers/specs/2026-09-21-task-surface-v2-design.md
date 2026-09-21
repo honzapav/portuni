@@ -251,6 +251,31 @@ not a styled copy:
 The palette keeps its single purpose (find and open a node); actions
 are not added here.
 
+## Přehled
+
+The dashboard follows shadcn's dashboard block: a strip of counters on
+top, the cards under it, the page using the width it has.
+
+- The page is `max-w-[1400px]` with 24 px padding, not `max-w-5xl`.
+- **Counter strip**, four cards in one row (two per row under 1024 px):
+  Čeká na mě, Běží, Vyžaduje pozornost, Nesynchronizováno. Each is a
+  number with its label under it; clicking one opens the matching place
+  (Práce in the Stav view for the first two, Graf for attention, the
+  Nesynchronizováno dialog for the last).
+- **Cards**: Relace, Vyžaduje pozornost, Poslední aktivita, Nové uzly,
+  in a two-column grid. Every card lists at most **8 rows**; the rest is
+  behind a footer link "Zobrazit všech N" that expands the card in place
+  (per mount). A card with nothing to show keeps its empty line, not its
+  height.
+- **Relace** lists threads (rule 7: `session_type = 'interactive_task'`,
+  `cli = null`) — waiting first, then running, then suspended — plus the
+  disconnected-jump queue as today. Hand-opened CLI sessions are not
+  rows here; the card's footer says "K tomu N relací z CLI (N běží)" and
+  Relace under the node keeps them.
+- **Rows** are 36 px: name and chip on the first line, node · time on
+  the second at 11.5 px; the chip is the state chip from
+  `sessionRowChip`, not a text fragment.
+
 ## Unsynced overview
 
 The node name in "Nesynchronizováno" navigates the way Přehled's node
@@ -294,6 +319,9 @@ stripped like the `ai` import was.
    delta coalescing. `chain-of-thought` and `loader` copied.
 4. **Context**: the `context_usage` event end to end, the two columns,
    the ring with its threshold behaviour. `context` copied.
+5. **Přehled**: the counter strip, the row cap with the expand footer,
+   threads only in Relace, the wider page. No data change; the payload
+   already carries everything.
 
 Each phase works in a team workspace and a personal workspace before it
 closes (the draft creation and the patch have a central half in
