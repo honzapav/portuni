@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.0](https://github.com/honzapav/portuni/compare/v0.18.1...v0.19.0) (2026-09-21)
+
+
+### Features
+
+* **sync,web,docs:** Drive change-feed correlation by file id, persistent folder cache, watcher backoff, residual pull accounting ([#421](https://github.com/honzapav/portuni/issues/421)) ([518acb4](https://github.com/honzapav/portuni/commit/518acb478ae00a64927555209bd20ec62ec7c0a1))
+* **sync,web,runner,mcp:** Drive change feed and the remote watcher on central; Práce sidebar threads and highlight; org default instance, provider limits, post-redesign layout, connector store fail-fast ([#415](https://github.com/honzapav/portuni/issues/415)) ([da65d6c](https://github.com/honzapav/portuni/commit/da65d6cf222fa5ebb1f083c2a4953a47fecb8efe))
+
+
+### Bug Fixes
+
+* **runner:** reap orphaned runs in central mode too ([#398](https://github.com/honzapav/portuni/issues/398)) ([355f5a3](https://github.com/honzapav/portuni/commit/355f5a3eac97680d1c5eb297e55377a2a7c92893))
+
 ## [0.18.1](https://github.com/honzapav/portuni/compare/v0.18.0...v0.18.1) (2026-09-17)
 
 
