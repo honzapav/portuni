@@ -36,13 +36,22 @@ import {
   latestQuestionEvent,
   appendDelta,
   clearDeltaBuffer,
-  collapseToolCalls,
+  createDeltaCoalescer,
+  deriveTranscriptRows,
+  activitySummary,
+  workingPhase,
+  WORKING_LABEL,
   formatRestartHint,
+  type ActivityItem,
+  type ActivityRow,
   type ChatEvent,
   insertBySeq,
   type CanonicalEvent,
   type DeltaBuffers,
+  type TranscriptRow,
+  type WorkingPhase,
 } from "../lib/session-chat";
+import { useNowTick } from "../lib/use-now-tick";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectGroup, SelectLabel } from "@/components/ui/select";
@@ -54,7 +63,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { X } from "lucide-react";
+import { BrainIcon, X } from "lucide-react";
 import {
   Conversation,
   ConversationContent,
@@ -73,6 +82,13 @@ import {
 } from "@/components/ai-elements/confirmation";
 import { Checkpoint, CheckpointIcon } from "@/components/ai-elements/checkpoint";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { Loader } from "@/components/ai-elements/loader";
+import {
+  ChainOfThought,
+  ChainOfThoughtContent,
+  ChainOfThoughtHeader,
+  ChainOfThoughtStep,
+} from "@/components/ai-elements/chain-of-thought";
 import {
   PromptInput,
   PromptInputBody,
@@ -121,6 +137,10 @@ export default function SessionChat({
   const [textDeltaBuffers, setTextDeltaBuffers] = useState<DeltaBuffers>({});
   const [reasoningDeltaBuffers, setReasoningDeltaBuffers] = useState<DeltaBuffers>({});
   const [liveRunId, setLiveRunId] = useState<string | null>(null);
+  // When the last message was sent, until its run_started arrives -- what
+  // the working row shows as "Spouštím…" (rule 2: something is always on
+  // screen while a run is live, and the run is live from the send).
+  const [sentAt, setSentAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState<{ state: SessionState; waiting_since: string | null }>({
@@ -220,7 +240,24 @@ export default function SessionChat({
     setTextDeltaBuffers({});
     setReasoningDeltaBuffers({});
     setLiveRunId(null);
+    setSentAt(null);
     setLive({ state: session.state, waiting_since: session.waiting_since });
+
+    // Deltas are coalesced (spec, "Streaming"): a burst of frames becomes
+    // one state update per animation frame. Flushed on run end so nothing
+    // in flight is lost before the buffers clear.
+    const coalescer = createDeltaCoalescer(
+      (batch) => {
+        for (const d of batch) {
+          if (d.channel === "reasoning") setReasoningDeltaBuffers((prev) => appendDelta(prev, d.run_id, d.text));
+          else setTextDeltaBuffers((prev) => appendDelta(prev, d.run_id, d.text));
+        }
+      },
+      (cb) => {
+        const id = requestAnimationFrame(cb);
+        return () => cancelAnimationFrame(id);
+      },
+    );
 
     // Live run detection rides on the replayed/streamed events themselves
     // (run_started without a later run_ended), so one code path covers
@@ -230,7 +267,9 @@ export default function SessionChat({
       setEvents((prev) => insertBySeq(prev, { seq: envelope.seq, event }));
       if (event.kind === "run_started") {
         setLiveRunId(event.payload.run_id);
+        setSentAt(null);
       } else if (event.kind === "run_ended") {
+        coalescer.flush();
         setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setLiveRunId(null);
@@ -246,13 +285,7 @@ export default function SessionChat({
         });
       }
     });
-    const offDelta = sessionsClient.onDelta(session.id, (delta) => {
-      if (delta.channel === "reasoning") {
-        setReasoningDeltaBuffers((prev) => appendDelta(prev, delta.run_id, delta.text));
-      } else {
-        setTextDeltaBuffers((prev) => appendDelta(prev, delta.run_id, delta.text));
-      }
-    });
+    const offDelta = sessionsClient.onDelta(session.id, (delta) => coalescer.push(delta));
     const offState = sessionsClient.onSessionState((s) => {
       if (s.session_id !== session.id) return;
       setLive({ state: s.state, waiting_since: s.waiting_since });
@@ -270,6 +303,7 @@ export default function SessionChat({
 
     return () => {
       cancelled = true;
+      coalescer.clear();
       offEvent();
       offDelta();
       offState();
@@ -328,12 +362,16 @@ export default function SessionChat({
     if (liveRunId !== null) setNoticeDismissed(false);
   }, [liveRunId]);
 
-  const displayEvents = useMemo(() => collapseToolCalls(events), [events]);
+  const rows = useMemo(() => deriveTranscriptRows(events, liveRunId), [events, liveRunId]);
   const openQuestion = latestQuestionEvent(events);
   const isWaiting = live.state === "running" && live.waiting_since !== null;
   const runIsLive = liveRunId !== null;
   const streamingText = liveRunId ? textDeltaBuffers[liveRunId] : undefined;
   const streamingReasoning = liveRunId ? reasoningDeltaBuffers[liveRunId] : undefined;
+  // The working row (rule 2): shown while a run is live (or a send is in
+  // flight) and nothing else at the transcript end says what is happening.
+  const phase = runIsLive || sentAt !== null ? workingPhase(events, liveRunId, sentAt) : null;
+  const showWorking = phase !== null && !streamingText && !streamingReasoning && !isWaiting;
   const chip = sessionStatusChip(live.state, live.waiting_since);
   const restartHint = signals ? formatRestartHint(signals) : null;
   // #378: an open thread with a run that ended other than by Uzavřít --
@@ -377,6 +415,10 @@ export default function SessionChat({
     try {
       await sessionsClient.message(session.id, text);
       setComposerText("");
+      // Until run_started lands (a promotion or a resume starts a process
+      // first), the working row says "Spouštím…". A live run's own
+      // message needs none: its run_started already happened.
+      if (liveRunId === null) setSentAt(Date.now());
     } catch (e) {
       setError(String(e));
     } finally {
@@ -488,12 +530,12 @@ export default function SessionChat({
         <ConversationContent className={`${THREAD_COLUMN} gap-5`}>
           {loading ? (
             <Shimmer duration={1.5}>Načítám konverzaci…</Shimmer>
-          ) : displayEvents.length === 0 ? (
+          ) : rows.length === 0 && !showWorking ? (
             <ConversationEmptyState title="Zatím žádné zprávy" description="Napiš první zprávu níže." />
           ) : (
             <>
-              {displayEvents.map((item) => (
-                <EventRow key={item.seq} item={item} onOpenFile={onOpenFile} />
+              {rows.map((row) => (
+                <TranscriptRowView key={row.key} row={row} onOpenFile={onOpenFile} />
               ))}
               {streamingReasoning && (
                 <Reasoning isStreaming defaultOpen>
@@ -508,6 +550,7 @@ export default function SessionChat({
                   </MessageContent>
                 </Message>
               )}
+              {showWorking && phase && <WorkingRow phase={phase} />}
             </>
           )}
         </ConversationContent>
@@ -674,66 +717,31 @@ function SystemMarker({ children }: { children: React.ReactNode }) {
   return <div className="text-center text-[11px] text-[var(--color-text-dim)]">{children}</div>;
 }
 
-function EventRow({
-  item,
-  onOpenFile,
-}: {
-  item: ChatEvent;
-  onOpenFile?: (relPath: string) => void;
-}) {
-  const event: CanonicalEvent = item.event;
-  switch (event.kind) {
-    case "user_message":
+// Rule 1: the prompt and the answer are the only rows at full weight;
+// activity is one folded group per turn, bookkeeping is no row at all
+// (lib/session-chat.ts's deriveTranscriptRows decides).
+function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile?: (relPath: string) => void }) {
+  switch (row.kind) {
+    case "prompt":
       return (
         <Message from="user">
           <MessageContent className="group-[.is-user]:border group-[.is-user]:border-[var(--color-border)] group-[.is-user]:bg-[var(--color-accent-soft)]">
-            <MessageResponse>{event.payload.text}</MessageResponse>
+            <MessageResponse>{row.text}</MessageResponse>
           </MessageContent>
         </Message>
       );
-    case "assistant_message":
+    case "answer":
       return (
         <Message from="assistant">
           <MessageContent>
-            <MessageResponse>{event.payload.text}</MessageResponse>
+            <MessageResponse>{row.text}</MessageResponse>
           </MessageContent>
         </Message>
       );
-    case "reasoning":
-      return (
-        <Reasoning isStreaming={false} defaultOpen={false}>
-          <ReasoningTrigger getThinkingMessage={reasoningTriggerMessage} />
-          <ReasoningContent>{event.payload.summary}</ReasoningContent>
-        </Reasoning>
-      );
-    case "tool_call": {
-      const p = event.payload;
-      const failed = p.status === "failed";
-      return (
-        <Tool defaultOpen={false} className="mb-0 bg-[var(--color-surface)]">
-          <ToolHeader title={p.title || undefined} tool={p.tool} state={p.status} className="p-2.5" />
-          <ToolContent>
-            {p.input_summary && <ToolInput input={p.input_summary} />}
-            <ToolOutput output={failed ? null : p.output_excerpt} errorText={failed ? p.output_excerpt : null} />
-          </ToolContent>
-        </Tool>
-      );
-    }
-    case "file_change":
-      return (
-        <SystemMarker>
-          {onOpenFile ? (
-            <Button variant="link" size="xs" className="h-auto p-0 text-[11px] text-inherit" onClick={() => onOpenFile(event.payload.path)}>
-              {event.payload.path}
-            </Button>
-          ) : (
-            event.payload.path
-          )}{" "}
-          ({fileChangeOpLabel(event.payload.op)})
-        </SystemMarker>
-      );
+    case "activity":
+      return <ActivityGroupRow row={row} onOpenFile={onOpenFile} />;
     case "question":
-      return <SystemMarker>Otázka: {event.payload.title}</SystemMarker>;
+      return <SystemMarker>Otázka: {row.title}</SystemMarker>;
     case "compaction":
       return (
         <Checkpoint className="justify-center text-[11px]">
@@ -741,28 +749,103 @@ function EventRow({
           Komprese kontextu
         </Checkpoint>
       );
-    case "handoff":
-      return <SystemMarker>Shrnutí relace uloženo</SystemMarker>;
-    case "state_changed":
-      return (
-        <SystemMarker>
-          Stav: {event.payload.from} → {event.payload.to}
-          {event.payload.by ? ` (ukončil/a ${event.payload.by})` : ""}
-        </SystemMarker>
-      );
-    case "run_started":
-      return <SystemMarker>Běh spuštěn</SystemMarker>;
-    case "run_ended":
-      return <SystemMarker>Běh ukončen ({runEndReasonLabel(event.payload.reason)})</SystemMarker>;
+    case "summary":
+      return <SystemMarker>Shrnutí uloženo</SystemMarker>;
     case "error":
       return (
         <SystemMarker>
-          <span style={{ color: "var(--color-danger)" }}>{event.payload.message}</span>
+          <span style={{ color: "var(--color-danger)" }}>{row.message}</span>
         </SystemMarker>
       );
     default:
       return null;
   }
+}
+
+// One turn's activity: collapsed to its sentence, expanded to a
+// ChainOfThought with one Tool per call. The live group (the current
+// run's open one) stays expanded on the tool that is running; a
+// historical group expands only by hand, per mount.
+function ActivityGroupRow({ row, onOpenFile }: { row: ActivityRow; onOpenFile?: (relPath: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const running = row.live ? row.items.find((i) => i.kind === "tool" && i.call.status === "started") : undefined;
+  const summary = activitySummary(row.items);
+  const headerText = summary.text || (row.live ? "Pracuji…" : "Aktivita");
+  return (
+    <ChainOfThought open={row.live || open} onOpenChange={setOpen} className="text-[12.5px]">
+      <ChainOfThoughtHeader
+        className="text-[12.5px]"
+        style={summary.failed > 0 ? { color: "var(--color-danger)" } : undefined}
+      >
+        {row.live ? <Shimmer duration={1.5}>{headerText}</Shimmer> : headerText}
+      </ChainOfThoughtHeader>
+      <ChainOfThoughtContent>
+        {row.live && !open && running ? (
+          <ToolStep item={running} onOpenFile={onOpenFile} />
+        ) : (
+          row.items.map((item) => <ToolStep key={item.seq} item={item} onOpenFile={onOpenFile} />)
+        )}
+      </ChainOfThoughtContent>
+    </ChainOfThought>
+  );
+}
+
+function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relPath: string) => void }) {
+  if (item.kind === "reasoning") {
+    return (
+      <ChainOfThoughtStep label="Uvažování" icon={BrainIcon}>
+        <Reasoning isStreaming={false} defaultOpen={false}>
+          <ReasoningTrigger getThinkingMessage={reasoningTriggerMessage} />
+          <ReasoningContent>{item.summary}</ReasoningContent>
+        </Reasoning>
+      </ChainOfThoughtStep>
+    );
+  }
+  if (item.kind === "file_change") {
+    return (
+      <ChainOfThoughtStep
+        label={
+          onOpenFile ? (
+            <Button variant="link" size="xs" className="h-auto p-0 text-inherit" onClick={() => onOpenFile(item.path)}>
+              {item.path}
+            </Button>
+          ) : (
+            item.path
+          )
+        }
+        description={fileChangeOpLabel(item.op)}
+      />
+    );
+  }
+  const p = item.call;
+  const failed = p.status === "failed";
+  return (
+    <ChainOfThoughtStep label={p.title || p.tool} status={p.status === "started" ? "active" : "complete"}>
+      <Tool defaultOpen={false} className="mb-0 bg-[var(--color-surface)]">
+        <ToolHeader title={p.title || undefined} tool={p.tool} state={p.status} className="p-2.5" />
+        <ToolContent>
+          {p.input_summary && <ToolInput input={p.input_summary} />}
+          <ToolOutput output={failed ? null : p.output_excerpt} errorText={failed ? p.output_excerpt : null} />
+        </ToolContent>
+      </Tool>
+    </ChainOfThoughtStep>
+  );
+}
+
+// Rule 2: a live run with an empty transcript end is a bug -- this row is
+// what fills it, with a label for the last thing that happened and the
+// seconds since it appeared.
+function WorkingRow({ phase }: { phase: WorkingPhase }) {
+  const [since] = useState(() => Date.now());
+  const now = useNowTick(1000);
+  const seconds = Math.max(0, Math.floor((now - since) / 1000));
+  return (
+    <div className="flex items-center gap-2 text-[12.5px] text-[var(--color-text-dim)]" role="status">
+      <Loader size={14} />
+      <Shimmer duration={1.5}>{WORKING_LABEL[phase]}</Shimmer>
+      <span className="tabular-nums">{seconds} s</span>
+    </div>
+  );
 }
 
 // The open-question interactive panel (spec: "the question panel becomes
@@ -830,16 +913,4 @@ function fileChangeOpLabel(op: "create" | "edit" | "delete" | "rename"): string 
     case "rename":
       return "přejmenován";
   }
-}
-
-function runEndReasonLabel(reason: string): string {
-  const labels: Record<string, string> = {
-    completed: "dokončeno",
-    interrupted: "přerušeno",
-    suspended: "pozastaveno",
-    error: "chyba",
-    limit: "limit",
-    host_lost: "proces osiřel",
-  };
-  return labels[reason] ?? reason;
 }

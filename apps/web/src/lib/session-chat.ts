@@ -284,17 +284,19 @@ export function runEndReasonLabel(reason: string): string {
 // yield nothing; a run_ended with any other reason yields an error row.
 export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: string | null): TranscriptRow[] {
   const rows: TranscriptRow[] = [];
-  let open: ActivityRow | null = null;
+  // Held in an object so the closures below can reset it -- a plain `let`
+  // narrows to `null` for the reader after the loop.
+  const group: { open: ActivityRow | null } = { open: null };
   let currentRun: string | null = null;
   const close = (): void => {
-    open = null;
+    group.open = null;
   };
   const push = (item: ActivityItem): void => {
-    if (!open) {
-      open = { kind: "activity", key: `a${item.seq}`, runId: currentRun, items: [], live: false };
-      rows.push(open);
+    if (!group.open) {
+      group.open = { kind: "activity", key: `a${item.seq}`, runId: currentRun, items: [], live: false };
+      rows.push(group.open);
     }
-    open.items.push(item);
+    group.open.items.push(item);
   };
   for (const { seq, event } of collapseToolCalls(events)) {
     switch (event.kind) {
@@ -346,7 +348,7 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
         break;
     }
   }
-  const trailing: ActivityRow | null = open;
+  const trailing = group.open;
   if (trailing && liveRunId !== null && trailing.runId === liveRunId) trailing.live = true;
   return rows;
 }
