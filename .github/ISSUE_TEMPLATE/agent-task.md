@@ -16,18 +16,18 @@ Jedna až tři věty. Číslované body níže jsou seznam hotového: co v nich 
 
 Kde v kódu problém vzniká (soubor, funkce). Oprava se toho místa dotkne, nebo PR vysvětlí, proč ne.
 
-## Režimy: local / central – co musí fungovat kde
+## Workspace: osobní / týmový – co musí fungovat kde
 
-Central mód je primární provozní režim; local workspace je central v krabici pro jednoho člověka (`docs/architecture/data-modes.md`). Vyplň všechny řádky. „Známá mezera v central módu" není výsledek; chybějící půlka je nová issue pojmenovaná v titulu PR.
+Týmový workspace je primární provozní režim; osobní workspace je totéž v krabici pro jednoho člověka (`docs/architecture/data-modes.md`). Vyplň všechny řádky. „Známá mezera v týmovém workspace" není výsledek; chybějící půlka je nová issue pojmenovaná v titulu PR.
 
-| | Local workspace | Central / agent mód |
+| | Osobní workspace | Týmový workspace (central server + sync agent) |
 |---|---|---|
 | Co se má stát | | |
-| Kde to běží (sidecar s grafovou DB / sync agent bez grafové DB / central) | | |
-| Které z těchto míst se mění: `apps/server/api/agent-router.ts`, `is_local_only_path` (`apps/desktop/src/lib.rs`) + `apps/server/shared/local-only-routes.json`, `CentralClient` (`apps/server/domain/sync/central/client.ts`), `apps/server/mcp/agent-tools.ts` | | |
+| Kde to běží (osobní: sidecar s grafovou DB / týmový: sync agent bez grafové DB, central server) | | |
+| Které z těchto míst se mění: `apps/server/api/agent-router.ts`, `is_local_only_path` (`apps/desktop/src/lib.rs`) + `apps/server/shared/device-local-routes.json`, `CentralClient` (`apps/server/domain/sync/central/client.ts`), `apps/server/mcp/agent-tools.ts` | | |
 | Test proti fake central serveru (`test/agent-router*.test.ts`, `test/agent-tools.test.ts`) | | |
 
-Pokud je funkce záměrně central-only (Drive, remote watcher, tým, hosty, rutiny), napiš to sem výslovně místo tabulky.
+Pokud je funkce záměrně jen na central serveru (Drive, remote watcher, tým, hosty, rutiny), napiš to sem výslovně místo tabulky.
 
 ## Migrace a schéma (pokud se mění)
 

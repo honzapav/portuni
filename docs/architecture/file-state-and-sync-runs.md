@@ -3,8 +3,8 @@
 File state is maintained, never re-derived by an agent: the mirror watcher
 keeps the local side current on every disk change, the remote watcher on
 the central server keeps the remote side current, and a deliberate sync run is the only
-thing that moves bytes. The same rules hold in a local workspace and in
-central mode; the sections below say where the two differ and why.
+thing that moves bytes. The same rules hold in a personal workspace and in
+team workspace; the sections below say where the two differ and why.
 Design background: [`file-sync.md`](./file-sync.md) (adapters, hash identity,
 data model, tool contracts) and
 [`file-mutation-propagation.md`](./file-mutation-propagation.md) (tombstones,
@@ -13,7 +13,7 @@ top of both.
 
 ## Modes in one table
 
-| | Local workspace (`isLocalWorkspace()`: not `PORTUNI_AUTH_MODE=google`, not `PORTUNI_AGENT_MODE=1`) | Central mode, the device (sidecar as sync agent, `PORTUNI_AGENT_MODE=1`) | Central server itself (`PORTUNI_AUTH_MODE=google`) |
+| | Personal workspace (`isLocalWorkspace()`: not `PORTUNI_AUTH_MODE=google`, not `PORTUNI_AGENT_MODE=1`) | Team workspace, the device (sidecar as sync agent, `PORTUNI_AGENT_MODE=1`) | Central server itself (`PORTUNI_AUTH_MODE=google`) |
 |---|---|---|---|
 | Engine | `engine.ts`, `sync-run.ts` | `engine-central.ts`, routes in `agent-router.ts`, record half via `CentralClient` | `engine.ts` direct, adapter-direct file lifecycle, `file-content-remote.ts` |
 | Remote | none, ever (`LOCAL_MODE_NO_REMOTE`) | central resolves it; device holds no Drive credentials | Drive via service account |
@@ -25,7 +25,7 @@ top of both.
 A behaviour change on the file plane touches both device engines or states
 in its PR why one is out of scope; a route the desktop UI calls needs an
 entry in `is_local_only_path` (`apps/desktop/src/lib.rs`) and a handler in
-`agent-router.ts`, or it never reaches the device in central mode.
+`agent-router.ts`, or it never reaches the device in a team workspace.
 
 ## Registration and classification
 
@@ -37,7 +37,7 @@ entry in `is_local_only_path` (`apps/desktop/src/lib.rs`) and a handler in
   later `storeFile`/write on the same path backfills `remote_name` onto the
   existing row instead of creating a duplicate.
 - **Registration is record-only.** No upload happens at registration. On a
-  local workspace the file reads `clean` (there is nothing to push to). On a
+  personal workspace the file reads `clean` (there is nothing to push to). On a
   workspace where a remote can resolve it reads `push` until a deliberate
   `portuni_store` or sync run pushes it.
 - **Where a remote is required.** `storeFile`, `pullFile`, `runNodeSync` and
@@ -56,14 +56,14 @@ entry in `is_local_only_path` (`apps/desktop/src/lib.rs`) and a handler in
   `deleted_local`. REST derives `sync_class` from the bucket array;
   `portuni_status` serializes the raw `StatusResult`, so `entry.class` must
   give the same answer.
-- **Local workspace scan.** `statusScan` computes `isLocalWorkspace()` once
+- **Personal workspace scan.** `statusScan` computes `isLocalWorkspace()` once
   and short-circuits every row before touching an adapter: tracked and
   present is `clean`, tracked and gone from disk is `deleted_local`.
   `push`/`pull`/`conflict`/`remote_*` cannot occur. The web hides (not
   disables) `SyncBar`/`SyncOverview`'s "Synchronizovat" and the file row's
-  "Obnovit" on a local workspace (`useDataMode()` in `DetailPane.tsx`,
+  "Obnovit" on a personal workspace (`useDataMode()` in `DetailPane.tsx`,
   `SyncOverview.tsx`).
-- **Central-mode scan (device and central server).** `statusScanCentral` reads only
+- **Team-workspace scan (device and central server).** `statusScanCentral` reads only
   `file_state.cached_local_hash` and `files.current_remote_hash`; it has no
   `fast` parameter and never stats the remote. Re-deriving what the device
   does not know is the sync run's own reconcile pass
@@ -77,7 +77,7 @@ entry in `is_local_only_path` (`apps/desktop/src/lib.rs`) and a handler in
 - **`portuni_status` filters.** `classes`/`path_prefix`/`limit`/`offset`
   (`status-filter.ts`); the response always carries `counts` (true
   per-bucket sizes, ignoring filters) and `truncated`.
-- **Central hash tracking.** `files.current_remote_hash` is central-mode
+- **Central hash tracking.** `files.current_remote_hash` is team-workspace
   classification's only source of remote truth, so every path that proves
   the remote's identity persists it: `writeFileBytesRemote`'s `ifAbsent`
   and `baseCanonicalHash` checks and `readFileBytesRemote` call
@@ -127,7 +127,7 @@ entry in `is_local_only_path` (`apps/desktop/src/lib.rs`) and a handler in
   one-shot watcher event never silently degrades (same rule as
   `tryApplyDiskMoveCentral`).
 
-## File lifecycle routes in central mode
+## File lifecycle routes in a team workspace
 
 Central's own create, rename and delete are adapter-direct (it has no device
 mirror). The desktop UI's REST calls for them are routed to the device
@@ -178,7 +178,7 @@ half:
 - **Still central-only.** `/nodes/:id/file-url` and `/nodes/:id/folder-url`
   are served Drive-direct by the central server and are deliberately not device-local.
 
-Local workspace equivalents: `createFile` (`file-content.ts`) resolves the
+Personal workspace equivalents: `createFile` (`file-content.ts`) resolves the
 remote first and calls `storeFile` (register + push) or `registerLocalFile`
 (record only) when nothing is routed, so a retry never hits `EXISTS` for
 bytes already on disk; `deleteFile`/`moveFile`/`renameFile`/`renameFolder`
@@ -304,11 +304,11 @@ that follow from it:
   start; a server with no loop answers `[]`, and `isLocalWorkspace()`
   short-circuits to the same. **Deliberately not device-local**: no
   `is_local_only_path` entry, no `agent-router.ts` route, no `CentralClient`
-  method, no MCP tool. The central-mode desktop reaches it through the
+  method, no MCP tool. The team-workspace desktop reaches it through the
   ordinary proxy to the central server, the only process that runs the loop. Web
   helpers (`apps/web/src/lib/remote-watch-view.ts`: `remoteWatchLine`,
   `pullNodeCount`) are pure and server-tested; Nastavení → Synchronizace
-  renders one line per remote and nothing on a local workspace.
+  renders one line per remote and nothing on a personal workspace.
 
 ## Per-path locking
 
@@ -390,19 +390,19 @@ A local step that runs after central already committed reports
 
 ## Drive: one auth path, central only
 
-Collaboration is central mode
+Collaboration is team workspace
 (`docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md`). A
-local workspace cannot register or route to a remote, so there is no
+personal workspace cannot register or route to a remote, so there is no
 per-user Drive OAuth anywhere. `drive-adapter.ts` takes auth from the
 remote token's `service_account_json` only (`drive-sa-auth.ts`;
 `assertSaDriveConfig` requires a `shared_drive_id`, since a service account
 has no My Drive quota). Setup is `remote-service.ts`
 (`setupRemoteService`/`setRoutingPolicyService`/`listRemotesService`, admin
-tier, refused on a local workspace with `LocalModeNoRemoteError`) reached
+tier, refused on a personal workspace with `LocalModeNoRemoteError`) reached
 through `portuni_setup_remote` (MCP only; the `setup-drive-remote` prompt
 walks the steps). There is no REST or web UI for connecting Drive;
 `SyncSection.tsx` (Nastavení → Synchronizace) is informational: server URL
-in central mode, a one-line "no remote" note on a local workspace, plus
+in a team workspace, a one-line "no remote" note on a personal workspace, plus
 mirror-watcher errors and the remote-watcher lines in both.
 
 ## Deliberately not done
@@ -416,7 +416,7 @@ Do not re-litigate without new reasons:
   mutation retries. Larger than one backlog item; the delete replay above
   is the reachable case.
 - Making `moveFile`/`renameFile`/`renameFolder` work for a never-routed
-  local-only file. Today it is a clear rejection (`"File X has no remote
+  device-local file. Today it is a clear rejection (`"File X has no remote
   binding"`, or a per-file `repair_needed` in `renameFolder`'s batch);
   widening the public `remote_name` fields to nullable is a riskier change
   than the narrow scenario warrants.
@@ -437,4 +437,4 @@ Do not re-litigate without new reasons:
 - `docs/superpowers/specs/2026-09-12-remote-watcher-design.md`: the remote
   watcher.
 - `docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md`:
-  why a local workspace has no remote.
+  why a personal workspace has no remote.

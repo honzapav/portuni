@@ -10,11 +10,11 @@ suspend, resume, access tiers) is in
 [`sessions-and-runner.md`](./sessions-and-runner.md); the design intent is
 `docs/superpowers/specs/2026-09-15-task-surface-design.md`.
 
-Data modes: the web layer is the same in a local workspace and a central-mode
+Workspaces: the web layer is the same in a personal workspace and a team-workspace
 workspace. Every session route it calls is served by the device sidecar in
-both modes, and the WebSocket always targets that sidecar. The only
+both kinds of workspace, and the WebSocket always targets that sidecar. The only
 mode-aware pieces are unrelated to threads: sync actions and the file row's
-restore button are hidden on a local workspace (`useDataMode()` in
+restore button are hidden on a personal workspace (`useDataMode()` in
 `DetailPane.tsx` and `SyncOverview.tsx`).
 
 ## Surfaces
@@ -322,7 +322,7 @@ there first.
 - The Relace tab shows no host label; `host_id` lives on the run, not the
   summary (#428).
 - A model change reaches a live run only on the device driving it; in
-  central mode `PATCH /sessions/:id` goes to the central server, which runs nothing
+  team workspace `PATCH /sessions/:id` goes to the central server, which runs nothing
   (#426, see `sessions-and-runner.md`).
 
 ## See also

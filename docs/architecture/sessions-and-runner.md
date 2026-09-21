@@ -84,7 +84,7 @@ actions `read | message | stop | resume` (spec: remote-hosts-and-task-queue,
   carrying `by` (`SessionRuntime.recordStoppedBy`) so the chat shows who.
 - Coarse route scopes (`auth/min-scopes.ts`): `GET` routes are `read`,
   every mutating `/sessions*` route and `POST /sessions` are `write`.
-- In central mode these checks run on the central server, on every store round
+- In a team workspace these checks run on the central server, on every store round
   trip: the device never re-implements them. A central 404 surfaces as
   `SESSION_NOT_FOUND`.
 
@@ -95,7 +95,7 @@ orientation, translates events, ends and suspends) is one implementation,
 `session-runtime.ts`, and it always runs on the device. Only
 `CreateSessionRuntimeDeps` changes between modes:
 
-| dep | local workspace | central mode |
+| dep | personal workspace | team workspace |
 |---|---|---|
 | `store` | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
 | provisioning | `provision.ts`: `createMirrorForNode`, `orientationForNode` (direct db read) | `provision-central.ts`: `createMirrorForNodeCentral`, `CentralClient.orientation` (`GET /nodes/:id/orientation`) |
@@ -125,7 +125,7 @@ orientation, translates events, ends and suspends) is one implementation,
   register the file as tracked; the next sync run's untracked-file
   discovery picks it up.
 
-### Which routes run where (central mode)
+### Which routes run where (team workspace)
 
 `is_local_only_path` (`apps/desktop/src/lib.rs`) sends to the device's sync
 agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
@@ -160,7 +160,7 @@ live action, `sessions-ws.ts` in the same change.
     `run_ended {reason: "host_lost"}`, suspend with reason `host_lost`
     (Relace label "proces osiřel po restartu") and append a `handoff` event.
 - A pid file is only ever found by the next boot of the same process on the
-  same machine. Both modes run the sweep: `index.ts` and `desktop.ts`'s
+  same machine. Both kinds of workspace run the sweep: `index.ts` and `desktop.ts`'s
   local branch call `sweepOrphanedRunsOnBoot` (`localRunSweepBackend`,
   resolves the run by id in `session_runs`); `desktop.ts`'s `agentMain`
   calls `sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client))`
@@ -280,7 +280,7 @@ human verification.
   the WS snapshot). A draft is visible only in the window that created it.
 - **Prune.** `sweepStaleDraftSessionsOnBoot` deletes drafts older than 24 h
   at boot of the process that owns the graph db (`index.ts`, `desktop.ts`
-  local branch; on the central server for central-mode rows). A thread's `×` deletes
+  local branch; on the central server for team-workspace rows). A thread's `×` deletes
   an empty draft immediately.
 - **Every non-close end suspends with a server-written summary.**
   `closingSessions: Set<string>` marks an explicit close (`closeSession`,
@@ -374,7 +374,7 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   `SessionRuntime` method as its REST twin. A refused action is an
   `{id, type: "error", payload: {code, message}}` frame, never a closed
   socket.
-- **Mounted in both modes** through `SessionsWsDeps` (`runtime`, `access`,
+- **Mounted in both kinds of workspace** through `SessionsWsDeps` (`runtime`, `access`,
   `snapshot`, `canSee`): `createLocalSessionsWsDeps()` over the graph db;
   `agentMain` passes `createSessionsWsServer(createAgentSessionsWsDeps(
   client, runtime))` with the same runtime instance its router drives. The

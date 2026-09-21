@@ -177,7 +177,7 @@ static EXIT_FALLBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// building a fresh one per request meant no keep-alive and a rebuilt TLS
 /// stack every time. Measured on loopback (no TLS at all): 0.138 ms just to
 /// construct one, and a GET costs 0.181 ms with a fresh client against
-/// 0.031 ms with a shared one. On the central-mode path the same pattern
+/// 0.031 ms with a shared one. On the team-workspace path the same pattern
 /// costs a full TCP+TLS handshake per request instead of reusing a pooled
 /// connection. Cloning is cheap -- a `Client` is an `Arc` handle to the pool.
 pub(crate) fn http_client() -> reqwest::Client {
@@ -789,7 +789,7 @@ fn clear_turso_token(window: tauri::Window) -> Result<(), String> {
 // Both data modes hand out the workspace's local sidecar token: the URL the
 // Settings panel shows next to it is always the local MCP front door
 // (`workspace::global_front_door_url`), which authenticates with
-// PORTUNI_AUTH_TOKEN — in central mode the front door proxies graph tools
+// PORTUNI_AUTH_TOKEN — in a team workspace the front door proxies graph tools
 // to the central server with the device token itself, so the device token
 // is never the credential a client needs.
 #[tauri::command]
@@ -830,7 +830,7 @@ fn regenerate_mcp_token(window: tauri::Window) -> Result<String, String> {
 // Resolve (name, url, claude_token, token_env) for one workspace's global
 // MCP entry. Local mode: loopback URL from the stable config port and the
 // literal persisted token (Claude embeds it; Codex/Vibe use env
-// indirection). Central mode: the same loopback front door (never the
+// indirection). Team workspace: the same loopback front door (never the
 // central URL) and env-reference for all.
 fn global_entry_parts(
     app: &AppHandle,
@@ -1170,13 +1170,13 @@ fn open_external(url: String) -> Result<(), String> {
 }
 
 /// The shared route contract with the server: which routes the webview's
-/// `api_request` sends to THIS device's sidecar in central mode instead of
+/// `api_request` sends to THIS device's sidecar in a team workspace instead of
 /// the central server. `apps/server/api/agent-router.ts` serves exactly this
 /// list and is tested against the same file
 /// (`test/agent-router-route-parity.test.ts`), so a route added in one place
 /// without the other fails the gate. Method-agnostic on purpose: routing is
 /// decided per path, the router decides per method.
-const LOCAL_ONLY_ROUTES_JSON: &str = include_str!("../../server/shared/local-only-routes.json");
+const LOCAL_ONLY_ROUTES_JSON: &str = include_str!("../../server/shared/device-local-routes.json");
 
 /// One `device_local` pattern, split into segments; `{name}` matches any
 /// single non-empty segment.
@@ -1189,10 +1189,10 @@ fn local_only_patterns() -> &'static [Vec<RouteSegment>] {
     static PATTERNS: std::sync::OnceLock<Vec<Vec<RouteSegment>>> = std::sync::OnceLock::new();
     PATTERNS.get_or_init(|| {
         let doc: serde_json::Value = serde_json::from_str(LOCAL_ONLY_ROUTES_JSON)
-            .expect("local-only-routes.json is valid JSON");
+            .expect("device-local-routes.json is valid JSON");
         doc["device_local"]
             .as_array()
-            .expect("local-only-routes.json has a device_local array")
+            .expect("device-local-routes.json has a device_local array")
             .iter()
             .map(|entry| {
                 let pattern = entry["pattern"]
@@ -1215,7 +1215,7 @@ fn local_only_patterns() -> &'static [Vec<RouteSegment>] {
 }
 
 /// True when `path` (query string ignored) is one of the device-local routes
-/// in `apps/server/shared/local-only-routes.json`. Everything else goes to
+/// in `apps/server/shared/device-local-routes.json`. Everything else goes to
 /// the central server: graph reads and writes, the session record half
 /// (`/sessions/<id>`, `/state`, `/resume-info`, `/runs...`, `/sessions/record`),
 /// `/nodes/<id>/file-url` and `/nodes/<id>/folder-url`.
@@ -1274,7 +1274,7 @@ struct DataModeResponse {
 }
 
 /// Return the current data mode and server URL. Used by the React frontend
-/// to adapt its UI (hide mirror/sync affordances in central mode).
+/// to adapt its UI (hide mirror/sync affordances in a team workspace).
 #[tauri::command]
 fn get_data_mode(window: tauri::Window) -> Result<DataModeResponse, String> {
     let ws_id = ws_of(&window)?;
@@ -2002,7 +2002,7 @@ async fn restart_sidecar(window: tauri::Window, id: Option<String>) -> Result<()
 // need to reach this workspace's local backend (api_request's webview
 // proxy, mint_showtime_handoff, sessions_ws's live channel).
 //
-// Port 0 is the central-mode sentinel: the sync agent for this workspace
+// Port 0 is the team-workspace sentinel: the sync agent for this workspace
 // isn't running (not logged in yet, or no server_url). Callers that need to
 // distinguish that case from "genuinely not ready" should match on the
 // exact error string "sync agent not running".
@@ -2067,7 +2067,7 @@ async fn api_request(
     let (ws_id, cfg) = ws_and_config(&app, &window)?;
     let is_central = workspace::is_central(&cfg);
 
-    // In central mode, LOCAL_ONLY paths (mirror/sync/scope) are
+    // In a team workspace, LOCAL_ONLY paths (mirror/sync/scope) are
     // served by the LOCAL sync agent — fall through to the local proxy
     // below. Everything else goes to the central server.
     if is_central && !is_local_only_path(&path) {
@@ -2075,10 +2075,10 @@ async fn api_request(
         let server_url = cfg
             .server_url
             .clone()
-            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
+            .ok_or_else(|| "team workspace requires server_url in config.json".to_string())?;
 
         let jwt = keychain_get_ws(auth::KEYCHAIN_SESSION_JWT, &ws_id)
-            .ok_or_else(|| "central mode: not logged in (no session JWT)".to_string())?;
+            .ok_or_else(|| "team workspace: not logged in (no session JWT)".to_string())?;
 
         // Convert body: api_request takes Option<String>, do_central_request
         // takes Option<&serde_json::Value>. Parse if present, fall through as
@@ -2135,15 +2135,15 @@ async fn api_request(
     }
 
     // Local proxy: the bundled sidecar (local mode) or the sync agent
-    // (central mode, LOCAL_ONLY paths).
+    // (team workspace, LOCAL_ONLY paths).
     // Snapshot port + token from state, then drop the guard before
     // awaiting — holding a std::sync::Mutex across .await deadlocks
     // the executor on contention.
     let (port, token) = match sidecar_port_and_token(&app, &ws_id) {
         Ok(pt) => pt,
         Err(e) if e == "sync agent not running" => {
-            // Central-mode sentinel: the sync agent is not running (not
-            // logged in yet, or no server_url). Local-only affordances
+            // Team-workspace sentinel: the sync agent is not running (not
+            // logged in yet, or no server_url). Device-local affordances
             // stay parked.
             return Ok(ApiResponse {
                 status: 501,
@@ -2722,7 +2722,7 @@ struct WorkspaceInfo {
     active: bool,
     running: bool,
     // True when the BackendPorts entry for this workspace is the central
-    // sentinel (Some(0)): a central-mode sync agent that is deferred because
+    // sentinel (Some(0)): a team-workspace sync agent that is deferred because
     // the user has not logged in yet (see spawn_sidecar_ws). Distinct from
     // "not running" (no entry at all, or a crashed/never-spawned sidecar) so
     // the UI can show "waiting for login" instead of a plain error state.
@@ -3776,12 +3776,12 @@ mod local_only_path_tests {
     use super::is_local_only_path;
 
     // The shared contract with the server: every route the webview must
-    // reach on THIS device's sidecar in central mode, and the record-half /
+    // reach on THIS device's sidecar in a team workspace, and the record-half /
     // graph routes that must keep going to central. agent-router.ts is
     // checked against the same file by test/agent-router-route-parity
     // .test.ts, so a route added on one side without the other fails the
     // gate on whichever side is missing.
-    const LOCAL_ONLY_ROUTES: &str = include_str!("../../server/shared/local-only-routes.json");
+    const LOCAL_ONLY_ROUTES: &str = include_str!("../../server/shared/device-local-routes.json");
 
     fn route_examples(section: &str) -> Vec<(String, String)> {
         let doc: serde_json::Value = serde_json::from_str(LOCAL_ONLY_ROUTES).expect("valid json");
@@ -3805,7 +3805,7 @@ mod local_only_path_tests {
         for (pattern, example) in routes {
             assert!(
                 is_local_only_path(&example),
-                "{pattern} ({example}) is listed as device-local in local-only-routes.json but is_local_only_path says central"
+                "{pattern} ({example}) is listed as device-local in device-local-routes.json but is_local_only_path says central"
             );
         }
     }
@@ -3815,7 +3815,7 @@ mod local_only_path_tests {
         for (pattern, example) in route_examples("central") {
             assert!(
                 !is_local_only_path(&example),
-                "{pattern} ({example}) is listed as central in local-only-routes.json but is_local_only_path routes it to the sidecar"
+                "{pattern} ({example}) is listed as central in device-local-routes.json but is_local_only_path routes it to the sidecar"
             );
         }
     }
@@ -3911,7 +3911,7 @@ mod local_only_path_tests {
     #[test]
     fn sync_jobs_is_local_only() {
         // #273: the background multi-node sync job fans out into per-node
-        // POST /nodes/:id/sync calls, already local-only above -- the job
+        // POST /nodes/:id/sync calls, already device-local above -- the job
         // itself (start, poll by id, poll "current") must run on the same
         // device or it would drive central-side syncRunCentral calls with
         // no device mirror context at all.
@@ -3924,7 +3924,7 @@ mod local_only_path_tests {
     #[test]
     fn runners_registry_is_local_only() {
         // runners.json lives on this device's sidecar; the Runnery tab in
-        // central mode must read and write it there, not on central.
+        // team workspace must read and write it there, not on central.
         assert!(is_local_only_path("/runners"));
         assert!(is_local_only_path("/runners/instances"));
         assert!(is_local_only_path("/runners/instances/01ABCDEF"));

@@ -3,9 +3,9 @@
 An agent reaches Portuni through one MCP server (`apps/server/mcp/`),
 whichever of the three ways it connects: a session on a **local
 workspace** (the standalone server or a local-mode sidecar, `env`
-auth), a session through the **sync-agent front door** on a central-mode
+auth), a session through the **sync-agent front door** on a team-workspace
 device (`agent-transport.ts` proxies to the central server, `agent-tools.ts` runs the
-device-local tools), or a **connector session on the central server** (claude.ai or
+device-local tools), or a **remote MCP client session (OAuth grant) on the central server** (claude.ai or
 Claude Desktop → `api.portuni.com/mcp`, no device and no `sync.db`). Every
 mechanism below states what it does in each of the three. The scope model
 itself (scope set, session types, refusal contract, write set) is
@@ -15,7 +15,7 @@ documented once, in `apps/server/mcp/resources/scope-rules.md` (served as
 
 ## Auth modes and scope tiers
 
-`PORTUNI_AUTH_MODE=env` (the default for a local workspace) resolves every
+`PORTUNI_AUTH_MODE=env` (the default for a personal workspace) resolves every
 request to the solo bearer identity; `google` (central) authenticates with
 Google OAuth and derives the tier from group membership. Enforcement is
 server-side in `apps/server/auth/`: `min-scopes.ts` names the minimum tier
@@ -29,7 +29,7 @@ per tool and REST route, `node-access.ts` decides node visibility.
 | `admin` | deletes, users, `portuni_setup_remote`, routing policy | `PORTUNI_GROUPS_ADMIN` |
 
 Each `PORTUNI_GROUPS_*` value is a comma-separated list of group emails.
-A local workspace has one unscoped identity; the tiers only bite on
+A personal workspace has one unscoped identity; the tiers only bite on
 central. The sync-agent front door does not evaluate tiers itself: every
 proxied call is authorized on the central server under the device token's identity,
 and the device-local tools (`LOCAL_TOOLS`, below) apply the same local
@@ -45,14 +45,14 @@ the underlying reason**; the server never serves an empty-scope session in
 place of the one the client asked for. A headless device token without
 `?home_node_id` is refused at seed time for the same reason.
 
-- Local workspace: the per-mirror configs (below) carry the parameter, so
+- Personal workspace: the per-mirror configs (below) carry the parameter, so
   a CLI opened inside a mirror is seeded without any tool call.
 - Agent-mode front door: the per-mirror `.mcp.json` points at the local
   sidecar (`http://127.0.0.1:<port>/mcp?home_node_id=…`); the front door
   opens the upstream connection to central only once the request carries
   a valid `initialize`, forwards the parameter, and the central server does the seed.
   A probe at the local door never creates a session row on the central server.
-- Connector on the central server: no `home_node_id` and no scope set; the session is
+- Remote MCP client on the central server: no `home_node_id` and no scope set; the session is
   `interactive_chat`, permission-only reads (see scope-rules).
 
 ## Materialized scope configs
@@ -93,11 +93,11 @@ Rules that hold in every mode:
 
 Per mode:
 
-- Local workspace: the sidecar materializes directly from its graph db.
+- Personal workspace: the sidecar materializes directly from its graph db.
 - Agent-mode device: the sidecar materializes the same files
   (`materializeAllRegisteredMirrors` at sync-agent boot in `desktop.ts`),
   pointing `.mcp.json` at the local front door instead of central.
-- Connector on the central server: nothing to materialize; there is no mirror.
+- Remote MCP client on the central server: nothing to materialize; there is no mirror.
 
 ## Disk read scope and `portuni_read_file`
 
@@ -129,7 +129,7 @@ adapter's `canUseTool` callback (`domain/write-scope.ts`'s
 
 Per mode:
 
-- Local workspace: `readable_path` comes straight from the mirror
+- Personal workspace: `readable_path` comes straight from the mirror
   registry in the graph db.
 - Agent-mode device: the central server's answer carries `local_mirror: null` and
   `local_path: null` (it has no device filesystem), so
@@ -137,7 +137,7 @@ Per mode:
   fill `readable_path`, `local_mirror` and `files[].local_path` from this
   device's own mirror registry for any node mirrored here, and the front
   door's `portuni_expand_scope` overlay fills `readable` the same way.
-- Connector on the central server: never a mirror, so `readable_path` is always
+- Remote MCP client on the central server: never a mirror, so `readable_path` is always
   `null` and `portuni_read_file` is the only file read available.
 
 `X-Portuni-Spawn-Id` is not a read-scope mechanism: it binds a fresh
@@ -153,13 +153,13 @@ only** (`write-scope.ts`'s `buildOrientationHint`, appended by
 `scope-materialize.ts`); `.cursor/rules` and the `CLAUDE.md`/`AGENTS.md`
 marker blocks keep the shorter write-scope hint and never carry it.
 
-- Local workspace: `orientationForNode` reads the graph db directly.
+- Personal workspace: `orientationForNode` reads the graph db directly.
 - Agent-mode device: `materializeAllRegisteredMirrors` takes an
   `orientationFor` resolver; sync-agent boot passes
   `CentralClient.orientation` (`GET /nodes/:id/orientation`, computed on
   central, which has the graph). A failed fetch yields no orientation
   section, never a failed materialization.
-- Connector on the central server: no mirror, no file; a runner-started task gets
+- Remote MCP client on the central server: no mirror, no file; a runner-started task gets
   its orientation through the run's own provisioning instead.
 
 ## Elicitation and tool-call deadlines
@@ -193,7 +193,7 @@ dialogs at all.
 
 Per mode:
 
-- Local workspace: dialog rendered by the connected client; `env`
+- Personal workspace: dialog rendered by the connected client; `env`
   sessions are unscoped for writes and rarely see one.
 - Agent-mode device: the front door advertises the connected client's
   own capabilities upstream and relays the central server's elicitation request back
@@ -202,7 +202,7 @@ Per mode:
   `portuni_store`, `portuni_pull`, `portuni_adopt_files`) never pass
   through `mcp/tools/files.ts`; they always run on a device that has a
   `sync.db`, so invariant 2 is satisfied by construction there.
-- Connector on the central server: no `sync.db`, so `portuni_store` and a
+- Remote MCP client on the central server: no `sync.db`, so `portuni_store` and a
   `portuni_pull(file_id)` fail fast; the write dialog for graph tools
   renders in claude.ai and times out under invariant 1.
 
@@ -247,12 +247,12 @@ registers it.
 
 Per mode:
 
-- Local workspace: handoff minted and exchanged on the local sidecar; the
+- Personal workspace: handoff minted and exchanged on the local sidecar; the
   agent connects to it directly.
 - Agent-mode device: identical, against the local front door (the
   `mcp_url` in the exchange points at the sidecar), so the Showtime agent
   is proxied to the central server like any other session.
-- Connector on the central server: not applicable; both commands need a mirror on a
+- Remote MCP client on the central server: not applicable; both commands need a mirror on a
   device.
 
 ## Environment variables

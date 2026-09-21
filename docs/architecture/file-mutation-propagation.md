@@ -6,7 +6,7 @@ deterministic — no agent involvement, no silent skips.
 
 | Origin | Mechanism | Code |
 |---|---|---|
-| MCP tool on this device (central mode) | Agent front door: snapshot before proxy, local disk step after a confirmed success | `mcp/agent-tools.ts` (`snapshotForDiskMutation` / `applyLocalAfterProxiedMutation`), wired in `mcp/agent-transport.ts` (GH #78) |
+| MCP tool on this device (team workspace) | Agent front door: snapshot before proxy, local disk step after a confirmed success | `mcp/agent-tools.ts` (`snapshotForDiskMutation` / `applyLocalAfterProxiedMutation`), wired in `mcp/agent-transport.ts` (GH #78) |
 | Web UI / another device / any remote plane | Delete tombstones in sync-info, matched during discovery, cleaned by the sync run | `sync-remote-api.ts` (`NodeSyncInfo.deleted`), `engine.ts` (`matchDeleteTombstones` / `cleanupDeletedRemote`), `engine-central.ts` (`matchTombstonesForContext`) (GH #79) |
 | Raw `mv` / `rm` on disk | Watcher pairing at registration time by inode identity; unregister of never-pushed deletions | `reconcile.ts` (`tryApplyDiskMove`, unregister branch), `engine-central.ts` (`tryApplyDiskMoveCentral`) |
 | Deleted / added on the remote (Drive UI, another tool) | Remote sweep at the start of every deliberate sync run: a pushed record whose object is confirmed gone is deleted + tombstoned; a file new on the remote anywhere under `wip/`, `outputs/`, or `resources/` (at any depth) is adopted (skipped if any path segment past the section starts with `.`) | `remote-sweep.ts` (`remoteSweep`, `adoptableSection`), called from `handleSyncRun` and `POST /nodes/:id/sync/remote-sweep` |
@@ -59,7 +59,7 @@ where it can see the move — the watcher's registration path:
   Drive file ID — and thus shared links, comments, version history —
   preserved). `moveFile` gained optional `newFilename`, so one rename covers
   a combined move+rename. Never-pushed records are retargeted with a plain
-  record update (no remote object exists). Central mode goes through
+  record update (no remote object exists). Team workspace goes through
   `POST /nodes/:nodeId/files/:fileId/move` (`CentralClient.moveFileRecord`).
 - Watcher reconciles are serialized in event order (`mirror-watcher.ts`):
   the mv emits events for both paths in arbitrary order and the second
@@ -92,7 +92,7 @@ where it can see the move — the watcher's registration path:
 - The per-node status endpoint (`GET /nodes/:id/sync/status`) runs without
   discovery, so its `untracked` list can transiently show a tombstoned copy;
   the next sync run cleans it.
-- A cross-mirror `mv` in central mode falls back to plain registration
+- A cross-mirror `mv` in a team workspace falls back to plain registration
   (candidates are limited to the node's own records).
 - Tombstone matching starts with deletions performed after this change
   (older audit rows lack `node_id`).

@@ -14,9 +14,9 @@ still the production driver everywhere.
 
 | Runtime | Graph db | Per-device sync db |
 |---|---|---|
-| Local workspace (desktop sidecar without `TURSO_URL`, or a standalone server with a `file:` URL) | `file:<dataDir>/portuni.db` via libsql (`apps/server/desktop.ts` sets `TURSO_URL` to that path when unset); PGlite after B4 | `<workspace>/.portuni/sync.db` |
+| Personal workspace (desktop sidecar without `TURSO_URL`, or a standalone server with a `file:` URL) | `file:<dataDir>/portuni.db` via libsql (`apps/server/desktop.ts` sets `TURSO_URL` to that path when unset); PGlite after B4 | `<workspace>/.portuni/sync.db` |
 | Central server (`PORTUNI_AUTH_MODE=google`) | Turso today; managed Postgres after B6 | none (no mirrors) |
-| Central-mode sidecar (`PORTUNI_AGENT_MODE=1`) | **none** | `<workspace>/.portuni/sync.db` |
+| Team-workspace sidecar (`PORTUNI_AGENT_MODE=1`) | **none** | `<workspace>/.portuni/sync.db` |
 
 Rules that follow:
 
@@ -26,7 +26,7 @@ Rules that follow:
   `~/Library/Application Support/ooo.workflow.portuni/`.
 - A workspace without `TURSO_URL` has its local SQLite as the source of
   truth. No Turso is involved.
-- A central-mode sidecar has no graph db at all. New server code that reads
+- A team-workspace sidecar has no graph db at all. New server code that reads
   the graph directly (`getDb()`, a `belongs_to` query, `session_scope`)
   needs a `CentralClient` counterpart or an injectable seam, or it silently
   breaks the one mode a team uses. The existing seams are listed in
@@ -36,7 +36,7 @@ Rules that follow:
   `createClient` directly, wrapped in `createLibsqlDbClient`. It is not
   driven by `getDb()`'s driver selection and moves to PGlite together with
   the graph db in B4.
-- A local workspace cannot register or route to a remote; that rule and its
+- A personal workspace cannot register or route to a remote; that rule and its
   legacy-row handling live in [`data-modes.md`](./data-modes.md).
 
 ## The `DbClient` interface and its drivers
@@ -306,6 +306,6 @@ Runbook: `docs/runbooks/postgres-cutover.md`.
 - `docs/lessons-learned.md` §7: the migration incident behind the
   `executeMultiple` rule.
 - [`data-modes.md`](./data-modes.md): which runtime reaches which
-  database, and the seams a central-mode sidecar uses instead of a graph db.
+  database, and the seams a team-workspace sidecar uses instead of a graph db.
 - [`sessions-and-runner.md`](./sessions-and-runner.md): the session store
   and runtime seams.

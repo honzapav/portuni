@@ -12,9 +12,9 @@ Lockfiles are regenerated, never hand-edited: `npm install --package-lock-only` 
 - Desktop: Rust unit tests in `apps/desktop`.
 - Web: typecheck + build; no browser tests.
 
-## Modes
+## Workspaces
 
-Central mode is the primary runtime; a local workspace is central in a box for one person. Read `docs/architecture/data-modes.md` before a server, route, MCP tool or session-runtime change and go through its "Modes checklist"; a route the desktop reaches on the device in central mode is added to `apps/server/shared/local-only-routes.json` together with `is_local_only_path` and `agent-router.ts`. The issue's "Režimy: local / central" section says what must work where; when it is missing, ask in a comment and treat both modes as required.
+A team workspace (central server + sync agent) is the primary runtime; a personal workspace is the same server in a box for one person. Read `docs/architecture/data-modes.md` before a server, route, MCP tool or session-runtime change and go through its "Workspace checklist"; a route the desktop reaches on the device in a team workspace is added to `apps/server/shared/device-local-routes.json` together with `is_local_only_path` and `agent-router.ts`. The issue's "Workspace: osobní / týmový" section says what must work where; when it is missing, ask in a comment and treat both kinds of workspace as required.
 
 ## Documentation
 

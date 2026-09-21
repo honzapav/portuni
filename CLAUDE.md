@@ -4,21 +4,24 @@ Knowledge graph for organisations (POPP: organisations, projects, processes,
 areas, principles). Backend Node + libSQL (Turso), frontend React + Vite,
 desktop shell Tauri 2.
 
-**Modes rule, before anything else.** Central mode is the primary
-operating mode: a team runs the central server, every teammate's desktop is a
-central-mode workspace whose sidecar is a sync agent, and that is where every
-real task, mirror and MCP session happens. A local workspace is central in a
-box for one person; it must keep working, but it is not the reference. Every
-change to the server, a REST route, an MCP tool or the session runtime works
-in **both** before its issue closes. A half that is missing is an **open issue
+**Workspace rule, before anything else.** A workspace is either a **team
+workspace** or a **personal workspace**, named by what it is for, not by
+where its database sits. The team workspace is the primary one: a team runs
+the central server, every teammate's desktop is a team workspace whose
+sidecar is a sync agent, and that is where every real task, mirror and MCP
+session happens. A personal workspace is the same server in a box for one
+person; it must keep working, but it is not the reference. Every change to
+the server, a REST route, an MCP tool or the session runtime works in
+**both** before its issue closes. A half that is missing is an **open issue
 named in the PR title**, never a "known gap" note in the docs. New behaviour
 is written once as domain code that runs on the central server and in the
-sidecar; where
-the device lacks the graph db, it takes a `CentralClient` seam, not a second
-implementation. Three words, kept apart: **central mode** is a workspace's
-`data_mode`; the **central server** is the process at `api.portuni.com`; the
-**sync agent** (`PORTUNI_AGENT_MODE=1`) is the device's sidecar in
-central mode. Model and checklist: `docs/architecture/data-modes.md`.
+sidecar; where the device lacks the graph db, it takes a `CentralClient`
+seam, not a second implementation. Words kept apart: **team workspace**
+(`data_mode: "central"`), **personal workspace** (`data_mode: "local"`), the
+**central server** (the process at `api.portuni.com`), the **sync agent**
+(the device's sidecar in a team workspace, `PORTUNI_AGENT_MODE=1`) and
+**device-local** (what the sync agent serves itself, `local_only` in code).
+Model and checklist: `docs/architecture/data-modes.md`.
 
 ## Where the rules live
 
@@ -28,7 +31,7 @@ its area.
 
 | Doc | Read when touching |
 |---|---|
-| `data-modes.md` | anything that behaves differently on the central server, on a central-mode device, or in a local workspace; request routing; the modes checklist |
+| `data-modes.md` | anything that behaves differently on the central server, on a team-workspace device, or in a personal workspace; request routing; the workspace checklist |
 | `file-state-and-sync-runs.md` | mirrors, watcher, reconcile, sync runs and jobs, remote watcher, locking, delete/move/rename, `repair_needed` |
 | `file-sync.md`, `file-mutation-propagation.md` | the file-bytes plane design, adapters, tombstones |
 | `sessions-and-runner.md` | sessions, tasks, runs, the Claude adapter, live channel server side, provider instances |
@@ -126,13 +129,13 @@ session `sandcastle-portuni` on its own socket; `watch`/`stop`/`status` are
 the other subcommands). Launcher, supervisor and prompt core come from the
 pinned package `honzapav/sandcastle-harness`; `.sandcastle/` holds only
 `config.json`, `prompt.project.md` and the Dockerfile. `config.json`'s
-`promptVars.runtimeTargets` is what puts the modes rule into the agent's
+`promptVars.runtimeTargets` is what puts the workspace rule into the agent's
 prompt. Secrets come from that Mac's Keychain, read by the loop process,
 never from disk. Never provision those entries, the image or a worktree for
 it on another machine. Details: `.sandcastle/README.md`.
 
-Issues for the loop use `.github/ISSUE_TEMPLATE/agent-task.md` (a "Režimy:
-local / central" section is mandatory); a batch's tracking issue uses
+Issues for the loop use `.github/ISSUE_TEMPLATE/agent-task.md` (a "Workspace:
+osobní / týmový" section is mandatory); a batch's tracking issue uses
 `tracking.md`, whose "Pravidla" block is the loop's contract.
 
 The verification gate for agents and humans alike is `scripts/agent-gate.sh`
@@ -176,17 +179,17 @@ One line each; the linked doc carries the mechanism and the reasoning.
 
 ### Modes and routing (`data-modes.md`, `desktop-shell.md`)
 
-- A REST route the desktop must reach on the device in central mode lives in
+- A REST route the desktop must reach on the device in a team workspace lives in
   three places at once: the local router, `agent-router.ts`, and
-  `apps/server/shared/local-only-routes.json`, which `is_local_only_path`
+  `apps/server/shared/device-local-routes.json`, which `is_local_only_path`
   embeds and matches against; `test/agent-router-route-parity.test.ts` holds
   the router to the same list.
-- A local workspace cannot register or route to a remote:
+- A personal workspace cannot register or route to a remote:
   `LocalModeNoRemoteError` (`LOCAL_MODE_NO_REMOTE`, REST 409) from
   `upsertRemote`/`setupRemoteService`/`setRoutingPolicyService`, and from
   `storeFile`/`pullFile`/`runNodeSync`/`snapshotService`, checked before any
   other work. Web hides (never merely disables) what cannot exist there.
-- A central-mode sidecar has no graph db. A graph read in code that runs on
+- A team-workspace sidecar has no graph db. A graph read in code that runs on
   the device goes through a `CentralClient` method or an injected resolver
   whose local default is the direct query; never a swallowed failure.
 - Central-only by design: Drive (service account only, shared drive
@@ -202,7 +205,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
   disk change; a registration never requires a remote (`remote_name` stays
   NULL, `remote_path` is always computed); a push is a deliberate
   `portuni_store` or sync run.
-- A status scan reads state, it never re-derives the remote; in central mode
+- A status scan reads state, it never re-derives the remote; in a team workspace
   `current_remote_hash` is the only remote truth, so every path that proves
   it persists it. Sync classes: `clean | push | pull | conflict |
   remote_missing | remote_error | native | deleted_local`; no `orphan`, no
@@ -217,7 +220,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
 - `relocateRemoteObject` refuses when both source and destination exist; a
   cross-remote move records `source_copied` so the retry can finish.
 - "Deliberately not done" (reserving a `files` row before upload, a general
-  idempotency-key replay, move/rename of a never-routed local-only file) is
+  idempotency-key replay, move/rename of a never-routed device-local file) is
   listed in the doc; do not re-litigate without new reasons.
 - Bulk sync is `POST /sync/jobs` (202, one job per user, reattach appends
   nodes); `total = push + untracked`, `decisions = conflict + deleted_local`,
@@ -232,7 +235,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
   (`DbSessionStore` locally, `CentralSessionStore` in sync-agent mode). Access is
   enforced once, on the central server, by `auth/session-access.ts`'s table. A new
   session verb lands in `router.ts`, `agent-router.ts`, `sessions-ws.ts`,
-  `min-scopes.ts` and `local-only-routes.json` together.
+  `min-scopes.ts` and `device-local-routes.json` together.
 - Nothing but Uzavřít and the auto-archive sweep reaches `closed`. Every other
   end (disconnect, idle `PORTUNI_RUN_IDLE_MS`, provider limit or error,
   boot sweep, orphaned pid) suspends with a server-written summary; the next
@@ -256,7 +259,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `PORTUNI_SCOPE.md`; no message is ever sent on connect.
 - A confirmation dialog never outlives the client's tool-call deadline
   (`ELICIT_TIMEOUT_MS` 4 min, relay 3 min, relay < outer always), and a tool
-  that cannot succeed (`requireLocalSyncDb()` on a connector session) fails
+  that cannot succeed (`requireLocalSyncDb()` on a remote MCP client session) fails
   before opening one.
 - Disk read scope is the real mirror path or nothing: `readable_path`/
   `local_path` on node answers, `portuni_read_file` for a node with no mirror

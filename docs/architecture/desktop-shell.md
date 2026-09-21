@@ -2,10 +2,10 @@
 
 The desktop app is a Tauri 2 host around the web UI. It owns every secret,
 spawns one sidecar per enabled workspace, opens one window per workspace, and
-proxies every request the webview makes. Central mode is the primary
+proxies every request the webview makes. A team workspace is the primary
 operating mode: there the sidecar is the **sync agent** and the graph lives on
-the central server; a local workspace runs the same sidecar as a full
-server. Every mechanism below works in both modes unless a section says
+the central server; a personal workspace runs the same sidecar as a full
+server. Every mechanism below works in both kinds of workspace unless a section says
 otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
 `sessions_ws.rs`, `updater.rs`, `workspace.rs`, `shell_path.rs`,
 `mcp_install.rs`).
@@ -42,7 +42,7 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
   `WorkspacesSection.tsx` `listen()` for it; a document-local
   `CustomEvent` would reach only the dispatching window.
 
-## Central-mode setup and the sync agent
+## Team workspace setup and the sync agent
 
 - `data_mode: "central"` plus `server_url` and `google_client_id` switch a
   workspace to the central server for the graph and for file content.
@@ -56,7 +56,7 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
   from `GET /auth/desktop-config` and writes `config.json` with
   `data_mode: "central"`. A hand-written `config.json` with the same keys
   works as a fallback.
-- In central mode the sidecar runs as the **sync agent**:
+- In a team workspace the sidecar runs as the **sync agent**:
   `spawn_sidecar_ws` passes `PORTUNI_AGENT_MODE=1`, `PORTUNI_CENTRAL_URL`,
   `PORTUNI_CENTRAL_TOKEN` (the device token from
   `auth::ensure_device_token`, Keychain label "Sync agent") and
@@ -70,7 +70,7 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
 - The agent starts only after Google login. Before that
   `spawn_sidecar_ws` records the sentinel port `0` in `BackendPorts`,
   emits `backend-ready` with `0` so the login gate renders, and every
-  local-only route answers `501 local_only` (see Request routing).
+  device-local route answers `501 local_only` (see Request routing).
   `google_login` re-invokes `spawn_sidecar_ws` after a successful login.
 - The sidecar needs a login shell's `PATH` to find `claude`;
   `shell_path::login_shell_path` provides it. There is no embedded
@@ -228,7 +228,7 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   `set_pending_backend_error`/`clear_pending_backend_error`, cleared on
   the next `backend-ready`). Pure cores: `backend_status_replay`,
   `record_pending_backend_error`, `retire_pending_backend_error`.
-- In central mode before login the replayed `backend-ready` carries the
+- In a team workspace before login the replayed `backend-ready` carries the
   sentinel port `0`.
 
 ## localStorage namespacing
@@ -236,7 +236,7 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
 - All windows share one webview origin, so per-workspace UI state is keyed
   `portuni:<ws_id>:<key>` (`apps/web/src/lib/workspace-storage.ts`):
   `openNodes`, `fileTreeCollapsed`, `workspace.detailVisible`,
-  `first-steps-pending` (central mode's first-login guidance flag).
+  `first-steps-pending` (the team workspace's first-login guidance flag).
   `currentWorkspaceId()` reads the id synchronously from
   `getCurrentWindow().label`; `scopedKey(key)` falls back to the unscoped
   `portuni:<key>` in a plain browser or Vite build, which has no workspace.
@@ -264,30 +264,30 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   (`apps/web/vite.config.ts`) injects the same header on `proxyReq` and
   `proxyReqWs` when configured, so the secret never reaches client JS in
   dev either.
-- The central-mode sync agent applies the same posture through
+- The team-workspace sync agent applies the same posture through
   `guardAgentRestWrite` on every mutating route it serves (file create,
   delete, resolve, rename, move, `PUT /nodes/:id/file`, sync run, mirror
   create, session actions). It has no graph db or session table to
   resolve a spawn id against, so the proven header is the only accepted
   proof there; a spawned agent mutates through MCP tools, which central
   write-gates.
-- MCP tool calls are outside this gate in both modes. Spec:
+- MCP tool calls are outside this gate in both kinds of workspace. Spec:
   `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md`.
 
 ## Request routing
 
 - The webview never makes HTTP requests itself. `api_request(window,
   method, path, body, headers)` resolves the window's workspace and:
-  - local workspace: proxies to `http://127.0.0.1:<port><path>` on the
+  - personal workspace: proxies to `http://127.0.0.1:<port><path>` on the
     workspace's sidecar with its bearer token (`sidecar_port_and_token`);
-  - central workspace: sends the request to `server_url` with the session
+  - team workspace: sends the request to `server_url` with the session
     JWT (`auth::do_central_request_raw`), retrying once after a silent
     refresh on 401, **unless** `is_local_only_path(path)` is true; then it
-    proxies to the local sync agent exactly as a local workspace would.
-- The local-only list is the set of routes the device must serve itself
+    proxies to the local sync agent exactly as a personal workspace would.
+- The device-local list is the set of routes the device must serve itself
   (mirrors, sync status and runs, file content and file lifecycle, runner
   registry, task actions). The canonical list is
-  `apps/server/shared/local-only-routes.json`; `is_local_only_path` in
+  `apps/server/shared/device-local-routes.json`; `is_local_only_path` in
   `lib.rs` embeds it (`include_str!`) and matches the request path against
   its `device_local` patterns (`{name}` is one segment, the query string is
   ignored), and `test/agent-router-route-parity.test.ts` holds
@@ -297,12 +297,12 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   router without the JSON entry is never reached from the desktop, and a
   JSON entry without a handler lands on the agent router's `501 agent_mode`
   fallthrough; either fails the parity test.
-- A central-mode workspace whose sync agent is not running (not logged
-  in, or no `server_url`) answers every local-only route with
+- A team workspace whose sync agent is not running (not logged
+  in, or no `server_url`) answers every device-local route with
   `501 {"error":"local_only","detail":"sync agent not running"}`.
   `apps/web/src/api.ts` turns it into `LocalOnlyError`, which the UI reads
   as "not signed in", never as "feature unavailable".
-- Routes deliberately not local-only, served by the central server in central mode:
+- Routes deliberately not device-local, served by the central server in a team workspace:
   `/nodes/:id/file-url`, `/nodes/:id/folder-url`, the session record half
   (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs…`,
   `/sessions/record`), `GET /nodes/:id/sessions`, `/overview`,
@@ -315,8 +315,8 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   `sessions_disconnect` open one connection per window to that window's
   own sidecar (`ws_of` + `sidecar_port_and_token`, the same bearer source
   as `api_request`, sent as `Authorization: Bearer` on the handshake). In
-  both modes the target is the device's own sidecar: the task runtime runs
-  there, and in central mode the sidecar's live channel is bound to the
+  both kinds of workspace the target is the device's own sidecar: the task runtime runs
+  there, and in a team workspace the sidecar's live channel is bound to the
   central session store.
 - Every server frame is re-emitted per window as `session-event`;
   connection status as `session-connection {status}` with
@@ -372,7 +372,7 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
 
 ## See also
 
-- `docs/architecture/data-modes.md`: what local and central mode are and
+- `docs/architecture/data-modes.md`: what local and team workspace are and
   which plane goes where.
 - `docs/architecture/sessions-and-runner.md`: the task runtime the bridge
   streams.

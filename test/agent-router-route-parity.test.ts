@@ -1,14 +1,14 @@
 // Parity between the desktop's routing table and the sync agent's router.
 //
-// apps/server/shared/local-only-routes.json is the one list of routes the
-// desktop webview sends to THIS device's sidecar in central mode
+// apps/server/shared/device-local-routes.json is the one list of routes the
+// desktop webview sends to THIS device's sidecar in a team workspace
 // (is_local_only_path, apps/desktop/src/lib.rs, matches request paths
 // against its patterns). This test proves the other half: every route
 // on that list is served by createAgentRouter (it must never fall through to
-// the 501 `agent_mode` catch-all, which is what a central-mode desktop would
+// the 501 `agent_mode` catch-all, which is what a team-workspace desktop would
 // see as "feature missing"), and the router serves no route the list does
 // not know about (a handler the desktop never routes to is dead code in
-// central mode, the shape of #264).
+// team workspace, the shape of #264).
 //
 // The fake central refuses every call, so a handler that reaches central
 // answers 4xx/5xx here; the assertion is only "handled by the agent router",
@@ -39,7 +39,7 @@ interface RouteContract {
   sidecar_direct: { patterns: string[] };
 }
 
-const CONTRACT_PATH = new URL("../apps/server/shared/local-only-routes.json", import.meta.url);
+const CONTRACT_PATH = new URL("../apps/server/shared/device-local-routes.json", import.meta.url);
 const ROUTER_PATH = new URL("../apps/server/api/agent-router.ts", import.meta.url);
 
 // A central that knows nothing: every method rejects with a 404-shaped
@@ -78,7 +78,7 @@ let workspace: string;
 let contract: RouteContract;
 let previousDataDir: string | undefined;
 
-describe("agent-router: parity with the desktop's local-only route list", () => {
+describe("agent-router: parity with the desktop's device-local route list", () => {
   before(async () => {
     delete process.env.PORTUNI_AUTH_TOKEN;
     workspace = await mkdtemp(join(tmpdir(), "portuni-route-parity-"));
@@ -167,7 +167,7 @@ describe("agent-router: parity with the desktop's local-only route list", () => 
     assert.deepEqual(
       unlisted,
       [],
-      "served by agent-router.ts but absent from local-only-routes.json: the desktop never routes here in central mode",
+      "served by agent-router.ts but absent from device-local-routes.json: the desktop never routes here in a team workspace",
     );
     const dead = [...known]
       .filter((p) => !contract.sidecar_direct.patterns.map(normalizePattern).includes(p))
