@@ -18,6 +18,8 @@ import { getMirrorPath } from "./sync/mirror-registry.js";
 import { isLocalWorkspace } from "../infra/server-config.js";
 import { getSession, getSessionScope, suspendSession } from "./sessions.js";
 import type { SessionRow } from "../shared/types.js";
+import { ulid } from "ulid";
+import type { CanonicalEvent, RunEndReason } from "./runner/types.js";
 
 // Fixed synced-path convention for a session's handoff -- a pure function
 // of the session id so both the write path here and any future reader
@@ -303,6 +305,78 @@ export async function suspendSessionServerSide(
 ): Promise<SessionRow | null> {
   const session = await getSession(db, sessionId);
   if (session?.state !== "running") return session;
+
+  // A suspend that does not come from the run's own end (a boot sweep after
+  // a restart, a dropped transport, a lost host) leaves the run row open and
+  // the event log on a run_started with no run_ended -- and every client
+  // replaying that log then treats the run as live: working row, stop
+  // button, no composer, on a session the server says is suspended. End
+  // the dangling runs here and say so in the log, the way the runtime's
+  // own run_ended does. A run the runtime already ended (ended_at set) is
+  // left alone, so its path appends nothing twice.
+  const endedRuns = await endDanglingRuns(db, sessionId, reason);
+  const suspended = await suspendWithSummary(db, session, reason);
+  // Only when THIS call ended a run: the runtime's own path (run_ended
+  // already in the log, run row already ended) appends nothing here, so
+  // its event sequence stays exactly what it was.
+  if (endedRuns.length > 0 && suspended?.state === "suspended") {
+    await appendSessionEvents(db, sessionId, null, [
+      { kind: "state_changed", payload: { from: "running", to: "suspended", waiting: false } },
+    ]);
+  }
+  return suspended;
+}
+
+function runEndReasonFor(reason: ServerHandoffReason): RunEndReason {
+  return reason === "host_lost" ? "host_lost" : "suspended";
+}
+
+async function endDanglingRuns(db: DbClient, sessionId: string, reason: ServerHandoffReason): Promise<string[]> {
+  const open = await db.execute({
+    sql: "SELECT id FROM session_runs WHERE session_id = ? AND ended_at IS NULL",
+    args: [sessionId],
+  });
+  const runIds = open.rows.map((r) => String(r.id));
+  if (runIds.length === 0) return runIds;
+  const now = new Date().toISOString();
+  const endReason = runEndReasonFor(reason);
+  for (const runId of runIds) {
+    await db.execute({
+      sql: "UPDATE session_runs SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+      args: [now, endReason, runId],
+    });
+    await appendSessionEvents(db, sessionId, runId, [
+      { kind: "run_ended", payload: { run_id: runId, reason: endReason, usage: null } },
+    ]);
+  }
+  return runIds;
+}
+
+// The same seq assignment DbSessionStore.appendEvents uses (domain/runner/
+// store.ts); duplicated here because this file stays independent of the
+// runner layer (see listSummaryEvents above).
+async function appendSessionEvents(
+  db: DbClient,
+  sessionId: string,
+  runId: string | null,
+  events: CanonicalEvent[],
+): Promise<void> {
+  const now = new Date().toISOString();
+  for (const event of events) {
+    await db.execute({
+      sql: `INSERT INTO session_events (id, session_id, run_id, seq, kind, payload, created_at)
+            SELECT ?, ?, ?, COALESCE((SELECT MAX(seq) FROM session_events WHERE session_id = ?), 0) + 1, ?, ?, ?`,
+      args: [ulid(), sessionId, runId, sessionId, event.kind, JSON.stringify(event.payload), now],
+    });
+  }
+}
+
+async function suspendWithSummary(
+  db: DbClient,
+  session: SessionRow,
+  reason: ServerHandoffReason,
+): Promise<SessionRow | null> {
+  const sessionId = session.id;
 
   const nodeName = session.node_id ? await nodeNameForHandoff(db, session.node_id) : null;
   const scope = await getSessionScope(db, sessionId);

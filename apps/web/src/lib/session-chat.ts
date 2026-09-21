@@ -440,6 +440,15 @@ export function activitySummary(items: readonly ActivityItem[]): { text: string;
   return { text: text.charAt(0).toUpperCase() + text.slice(1), failed };
 }
 
+// Whether the thread has a live run for the UI's purposes (working row,
+// stop button, composer). The replayed log says "a run_started with no
+// run_ended yet"; the server's own state says whether the session is
+// running at all. A suspended session with a dangling run_started (a log
+// older than the server-side suspend writing run_ended) is not live.
+export function runIsLiveFor(liveRunId: string | null, state: SessionState): boolean {
+  return liveRunId !== null && state === "running";
+}
+
 // --- The working row -----------------------------------------------------------
 // Rule 2: something is always on screen while a run is live. When neither
 // streaming text nor a running tool is, this row is, labelled by the last

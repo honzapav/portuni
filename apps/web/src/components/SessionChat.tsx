@@ -39,6 +39,7 @@ import {
   deriveTranscriptRows,
   activitySummary,
   workingPhase,
+  runIsLiveFor,
   WORKING_LABEL,
   type ActivityItem,
   type ActivityRow,
@@ -369,7 +370,7 @@ export default function SessionChat({
   );
   const openQuestion = latestQuestionEvent(events);
   const isWaiting = live.state === "running" && live.waiting_since !== null;
-  const runIsLive = liveRunId !== null;
+  const runIsLive = runIsLiveFor(liveRunId, live.state);
   const streamingText = liveRunId ? textDeltaBuffers[liveRunId] : undefined;
   const streamingReasoning = liveRunId ? reasoningDeltaBuffers[liveRunId] : undefined;
   // The working row (rule 2): shown while a run is live (or a send is in

@@ -81,6 +81,17 @@ until an unrelated refetch. `POST /sessions/:id/state` is a bare column
 transition with no runtime behind it and is not device-local; the web never
 uses it to close.
 
+A server-side suspend (`suspendSessionServerSide`: boot sweep, dropped
+transport, lost host) ends every run row of the session still open
+(`ended_at`, `end_reason` `suspended`, or `host_lost` for a lost host),
+appends `run_ended` for each and then `state_changed {to: "suspended"}`;
+without that the log ended on a `run_started` and every client replaying
+it showed a live run (working row, stop button, no composer) on a suspended
+thread. A run the runtime already ended is left alone, so the runtime's
+own suspend path appends nothing twice. The web never trusts the replayed
+log against the server's state: `runIsLiveFor(liveRunId, state)` is live
+only while the session is `running`.
+
 A rename is `POST /sessions/:id/rename`, device-local, through
 `SessionRuntime.renameSession`: it writes `name` (`name_is_custom`) and
 publishes a `session_changed` frame, which is never persisted or replayed

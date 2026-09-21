@@ -11,6 +11,7 @@ import {
   deriveTranscriptRows,
   activitySummary,
   workingPhase,
+  runIsLiveFor,
   createDeltaCoalescer,
   type ActivityItem,
   type ActivityRow,
@@ -270,6 +271,15 @@ describe("activitySummary", () => {
     );
     assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x", durationMs: null }]).text, "Uvažoval");
     assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x", durationMs: 2_000 }]).text, "Uvažoval 2 s");
+  });
+});
+
+describe("runIsLiveFor", () => {
+  it("is live only with a dangling run_started AND a running session -- a suspended one never is", () => {
+    assert.equal(runIsLiveFor("R1", "running"), true);
+    assert.equal(runIsLiveFor("R1", "suspended"), false);
+    assert.equal(runIsLiveFor(null, "running"), false);
+    assert.equal(runIsLiveFor("R1", "closed"), false);
   });
 });
 

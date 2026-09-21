@@ -21,6 +21,7 @@ import {
 } from "../apps/server/domain/sessions.js";
 import { parseServerHandoffReason } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
+import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 
 describe("createSession / getSession / listSessions", () => {
   it("creates a session row and reads it back", async () => {
@@ -250,6 +251,42 @@ describe("closeSessionIfRunning (#218, GC backstop; #329 suspends)", () => {
 });
 
 describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
+  // A restart never reaches the runtime's own run_ended, so the run row
+  // stays open and the log ends on run_started -- which every client
+  // replays as a live run (working row, stop button) on a session the
+  // server says is suspended. The sweep ends the run and says so.
+  it("ends the dangling run and appends run_ended + state_changed, so a replay sees no live run", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const store = new DbSessionStore(db);
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    const run = await store.createRun({ session_id: session.id, runner: "fake", instance_id: null, host_id: null });
+    await store.appendEvents(session.id, run.id, [
+      { kind: "run_started", payload: { run_id: run.id, runner: "fake", instance_id: null, resume: null } },
+    ]);
+
+    await closeStaleRunningSessionsOnBoot(db);
+
+    const [runRow] = await store.listRuns(session.id);
+    assert.ok(runRow.ended_at, "the run row is ended");
+    assert.equal(runRow.end_reason, "suspended");
+    const kinds = (await store.listEvents(session.id)).map((e) => `${e.kind}:${(JSON.parse(e.payload) as { run_id?: string; to?: string }).run_id ?? (JSON.parse(e.payload) as { to?: string }).to ?? ""}`);
+    assert.deepEqual(kinds, [`run_started:${run.id}`, `run_ended:${run.id}`, "state_changed:suspended"]);
+    assert.equal((await getSession(db, session.id))?.state, "suspended");
+  });
+
+  it("appends nothing extra for a session whose run the runtime already ended", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const store = new DbSessionStore(db);
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    const run = await store.createRun({ session_id: session.id, runner: "fake", instance_id: null, host_id: null });
+    await store.patchRun(run.id, { ended_at: new Date().toISOString(), end_reason: "completed" });
+    const before = (await store.listEvents(session.id)).length;
+    await closeStaleRunningSessionsOnBoot(db);
+    assert.equal((await store.listEvents(session.id)).length, before);
+    assert.equal((await store.listRuns(session.id))[0].end_reason, "completed", "an ended run is left alone");
+  });
+
+
   it("suspends every running row with a boot_sweep handoff, process-wide, leaving suspended untouched", async () => {
     const { db, nodeId } = await makeSharedDb();
     const running1 = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
