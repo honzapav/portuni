@@ -208,6 +208,16 @@ export function patchSessionModelEffort(
   return jsonRequest("POST", `/sessions/${encodeURIComponent(id)}/model`, patch);
 }
 
+// v2 rule 5: the draft's runner/instance choice, PATCH /sessions/:id --
+// central in a team workspace (the record is there), refused with 409
+// SESSION_NOT_DRAFT once the thread is promoted.
+export function patchSessionRunnerInstance(
+  id: string,
+  patch: { runner: string; instance_id: string | null },
+): Promise<{ runner: string | null; instance_id: string | null }> {
+  return jsonRequest("PATCH", `/sessions/${encodeURIComponent(id)}`, patch);
+}
+
 // configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
 // caller can resolve one from the desktop profiles registry (#204) --
 // lets the server check conversation-resumability at the right transcript

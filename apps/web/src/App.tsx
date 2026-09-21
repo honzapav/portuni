@@ -895,6 +895,14 @@ export default function App() {
   const registerSessionStarted = useCallback(
     (result: { session: SessionSummary; run: SessionRunRow | null }) => {
       setWorkspaceOpenSession(result.session);
+      // The shown-thread effect re-picks on the next refetch and, with no
+      // requested id, falls back to the node's newest live thread -- so a
+      // node that already had one kept showing it instead of the fresh
+      // draft. Requesting the new thread by id is what keeps it in front.
+      if (result.session.node_id) {
+        const nodeId = result.session.node_id;
+        setRequestedChatSessionByNode((p) => ({ ...p, [nodeId]: result.session.id }));
+      }
       if (result.session.state === "draft") {
         setLocalDrafts((prev) => ({ ...prev, [result.session.id]: result.session }));
         return;

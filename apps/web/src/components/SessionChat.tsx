@@ -21,7 +21,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionState, SessionSummary } from "../types";
 import { fetchSessionSignals, type SessionSignals } from "../api";
-import { sessionRowAccess } from "../lib/session-views";
+import { hostDisplayName, sessionRowAccess } from "../lib/session-views";
+import {
+  decodeRunnerChoice,
+  encodeRunnerChoice,
+  runnerChoiceLabel,
+  runnerPickerGroups,
+} from "../lib/runner-picker";
 import { useMe } from "../lib/use-me";
 import type { SessionsClient } from "../lib/sessions-client";
 import {
@@ -39,6 +45,7 @@ import {
 } from "../lib/session-chat";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SelectGroup, SelectLabel } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -81,8 +88,15 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
-import { patchSessionModelEffort } from "../api";
-import { fetchRunnerModels, type RunnerModel } from "../lib/runners";
+import { patchSessionModelEffort, patchSessionRunnerInstance } from "../api";
+import {
+  fetchRunnerModels,
+  listRunnerInstances,
+  listRunners,
+  type RunnerInfo,
+  type RunnerInstanceSummary,
+  type RunnerModel,
+} from "../lib/runners";
 
 // Floor between two restart-indicator reads (see the signals effect).
 const SIGNALS_MIN_INTERVAL_MS = 10_000;
@@ -138,11 +152,36 @@ export default function SessionChat({
   const { meId, canManage } = useMe();
   const access = sessionRowAccess(session.user_id, meId, canManage);
 
-  // #376: the model picker's list. A draft has no runner chosen yet
-  // (resolved only at promotion, from the first message) -- "claude" is
-  // the only runner this codebase registers today, so that's what a
-  // runner-less thread's picker queries; a real multi-runner picker would
-  // need its own runner choice first, which doesn't exist yet either.
+  // Composer row 2 (v2 rule 5): the runner/instance choice, open while the
+  // thread is a draft. The lists come from the device (both routes are
+  // device-local), the draft's initial value is what the organisation's
+  // default resolved to, so it is what the picker marks as "(výchozí)".
+  const [runners, setRunners] = useState<RunnerInfo[]>([]);
+  const [instances, setInstances] = useState<RunnerInstanceSummary[]>([]);
+  const initialChoiceRef = useRef({ runner: session.runner, instanceId: session.instance_id });
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([listRunners(), listRunnerInstances()])
+      .then(([r, i]) => {
+        if (cancelled) return;
+        setRunners(r.filter((x) => x.availability.installed && x.availability.logged_in));
+        setInstances(i);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const handleRunnerChange = (value: string) => {
+    const { runner, instanceId } = decodeRunnerChoice(value);
+    onSessionUpdated({ ...session, runner, instance_id: instanceId });
+    void patchSessionRunnerInstance(session.id, { runner, instance_id: instanceId }).catch((e) => setError(String(e)));
+  };
+  const host = hostDisplayName(session);
+
+  // #376: the model picker's list, for the thread's runner. A draft on a
+  // device with no logged-in runner falls back to "claude", the only
+  // runner this codebase registers today.
   const [models, setModels] = useState<RunnerModel[]>([]);
   useEffect(() => {
     let cancelled = false;
@@ -510,7 +549,10 @@ export default function SessionChat({
               }
             />
           </PromptInputBody>
-          <PromptInputFooter>
+          {/* Two rows under the textarea (spec, "The composer"): row 1 the
+              run's choices and send/stop, row 2 where it runs, dimmer. */}
+          <PromptInputFooter className="flex-col items-stretch gap-1">
+            <div className="flex items-center justify-between gap-2">
             <PromptInputTools>
               {access.canResume && (
                 <>
@@ -555,6 +597,43 @@ export default function SessionChat({
               status={sending ? "submitted" : runIsLive ? "streaming" : undefined}
               onStop={runIsLive ? () => void runAction("interrupt") : undefined}
             />
+            </div>
+            <div className="flex min-h-6 items-center gap-1.5 px-1 text-[11.5px] text-[var(--color-text-dim)]">
+              {live.state === "draft" && access.canResume && session.runner ? (
+                <PromptInputSelect
+                  value={encodeRunnerChoice(session.runner, session.instance_id)}
+                  onValueChange={handleRunnerChange}
+                >
+                  <PromptInputSelectTrigger
+                    className="h-6 w-auto min-w-0 px-1.5 text-[11.5px] font-normal"
+                    title="Runner a instance — platí pro celé vlákno, mění se jen u nového"
+                  >
+                    {/* The trigger names the pair ("claude · Work"); the
+                        list's own items name the instance under its
+                        runner's heading. */}
+                    <PromptInputSelectValue>{runnerChoiceLabel(session, instances)}</PromptInputSelectValue>
+                  </PromptInputSelectTrigger>
+                  <PromptInputSelectContent>
+                    {runnerPickerGroups(runners, instances, initialChoiceRef.current).map((g) => (
+                      <SelectGroup key={g.runner}>
+                        <SelectLabel>{g.label}</SelectLabel>
+                        {g.options.map((o) => (
+                          <PromptInputSelectItem key={o.value} value={o.value}>
+                            {o.label}
+                            {o.isDefault ? " (výchozí)" : ""}
+                          </PromptInputSelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
+                  </PromptInputSelectContent>
+                </PromptInputSelect>
+              ) : (
+                <span className="px-1.5">{runnerChoiceLabel(session, instances)}</span>
+              )}
+              {/* #428: the host whose sidecar runs the thread -- a label,
+                  never a choice, hidden when unknown. */}
+              {host && <span>· {host}</span>}
+            </div>
           </PromptInputFooter>
         </PromptInput>
         </div>
