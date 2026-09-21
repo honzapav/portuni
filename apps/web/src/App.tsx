@@ -30,6 +30,7 @@ import {
   mountedChatSessions,
   pickOpenChatSession,
   pruneNodeSessions,
+  requestChatSession,
 } from "./lib/session-views";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
@@ -895,14 +896,11 @@ export default function App() {
   const registerSessionStarted = useCallback(
     (result: { session: SessionSummary; run: SessionRunRow | null }) => {
       setWorkspaceOpenSession(result.session);
-      // The shown-thread effect re-picks on the next refetch and, with no
-      // requested id, falls back to the node's newest live thread -- so a
-      // node that already had one kept showing it instead of the fresh
-      // draft. Requesting the new thread by id is what keeps it in front.
-      if (result.session.node_id) {
-        const nodeId = result.session.node_id;
-        setRequestedChatSessionByNode((p) => ({ ...p, [nodeId]: result.session.id }));
-      }
+      // The node's shown chat is re-picked (pickOpenChatSession) on every
+      // refetch, so the fresh thread has to be the requested one -- else a
+      // node that already had a thread open snapped back to it the moment
+      // the new draft was tracked.
+      setRequestedChatSessionByNode((prev) => requestChatSession(prev, result.session));
       if (result.session.state === "draft") {
         setLocalDrafts((prev) => ({ ...prev, [result.session.id]: result.session }));
         return;
@@ -1023,8 +1021,6 @@ export default function App() {
           onWorkspaceCloseTask={workspaceCloseTask}
           onWorkspaceOpenNode={openNode}
           onWorkspaceCreateNode={workspaceCreateNode}
-          pullNodeCount={pullNodeCount(syncPending.nodes)}
-          onOpenSyncOverview={() => setSyncOverviewOpen(true)}
         />
       )}
 
@@ -1173,6 +1169,7 @@ export default function App() {
         sessionCount={runningSessionCount}
         onOpenWorkspace={openWorkspaceView}
         pendingCount={syncPending.total}
+        pullNodeCount={pullNodeCount(syncPending.nodes)}
         onOpenSyncOverview={() => setSyncOverviewOpen(true)}
         appUpdate={appUpdate}
       />

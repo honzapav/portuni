@@ -190,11 +190,14 @@ name muted on the right (absent under a group heading), and a
 - **`registerSessionStarted`** is the single entry point for every
   `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's `DetailPane`,
   the sidebar `+`, the Relace tab's "Navázat"): it sets the shown thread,
-  tracks a draft in `localDrafts`, and puts an already-running thread
-  straight into the node map (`mergeSessionIntoNodeMap`) so its row appears
-  before the confirming refetch.
+  requests it by id (`requestChatSession`), tracks a draft in `localDrafts`,
+  and puts an already-running thread straight into the node map
+  (`mergeSessionIntoNodeMap`) so its row appears before the confirming
+  refetch. Requesting it is what makes it stick: the pick re-runs the
+  moment the new thread is tracked, so without the requested id a node that
+  already had a thread open snapped straight back to it.
 - The folds above (`applySessionStateFrame`, `pickOpenChatSession`,
-  `mergeSessionIntoNodeMap`, `applyNodeSessionsRefetch`,
+  `requestChatSession`, `mergeSessionIntoNodeMap`, `applyNodeSessionsRefetch`,
   `dropPromotedDrafts`, `mergeDraftsIntoNodeMap`, `pruneNodeSessions`)
   return their input unchanged when nothing changed, because effects key on
   those identities.

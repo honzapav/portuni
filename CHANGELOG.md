@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.20.0](https://github.com/honzapav/portuni/compare/v0.19.0...v0.20.0) (2026-09-21)
+
+
+### Features
+
+* **runner,web,desktop,server,docs:** the host that ran a session; model change reaching a live run in a team workspace; the sync agent's suspend fallback; open threads stay mounted in Práce; team and personal workspace in the UI and the device-local identifiers ([#431](https://github.com/honzapav/portuni/issues/431)) ([4a76d8c](https://github.com/honzapav/portuni/commit/4a76d8c31d864bc554a99edcd24fe5ddc0018ef5))
+
+
+### Bug Fixes
+
+* **mcp:** remove the legacy per-mirror .vibe/config.toml the retired writer left behind ([#423](https://github.com/honzapav/portuni/issues/423)) ([1005398](https://github.com/honzapav/portuni/commit/100539846509ceb427e709ace42f1b2c3ed93f2b))
+* **web:** "Nový úkol" opens the fresh thread, not the one already shown ([#433](https://github.com/honzapav/portuni/issues/433)) ([16f7d7c](https://github.com/honzapav/portuni/commit/16f7d7c3fac21bf79dbc33a2e89015909694f7b5))
+* **web:** move remote-watch indicator from sidebar to status footer ([5614347](https://github.com/honzapav/portuni/commit/56143476d41a55d76ca0a4d6e06276a62427b590))
+* **web:** move remote-watch indicator to status footer ([#432](https://github.com/honzapav/portuni/issues/432)) ([5614347](https://github.com/honzapav/portuni/commit/56143476d41a55d76ca0a4d6e06276a62427b590))
+
 ## [0.19.0](https://github.com/honzapav/portuni/compare/v0.18.1...v0.19.0) (2026-09-21)
 
 
