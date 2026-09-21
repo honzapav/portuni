@@ -19,6 +19,7 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
 import {
   createSession,
+  createDraftSession,
   closeSessionIfRunning,
   setSessionScopeWritable,
   upsertSessionScopeRead,
@@ -226,6 +227,23 @@ describe("session REST endpoints", () => {
   test("GET /nodes/:id/sessions 404s for an unknown node", async () => {
     const res = await call(makeIdentity(SOLO), "GET", `/nodes/${ulid()}/sessions`);
     assert.equal(res.statusCode, 404);
+  });
+
+  // v2 rule 5: runner and instance are the thread's, chosen while it is a
+  // draft. A bare change on any other state is refused; the promotion
+  // patch (state together with them) is the one exception.
+  test("PATCH runner/instance_id is 409 SESSION_NOT_DRAFT on a running session, 200 on a draft", async () => {
+    const running = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task", runner: "claude" });
+    const refused = await call(makeIdentity(SOLO), "PATCH", `/sessions/${running.id}`, { instance_id: "01INST" });
+    assert.equal(refused.statusCode, 409);
+    assert.equal((JSON.parse(refused.body) as { code: string }).code, "SESSION_NOT_DRAFT");
+
+    const draft = await createDraftSession(db, SOLO, nodeId);
+    const ok = await call(makeIdentity(SOLO), "PATCH", `/sessions/${draft.id}`, { runner: "claude", instance_id: "01INST" });
+    assert.equal(ok.statusCode, 200);
+    const row = JSON.parse(ok.body) as { runner: string; instance_id: string };
+    assert.equal(row.runner, "claude");
+    assert.equal(row.instance_id, "01INST");
   });
 
   test("PATCH /sessions/:id renames a session the caller owns", async () => {

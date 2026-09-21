@@ -309,6 +309,14 @@ export async function handlePatchSession(
       respondJson(res, 200, await toSummary(updated));
       return;
     }
+    // v2 rule 5: runner and instance are the thread's, chosen while it is
+    // a draft. The promotion patch sets them together with state:
+    // "running" and passes; a bare change on any other state is refused.
+    const touchesRunner = body.runner !== undefined || body.instance_id !== undefined;
+    if (touchesRunner && existing.state !== "draft" && body.state === undefined) {
+      respondJson(res, 409, { error: "runner and instance can only change on a draft", code: "SESSION_NOT_DRAFT" });
+      return;
+    }
     // #426: the live half of a model change (session-runtime.ts's in-memory
     // liveRuns) belongs to POST /sessions/:id/model, which the desktop
     // routes to the device driving the run; this route is the record half
