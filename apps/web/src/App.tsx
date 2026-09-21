@@ -1291,7 +1291,7 @@ export default function App() {
           }}
           onSelectNode={(id) => {
             setSyncOverviewOpen(false);
-            setSelectedId(id);
+            overviewSelectNode(id);
           }}
         />
       )}
