@@ -65,8 +65,8 @@ where it can see the move — the watcher's registration path:
   the mv emits events for both paths in arbitrary order and the second
   event's handling depends on the first's outcome.
 - Cross-volume `mv` changes the inode and falls back to plain registration.
-  The `moved` bucket in `StatusResult` is kept for API compatibility and is
-  always empty.
+  `StatusResult` has no `moved` bucket: pairing happens at reconcile time,
+  never at scan time.
 
 ## Deletion semantics (one action, one outcome)
 

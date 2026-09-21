@@ -28,26 +28,29 @@ project says "graph sync" it means the **Turso plane**.
 
 `data_mode` is not a feature switch — it is a transport and trust boundary:
 
-- **Local mode** (default, the owner). The desktop app runs the Portuni server
-  itself (the embedded sidecar), talks **directly to Turso**, and tracks files
-  in mirror folders on your own machine — but never talks to a remote at all.
-  A local workspace cannot be given one: `portuni_setup_remote` and
-  `portuni_set_routing_policy` refuse with `LOCAL_MODE_NO_REMOTE`, and so does
-  every push/pull operation (`portuni_store`, `portuni_pull`, a sync run).
-  Files there classify as `clean` (tracked, present) or `deleted_local`
-  (tracked, gone from disk) — never `push`/`pull`/`conflict`. Sharing files
-  with other machines is what central mode is for.
-- **Central mode** (a teammate). Every graph request goes to a
-  shared server with a **Google login**, so the server can **enforce
-  permissions** (groups, per-node visibility). The teammate never holds the raw
-  database token or the Drive credentials. The desktop still runs its local
-  sidecar — but as a **sync agent**, not as a graph server: it maintains local
-  mirror folders and a file watcher, moves file bytes between those folders
-  and the central server using a per-device token, and serves file content
-  from the device mirror when one exists (so a file you just created locally
-  opens in the editor before it has ever been pushed). When there is no
-  mirror, file content is brokered through the central server; nothing on the
-  teammate's machine talks to Turso or Drive directly.
+- **Central mode** (a team, and the mode Portuni is built around). Every
+  graph request goes to a shared server with a **Google login**, so the server
+  can **enforce permissions** (groups, per-node visibility). The teammate never
+  holds the raw database token or the Drive credentials. The desktop still
+  runs its local sidecar — but as a **sync agent**, not as a graph server: it
+  maintains local mirror folders and a file watcher, moves file bytes between
+  those folders and the central server using a per-device token, serves file
+  content from the device mirror when one exists (so a file you just created
+  locally opens in the editor before it has ever been pushed), and runs agent
+  tasks on your machine. When there is no mirror, file content is brokered
+  through the central server; nothing on the teammate's machine talks to Turso
+  or Drive directly.
+- **Local mode** (one person, one machine). Central in a box: the desktop app
+  runs the same Portuni server itself (the embedded sidecar) against its own
+  database, and tracks files in mirror folders on your own machine — but never
+  talks to a remote at all. A local workspace cannot be given one:
+  `portuni_setup_remote` and `portuni_set_routing_policy` refuse with
+  `LOCAL_MODE_NO_REMOTE`, and so does every push/pull operation
+  (`portuni_store`, `portuni_pull`, a sync run). Files there classify as
+  `clean` (tracked, present) or `deleted_local` (tracked, gone from disk) —
+  never `push`/`pull`/`conflict`. Everything that works in a local workspace
+  works the same way in central mode; what needs a team, a remote or a
+  scheduler exists only in central mode.
 
 The central server is the **same Portuni backend**, just deployed centrally and
 reached with an identity instead of a shared secret. The key difference: it has
@@ -124,7 +127,7 @@ mirrors all work through the central server.
 |---|---|
 | graph sync | the shared knowledge graph in Turso |
 | file sync | file bytes moving between your mirror and Drive |
-| local mode | the client reaches data directly (the owner) |
+| local mode | one person, one machine: the client reaches its own database directly, no remote |
 | central mode | the client reaches data through the central server, permissions enforced |
 | sync agent | the local sidecar in central mode — mirror folders + watcher, brokered through the central server with a device token |
 
