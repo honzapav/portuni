@@ -288,12 +288,15 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   (mirrors, sync status and runs, file content and file lifecycle, runner
   registry, task actions). The canonical list is
   `apps/server/shared/local-only-routes.json`; `is_local_only_path` in
-  `lib.rs` and `apps/server/api/agent-router.ts` both have to match it,
-  and the tests on both sides check that they do. **A new device-served
-  route is added in all three places in the same change**; a route added
-  to the agent router without the matcher entry is never reached from the
-  desktop, and a matcher entry without a handler lands on the agent
-  router's `501 agent_mode` fallthrough.
+  `lib.rs` embeds it (`include_str!`) and matches the request path against
+  its `device_local` patterns (`{name}` is one segment, the query string is
+  ignored), and `test/agent-router-route-parity.test.ts` holds
+  `apps/server/api/agent-router.ts` to the same list. **A new device-served
+  route is added in all three places in the same change**: the local
+  router, the agent router and the JSON file. A handler added to the agent
+  router without the JSON entry is never reached from the desktop, and a
+  JSON entry without a handler lands on the agent router's `501 agent_mode`
+  fallthrough; either fails the parity test.
 - A central-mode workspace whose sync agent is not running (not logged
   in, or no `server_url`) answers every local-only route with
   `501 {"error":"local_only","detail":"sync agent not running"}`.

@@ -1169,158 +1169,66 @@ fn open_external(url: String) -> Result<(), String> {
     })
 }
 
-/// Returns true when `path` is a LOCAL_ONLY route that requires the sidecar
-/// (mirrors, sync, file content, write-scope helpers). These paths either do
-/// not exist on the central server or require local filesystem access; in
-/// central data_mode they return 501 local_only.
-///
-/// Rules derived from src/api/router.ts:
-///   /scope                      — write-scope gate (local filesystem check)
-///   /nodes/:id/mirror           — create mirror (local filesystem operation)
-///   /nodes/:id/sync-status      — sync status (local sync DB)
-///   /nodes/:id/sync             — sync run (local sync engine)
-///   /nodes/:id/file             — file content (GET/PUT); the agent serves a
-///                                 device mirror from disk so unsynced local
-///                                 files open in the editor, and falls back to
-///                                 central itself when there is no mirror or
-///                                 the file is pull-pending
-///   DELETE /nodes/:id/files/:fileId — file delete (#254): the record+remote
-///                                 half is still adapter-direct on the
-///                                 server, but the device's own local sync
-///                                 agent needs to run the disk-cleanup step
-///                                 (rm the mirror copy + drop file_state) the
-///                                 central server has no way to do itself, so
-///                                 this one sub-path routes to the sidecar
-///                                 instead of straight to central.
-///   POST /nodes/:id/files/:fileId/resolve — conflict resolution (#264): the
-///                                 agent-router already implements this
-///                                 correctly (findEntryByFileId +
-///                                 storeFileCentral/pullFileCentral against
-///                                 the device's own mirror), but nothing
-///                                 routed the desktop UI's REST call there --
-///                                 it went straight to central, which has no
-///                                 mirror to resolve against at all
-///                                 (409 on keep_local, 500 on take_remote/
-///                                 restore).
-///   POST /nodes/:id/files       — create (#266): a device with a mirror
-///                                 writes the file there and registers the
-///                                 record without waiting on the Drive
-///                                 upload, pushing in the background --
-///                                 central's own create does the Drive PUT
-///                                 before answering, which left the device
-///                                 with no sync baseline once the editor's
-///                                 own local-only save landed, permanently
-///                                 misclassified as a conflict. A device
-///                                 with no mirror for the node still
-///                                 forwards to central via the agent-router
-///                                 handler's own fallback (CentralClient
-///                                 .createFile), so this is safe to route
-///                                 here unconditionally.
-///   POST /nodes/:id/files/:fileId/rename — rename: central still does the
-///                                 record + remote step (the agent-router
-///                                 handler calls it), but only the device
-///                                 can rename the mirror copy; forwarding
-///                                 straight to central left the local file
-///                                 under its old name (missing locally +
-///                                 a new untracked file on the next scan).
-///
-/// NOT local-only (served from the central server): /nodes/:id/folder-url
-/// and /nodes/:id/file-url (Drive URL lookups on the server). All graph,
-/// actor, responsibility, etc. routes are central.
+/// The shared route contract with the server: which routes the webview's
+/// `api_request` sends to THIS device's sidecar in central mode instead of
+/// the central server. `apps/server/api/agent-router.ts` serves exactly this
+/// list and is tested against the same file
+/// (`test/agent-router-route-parity.test.ts`), so a route added in one place
+/// without the other fails the gate. Method-agnostic on purpose: routing is
+/// decided per path, the router decides per method.
+const LOCAL_ONLY_ROUTES_JSON: &str = include_str!("../../server/shared/local-only-routes.json");
+
+/// One `device_local` pattern, split into segments; `{name}` matches any
+/// single non-empty segment.
+enum RouteSegment {
+    Literal(String),
+    Param,
+}
+
+fn local_only_patterns() -> &'static [Vec<RouteSegment>] {
+    static PATTERNS: std::sync::OnceLock<Vec<Vec<RouteSegment>>> = std::sync::OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        let doc: serde_json::Value = serde_json::from_str(LOCAL_ONLY_ROUTES_JSON)
+            .expect("local-only-routes.json is valid JSON");
+        doc["device_local"]
+            .as_array()
+            .expect("local-only-routes.json has a device_local array")
+            .iter()
+            .map(|entry| {
+                let pattern = entry["pattern"]
+                    .as_str()
+                    .expect("every device_local entry has a pattern");
+                pattern
+                    .split('/')
+                    .filter(|seg| !seg.is_empty())
+                    .map(|seg| {
+                        if seg.starts_with('{') && seg.ends_with('}') {
+                            RouteSegment::Param
+                        } else {
+                            RouteSegment::Literal(seg.to_string())
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    })
+}
+
+/// True when `path` (query string ignored) is one of the device-local routes
+/// in `apps/server/shared/local-only-routes.json`. Everything else goes to
+/// the central server: graph reads and writes, the session record half
+/// (`/sessions/<id>`, `/state`, `/resume-info`, `/runs...`, `/sessions/record`),
+/// `/nodes/<id>/file-url` and `/nodes/<id>/folder-url`.
 pub(crate) fn is_local_only_path(path: &str) -> bool {
-    // Strip query string for matching.
     let p = path.split('?').next().unwrap_or(path);
-
-    // Exact top-level paths. /sync/pending aggregates the DEVICE's mirrors
-    // (footer unsynced indicator + quit guard); the central server has none
-    // and would answer an empty aggregate. /sync/health is the same shape
-    // for the mirror-watcher error buffer (#202) -- also device-local, also
-    // empty on the central server. /sync/jobs (+ /sync/jobs/current,
-    // /sync/jobs/<id>, #273) is the background multi-node sync job the
-    // footer's "Synchronizovat vše" starts -- it fans out into per-node
-    // POST /nodes/:id/sync calls, which are themselves already local-only
-    // below, so the job driving them must run on this device too.
-    // /runners (+ /runners/instances..., /runners/org-defaults/...) is the
-    // runner registry and provider instances (runners.json), a file on THIS
-    // device's sidecar -- the central server's own registry would describe
-    // the central host, not the machine the task actually runs on.
-    if p == "/scope"
-        || p == "/sync/pending"
-        || p == "/sync/health"
-        || p == "/sync/jobs"
-        || p.starts_with("/sync/jobs/")
-        || p == "/runners"
-        || p.starts_with("/runners/")
-    {
-        return true;
-    }
-
-    // Node sub-paths that are local-only.
-    // Matches: /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
-    //          /nodes/<id>/file (content),
-    //          /nodes/<id>/files (create, #266), /nodes/<id>/files/<fileId>
-    //          (delete, #254 -- exactly one segment after "files/"),
-    //          /nodes/<id>/files/<fileId>/resolve (#264),
-    //          /nodes/<id>/files/<fileId>/rename, and
-    //          /nodes/<id>/files/<fileId>/move (#278) -- the device renames/
-    //          relocates its own mirror copy after central confirms.
-    //
-    // NOT matched (served centrally): /nodes/<id>/file-url,
-    // /nodes/<id>/folder-url.
-    if let Some(rest) = p.strip_prefix("/nodes/") {
-        // rest = "<id>/<sub>" or "<id>/<sub>/..."
-        if let Some(slash) = rest.find('/') {
-            let sub = &rest[slash + 1..];
-            if sub == "mirror"
-                || sub == "sync-status"
-                || sub == "files"
-                || sub == "sync"
-                || sub == "file"
-            {
-                return true;
-            }
-            if let Some(file_seg) = sub.strip_prefix("files/") {
-                if (!file_seg.is_empty() && !file_seg.contains('/'))
-                    || file_seg.ends_with("/resolve")
-                    || file_seg.ends_with("/rename")
-                    || file_seg.ends_with("/move")
-                {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // Sessions/tasks (runner batch, #323): bare POST /sessions starts a
-    // task on THIS device's own session runtime. Per-session action verbs
-    // that drive that same local run/device sidecar also stay local; the
-    // record half (bare /sessions/<id>, /state, /resume-info, /runs...,
-    // /sessions/record) stays central -- NOT matched here on purpose, same
-    // as /nodes/<id>/file-url above.
-    if p == "/sessions" {
-        return true;
-    }
-    if let Some(rest) = p.strip_prefix("/sessions/") {
-        if let Some(slash) = rest.find('/') {
-            let sub = &rest[slash + 1..];
-            if sub == "messages"
-                || sub == "interrupt"
-                || sub == "continue"
-                || sub == "close"
-                || sub == "events"
-                || sub == "signals"
-            {
-                return true;
-            }
-            if let Some(request_id) = sub.strip_prefix("questions/") {
-                if !request_id.is_empty() && !request_id.contains('/') {
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
+    let segments: Vec<&str> = p.split('/').filter(|seg| !seg.is_empty()).collect();
+    local_only_patterns().iter().any(|pattern| {
+        pattern.len() == segments.len()
+            && pattern.iter().zip(&segments).all(|(want, got)| match want {
+                RouteSegment::Param => true,
+                RouteSegment::Literal(lit) => lit == got,
+            })
+    })
 }
 
 /// True when `candidate`, after lexical normalization (resolving `.`/`..`),

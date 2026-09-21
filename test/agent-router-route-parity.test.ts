@@ -2,8 +2,8 @@
 //
 // apps/server/shared/local-only-routes.json is the one list of routes the
 // desktop webview sends to THIS device's sidecar in central mode
-// (is_local_only_path, apps/desktop/src/lib.rs, checked against the same
-// file by its own Rust tests). This test proves the other half: every route
+// (is_local_only_path, apps/desktop/src/lib.rs, matches request paths
+// against its patterns). This test proves the other half: every route
 // on that list is served by createAgentRouter (it must never fall through to
 // the 501 `agent_mode` catch-all, which is what a central-mode desktop would
 // see as "feature missing"), and the router serves no route the list does

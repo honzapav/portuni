@@ -316,14 +316,14 @@ there first.
 
 - Switching threads remounts `SessionChat` (`key={openSession.id}`) and
   replays the log; open threads are not kept mounted, so scroll position
-  does not survive a switch.
+  does not survive a switch (#429).
 - No context-usage ring next to "Pokračovat v nové session": there is no
   token accounting to drive it.
 - The Relace tab shows no host label; `host_id` lives on the run, not the
-  summary.
+  summary (#428).
 - A model change reaches a live run only on the device driving it; in
   central mode `PATCH /sessions/:id` goes to central, which runs nothing
-  (see `sessions-and-runner.md`).
+  (#426, see `sessions-and-runner.md`).
 
 ## See also
 

@@ -400,11 +400,12 @@ in the codebase. The desktop bridge is documented with the desktop shell.
 
 - `PATCH /sessions/:id` with `model` reaches a live run only in a local
   workspace: in agent mode the route goes to central, whose runtime never
-  runs a task, so a live-run model switch is silently a next-run change.
+  runs a task, so a live-run model switch is silently a next-run change
+  (#426).
 - The central suspend fallback's handoff has empty write/read-set sections
-  and is not registered as a tracked file until the next sync run.
+  and is not registered as a tracked file until the next sync run (#427).
 - `host_id` is stored on `SessionRunRow` only; no surface shows which host
-  ran a session (host-aware UI is the remote-hosts spec's work).
+  ran a session (#428).
 
 ## See also
 

@@ -174,8 +174,9 @@ One line each; the linked doc carries the mechanism and the reasoning.
 
 - A REST route the desktop must reach on the device in central mode lives in
   three places at once: the local router, `agent-router.ts`, and
-  `apps/server/shared/local-only-routes.json` (the Rust `is_local_only_path`
-  and `test/agent-router-route-parity.test.ts` are both tested against it).
+  `apps/server/shared/local-only-routes.json`, which `is_local_only_path`
+  embeds and matches against; `test/agent-router-route-parity.test.ts` holds
+  the router to the same list.
 - A local workspace cannot register or route to a remote:
   `LocalModeNoRemoteError` (`LOCAL_MODE_NO_REMOTE`, REST 409) from
   `upsertRemote`/`setupRemoteService`/`setRoutingPolicyService`, and from

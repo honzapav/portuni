@@ -36,9 +36,9 @@ Consequences for any change (from `docs/vision/portuni-as-workspace.md`,
 - Tests: the fake `CentralClient` in `test/agent-router*.test.ts` and
   `test/agent-tools.test.ts` is where the central half is proven. A route the
   desktop sends to the sidecar in central mode is listed in
-  `apps/server/shared/local-only-routes.json`; the Rust matcher and the agent
-  router are both tested against that file, so a route added on one side
-  without the other fails the gate.
+  `apps/server/shared/local-only-routes.json`; `is_local_only_path` reads its
+  patterns from that file at compile time and the agent router is tested
+  against it, so a route added on one side without the other fails the gate.
 
 ## "Sync" means two different things
 
@@ -112,13 +112,14 @@ in", never as "feature unbuilt".
 
 The canonical list of device-local routes is
 `apps/server/shared/local-only-routes.json` (sections `device_local`,
-`central`, `sidecar_direct`). The Rust test module `local_only_path_tests`
-asserts the matcher's verdict on every example; `test/agent-router-route-
-parity.test.ts` asserts the agent router handles every device-local entry
-and serves nothing the list omits. **A new REST route touches three places at
-once**: the router that serves it locally, `agent-router.ts`, and that JSON
-file (which the Rust matcher must then also accept; extend
-`is_local_only_path` and its test module).
+`central`, `sidecar_direct`). `is_local_only_path` is driven by that file:
+it embeds it with `include_str!` and matches a request path against the
+`device_local` patterns (`{name}` is one segment, the query string is
+ignored). `test/agent-router-route-parity.test.ts` asserts the agent router
+handles every device-local entry and serves nothing the list omits; the Rust
+`local_only_path_tests` assert the `central` examples stay central. **A new
+REST route touches three places at once**: the router that serves it
+locally, `agent-router.ts`, and that JSON file.
 
 Which routes stay central on purpose: graph reads and writes, the session
 record half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`,
