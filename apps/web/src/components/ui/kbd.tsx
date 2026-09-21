@@ -16,9 +16,11 @@ function Kbd({ className, ...props }: React.ComponentProps<"kbd">) {
   )
 }
 
+// A <div>, not shadcn's <kbd>: the browser's own kbd rule would set the
+// label text beside the chips in monospace.
 function KbdGroup({ className, ...props }: React.ComponentProps<"div">) {
   return (
-    <kbd
+    <div
       data-slot="kbd-group"
       className={cn("inline-flex items-center gap-1", className)}
       {...props}
