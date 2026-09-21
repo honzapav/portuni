@@ -773,12 +773,18 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // the record on central in sync-agent mode: the live half can only be
   // done by the device driving the run, so the whole call lives here
   // rather than in the REST handler (#426).
+  // Record first, live run second: the record half is the one that can be
+  // refused (in a team workspace it is a PATCH on the central server), and a
+  // refused write must not leave the live run on a model the record never
+  // took. The live half cannot fail the same way -- it is an in-process
+  // call on the run this sidecar drives.
   async function setModelAndEffort(sessionId: string, patch: SetModelAndEffortInput): Promise<SessionRow> {
+    const row = await store.patchSession(sessionId, { model: patch.model, effort: patch.effort });
     if (patch.model !== undefined) {
       const live = liveRuns.get(sessionId);
       if (live) await live.handle.setModel(patch.model);
     }
-    return store.patchSession(sessionId, { model: patch.model, effort: patch.effort });
+    return row;
   }
 
   // #378: the only action that actually ends a live run's process (besides

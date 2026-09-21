@@ -343,9 +343,6 @@ there first.
 
 - No context-usage ring next to "Pokračovat v nové session": there is no
   token accounting to drive it.
-- A model change reaches a live run only on the device driving it; in
-  team workspace `PATCH /sessions/:id` goes to the central server, which runs nothing
-  (#426, see `sessions-and-runner.md`).
 
 ## See also
 
