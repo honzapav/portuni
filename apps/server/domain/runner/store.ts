@@ -122,6 +122,12 @@ export interface CreateDraftSessionInput {
   user_id: string;
   model?: string | null;
   effort?: string | null;
+  // v2 rule 5 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
+  // chosen before the first message. The device resolves the
+  // organisation's defaults (session-runtime.ts's resolveDraftDefaults);
+  // the store only records. null means "no runner is logged in here".
+  runner?: string | null;
+  instance_id?: string | null;
 }
 
 export interface PatchSessionInput {
@@ -203,6 +209,8 @@ export class DbSessionStore implements SessionStore {
     return createDraftSessionRow(this.db, input.user_id, input.node_id, {
       model: input.model,
       effort: input.effort,
+      runner: input.runner,
+      instance_id: input.instance_id,
     });
   }
 

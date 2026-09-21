@@ -116,11 +116,11 @@ class FakeCentral implements CentralClient {
       user_id: input.user_id,
       session_type: "interactive_task",
       cli: null,
-      instance_id: null,
+      instance_id: input.instance_id ?? null,
       agent_session_id: null,
       terminal_id: null,
       brief: null,
-      runner: null,
+      runner: input.runner ?? null,
       host_id: null,
       waiting_since: null,
       state: "draft",
@@ -426,7 +426,10 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(body.session.state, "draft");
     assert.equal(body.session.node_id, NODE_ID);
     assert.equal(body.session.brief, null);
-    assert.equal(body.session.runner, null);
+    // v2 rule 5: the device resolved its default runner before the record
+    // went to central.
+    assert.equal(body.session.runner, "fake");
+    assert.equal(body.session.instance_id, null);
     assert.equal(fake.sessions.size, 1);
     assert.equal(fake.runs.size, 0);
   });

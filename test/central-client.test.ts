@@ -361,7 +361,7 @@ describe("createHttpCentralClient", () => {
   it("createDraftSessionRecord posts the draft shape to the same route", async () => {
     const { fetchImpl, calls } = fakeFetch([{ status: 201, json: { id: "S2", state: "draft" } }]);
     const c = createHttpCentralClient({ ...BASE, fetchImpl });
-    const row = await c.createDraftSessionRecord({ node_id: "N1", user_id: "U1", model: "sonnet" });
+    const row = await c.createDraftSessionRecord({ node_id: "N1", user_id: "U1", model: "sonnet", runner: "claude" });
     assert.equal(row.state, "draft");
     assert.equal(calls[0].url, "https://api.example.com/sessions/record");
     assert.equal(calls[0].method, "POST");
@@ -370,6 +370,8 @@ describe("createHttpCentralClient", () => {
       node_id: "N1",
       model: "sonnet",
       effort: null,
+      runner: "claude",
+      instance_id: null,
     });
   });
 

@@ -63,7 +63,6 @@ import {
 import { nodeVisibleTo } from "../auth/node-access.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import {
-  createDraftSession,
   deleteDraftSession,
   getLatestRunHostId,
   getSession,
@@ -525,9 +524,14 @@ export async function handleStartSession(
 
     if (body.brief === undefined) {
       // No brief yet: a draft, not a task -- the first message
-      // (POST /sessions/:id/messages) promotes it and resolves runner/
-      // instance itself (session-runtime.ts's promoteDraftAndStart).
-      const session = await createDraftSession(db, identity.userId, body.node_id, {
+      // (POST /sessions/:id/messages) promotes it. Through the runtime, not
+      // createDraftSession directly, because the runtime is what resolves
+      // the organisation's default runner/instance onto the row (v2 rule
+      // 5); its store here is DbSessionStore, so the row still lands in
+      // this db.
+      const session = await getSessionRuntime().createDraft({
+        userId: identity.userId,
+        nodeId: body.node_id,
         model: body.model,
         effort: body.effort,
       });
@@ -775,6 +779,9 @@ const RecordSessionBody = z.union([
     node_id: z.string().min(1),
     model: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),
+    // v2 rule 5: resolved on the device, recorded here.
+    runner: z.string().nullable().optional(),
+    instance_id: z.string().nullable().optional(),
   }),
   z.object({
     draft: z.literal(false).optional(),
@@ -816,6 +823,8 @@ export async function handleCreateSessionRecord(
             user_id: identity.userId,
             model: body.model,
             effort: body.effort,
+            runner: body.runner ?? null,
+            instance_id: body.instance_id ?? null,
           })
         : await store.createSession({
             node_id: body.node_id,

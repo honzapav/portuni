@@ -272,7 +272,9 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   // #374: a thread opens empty -- POST /sessions with no brief creates a
-  // draft (no run, no runner chosen yet) instead of starting a task.
+  // draft (no run) instead of starting a task. v2 rule 5: the draft
+  // already carries the device's default runner (the fake is the only
+  // one registered) and instance (none configured, so null).
   test("POST /sessions without a brief creates a draft, no run started", async () => {
     installRuntime([]);
     const res = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
@@ -281,7 +283,8 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal(body.session.state, "draft");
     assert.equal(body.session.name, "Nový úkol");
     assert.equal(body.session.brief, null);
-    assert.equal(body.session.runner, null);
+    assert.equal(body.session.runner, "fake");
+    assert.equal(body.session.instance_id, null);
     assert.equal(body.run, null);
 
     // A draft never shows up in the node's own sessions list -- "visible
@@ -290,6 +293,25 @@ describe("task REST endpoints under /sessions", () => {
     const listRes = await call(makeIdentity("U1"), "GET", `/nodes/${dbFixture.nodeId}/sessions`);
     const listBody = JSON.parse(listRes.body) as { sessions: SessionSummary[] };
     assert.ok(!listBody.sessions.some((s) => s.id === body.session.id));
+  });
+
+  // v2 rule 5: promotion keeps what the draft row says -- here an instance
+  // patched onto the draft after creation -- instead of re-resolving the
+  // organisation's default.
+  test("promotion keeps the draft's own runner/instance instead of re-resolving", async () => {
+    installRuntime([{ wait: "message" }]);
+    const draftRes = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
+    const { session: draft } = JSON.parse(draftRes.body) as { session: SessionSummary };
+    const patchRes = await call(makeIdentity("U1"), "PATCH", `/sessions/${draft.id}`, { instance_id: "01INST" });
+    assert.equal(patchRes.statusCode, 200);
+
+    const msgRes = await call(makeIdentity("U1"), "POST", `/sessions/${draft.id}/messages`, { text: "go" });
+    assert.equal(msgRes.statusCode, 202);
+    const getRes = await call(makeIdentity("U1"), "GET", `/sessions/${draft.id}`);
+    const updated = JSON.parse(getRes.body) as { state: string; runner: string; instance_id: string | null };
+    assert.equal(updated.state, "running");
+    assert.equal(updated.runner, "fake");
+    assert.equal(updated.instance_id, "01INST");
   });
 
   test("POST /sessions/:id/messages promotes a draft: resolves the runner, names the thread, starts the run", async () => {

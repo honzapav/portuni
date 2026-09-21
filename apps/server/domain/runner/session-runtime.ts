@@ -84,7 +84,7 @@ export function resolveModelAndEffort(
   };
 }
 
-async function resolveTaskDefaults(
+export async function resolveTaskDefaults(
   nodeId: string,
   resolveNodeOrgId: ResolveNodeOrgId,
 ): Promise<{ runner: string; instanceId: string | null }> {
@@ -116,6 +116,21 @@ async function resolveTaskDefaults(
 
   const orgDefault = orgId ? forRunner.find((i) => i.org_defaults.includes(orgId)) : undefined;
   return { runner: usable.id, instanceId: orgDefault?.id ?? null };
+}
+
+// v2 rule 5: a draft opens with the organisation's defaults already on its
+// row. The same resolution, but "no runner" is a legal answer (both null)
+// -- the composer says so instead of showing a picker.
+export async function resolveDraftDefaults(
+  nodeId: string,
+  resolveNodeOrgId: ResolveNodeOrgId,
+): Promise<{ runner: string | null; instanceId: string | null }> {
+  try {
+    return await resolveTaskDefaults(nodeId, resolveNodeOrgId);
+  } catch (err) {
+    if (err instanceof NoRunnerAvailableError) return { runner: null, instanceId: null };
+    throw err;
+  }
 }
 
 export interface RunnerRegistryLookup {
@@ -540,11 +555,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   }
 
   async function createDraft(input: CreateDraftInput): Promise<SessionRow> {
+    const defaults = await resolveDraftDefaults(input.nodeId, resolveNodeOrgId);
     return store.createDraft({
       node_id: input.nodeId,
       user_id: input.userId,
       model: input.model ?? null,
       effort: input.effort ?? null,
+      runner: defaults.runner,
+      instance_id: defaults.instanceId,
     });
   }
 
@@ -616,16 +634,19 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   // A thread is a session row from the moment it opens (#374, "the session
   // row exists from the moment the thread opens"): the first message is
-  // what promotes a draft to running and starts its first run, resolving
-  // runner/instance the same way startTask's caller used to before it was
-  // chosen up front in a now-removed dialog.
+  // what promotes a draft to running and starts its first run. v2 rule 5:
+  // the runner/instance are the draft's own (chosen in the composer, or
+  // the defaults written at creation); the resolution runs only for a
+  // draft that has none, e.g. one created while no runner was logged in.
   async function promoteDraftAndStart(sessionId: string, text: string): Promise<void> {
     const session = await store.getSession(sessionId);
     if (!session) throw new Error(`sendMessage: session ${sessionId} not found`);
     if (session.state !== "draft") throw new Error(`sendMessage: session ${sessionId} has no live run`);
     if (!session.node_id) throw new Error(`sendMessage: draft session ${sessionId} has no anchor node`);
 
-    const { runner, instanceId } = await resolveTaskDefaults(session.node_id, resolveNodeOrgId);
+    const { runner, instanceId } = session.runner
+      ? { runner: session.runner, instanceId: session.instance_id }
+      : await resolveTaskDefaults(session.node_id, resolveNodeOrgId);
     const updated = await store.patchSession(sessionId, {
       state: "running",
       brief: text,

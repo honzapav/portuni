@@ -178,14 +178,25 @@ export async function createDraftSession(
   db: DbClient,
   userId: string,
   nodeId: string,
-  overrides: { model?: string | null; effort?: string | null } = {},
+  overrides: { model?: string | null; effort?: string | null; runner?: string | null; instance_id?: string | null } = {},
 ): Promise<SessionRow> {
   const id = ulid();
   const now = new Date().toISOString();
   await db.execute({
-    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, state, name, model, effort, created_at, last_active_at)
-          VALUES (?, ?, ?, 'interactive_task', 'draft', ?, ?, ?, ?, ?)`,
-    args: [id, nodeId, userId, "Nový úkol", overrides.model ?? null, overrides.effort ?? null, now, now],
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, state, name, model, effort, runner, instance_id, created_at, last_active_at)
+          VALUES (?, ?, ?, 'interactive_task', 'draft', ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      id,
+      nodeId,
+      userId,
+      "Nový úkol",
+      overrides.model ?? null,
+      overrides.effort ?? null,
+      overrides.runner ?? null,
+      overrides.instance_id ?? null,
+      now,
+      now,
+    ],
   });
 
   await writeAudit(db, userId, "session_create", "session", id, { node_id: nodeId, draft: true });
