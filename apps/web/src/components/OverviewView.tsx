@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Clock, MessagesSquare, RefreshCw, Sparkles } from "lucide-react";
+import { capRows, overviewCounters, splitThreadsAndCli } from "../lib/overview-view";
 import type {
   AccessRequest,
   OverviewAttentionNode,
@@ -46,9 +47,24 @@ type Props = {
   // and a change in the set of live sessions reloads the whole overview
   // (a new task shows up, a closed one leaves the inbox) -- no polling.
   liveStates?: Readonly<Record<string, SessionStateMessage>>;
+  // The counter strip (v2 spec, "Přehled"): the unsynced total from
+  // /sync/pending, and where each counter leads -- Práce for the first two,
+  // Graf for attention, the Nesynchronizováno dialog for the last.
+  unsyncedCount: number;
+  onOpenWorkspace: () => void;
+  onOpenGraph: () => void;
+  onOpenSyncOverview: () => void;
 };
 
-export default function OverviewView({ onSelectNode, onOpenSession, liveStates }: Props) {
+export default function OverviewView({
+  onSelectNode,
+  onOpenSession,
+  liveStates,
+  unsyncedCount,
+  onOpenWorkspace,
+  onOpenGraph,
+  onOpenSyncOverview,
+}: Props) {
   const [data, setData] = useState<OverviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -90,7 +106,7 @@ export default function OverviewView({ onSelectNode, onOpenSession, liveStates }
 
   return (
     <div className="absolute inset-0 overflow-y-auto scroll-thin">
-      <div className="mx-auto max-w-5xl px-6 py-6">
+      <div className="mx-auto max-w-[1400px] px-6 py-6">
         <div className="mb-4 flex items-center justify-between">
           <h1 className="text-[18px] font-semibold text-[var(--color-text)]">Přehled</h1>
           <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading} className="text-muted-foreground">
@@ -106,7 +122,22 @@ export default function OverviewView({ onSelectNode, onOpenSession, liveStates }
         )}
 
         {data && (
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          <CounterStrip
+            counters={overviewCounters(
+              liveStates ? mergeLiveSessionStates(data.sessions.running, liveStates) : data.sessions.running,
+              liveStates ? mergeLiveSessionStates(data.sessions.suspended, liveStates) : data.sessions.suspended,
+              meId,
+              data.attention.nodes.length + data.attention.access_requests.length + data.attention.sync_issues.length,
+              unsyncedCount,
+            )}
+            onOpenWorkspace={onOpenWorkspace}
+            onOpenGraph={onOpenGraph}
+            onOpenSyncOverview={onOpenSyncOverview}
+          />
+        )}
+
+        {data && (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <SessionsCard
               running={liveStates ? mergeLiveSessionStates(data.sessions.running, liveStates) : data.sessions.running}
               suspended={liveStates ? mergeLiveSessionStates(data.sessions.suspended, liveStates) : data.sessions.suspended}
@@ -138,19 +169,82 @@ function Card({
   title,
   icon,
   children,
+  footer,
 }: {
   title: string;
   icon: React.ReactNode;
   children: React.ReactNode;
+  footer?: React.ReactNode;
 }) {
   return (
-    <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+    <section className="flex flex-col rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
       <div className="mb-3 flex items-center gap-1.5 text-[13px] font-semibold text-[var(--color-text)]">
         {icon}
         {title}
       </div>
       {children}
+      {footer && <div className="mt-3 border-t border-[var(--color-border)] pt-2">{footer}</div>}
     </section>
+  );
+}
+
+// The strip on top (shadcn's dashboard block): a number with its label
+// under it, the whole card a button to the place it counts.
+function CounterStrip({
+  counters,
+  onOpenWorkspace,
+  onOpenGraph,
+  onOpenSyncOverview,
+}: {
+  counters: { waiting: number; running: number; attention: number; unsynced: number };
+  onOpenWorkspace: () => void;
+  onOpenGraph: () => void;
+  onOpenSyncOverview: () => void;
+}) {
+  const items: { label: string; value: number; onClick: () => void; tone?: string }[] = [
+    { label: "Čeká na mě", value: counters.waiting, onClick: onOpenWorkspace, tone: "var(--color-node-process)" },
+    { label: "Běží", value: counters.running, onClick: onOpenWorkspace, tone: "var(--color-status-active)" },
+    { label: "Vyžaduje pozornost", value: counters.attention, onClick: onOpenGraph },
+    { label: "Nesynchronizováno", value: counters.unsynced, onClick: onOpenSyncOverview },
+  ];
+  return (
+    <div className="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {items.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          onClick={item.onClick}
+          className="flex flex-col items-start gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 text-left transition-colors hover:bg-[var(--color-surface-2)]"
+        >
+          <span
+            className="text-[24px] font-semibold leading-none tabular-nums text-[var(--color-text)]"
+            style={item.value > 0 && item.tone ? { color: item.tone } : undefined}
+          >
+            {item.value}
+          </span>
+          <span className="text-[12px] text-[var(--color-text-dim)]">{item.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// "Zobrazit všech N" under a capped list; expands the card in place.
+function ShowAll({ hidden, total, onClick }: { hidden: number; total: number; onClick: () => void }) {
+  if (hidden <= 0) return null;
+  return (
+    <Button variant="link" size="xs" className="h-auto p-0 text-[12px]" onClick={onClick}>
+      Zobrazit všech {total}
+    </Button>
+  );
+}
+
+function StateChip({ label, color, pulsing }: { label: string; color: string; pulsing: boolean }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 text-[11px]" style={{ color }}>
+      <span className={`inline-flex h-1.5 w-1.5 rounded-full ${pulsing ? "animate-pulse" : ""}`} style={{ background: color }} />
+      {label}
+    </span>
   );
 }
 
@@ -170,7 +264,7 @@ function Row({
     <Comp
       type={onClick ? "button" : undefined}
       onClick={onClick}
-      className={`flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-[12.5px] ${
+      className={`flex min-h-9 w-full flex-col justify-center gap-0.5 rounded-md px-2 py-1 text-left text-[12.5px] ${
         onClick ? "transition-colors hover:bg-[var(--color-bg)]" : ""
       }`}
     >
@@ -196,27 +290,40 @@ function SessionsCard({
 }) {
   // The inbox: Čeká na mě first, then Běží, then Pozastaveno, restricted to
   // the caller's own sessions -- the team-wide list is the hosts spec's job.
-  const sessions = sortInboxSessions(running, suspended, meId);
+  // Threads only (v2 rule 7): a hand-opened CLI session is a count in the
+  // footer, the node's Relace tab keeps it.
+  const [expanded, setExpanded] = useState(false);
+  const { threads, cli } = splitThreadsAndCli(sortInboxSessions(running, suspended, meId));
+  const { shown, hidden } = capRows(threads, expanded);
+  const cliLine =
+    cli.total > 0 ? `K tomu ${cli.total} ${cli.total === 1 ? "relace" : cli.total < 5 ? "relace" : "relací"} z CLI (${cli.running} běží)` : null;
   return (
-    <Card title="Relace" icon={<MessagesSquare size={14} />}>
-      {sessions.length === 0 ? (
-        <Empty>Žádné běžící ani pozastavené relace.</Empty>
+    <Card
+      title="Relace"
+      icon={<MessagesSquare size={14} />}
+      footer={
+        hidden > 0 || cliLine ? (
+          <div className="flex items-center justify-between gap-3 text-[12px] text-[var(--color-text-dim)]">
+            <ShowAll hidden={hidden} total={threads.length} onClick={() => setExpanded(true)} />
+            {cliLine && <span className="ml-auto">{cliLine}</span>}
+          </div>
+        ) : undefined
+      }
+    >
+      {threads.length === 0 ? (
+        <Empty>Žádná běžící ani pozastavená vlákna.</Empty>
       ) : (
         <div className="space-y-0.5">
-          {sessions.map((s) => {
+          {shown.map((s) => {
             const chip = sessionRowChip(s.state, s.waiting_since);
             return (
               <Row key={s.id} onClick={s.node_id ? () => onOpenSession(s.node_id!, s.id) : undefined}>
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${chip.pulsing ? "animate-pulse" : ""}`}
-                    style={{ background: chip.color }}
-                    title={chip.label}
-                  />
-                  <span className="truncate text-[var(--color-text)]">{s.name}</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-[13px] text-[var(--color-text)]">{s.name}</span>
+                  <StateChip label={chip.label} color={chip.color} pulsing={chip.pulsing} />
                 </div>
-                <div className="pl-3 text-[11px] text-[var(--color-text-dim)]">
-                  {s.node_name ?? "Chat"} · {chip.label} · {fmtDateTime(s.last_active_at)}
+                <div className="text-[11.5px] text-[var(--color-text-dim)]">
+                  {s.node_name ?? "Chat"} · {fmtDateTime(s.last_active_at)}
                 </div>
               </Row>
             );
@@ -258,14 +365,28 @@ function AttentionCard({
   syncIssues: OverviewSyncIssue[];
   onSelectNode: (nodeId: string) => void;
 }) {
-  const empty = nodes.length === 0 && accessRequests.length === 0 && syncIssues.length === 0;
+  const [expanded, setExpanded] = useState(false);
+  type Item = { kind: "node"; data: OverviewAttentionNode } | { kind: "access"; data: AccessRequest } | { kind: "sync"; data: OverviewSyncIssue };
+  const all: Item[] = [
+    ...nodes.map((data): Item => ({ kind: "node", data })),
+    ...accessRequests.map((data): Item => ({ kind: "access", data })),
+    ...syncIssues.map((data): Item => ({ kind: "sync", data })),
+  ];
+  const { shown, hidden } = capRows(all, expanded);
+  const shownNodes = shown.filter((i): i is Extract<Item, { kind: "node" }> => i.kind === "node").map((i) => i.data);
+  const shownAccess = shown.filter((i): i is Extract<Item, { kind: "access" }> => i.kind === "access").map((i) => i.data);
+  const shownSync = shown.filter((i): i is Extract<Item, { kind: "sync" }> => i.kind === "sync").map((i) => i.data);
   return (
-    <Card title="Vyžaduje pozornost" icon={<AlertTriangle size={14} />}>
-      {empty ? (
+    <Card
+      title="Vyžaduje pozornost"
+      icon={<AlertTriangle size={14} />}
+      footer={hidden > 0 ? <ShowAll hidden={hidden} total={all.length} onClick={() => setExpanded(true)} /> : undefined}
+    >
+      {all.length === 0 ? (
         <Empty>Nic nevyžaduje pozornost.</Empty>
       ) : (
         <div className="space-y-0.5">
-          {nodes.map((n) => {
+          {shownNodes.map((n) => {
             const state = n.type === "project" ? n.health : (n.lifecycle_state ?? "");
             const color = n.type === "project" ? HEALTH_COLORS[n.health] : (LIFECYCLE_COLORS[state] ?? "gray");
             return (
@@ -278,13 +399,13 @@ function AttentionCard({
               </Row>
             );
           })}
-          {accessRequests.map((r) => (
+          {shownAccess.map((r) => (
             <Row key={r.id} onClick={() => onSelectNode(r.node_id)}>
               <div className="text-[var(--color-text)]">Žádost o přístup: {r.user_name}</div>
               <div className="text-[11px] text-[var(--color-text-dim)]">{r.node_name}</div>
             </Row>
           ))}
-          {syncIssues.map((s) => (
+          {shownSync.map((s) => (
             <Row key={s.id} onClick={() => onSelectNode(s.node_id)}>
               <div className="text-[var(--color-text)]">Problém se synchronizací: {s.node_name}</div>
               <div className="truncate text-[11px] text-[var(--color-text-dim)]">{s.last_error}</div>
@@ -313,14 +434,20 @@ function ActivityCard({
     ...events.map((e): Item => ({ kind: "event", at: e.created_at, data: e })),
     ...sessionWrites.map((w): Item => ({ kind: "write", at: w.added_at, data: w })),
   ].sort((a, b) => (a.at < b.at ? 1 : -1));
+  const [expanded, setExpanded] = useState(false);
+  const { shown, hidden } = capRows(items, expanded);
 
   return (
-    <Card title="Poslední aktivita" icon={<Clock size={14} />}>
+    <Card
+      title="Poslední aktivita"
+      icon={<Clock size={14} />}
+      footer={hidden > 0 ? <ShowAll hidden={hidden} total={items.length} onClick={() => setExpanded(true)} /> : undefined}
+    >
       {items.length === 0 ? (
         <Empty>Zatím žádná aktivita.</Empty>
       ) : (
         <div className="space-y-0.5">
-          {items.slice(0, 30).map((item) =>
+          {shown.map((item) =>
             item.kind === "event" ? (
               <Row key={`e-${item.data.id}`} onClick={() => onSelectNode(item.data.node_id)}>
                 <div className="truncate text-[var(--color-text)]">{item.data.content}</div>
@@ -350,13 +477,19 @@ function NewNodesCard({
   nodes: OverviewNewNode[];
   onSelectNode: (nodeId: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const { shown, hidden } = capRows(nodes, expanded);
   return (
-    <Card title="Nové nody" icon={<Sparkles size={14} />}>
+    <Card
+      title="Nové uzly"
+      icon={<Sparkles size={14} />}
+      footer={hidden > 0 ? <ShowAll hidden={hidden} total={nodes.length} onClick={() => setExpanded(true)} /> : undefined}
+    >
       {nodes.length === 0 ? (
-        <Empty>Žádné nedávno vytvořené nody.</Empty>
+        <Empty>Žádné nedávno vytvořené uzly.</Empty>
       ) : (
         <div className="space-y-0.5">
-          {nodes.map((n) => (
+          {shown.map((n) => (
             <Row key={n.id} onClick={() => onSelectNode(n.id)}>
               <div className="truncate text-[var(--color-text)]">{n.name}</div>
               <div className="text-[11px] text-[var(--color-text-dim)]">
