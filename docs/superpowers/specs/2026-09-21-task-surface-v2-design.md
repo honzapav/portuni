@@ -80,10 +80,12 @@ server's `node:test` runner, and produces these row kinds:
 | question | `question` | marker when historical; `Confirmation` above the composer when open (unchanged) |
 | compaction | `compaction` | `Checkpoint` (unchanged) |
 | summary | `handoff` | marker "Shrnutí uloženo" |
-| error | `error`, and a `run_ended` whose reason is not `completed` | marker in the danger colour |
+| note | `run_ended` with reason `interrupted` | neutral marker "Přerušeno" |
+| error | `error`, and a `run_ended` with reason `error`, `limit` or `host_lost` | marker in the danger colour |
 
-`run_started`, `run_ended` with reason `completed`, and `state_changed`
-produce no row. They still drive the live-run detection and the
+`run_started`, `run_ended` with reason `completed` or `suspended` (the
+ordinary end of every run in this runtime), and `state_changed` produce
+no row. They still drive the live-run detection and the
 lifecycle notice.
 
 ### The activity group

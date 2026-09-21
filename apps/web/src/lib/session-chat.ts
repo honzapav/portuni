@@ -286,6 +286,7 @@ export type TranscriptRow =
   | { kind: "question"; key: string; title: string }
   | { kind: "compaction"; key: string }
   | { kind: "summary"; key: string }
+  | { kind: "note"; key: string; text: string }
   | { kind: "error"; key: string; message: string };
 
 export function runEndReasonLabel(reason: string): string {
@@ -302,8 +303,11 @@ export function runEndReasonLabel(reason: string): string {
 
 // `liveRunId` says which run is live: its trailing activity group (after
 // the last answer) is marked live, so the renderer keeps it expanded on
-// the running tool. run_started, run_ended(completed) and state_changed
-// yield nothing; a run_ended with any other reason yields an error row.
+// the running tool. run_started and state_changed yield nothing. A
+// run_ended yields nothing for `completed` and `suspended` (the ordinary
+// ends -- the notice bar already says the process is gone), a neutral
+// note for `interrupted`, and an error row for `error`, `limit` and
+// `host_lost`.
 export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: string | null): TranscriptRow[] {
   const rows: TranscriptRow[] = [];
   // Held in an object so the closures below can reset it -- a plain `let`
@@ -345,7 +349,9 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
         break;
       case "run_ended":
         close();
-        if (event.payload.reason !== "completed") {
+        if (event.payload.reason === "interrupted") {
+          rows.push({ kind: "note", key: `e${seq}`, text: "Přerušeno" });
+        } else if (event.payload.reason !== "completed" && event.payload.reason !== "suspended") {
           rows.push({ kind: "error", key: `e${seq}`, message: `Běh skončil: ${runEndReasonLabel(event.payload.reason)}` });
         }
         currentRun = null;

@@ -269,9 +269,10 @@ deduplicates a replay against a frame that raced it.
   `reasoning`, `tool_call` and `file_change` between two answers of one run
   folds into one `activity` row; `question`, `compaction` (`Checkpoint`),
   `handoff` ("Shrnutí uloženo") and `error` keep a small marker; a
-  `run_ended` whose reason is not `completed` is an error row;
-  `run_started`, `run_ended(completed)`, `state_changed` and
-  `context_usage` render nothing. `collapseToolCalls` runs inside, so a
+  `run_ended` is nothing for `completed` and `suspended` (the ordinary
+  ends), a neutral "Přerušeno" note for `interrupted`, and an error row in
+  the danger colour for `error`, `limit` and `host_lost`; `run_started`,
+  `state_changed` and `context_usage` render nothing. `collapseToolCalls` runs inside, so a
   `started` and its `completed`/`failed` are one item.
 - **The activity group** (`ActivityGroupRow`) is a `ChainOfThought` whose
   header is `activitySummary(items)`: a sentence from verb counts

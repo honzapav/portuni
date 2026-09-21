@@ -225,6 +225,15 @@ describe("deriveTranscriptRows", () => {
       ["error"],
     );
     assert.match((ended[0] as { message: string }).message, /chyba/);
+    // The ordinary ends are not errors: suspended is every idle/natural end
+    // in this runtime, so it yields no row; an interrupt is a neutral note.
+    const suspended = deriveTranscriptRows([runStarted(1), ev(2, "run_ended", { run_id: "R1", reason: "suspended", usage: null })], null);
+    assert.deepEqual(suspended, []);
+    const interrupted = deriveTranscriptRows([runStarted(1), ev(2, "run_ended", { run_id: "R1", reason: "interrupted", usage: null })], null);
+    assert.deepEqual(
+      interrupted.map((r) => r.kind),
+      ["note"],
+    );
   });
 
   it("question, compaction and handoff keep their markers", () => {

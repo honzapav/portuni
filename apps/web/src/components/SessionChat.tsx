@@ -806,6 +806,8 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
       );
     case "summary":
       return <SystemMarker>Shrnutí uloženo</SystemMarker>;
+    case "note":
+      return <SystemMarker>{row.text}</SystemMarker>;
     case "error":
       return (
         <SystemMarker>
