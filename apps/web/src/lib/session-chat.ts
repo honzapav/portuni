@@ -244,3 +244,256 @@ export function threadNameFromFirstMessage(text: string): string {
   const cut = lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated;
   return `${cut}…`;
 }
+
+// --- Transcript rows (v2 spec, "The activity model") -------------------------
+// The transcript is a list of rows derived from the canonical events: the
+// prompt and the answer at full weight, everything between two answers of
+// one run folded into one activity group, run bookkeeping into nothing.
+
+export type ActivityItem =
+  | { kind: "reasoning"; seq: number; summary: string }
+  | { kind: "tool"; seq: number; call: ToolCallEvent["payload"] }
+  | { kind: "file_change"; seq: number; path: string; op: FileChangeOp };
+
+export type ActivityRow = { kind: "activity"; key: string; runId: string | null; items: ActivityItem[]; live: boolean };
+
+export type TranscriptRow =
+  | { kind: "prompt"; key: string; text: string }
+  | { kind: "answer"; key: string; text: string }
+  | ActivityRow
+  | { kind: "question"; key: string; title: string }
+  | { kind: "compaction"; key: string }
+  | { kind: "summary"; key: string }
+  | { kind: "error"; key: string; message: string };
+
+export function runEndReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    completed: "dokončeno",
+    interrupted: "přerušeno",
+    suspended: "pozastaveno",
+    error: "chyba",
+    limit: "limit",
+    host_lost: "proces osiřel",
+  };
+  return labels[reason] ?? reason;
+}
+
+// `liveRunId` says which run is live: its trailing activity group (after
+// the last answer) is marked live, so the renderer keeps it expanded on
+// the running tool. run_started, run_ended(completed) and state_changed
+// yield nothing; a run_ended with any other reason yields an error row.
+export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: string | null): TranscriptRow[] {
+  const rows: TranscriptRow[] = [];
+  let open: ActivityRow | null = null;
+  let currentRun: string | null = null;
+  const close = (): void => {
+    open = null;
+  };
+  const push = (item: ActivityItem): void => {
+    if (!open) {
+      open = { kind: "activity", key: `a${item.seq}`, runId: currentRun, items: [], live: false };
+      rows.push(open);
+    }
+    open.items.push(item);
+  };
+  for (const { seq, event } of collapseToolCalls(events)) {
+    switch (event.kind) {
+      case "user_message":
+        close();
+        rows.push({ kind: "prompt", key: `e${seq}`, text: event.payload.text });
+        break;
+      case "assistant_message":
+        close();
+        rows.push({ kind: "answer", key: `e${seq}`, text: event.payload.text });
+        break;
+      case "reasoning":
+        push({ kind: "reasoning", seq, summary: event.payload.summary });
+        break;
+      case "tool_call":
+        push({ kind: "tool", seq, call: event.payload });
+        break;
+      case "file_change":
+        push({ kind: "file_change", seq, path: event.payload.path, op: event.payload.op });
+        break;
+      case "run_started":
+        currentRun = event.payload.run_id;
+        close();
+        break;
+      case "run_ended":
+        close();
+        if (event.payload.reason !== "completed") {
+          rows.push({ kind: "error", key: `e${seq}`, message: `Běh skončil: ${runEndReasonLabel(event.payload.reason)}` });
+        }
+        currentRun = null;
+        break;
+      case "question":
+        close();
+        rows.push({ kind: "question", key: `e${seq}`, title: event.payload.title });
+        break;
+      case "compaction":
+        close();
+        rows.push({ kind: "compaction", key: `e${seq}` });
+        break;
+      case "handoff":
+        close();
+        rows.push({ kind: "summary", key: `e${seq}` });
+        break;
+      case "error":
+        close();
+        rows.push({ kind: "error", key: `e${seq}`, message: event.payload.message });
+        break;
+      default:
+        break;
+    }
+  }
+  const trailing: ActivityRow | null = open;
+  if (trailing && liveRunId !== null && trailing.runId === liveRunId) trailing.live = true;
+  return rows;
+}
+
+// --- The activity sentence ---------------------------------------------------
+// "Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval 12 s". The verb
+// table covers Claude's tool names; another runner's tools fall back to
+// their own names (spec, known gaps).
+
+type ToolVerb = "read" | "edited" | "created" | "command";
+const TOOL_VERBS: Record<string, ToolVerb> = {
+  Read: "read",
+  Glob: "read",
+  Grep: "read",
+  LS: "read",
+  WebFetch: "read",
+  WebSearch: "read",
+  Edit: "edited",
+  MultiEdit: "edited",
+  NotebookEdit: "edited",
+  Write: "created",
+  Bash: "command",
+};
+
+export function toolVerbCounts(items: readonly ActivityItem[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (item.kind !== "tool") continue;
+    const key = TOOL_VERBS[item.call.tool] ?? `tool:${item.call.tool}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function czechCount(n: number, one: string, few: string, many: string): string {
+  if (n === 1) return one;
+  if (n >= 2 && n <= 4) return few;
+  return many;
+}
+
+export function activitySummary(
+  items: readonly ActivityItem[],
+  reasoningSeconds?: number | null,
+): { text: string; failed: number } {
+  const tools = items.filter((i): i is Extract<ActivityItem, { kind: "tool" }> => i.kind === "tool");
+  const failed = tools.filter((t) => t.call.status === "failed").length;
+  // A group with a single call shows that call's title instead of a sentence.
+  if (tools.length === 1 && !reasoningSeconds) {
+    const t = tools[0];
+    const title = t.call.title || t.call.tool;
+    return { text: failed ? `${title} · selhal` : title, failed };
+  }
+  const parts: string[] = [];
+  const counts = toolVerbCounts(items);
+  const read = counts.get("read");
+  if (read) parts.push(`přečteno ${read} ${czechCount(read, "soubor", "soubory", "souborů")}`);
+  const edited = counts.get("edited");
+  if (edited) parts.push(`upraveno ${edited}`);
+  const created = counts.get("created");
+  if (created) parts.push(`vytvořeno ${created}`);
+  const cmd = counts.get("command");
+  if (cmd) parts.push(`${cmd} ${czechCount(cmd, "příkaz", "příkazy", "příkazů")}`);
+  for (const [key, n] of counts) if (key.startsWith("tool:")) parts.push(`${n} × ${key.slice(5)}`);
+  if (reasoningSeconds) parts.push(`uvažoval ${reasoningSeconds} s`);
+  if (failed) parts.push(`${failed} ${czechCount(failed, "selhal", "selhaly", "selhalo")}`);
+  if (parts.length === 0 && items.some((i) => i.kind === "reasoning")) parts.push("uvažoval");
+  const text = parts.join(" · ");
+  return { text: text.charAt(0).toUpperCase() + text.slice(1), failed };
+}
+
+// --- The working row -----------------------------------------------------------
+// Rule 2: something is always on screen while a run is live. When neither
+// streaming text nor a running tool is, this row is, labelled by the last
+// thing that happened.
+
+export type WorkingPhase = "starting" | "thinking" | "continuing";
+export const WORKING_LABEL: Record<WorkingPhase, string> = {
+  starting: "Spouštím…",
+  thinking: "Přemýšlím…",
+  continuing: "Pokračuji…",
+};
+
+// null = nothing to show: no run and no send in flight, or the run's last
+// event is a still-running tool (the live activity row shows that one).
+export function workingPhase(
+  events: readonly ChatEvent[],
+  liveRunId: string | null,
+  sentAt: number | null,
+): WorkingPhase | null {
+  if (liveRunId === null) return sentAt !== null ? "starting" : null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i].event;
+    if (e.kind === "run_started" && e.payload.run_id === liveRunId) return "thinking";
+    if (e.kind === "tool_call") return e.payload.status === "started" ? null : "continuing";
+    if (e.kind === "assistant_message" || e.kind === "reasoning") return "continuing";
+  }
+  return "thinking";
+}
+
+// --- Delta coalescing (v2 spec, "Streaming") ----------------------------------
+// A burst of delta frames costs one render: frames are buffered per
+// (run, channel) and delivered once per scheduler tick. The desktop bridge
+// forwards frames unchanged; this is the webview's own batching.
+
+export type StreamDelta = { run_id: string; channel: "text" | "reasoning"; text: string };
+
+export interface DeltaCoalescer {
+  push(delta: StreamDelta): void;
+  // Deliver what is buffered now (a run_ended, an unmount) and cancel the tick.
+  flush(): void;
+  // Drop what is buffered without delivering.
+  clear(): void;
+}
+
+export function createDeltaCoalescer(
+  deliver: (batch: StreamDelta[]) => void,
+  schedule: (cb: () => void) => () => void,
+): DeltaCoalescer {
+  const buffer = new Map<string, StreamDelta>();
+  let cancel: (() => void) | null = null;
+  const drain = (): void => {
+    cancel = null;
+    if (buffer.size === 0) return;
+    const batch = [...buffer.values()];
+    buffer.clear();
+    deliver(batch);
+  };
+  return {
+    push(delta) {
+      const key = `${delta.run_id}\u0000${delta.channel}`;
+      const prev = buffer.get(key);
+      buffer.set(key, prev ? { ...prev, text: prev.text + delta.text } : { ...delta });
+      if (!cancel) cancel = schedule(drain);
+    },
+    flush() {
+      if (cancel) {
+        cancel();
+        cancel = null;
+      }
+      drain();
+    },
+    clear() {
+      buffer.clear();
+      if (cancel) {
+        cancel();
+        cancel = null;
+      }
+    },
+  };
+}
