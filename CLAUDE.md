@@ -20,7 +20,7 @@ seam, not a second implementation. Words kept apart: **team workspace**
 (`data_mode: "central"`), **personal workspace** (`data_mode: "local"`), the
 **central server** (the process at `api.portuni.com`), the **sync agent**
 (the device's sidecar in a team workspace, `PORTUNI_AGENT_MODE=1`) and
-**device-local** (what the sync agent serves itself, `local_only` in code).
+**device-local** (what the sync agent serves itself, `device_local` in code).
 Model and checklist: `docs/architecture/data-modes.md`.
 
 ## Where the rules live
@@ -181,7 +181,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
 
 - A REST route the desktop must reach on the device in a team workspace lives in
   three places at once: the local router, `agent-router.ts`, and
-  `apps/server/shared/device-local-routes.json`, which `is_local_only_path`
+  `apps/server/shared/device-local-routes.json`, which `is_device_local_path`
   embeds and matches against; `test/agent-router-route-parity.test.ts` holds
   the router to the same list.
 - A personal workspace cannot register or route to a remote:

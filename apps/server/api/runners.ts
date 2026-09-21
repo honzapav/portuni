@@ -13,7 +13,7 @@
 // No ownership model here (unlike sessions): the registry is one shared,
 // device-wide file, same as the desktop's old config.json profiles
 // registry. Device-wide also means device-LOCAL: in agent mode the desktop
-// routes every /runners* call to the sidecar (lib.rs's is_local_only_path,
+// routes every /runners* call to the sidecar (lib.rs's is_device_local_path,
 // agent-router.ts), never to central.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -50,7 +50,7 @@ export async function handleListRunners(req: IncomingMessage, res: ServerRespons
 }
 
 // #376: the model picker's list -- device-local like every other /runners*
-// route (lib.rs's is_local_only_path already matches on the /runners/
+// route (lib.rs's is_device_local_path already matches on the /runners/
 // prefix). 404 for an unregistered runner id, same tier as the instance
 // routes below (no ownership model, read scope).
 export async function handleListRunnerModels(

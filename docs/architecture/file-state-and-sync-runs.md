@@ -24,7 +24,7 @@ top of both.
 
 A behaviour change on the file plane touches both device engines or states
 in its PR why one is out of scope; a route the desktop UI calls needs an
-entry in `is_local_only_path` (`apps/desktop/src/lib.rs`) and a handler in
+entry in `is_device_local_path` (`apps/desktop/src/lib.rs`) and a handler in
 `agent-router.ts`, or it never reaches the device in a team workspace.
 
 ## Registration and classification
@@ -131,7 +131,7 @@ entry in `is_local_only_path` (`apps/desktop/src/lib.rs`) and a handler in
 
 Central's own create, rename and delete are adapter-direct (it has no device
 mirror). The desktop UI's REST calls for them are routed to the device
-(`is_local_only_path` matches `POST /nodes/:id/files`, `DELETE
+(`is_device_local_path` matches `POST /nodes/:id/files`, `DELETE
 /nodes/:id/files/:fileId`, `POST …/:fileId/{resolve,rename,move}`), and
 `agent-router.ts` splits each into a central record half and a local disk
 half:
@@ -225,7 +225,7 @@ that follow from it:
   reattach. One job per user: a second `POST /sync/jobs` reattaches and
   appends any node not already covered. State is in-memory; a restart
   loses the progress view, never work, since each node's run is
-  idempotent. The routes are device-local in both `is_local_only_path` and
+  idempotent. The routes are device-local in both `is_device_local_path` and
   `agent-router.ts`.
 - **Per-node serialization.** The pool wraps each node in
   `withNodeSyncLock` (path lock `sync-node:<id>`), so a central catch-up
@@ -368,7 +368,7 @@ that follow from it:
   `domain/sync/remote-watch-status.ts`, which the loop registers with at
   start; a server with no loop answers `[]`, and `isLocalWorkspace()`
   short-circuits to the same. **Deliberately not device-local**: no
-  `is_local_only_path` entry, no `agent-router.ts` route, no `CentralClient`
+  `is_device_local_path` entry, no `agent-router.ts` route, no `CentralClient`
   method, no MCP tool. The team-workspace desktop reaches it through the
   ordinary proxy to the central server, the only process that runs the loop. Web
   helpers (`apps/web/src/lib/remote-watch-view.ts`: `remoteWatchLine`,

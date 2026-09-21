@@ -9,6 +9,7 @@
 // what its user could reach anyway.
 
 import type { DataSourceRow, SessionRow, SessionState } from "../../../shared/types.js";
+import type { SessionScopeRecord } from "../../../shared/api-types.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
@@ -139,6 +140,12 @@ export interface CentralClient {
     events: CanonicalEvent[],
   ): Promise<number[]>;
   listSessionEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
+  // GET /sessions/:id/scope (#427): the session's read/write set by node id
+  // and the anchor node's name. `session_scope` is a graph-db table, so a
+  // sync agent has none -- the suspend fallback
+  // (domain/runner/suspend-fallback-central.ts) fills its summary's scope
+  // sections from here instead of leaving them empty.
+  sessionScopeRecord(sessionId: string): Promise<SessionScopeRecord>;
   // GET /nodes/:id/orientation: what buildOrientationHint would render
   // locally, computed by the central server (which has the real graph db)
   // instead of the agent-mode sidecar (which does not).
@@ -500,6 +507,13 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       if (r.status !== 200) throwFor(r.status, p, r.json);
       const events = (r.json as { events: Array<{ payload: unknown } & Omit<SessionEventRow, "payload">> }).events;
       return events.map((e) => ({ ...e, payload: JSON.stringify(e.payload) }));
+    },
+
+    async sessionScopeRecord(sessionId) {
+      const p = `/sessions/${encodeURIComponent(sessionId)}/scope`;
+      const r = await request("GET", p);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as SessionScopeRecord;
     },
 
     async orientation(nodeId) {

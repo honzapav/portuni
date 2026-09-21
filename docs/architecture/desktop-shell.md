@@ -70,7 +70,7 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
 - The agent starts only after Google login. Before that
   `spawn_sidecar_ws` records the sentinel port `0` in `BackendPorts`,
   emits `backend-ready` with `0` so the login gate renders, and every
-  device-local route answers `501 local_only` (see Request routing).
+  device-local route answers `501 sync_agent_down` (see Request routing).
   `google_login` re-invokes `spawn_sidecar_ws` after a successful login.
 - The sidecar needs a login shell's `PATH` to find `claude`;
   `shell_path::login_shell_path` provides it. There is no embedded
@@ -282,12 +282,12 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
     workspace's sidecar with its bearer token (`sidecar_port_and_token`);
   - team workspace: sends the request to `server_url` with the session
     JWT (`auth::do_central_request_raw`), retrying once after a silent
-    refresh on 401, **unless** `is_local_only_path(path)` is true; then it
+    refresh on 401, **unless** `is_device_local_path(path)` is true; then it
     proxies to the local sync agent exactly as a personal workspace would.
 - The device-local list is the set of routes the device must serve itself
   (mirrors, sync status and runs, file content and file lifecycle, runner
   registry, task actions). The canonical list is
-  `apps/server/shared/device-local-routes.json`; `is_local_only_path` in
+  `apps/server/shared/device-local-routes.json`; `is_device_local_path` in
   `lib.rs` embeds it (`include_str!`) and matches the request path against
   its `device_local` patterns (`{name}` is one segment, the query string is
   ignored), and `test/agent-router-route-parity.test.ts` holds
@@ -299,8 +299,8 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   fallthrough; either fails the parity test.
 - A team workspace whose sync agent is not running (not logged
   in, or no `server_url`) answers every device-local route with
-  `501 {"error":"local_only","detail":"sync agent not running"}`.
-  `apps/web/src/api.ts` turns it into `LocalOnlyError`, which the UI reads
+  `501 {"error":"sync_agent_down","detail":"sync agent not running"}`.
+  `apps/web/src/api.ts` turns it into `SyncAgentDownError`, which the UI reads
   as "not signed in", never as "feature unavailable".
 - Routes deliberately not device-local, served by the central server in a team workspace:
   `/nodes/:id/file-url`, `/nodes/:id/folder-url`, the session record half

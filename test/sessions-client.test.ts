@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { createSessionsClient, createDirectWsTransport } from "../apps/web/src/lib/sessions-client.js";
+import { mountedChatSessions } from "../apps/web/src/lib/session-views.js";
+import type { SessionState } from "../apps/web/src/types.js";
 
 interface SubscribeCall {
   session_id: string;
@@ -18,6 +20,7 @@ class FakeSessionsServer {
   readonly wss: WebSocketServer;
   private readonly sockets = new Set<WsSocket>();
   readonly subscribeCalls: SubscribeCall[] = [];
+  readonly unsubscribeCalls: string[] = [];
   // When set, requests are recorded but never answered -- the way a server
   // that dies mid-request behaves. Lets a test strand a request on purpose.
   silent = false;
@@ -31,6 +34,9 @@ class FakeSessionsServer {
         const frame = JSON.parse(String(raw)) as { id?: string; type: string; payload: unknown };
         if (frame.type === "subscribe") {
           this.subscribeCalls.push(frame.payload as SubscribeCall);
+        }
+        if (frame.type === "unsubscribe") {
+          this.unsubscribeCalls.push((frame.payload as { session_id: string }).session_id);
         }
         if (frame.id && !this.silent) {
           socket.send(JSON.stringify({ id: frame.id, type: "reply", payload: { ok: true } }));
@@ -230,6 +236,66 @@ describe("sessions-client: direct-WS transport", () => {
     });
     await waitUntil(() => states.length === 1);
     assert.deepEqual(states, ["running"]);
+
+    client.disconnect();
+  });
+});
+
+// #429: Práce keeps one mounted SessionChat per open thread and only flips
+// which one is visible, so a switch must not re-subscribe. There is no DOM
+// here, so this drives the real client through the mount set the real
+// helper computes, reconciled the way React reconciles keyed children --
+// a key that appears mounts (subscribe), a key that disappears unmounts
+// (unsubscribe), a key that stays put does nothing.
+describe("sessions-client: the mounted-thread set (#429)", () => {
+  type Thread = { id: string; node_id: string | null; state: SessionState };
+
+  function keyedReconciler(client: { subscribe(id: string): Promise<void>; unsubscribe(id: string): void }) {
+    let mounted: string[] = [];
+    return async (next: readonly Thread[]) => {
+      const ids = next.map((s) => s.id);
+      for (const id of mounted) if (!ids.includes(id)) client.unsubscribe(id);
+      for (const id of ids) if (!mounted.includes(id)) await client.subscribe(id);
+      mounted = ids;
+    };
+  }
+
+  it("subscribes once per thread and keeps the subscription across switches, unsubscribing only on close", async () => {
+    const server = await fakeServer();
+    const client = createSessionsClient({ transport: testTransport(server) });
+    clients.push(client);
+
+    const a: Thread = { id: "A", node_id: "n1", state: "running" };
+    const b: Thread = { id: "B", node_id: "n1", state: "suspended" };
+    const c: Thread = { id: "C", node_id: "n2", state: "running" };
+    const byNode = { n1: [a, b], n2: [c] };
+    const render = keyedReconciler(client);
+
+    // Two nodes open, A shown.
+    await render(mountedChatSessions(byNode, ["n1", "n2"], a));
+    await waitUntil(() => server.subscribeCalls.length === 3);
+
+    // Switch to B, then to C, then back to A: the mounted set never changes.
+    await render(mountedChatSessions(byNode, ["n1", "n2"], b));
+    await render(mountedChatSessions(byNode, ["n1", "n2"], c));
+    await render(mountedChatSessions(byNode, ["n1", "n2"], a));
+
+    const subscribesFor = (id: string) => server.subscribeCalls.filter((call) => call.session_id === id).length;
+    assert.equal(subscribesFor("A"), 1);
+    assert.equal(subscribesFor("B"), 1);
+    assert.equal(subscribesFor("C"), 1);
+    assert.deepEqual(server.unsubscribeCalls, []);
+
+    // Closing node n2 unmounts its thread and unsubscribes it, and only it.
+    await render(mountedChatSessions({ n1: [a, b] }, ["n1"], a));
+    await waitUntil(() => server.unsubscribeCalls.length === 1);
+    assert.deepEqual(server.unsubscribeCalls, ["C"]);
+
+    // Closing thread B (the × on its sub-row) unsubscribes B alone.
+    await render(mountedChatSessions({ n1: [a] }, ["n1"], a));
+    await waitUntil(() => server.unsubscribeCalls.length === 2);
+    assert.deepEqual(server.unsubscribeCalls, ["C", "B"]);
+    assert.equal(subscribesFor("A"), 1);
 
     client.disconnect();
   });

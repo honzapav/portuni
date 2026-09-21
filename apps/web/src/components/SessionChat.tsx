@@ -21,7 +21,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionState, SessionSummary } from "../types";
 import { fetchSessionSignals, type SessionSignals } from "../api";
-import { sessionRowAccess } from "../lib/session-views";
+import { hostDisplayName, sessionRowAccess } from "../lib/session-views";
 import { useMe } from "../lib/use-me";
 import type { SessionsClient } from "../lib/sessions-client";
 import {
@@ -290,6 +290,7 @@ export default function SessionChat({
   const streamingText = liveRunId ? textDeltaBuffers[liveRunId] : undefined;
   const streamingReasoning = liveRunId ? reasoningDeltaBuffers[liveRunId] : undefined;
   const chip = sessionStatusChip(live.state, live.waiting_since);
+  const host = hostDisplayName(session);
   const restartHint = signals ? formatRestartHint(signals) : null;
   // #378: an open thread with a run that ended other than by Uzavřít --
   // the next message replays the whole conversation from the summary.
@@ -367,7 +368,9 @@ export default function SessionChat({
           <span>
             {session.runner ?? "runner neznámý"}
             {session.instance_id ? ` · ${session.instance_id}` : ""}
-            {session.host_id ? ` · ${session.host_id}` : ""}
+            {/* #428: which host ran it -- the label when central knows one,
+                otherwise the host id. Hidden when neither exists. */}
+            {host ? ` · ${host}` : ""}
             {/* #375: the thread's own model/effort override, when set --
                 there is no picker yet (phase 5), just the current choice. */}
             {session.model ? ` · ${session.model}` : ""}

@@ -16,6 +16,7 @@ import {
 } from "../domain/runner/run-sweep.js";
 import { createSuspendFallbackCentral } from "../domain/runner/suspend-fallback-central.js";
 import type { SessionStore } from "../domain/runner/store.js";
+import type { CentralClient } from "../domain/sync/central/client.js";
 
 export async function sweepOrphanedRunsOnBoot(backend?: RunSweepBackend): Promise<void> {
   try {
@@ -35,7 +36,10 @@ export async function sweepOrphanedRunsOnBoot(backend?: RunSweepBackend): Promis
 // central. The suspend half reuses the runtime's own agent-mode fallback,
 // so an orphaned run is written up exactly the way a live one that timed
 // out would be.
-export async function sweepOrphanedRunsOnBootCentral(store: SessionStore): Promise<void> {
-  const suspend = createSuspendFallbackCentral(store);
+export async function sweepOrphanedRunsOnBootCentral(
+  store: SessionStore,
+  client: CentralClient,
+): Promise<void> {
+  const suspend = createSuspendFallbackCentral(store, client);
   await sweepOrphanedRunsOnBoot(centralRunSweepBackend(store, suspend));
 }

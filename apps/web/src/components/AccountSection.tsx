@@ -116,10 +116,10 @@ export default function AccountSection() {
       </p>
       {dataMode && (
         <div className="mb-4 flex items-center gap-2 text-[13px] text-[var(--color-text-dim)]">
-          <span>Režim dat:</span>
+          <span>Druh workspace:</span>
           {dataMode.mode === "central" ? (
             <span className="font-mono text-[var(--color-text-muted)]">
-              centrální server
+              týmový
               {dataMode.server_url ? (
                 <span className="ml-1 text-[var(--color-text-dim)]">
                   ({dataMode.server_url})
@@ -127,7 +127,7 @@ export default function AccountSection() {
               ) : null}
             </span>
           ) : (
-            <span className="font-mono text-[var(--color-text-muted)]">lokální</span>
+            <span className="font-mono text-[var(--color-text-muted)]">osobní</span>
           )}
         </div>
       )}
@@ -271,7 +271,7 @@ function UserCard({
   );
 }
 
-// --- Connected apps (OAuth connectors) ----------------------------------------
+// --- Connected apps (chat clients with an OAuth grant) ------------------------
 
 type GrantsState =
   | { kind: "loading" }

@@ -99,7 +99,7 @@ orientation, translates events, ends and suspends) is one implementation,
 |---|---|---|
 | `store` | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
 | provisioning | `provision.ts`: `createMirrorForNode`, `orientationForNode` (direct db read) | `provision-central.ts`: `createMirrorForNodeCentral`, `CentralClient.orientation` (`GET /nodes/:id/orientation`) |
-| `suspendFallback` | `suspendSessionServerSide(db, id, reason)` | `domain/runner/suspend-fallback-central.ts`: writes the handoff into the device mirror and patches the record over REST |
+| `suspendFallback` | `suspendSessionServerSide(db, id, reason)` | `domain/runner/suspend-fallback-central.ts`: writes the same handoff into the device mirror (scope sections from `CentralClient.sessionScopeRecord`), registers it record-only and patches the record over REST. Without a mirror for the node it patches the record with `handoff_path: null` and no content: `PatchSessionInput` has no `handoff_inline`, so the inline fallback of the local half does not exist here (#434) |
 | `resolveNodeOrgId` | `belongs_to` graph query (a failed lookup is distinguishable from "no organization") | `CentralClient.nodeOrganizationId` (`GET /nodes/:id`, the outgoing `belongs_to` peer that is an organization) |
 | `session_scope` reads (`getSessionScope` in `startRun`/`sessionSignals`) | real | degrade to an empty scope, never throw |
 
@@ -120,27 +120,52 @@ orientation, translates events, ends and suspends) is one implementation,
   never fails a promotion; it logs one warning naming the node, only when
   the fallback is visible (two or more instances for that runner and some
   org default configured).
-- The central suspend fallback writes a handoff whose write/read-set
-  sections are always empty (no local `session_scope`) and does not
-  register the file as tracked; the next sync run's untracked-file
-  discovery picks it up.
+- The team-workspace suspend fallback writes the same summary the personal
+  one does (#427). `session_scope` and the node's name are graph-db reads,
+  so they come from `GET /sessions/:id/scope`
+  (`CentralClient.sessionScopeRecord`, a record-half route like the rest);
+  a scope read that fails logs and degrades to empty sections rather than
+  leaving the thread `running` with no handoff. The file is then registered
+  through `registerLocalFileCentral` -- record-only, exactly what the
+  watcher does for a new file in a mirror -- so it appears under Files at
+  once; a failed registration logs and is left to the next sync run's
+  untracked-file discovery, same best-effort posture as
+  `writeHandoffAndSuspend`.
 
 ### Which routes run where (team workspace)
 
-`is_local_only_path` (`apps/desktop/src/lib.rs`) sends to the device's sync
+`is_device_local_path` (`apps/desktop/src/lib.rs`) sends to the device's sync
 agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
 `messages`, `interrupt`, `continue`, `close`, `events`, `signals`,
 `questions/:request_id`. The record half stays on the central server: bare
-`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs...`,
-`/sessions/record`, plus `GET /nodes/:id/sessions` and `/overview`.
+`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/scope`,
+`/runs...`, `/sessions/record`, plus `GET /nodes/:id/sessions` and
+`/overview`.
 `signals` is device-local because it reads in-memory live-run state
 (`liveRuns`, `runStartScopeSize`) that exists only in the process running
 the task. A new per-session verb must be added to `router.ts`,
-`agent-router.ts`, `is_local_only_path`, `min-scopes.ts` and, when it is a
+`agent-router.ts`, `is_device_local_path`, `min-scopes.ts` and, when it is a
 live action, `sessions-ws.ts` in the same change.
 
 ## Runs, events, pid files and the boot sweep
 
+- The host of a run is the machine that started it. `domain/runner/hosts.ts`
+  is the whole registry there is: `localHostId()` is `PORTUNI_HOST_ID` or
+  the machine name slugified (`Honzas-MacBook-Pro.local` ->
+  `honzas-macbook-pro`), `localHostLabel()` is `PORTUNI_HOST_LABEL` or that
+  machine name with its case intact, and `resolveHostLabel(id)` answers only
+  for the host this process is -- nothing here can name another machine
+  until the `hosts` table of the remote-hosts spec exists. The runtime
+  stamps `localHostId()` on every session and run it creates, so in a team
+  workspace the sync agent's id is what reaches the central server's record
+  (`POST /sessions/:id/runs` already carried `host_id`). Ids are
+  human-readable rather than ULIDs precisely because the surfaces fall back
+  to them when there is no label.
+- `toSummary` (`api/sessions.ts`) reports the latest run that names a host
+  (`getLatestRunHostId`), falling back to the session row's own -- a thread
+  that started on one machine and last ran on another shows where it last
+  ran. `SessionSummary.host_id` and `host_label` are what the Relace row and
+  the chat header render; neither fetches `GET /sessions/:id/runs` per row.
 - `startRun` writes `<dataDir>/runs/<runId>.pid` (`domain/runner/pid-file.ts`:
   `pid`, `started_at`, `session_id`) right after `adapter.start()` and
   removes it in the `run_ended` branch of `handleAdapterEvent`.
@@ -324,10 +349,21 @@ human verification.
   `null` (the runner's own default). Threaded onto `RunStart.model`/
   `.effort`; the adapter never reads config. The Claude adapter omits the
   option entirely when null.
-- `PATCH /sessions/:id` with `model` calls `SessionRuntime.setModel`
-  (`RunHandle.setModel` -> `q.setModel`, no-op after the run ended) and
-  then persists the column. `effort` has no live setter and applies from
-  the next run only; there is no `setEffort`.
+- `POST /sessions/:id/model` (`{model?, effort?}`, at least one; `null`
+  means "no override") is the one way the composer changes either. It calls
+  `SessionRuntime.setModelAndEffort`, which forwards a model change to the
+  live run (`RunHandle.setModel` -> `q.setModel`, no-op after the run ended
+  or when there is no live run) and then persists both columns through the
+  store. `effort` has no live setter and applies from the next run only;
+  there is no `setEffort`.
+- That route is **device-local** (`device-local-routes.json`, #426): the
+  live run only ever exists in the process driving it, which in a team
+  workspace is the sync agent, never the central server. The device's
+  runtime applies the change to the live run and its `CentralSessionStore`
+  writes the record half on central (a `PATCH /sessions/:id`), so one code
+  path covers both kinds of workspace. `PATCH /sessions/:id` still accepts
+  `model`/`effort` as plain columns -- that is exactly what the store
+  forwards -- but it never touches a live run.
 - `SessionSummary` carries `model` and `effort`.
 
 ## Provider instances
@@ -337,7 +373,7 @@ human verification.
 (`GET /runners`, `/runners/instances` CRUD, `PUT .../org-default`,
 `DELETE /runners/org-defaults/:orgId`, `GET /runners/:runner/models`).
 
-- **Device-local in every mode.** `is_local_only_path` routes every
+- **Device-local in every mode.** `is_device_local_path` routes every
   `/runners*` call to the sync agent; `agent-router.ts` mounts the same
   handlers, mutations behind `guardAgentRestWrite`. Central's own registry
   would describe the central host, not the machine running the task.
@@ -398,14 +434,10 @@ in the codebase. The desktop bridge is documented with the desktop shell.
 
 ## Known gaps
 
-- `PATCH /sessions/:id` with `model` reaches a live run only in a local
-  workspace: in sync-agent mode the route goes to the central server, whose runtime never
-  runs a task, so a live-run model switch is silently a next-run change
-  (#426).
-- The central suspend fallback's handoff has empty write/read-set sections
-  and is not registered as a tracked file until the next sync run (#427).
-- `host_id` is stored on `SessionRunRow` only; no surface shows which host
-  ran a session (#428).
+- There is no `hosts` registry: a host has a label only where it is the
+  machine asking (`resolveHostLabel`), so a teammate's device read off the
+  central server shows its id. Registration, heartbeat, capabilities and
+  choosing where a task runs are still only in the remote-hosts spec.
 
 ## See also
 

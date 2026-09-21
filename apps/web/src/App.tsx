@@ -27,6 +27,7 @@ import {
   mergeDraftsIntoNodeMap,
   mergeLiveSessionStates,
   mergeSessionIntoNodeMap,
+  mountedChatSessions,
   pickOpenChatSession,
   pruneNodeSessions,
   requestChatSession,
@@ -252,11 +253,11 @@ export default function App() {
   // Load detail when selection changes. The cancelled flag matters: without
   // it a slow response for node A lands after the user already clicked node
   // B and paints A's detail under B's selection.
-  // Central mode serves node-detail from the central server, which has no
-  // device state, so local_mirror comes back null even when this device owns
-  // the mirror. Overlay it from the local sync agent (GET /nodes/:id/mirror).
-  // Local mode already carries local_mirror in node-detail, so skip the extra
-  // call there; orgs never have a mirror.
+  // A team workspace serves node-detail from the central server, which has
+  // no device state, so local_mirror comes back null even when this device
+  // owns the mirror. Overlay it from the sync agent (GET /nodes/:id/mirror).
+  // A personal workspace already carries local_mirror in node-detail, so skip
+  // the extra call there; orgs never have a mirror.
   // The local_mirror overlay lives in fetchNode (api.ts) — the single fetch
   // point every consumer already goes through. App used to run it a second
   // time on top, re-requesting /nodes/:id/mirror after fetchNode had already
@@ -571,6 +572,14 @@ export default function App() {
     };
   }, [selectedWorkspaceNodeId, requestedChatSessionId, selectedNodeLiveStamp, localDrafts]);
 
+  // A chat reporting its session back (a model/effort change, a live state
+  // frame). Every open thread has a mounted chat now (#429), so the update
+  // has to be matched by id: a hidden thread's frame must not replace the
+  // shown one.
+  const updateWorkspaceOpenSession = useCallback((updated: SessionSummary) => {
+    setWorkspaceOpenSession((prev) => (prev && prev.id === updated.id ? updated : prev));
+  }, []);
+
 
   // #343's Práce sidebar: every OPEN node's own running/suspended
   // persistent sessions, for WorkspaceNodeList's sub-rows. Refetched
@@ -641,6 +650,16 @@ export default function App() {
         ]),
       ),
     [openSessionsByNodeWithDrafts, sessionStates],
+  );
+
+  // #429: every thread open in this window keeps a mounted SessionChat, so
+  // switching threads is a visibility flip instead of a remount (scroll
+  // position, streaming buffers and the composer survive, and nothing
+  // re-subscribes). Closing a node or a thread drops it from this list,
+  // which is what unmounts its chat and unsubscribes it.
+  const workspaceMountedSessions = useMemo(
+    () => mountedChatSessions(liveOpenSessionsByNode, openNodeIds, workspaceOpenSession),
+    [liveOpenSessionsByNode, openNodeIds, workspaceOpenSession],
   );
 
   // --- Source editor state ---
@@ -1083,9 +1102,10 @@ export default function App() {
               onCloseEditor={closeEditor}
               onExpandEditor={() => setEditorFullscreen(true)}
               openSession={workspaceOpenSession}
+              mountedSessions={workspaceMountedSessions}
               sessionsClient={sessionsClient}
               liveSessionStates={sessionStates}
-              onSessionUpdated={setWorkspaceOpenSession}
+              onSessionUpdated={updateWorkspaceOpenSession}
               onSessionStarted={registerSessionStarted}
               onOpenChat={openSessionChat}
             />

@@ -1,36 +1,46 @@
 // Agent-mode counterpart of domain/session-handoff.ts's
 // suspendSessionServerSide: session-runtime.ts's suspend() falls back to
-// this when the agent never calls portuni_session_suspend in time. The
-// local version writes straight against the graph db (getSession,
+// this when the run ends without the thread having been closed. The local
+// version writes straight against the graph db (getSession,
 // getSessionScope, suspendSession/writeHandoffAndSuspend) -- none of which
-// exist in agent mode, so this goes through the SessionStore abstraction
-// instead (rule 1: "one implementation" means the caller in session-
-// runtime.ts never knows which one it got).
+// exist in a team-workspace sidecar, so the record half goes through the
+// SessionStore abstraction instead (rule 1: "one implementation" means the
+// caller in session-runtime.ts never knows which one it got) and the two
+// graph-db reads the summary needs (the node's name, the session's scope)
+// come over CentralClient.
 //
-// Simplification accepted for phase 1 (a backstop path, not the common
-// one -- the agent calling portuni_session_suspend itself is): the write
-// set / read set sections of the handoff content are always empty (agent
-// mode has no local session_scope tracking to read them from), and the
-// handoff file is written to the mirror but not registered as a tracked
-// file the way writeHandoffAndSuspend's local counterpart does -- the next
-// sync run's untracked-file discovery picks it up instead of it appearing
-// immediately in the Files tab.
+// #427 closed the two simplifications phase 1 accepted here: the summary's
+// write/read-set sections are filled from GET /sessions/:id/scope rather
+// than left empty, and the handoff file is registered as a tracked file of
+// the node right away (registerLocalFileCentral, the same record-only
+// registration the watcher uses) instead of waiting for the next sync run's
+// untracked-file discovery to notice it.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { sha256Buffer } from "../sync/hash.js";
 import { getMirrorPath } from "../sync/mirror-registry.js";
+import { registerLocalFileCentral } from "../sync/central/engine-central.js";
 import {
   buildRunSummaryContent,
   handoffRelativePath,
   type ServerHandoffReason,
   type SummaryEvent,
 } from "../session-handoff.js";
+import type { CentralClient } from "../sync/central/client.js";
+import type { SessionScopeRecord } from "../../shared/api-types.js";
 import type { SessionRow } from "../../shared/types.js";
 import type { SessionStore } from "./store.js";
 
+const EMPTY_SCOPE: Omit<SessionScopeRecord, "session_id"> = {
+  node_name: null,
+  write_set: [],
+  read_set: [],
+};
+
 export function createSuspendFallbackCentral(
   store: SessionStore,
+  client: CentralClient,
 ): (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null> {
   return async function suspendFallbackCentral(sessionId, reason) {
     const session = await store.getSession(sessionId);
@@ -38,29 +48,56 @@ export function createSuspendFallbackCentral(
 
     // #378: the summary's events come through the same SessionStore
     // abstraction every other agent-mode call already goes through --
-    // listEvents works identically to the local path, unlike session_scope
-    // (still empty here; agent mode has no local session_scope table).
+    // listEvents works identically to the local path.
     const rows = await store.listEvents(sessionId);
     const events: SummaryEvent[] = rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
+    // A scope read that fails must not cost the session its suspend: the
+    // summary is still worth writing without its scope sections, and the
+    // alternative is a thread left 'running' with no handoff at all. Same
+    // posture the local path's own callers take (session-runtime.ts reads
+    // session_scope with .catch(() => [])).
+    const scope = await client.sessionScopeRecord(sessionId).catch((err) => {
+      console.error(`[portuni:suspend-fallback] scope read failed for session ${sessionId}:`, err);
+      return EMPTY_SCOPE;
+    });
     const content = buildRunSummaryContent({
-      nodeName: null,
+      nodeName: scope.node_name,
       sessionName: session.name,
       reason,
       events,
-      writeSet: [],
-      readSet: [],
+      writeSet: scope.write_set,
+      readSet: scope.read_set,
       lastActiveAt: session.last_active_at,
     });
     const handoffHash = sha256Buffer(Buffer.from(content, "utf8"));
 
     const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
     let handoffPath: string | null = null;
-    if (mirrorRoot) {
+    if (mirrorRoot && session.node_id) {
       const relPath = handoffRelativePath(session.id);
       const absPath = join(mirrorRoot, relPath);
       await mkdir(dirname(absPath), { recursive: true });
       await writeFile(absPath, content, "utf8");
       handoffPath = relPath;
+
+      // Record-only registration, exactly what the watcher does for a file
+      // that appeared in the mirror: the handoff shows up under Files at
+      // once, and the push is a later deliberate sync run. Best-effort for
+      // the same reason writeHandoffAndSuspend's own registration is --
+      // the file is on disk and the session IS suspended; a central that
+      // refused the record must not undo either.
+      try {
+        await registerLocalFileCentral(client, {
+          userId: session.user_id,
+          nodeId: session.node_id,
+          localPath: absPath,
+        });
+      } catch (err) {
+        console.error(
+          `[portuni:suspend-fallback] registering ${absPath} failed; the session is suspended and the handoff is written locally, but not yet tracked:`,
+          err,
+        );
+      }
     }
 
     return store.patchSession(sessionId, {

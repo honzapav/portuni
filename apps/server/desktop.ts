@@ -205,7 +205,7 @@ async function agentMain(client: CentralClient): Promise<void> {
   // local mode -- and nothing used to reap them, so the run stayed open and
   // its session read "running" forever. The idle sweep cannot see them: it
   // filters an in-process map that is empty after a restart.
-  void sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client));
+  void sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client), client);
   // #406: agent mode spills too (readNodeFileOrPath downloads through
   // CentralClient.getFileRaw for a node this device does not mirror), and no
   // MCP transport survives a restart.

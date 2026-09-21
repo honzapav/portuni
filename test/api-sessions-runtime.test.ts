@@ -119,10 +119,16 @@ describe("task REST endpoints under /sessions", () => {
   before(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "portuni-api-sessions-runtime-"));
     process.env.PORTUNI_DATA_DIR = dataDir;
+    // #428: pin the host identity so the assertions below do not depend on
+    // the machine's own hostname.
+    process.env.PORTUNI_HOST_ID = "test-host-1";
+    process.env.PORTUNI_HOST_LABEL = "Test Host 1";
   });
 
   after(async () => {
     delete process.env.PORTUNI_DATA_DIR;
+    delete process.env.PORTUNI_HOST_ID;
+    delete process.env.PORTUNI_HOST_LABEL;
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -191,7 +197,8 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal(JSON.parse(res.body).code, "UNKNOWN_INSTANCE");
   });
 
-  // #375: model/effort round-trip through POST and PATCH.
+  // #375/#426: model/effort round-trip through POST /sessions and
+  // POST /sessions/:id/model.
   test("POST /sessions persists model/effort; SessionSummary carries them", async () => {
     installRuntime([]);
     const res = await call(makeIdentity("U1"), "POST", "/sessions", {
@@ -207,7 +214,27 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal(body.session.effort, "high");
   });
 
-  test("PATCH /sessions/:id sets model on a session with a live run, reaching the adapter's live query", async () => {
+  // #428: the run carries the host it started on, and the summary reads it
+  // back from there -- so the Relace row and the chat header show which
+  // machine ran the task without a per-row GET /sessions/:id/runs.
+  test("POST /sessions stamps this host on the run; SessionSummary carries id and label", async () => {
+    installRuntime([]);
+    const res = await call(makeIdentity("U1"), "POST", "/sessions", {
+      node_id: dbFixture.nodeId,
+      brief: "x",
+      runner: "fake",
+    });
+    assert.equal(res.statusCode, 201);
+    const body = JSON.parse(res.body) as { session: SessionSummary; run: SessionRunRow | null };
+    assert.equal(body.run?.host_id, "test-host-1");
+    assert.equal(body.session.host_id, "test-host-1");
+    assert.equal(body.session.host_label, "Test Host 1");
+  });
+
+  // #426: POST /sessions/:id/model, not PATCH /sessions/:id -- the live
+  // half has to run on the device driving the run, so it got its own
+  // device-local route.
+  test("POST /sessions/:id/model sets model on a session with a live run, reaching the adapter's live query", async () => {
     const { adapter } = installRuntime([{ wait: "message" }]);
     const startRes = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
@@ -217,7 +244,7 @@ describe("task REST endpoints under /sessions", () => {
     const { session } = JSON.parse(startRes.body) as { session: SessionSummary };
     assert.equal(adapter.getLastSetModel(), null);
 
-    const patchRes = await call(makeIdentity("U1"), "PATCH", `/sessions/${session.id}`, {
+    const patchRes = await call(makeIdentity("U1"), "POST", `/sessions/${session.id}/model`, {
       model: "claude-sonnet-5",
     });
     assert.equal(patchRes.statusCode, 200);
@@ -227,7 +254,7 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal((JSON.parse(getRes.body) as { model: string | null }).model, "claude-sonnet-5");
   });
 
-  test("PATCH /sessions/:id sets effort without touching the live run (no live setter for it)", async () => {
+  test("POST /sessions/:id/model sets effort without touching the live run (no live setter for it)", async () => {
     const { adapter } = installRuntime([{ wait: "message" }]);
     const startRes = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
@@ -236,7 +263,7 @@ describe("task REST endpoints under /sessions", () => {
     });
     const { session } = JSON.parse(startRes.body) as { session: SessionSummary };
 
-    const patchRes = await call(makeIdentity("U1"), "PATCH", `/sessions/${session.id}`, { effort: "xhigh" });
+    const patchRes = await call(makeIdentity("U1"), "POST", `/sessions/${session.id}/model`, { effort: "xhigh" });
     assert.equal(patchRes.statusCode, 200);
     assert.equal(adapter.getLastSetModel(), null, "effort has no live setter, unlike model");
 
