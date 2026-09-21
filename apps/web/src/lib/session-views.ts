@@ -144,6 +144,21 @@ export function pickOpenChatSession<T extends { id: string; state: SessionState 
   return live[0] ?? null;
 }
 
+// The node's shown chat after a thread is started anywhere in the app
+// ("Nový úkol" in the detail, the sidebar's "+", the Relace tab's
+// "Navázat"): the fresh thread is what the node must show. Setting the
+// shown session alone is not enough -- the pick above re-runs the moment
+// the new thread is tracked, and without its id requested it keeps
+// preferring the previously requested thread (else the newest live one),
+// so the surface snapped straight back to the task that was already open.
+export function requestChatSession(
+  prev: Readonly<Record<string, string>>,
+  session: { id: string; node_id: string | null },
+): Record<string, string> {
+  if (!session.node_id) return { ...prev };
+  return { ...prev, [session.node_id]: session.id };
+}
+
 // ---------------------------------------------------------------- #412
 
 // The Práce sidebar's per-node thread map (App.tsx's openSessionsByNode).
