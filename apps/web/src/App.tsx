@@ -27,6 +27,7 @@ import {
   mergeDraftsIntoNodeMap,
   mergeLiveSessionStates,
   mergeSessionIntoNodeMap,
+  mountedChatSessions,
   pickOpenChatSession,
   pruneNodeSessions,
 } from "./lib/session-views";
@@ -570,6 +571,14 @@ export default function App() {
     };
   }, [selectedWorkspaceNodeId, requestedChatSessionId, selectedNodeLiveStamp, localDrafts]);
 
+  // A chat reporting its session back (a model/effort change, a live state
+  // frame). Every open thread has a mounted chat now (#429), so the update
+  // has to be matched by id: a hidden thread's frame must not replace the
+  // shown one.
+  const updateWorkspaceOpenSession = useCallback((updated: SessionSummary) => {
+    setWorkspaceOpenSession((prev) => (prev && prev.id === updated.id ? updated : prev));
+  }, []);
+
 
   // #343's Práce sidebar: every OPEN node's own running/suspended
   // persistent sessions, for WorkspaceNodeList's sub-rows. Refetched
@@ -640,6 +649,16 @@ export default function App() {
         ]),
       ),
     [openSessionsByNodeWithDrafts, sessionStates],
+  );
+
+  // #429: every thread open in this window keeps a mounted SessionChat, so
+  // switching threads is a visibility flip instead of a remount (scroll
+  // position, streaming buffers and the composer survive, and nothing
+  // re-subscribes). Closing a node or a thread drops it from this list,
+  // which is what unmounts its chat and unsubscribes it.
+  const workspaceMountedSessions = useMemo(
+    () => mountedChatSessions(liveOpenSessionsByNode, openNodeIds, workspaceOpenSession),
+    [liveOpenSessionsByNode, openNodeIds, workspaceOpenSession],
   );
 
   // --- Source editor state ---
@@ -1077,9 +1096,10 @@ export default function App() {
               onCloseEditor={closeEditor}
               onExpandEditor={() => setEditorFullscreen(true)}
               openSession={workspaceOpenSession}
+              mountedSessions={workspaceMountedSessions}
               sessionsClient={sessionsClient}
               liveSessionStates={sessionStates}
-              onSessionUpdated={setWorkspaceOpenSession}
+              onSessionUpdated={updateWorkspaceOpenSession}
               onSessionStarted={registerSessionStarted}
               onOpenChat={openSessionChat}
             />

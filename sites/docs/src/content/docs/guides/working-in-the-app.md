@@ -98,6 +98,14 @@ closed before a first message is sent is deleted outright, and one left
 open longer than 24 hours is pruned by the same server sweep that resolves
 a `running` row orphaned by a crashed process.
 
+Every thread you have open in the window stays live while you look at
+another one: each one keeps its own chat, and switching is only a change
+of which one is on screen. You come back to the same scroll position in
+the transcript, the same half-written message in the composer, and a
+transcript that kept streaming while you were away — nothing is fetched
+or replayed again. A thread's chat is dropped only when you close the
+thread or close its node in the left column.
+
 `SessionChat`'s header shows the session name, a status chip derived from
 `state` and `waiting_since` ("Běží", "Čeká na mě" when a question is
 open, "Pozastaveno", "Uzavřeno", "Archivováno"), and the runner/instance.

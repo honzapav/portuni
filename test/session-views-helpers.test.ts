@@ -15,8 +15,10 @@ import {
   dropPromotedDrafts,
   mergeDraftsIntoNodeMap,
   pruneNodeSessions,
+  isChatSessionState,
+  mountedChatSessions,
 } from "../apps/web/src/lib/session-views.js";
-import type { OverviewSessionRow } from "../apps/web/src/types.js";
+import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
 
 function overviewRow(overrides: Partial<OverviewSessionRow> & { id: string; user_id: string }): OverviewSessionRow {
@@ -313,5 +315,59 @@ describe("hostDisplayName (#428)", () => {
   it("is null when there is no host at all, so the surface hides the slot", () => {
     assert.equal(hostDisplayName({ host_id: null, host_label: null }), null);
     assert.equal(hostDisplayName({ host_id: "  ", host_label: "  " }), null);
+  });
+});
+
+describe("mountedChatSessions (#429)", () => {
+  type Thread = { id: string; node_id: string | null; state: SessionState };
+  const thread = (id: string, node_id: string | null, state: SessionState = "running"): Thread => ({
+    id,
+    node_id,
+    state,
+  });
+
+  it("mounts every chat-eligible thread of every open node, in open-node order", () => {
+    const byNode = {
+      n1: [thread("a"), thread("b", null, "suspended")],
+      n2: [thread("c", "n2", "draft")],
+    };
+    byNode.n1[0].node_id = "n1";
+    byNode.n1[1].node_id = "n1";
+    const mounted = mountedChatSessions(byNode, ["n2", "n1"], null);
+    assert.deepEqual(mounted.map((s) => s.id), ["c", "a", "b"]);
+  });
+
+  it("leaves out closed and archived threads -- those fall back to the node detail", () => {
+    const byNode = { n1: [thread("a", "n1", "closed"), thread("b", "n1", "archived"), thread("c", "n1")] };
+    assert.deepEqual(mountedChatSessions(byNode, ["n1"], null).map((s) => s.id), ["c"]);
+    assert.equal(isChatSessionState("closed"), false);
+    assert.equal(isChatSessionState("draft"), true);
+  });
+
+  it("mounts the shown thread even when the node map has not caught up with it", () => {
+    const shown = thread("draft-1", "n1", "draft");
+    assert.deepEqual(mountedChatSessions({}, ["n1"], shown).map((s) => s.id), ["draft-1"]);
+    // ...and only once when the map does carry it.
+    const byNode = { n1: [thread("draft-1", "n1", "draft"), thread("a", "n1")] };
+    assert.deepEqual(mountedChatSessions(byNode, ["n1"], shown).map((s) => s.id), ["draft-1", "a"]);
+  });
+
+  it("prefers the shown thread's own object over the map's copy of it", () => {
+    const shown = { ...thread("a", "n1"), state: "suspended" as SessionState };
+    const byNode = { n1: [thread("a", "n1")] };
+    assert.equal(mountedChatSessions(byNode, ["n1"], shown)[0], shown);
+  });
+
+  it("keeps the same mounted ids when only the shown thread changes -- a switch is not a remount", () => {
+    const byNode = { n1: [thread("a", "n1"), thread("b", "n1")] };
+    const before = mountedChatSessions(byNode, ["n1"], byNode.n1[0]).map((s) => s.id);
+    const after = mountedChatSessions(byNode, ["n1"], byNode.n1[1]).map((s) => s.id);
+    assert.deepEqual(before, after);
+  });
+
+  it("drops the threads of a node that is no longer open, and a thread that left the map", () => {
+    const byNode = { n1: [thread("a", "n1")], n2: [thread("c", "n2")] };
+    assert.deepEqual(mountedChatSessions(byNode, ["n1"], null).map((s) => s.id), ["a"]);
+    assert.deepEqual(mountedChatSessions({ n1: [] }, ["n1"], null), []);
   });
 });

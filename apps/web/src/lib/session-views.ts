@@ -136,7 +136,7 @@ export function pickOpenChatSession<T extends { id: string; state: SessionState 
   sessions: readonly T[],
   requestedId: string | null,
 ): T | null {
-  const live = sessions.filter((s) => s.state === "running" || s.state === "suspended" || s.state === "draft");
+  const live = sessions.filter((s) => isChatSessionState(s.state));
   if (requestedId) {
     const requested = live.find((s) => s.id === requestedId);
     if (requested) return requested;
@@ -251,4 +251,45 @@ export function hostDisplayName(session: {
   if (label) return label;
   const id = session.host_id?.trim();
   return id || null;
+}
+
+// ---------------------------------------------------------------- #429
+
+// A thread renders as chat while it is steerable: running (waiting
+// included), suspended (the composer disables, Nahodit resumes) and draft
+// (#374, rule 5: a thread opens empty). closed and archived are history,
+// so their node falls back to the plain detail surface.
+export function isChatSessionState(state: SessionState): boolean {
+  return state === "running" || state === "suspended" || state === "draft";
+}
+
+// The threads that keep a mounted SessionChat in this window (#429, the
+// task-surface spec's "mounted for every open thread and toggled"): every
+// chat-eligible thread of an open node, plus the shown one, which the
+// per-node map can still be missing (its own fetch resolved first, or it
+// is a local draft of a node whose list has not come back yet).
+//
+// Order is the open-node order, then each node's own list order, so the
+// rendered keys are stable across a switch -- React keeps a keyed child
+// mounted when only its position or props change, and that is what makes
+// switching threads free of a re-subscribe. The shown thread's own object
+// wins over the map's copy of it: it carries whatever the chat has since
+// updated (model, effort, live state), the map's copy is whatever the
+// last refetch returned.
+export function mountedChatSessions<T extends NodeSession>(
+  byNode: Readonly<Record<string, T[]>>,
+  openNodeIds: readonly string[],
+  shown: T | null,
+): T[] {
+  const mounted: T[] = [];
+  const seen = new Set<string>();
+  for (const nodeId of openNodeIds) {
+    for (const session of byNode[nodeId] ?? []) {
+      if (!isChatSessionState(session.state) || seen.has(session.id)) continue;
+      seen.add(session.id);
+      mounted.push(shown && shown.id === session.id ? shown : session);
+    }
+  }
+  if (shown && isChatSessionState(shown.state) && !seen.has(shown.id)) mounted.push(shown);
+  return mounted;
 }

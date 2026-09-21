@@ -11,12 +11,21 @@
 // The open-node list and its session sub-rows live in the global Sidebar
 // (workspace view); this component owns the centre + aside layout and the
 // aside's collapse state.
+//
+// Every thread open in this window keeps a mounted SessionChat (#429, the
+// spec's "mounted for every open thread and toggled"); only the shown one
+// is visible. A hidden pane is hidden with `visibility: hidden`, not
+// `display: none`: display none destroys the layout box, and with it the
+// transcript's scroll offset -- the very thing keeping the pane mounted is
+// for. `inert` keeps a hidden pane out of the tab order and out of reach
+// of the pointer.
 
 import { lazy, Suspense, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
+import { isChatSessionState } from "../lib/session-views";
 import type { FileEditor } from "../lib/use-file-editor";
 import { scopedKey } from "../lib/workspace-storage";
 import WorkspaceEmpty from "./WorkspaceEmpty";
@@ -65,6 +74,12 @@ type Props = {
   // nodeDetail; null when the node has no live session or nothing is
   // selected.
   openSession: SessionSummary | null;
+  // Every thread open in this window, in a stable order (#429): each one
+  // keeps a mounted chat so switching threads keeps its scroll position,
+  // its streaming buffers and its composer draft, and costs no
+  // re-subscribe. Includes `openSession`; App.tsx derives it with
+  // lib/session-views.ts's mountedChatSessions.
+  mountedSessions: readonly SessionSummary[];
   sessionsClient: SessionsClient;
   onSessionUpdated: (session: SessionSummary) => void;
   onSessionStarted: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
@@ -92,6 +107,7 @@ export default function WorkspaceView({
   onCloseEditor,
   onExpandEditor,
   openSession,
+  mountedSessions,
   sessionsClient,
   onSessionUpdated,
   onSessionStarted,
@@ -123,9 +139,7 @@ export default function WorkspaceView({
   // too -- a thread opens empty (#374, rule 5), composer focused, nothing
   // to show yet. closed and archived fall through to the plain node
   // detail, since those are history, not something to keep steering.
-  const hasOpenSession =
-    openSession != null &&
-    (openSession.state === "running" || openSession.state === "suspended" || openSession.state === "draft");
+  const hasOpenSession = openSession != null && isChatSessionState(openSession.state);
 
   // The node surface: EditorPane when a file is open for this node, else
   // DetailPane. Centre-stage when the node has no thread, the right aside
@@ -161,32 +175,49 @@ export default function WorkspaceView({
       />
     );
 
-  const chat =
-    hasOpenSession && openSession ? (
+  // Which pane is on screen. Null (nothing selected, or the selected node
+  // has no thread) leaves every pane hidden and the node surface centre-
+  // stage, without unmounting anything.
+  const shownSessionId = selectedNodeId && hasOpenSession && openSession ? openSession.id : null;
+
+  // One pane per open thread, each keyed on its session id, so a switch
+  // is a visibility flip -- React keeps every keyed child mounted and
+  // SessionChat's subscribe effect (keyed on session.id) never re-runs.
+  const chats =
+    mountedSessions.length > 0 ? (
       <Suspense fallback={null}>
-        <SessionChat
-          // Keyed on the session: without it React reuses one instance across
-          // every task that passes through this slot, so the composer draft
-          // (and everything else the component holds) bleeds from one task
-          // into the next.
-          key={openSession.id}
-          session={openSession}
-          onSessionUpdated={onSessionUpdated}
-          sessionsClient={sessionsClient}
-          onOpenFile={openSession.node_id ? (relPath) => onOpenFile(openSession.node_id!, relPath) : undefined}
-        />
+        {mountedSessions.map((session) => {
+          const visible = session.id === shownSessionId;
+          return (
+            <div
+              key={session.id}
+              className="absolute inset-0 flex flex-col"
+              style={visible ? undefined : { visibility: "hidden", pointerEvents: "none" }}
+              aria-hidden={visible ? undefined : true}
+              inert={visible ? undefined : true}
+            >
+              <SessionChat
+                session={session}
+                onSessionUpdated={onSessionUpdated}
+                sessionsClient={sessionsClient}
+                onOpenFile={session.node_id ? (relPath) => onOpenFile(session.node_id!, relPath) : undefined}
+              />
+            </div>
+          );
+        })}
       </Suspense>
     ) : null;
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-[var(--color-bg)]">
       <main className="relative flex min-w-0 flex-1 flex-col">
-        {/* A thread: the canvas has no chrome, the chat fills the centre. */}
-        {selectedNodeId && chat && <div className="absolute inset-0 flex flex-col">{chat}</div>}
+        {/* Every open thread, mounted; the shown one fills the centre,
+            the rest are hidden panes at the same geometry. */}
+        {chats}
 
-        {/* No thread: the node's detail / editor centre-stage, in a
+        {/* No thread shown: the node's detail / editor centre-stage, in a
             readable column. */}
-        {selectedNodeId && !chat && (
+        {selectedNodeId && !shownSessionId && (
           <div className="absolute inset-0 flex justify-center">
             <div className="flex h-full w-full max-w-[920px] flex-col border-x border-[var(--color-border)]">
               {nodeSurface(false)}
@@ -209,7 +240,7 @@ export default function WorkspaceView({
       {/* Right aside -- only when a thread occupies the centre. Without one
           the node surface IS the centre, so there is no aside. */}
       {selectedNodeId &&
-        chat &&
+        shownSessionId &&
         (detailVisible ? (
           <aside className="flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
             {nodeSurface(true)}
