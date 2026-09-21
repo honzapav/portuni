@@ -42,17 +42,23 @@ collapsible right aside.
 ### SessionChat (`SessionChat.tsx`)
 
 The chat for one thread. Header: status chip (`sessionStatusChip`), name,
-runner, instance, host, and the thread's own model and effort when set;
+runner, instance, host and the thread's own model and effort when set;
 "Pokračovat v nové session" and "Uzavřít" as the only header actions. Below
 the header: the restart hint line, the suspended-thread notice bar, the
 transcript, the open question's confirmation block, the composer.
+
+Host (#428): both surfaces render `hostDisplayName(session)`
+(`lib/session-views.ts`) -- `host_label` when the server resolved one,
+otherwise `host_id`, and nothing at all when the summary carries neither.
+The summary is the only source; neither surface fetches a session's runs.
+See `sessions-and-runner.md`, "Runs, events, pid files and the boot sweep".
 
 ### Relace tab (`DetailPane.sessions.tsx`)
 
 REST-only list of the node's persistent sessions
 (`fetchNodePersistentSessions`), archived rows behind a filter. Each row
-shows `sessionRowChip`, the brief's first line, the owner's name when the
-row is not the caller's own (`fetchUsers()`, which returns `[]` below manage
+shows `sessionRowChip`, the brief's first line, runner, instance and host,
+the owner's name when the row is not the caller's own (`fetchUsers()`, which returns `[]` below manage
 scope, so a plain teammate sees no name), and `resumeInfo` as information
 only. Actions: "Otevřít chat" (`onOpenChat`), "Uzavřít" behind a confirm
 `Dialog` (`closeConfirm`), and on a closed row "Navázat" (`continueSession`
@@ -319,8 +325,6 @@ there first.
   does not survive a switch (#429).
 - No context-usage ring next to "Pokračovat v nové session": there is no
   token accounting to drive it.
-- The Relace tab shows no host label; `host_id` lives on the run, not the
-  summary (#428).
 - A model change reaches a live run only on the device driving it; in
   team workspace `PATCH /sessions/:id` goes to the central server, which runs nothing
   (#426, see `sessions-and-runner.md`).

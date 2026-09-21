@@ -119,10 +119,16 @@ describe("task REST endpoints under /sessions", () => {
   before(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "portuni-api-sessions-runtime-"));
     process.env.PORTUNI_DATA_DIR = dataDir;
+    // #428: pin the host identity so the assertions below do not depend on
+    // the machine's own hostname.
+    process.env.PORTUNI_HOST_ID = "test-host-1";
+    process.env.PORTUNI_HOST_LABEL = "Test Host 1";
   });
 
   after(async () => {
     delete process.env.PORTUNI_DATA_DIR;
+    delete process.env.PORTUNI_HOST_ID;
+    delete process.env.PORTUNI_HOST_LABEL;
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -206,6 +212,23 @@ describe("task REST endpoints under /sessions", () => {
     const body = JSON.parse(res.body) as { session: SessionSummary };
     assert.equal(body.session.model, "claude-opus-4-8");
     assert.equal(body.session.effort, "high");
+  });
+
+  // #428: the run carries the host it started on, and the summary reads it
+  // back from there -- so the Relace row and the chat header show which
+  // machine ran the task without a per-row GET /sessions/:id/runs.
+  test("POST /sessions stamps this host on the run; SessionSummary carries id and label", async () => {
+    installRuntime([]);
+    const res = await call(makeIdentity("U1"), "POST", "/sessions", {
+      node_id: dbFixture.nodeId,
+      brief: "x",
+      runner: "fake",
+    });
+    assert.equal(res.statusCode, 201);
+    const body = JSON.parse(res.body) as { session: SessionSummary; run: SessionRunRow | null };
+    assert.equal(body.run?.host_id, "test-host-1");
+    assert.equal(body.session.host_id, "test-host-1");
+    assert.equal(body.session.host_label, "Test Host 1");
   });
 
   // #426: POST /sessions/:id/model, not PATCH /sessions/:id -- the live

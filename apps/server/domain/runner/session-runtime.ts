@@ -27,6 +27,7 @@ import type { SessionRow } from "../../shared/types.js";
 import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
 import { detectAll } from "./registry.js";
 import { getInstanceDefaults, getInstanceEnv, listInstances, type InstanceDefaults } from "./instances.js";
+import { localHostId } from "./hosts.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
@@ -555,7 +556,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       brief: input.brief,
       runner: input.runner,
       instance_id: instanceId,
-      host_id: null,
+      host_id: localHostId(),
       model: input.model ?? null,
       effort: input.effort ?? null,
     });
@@ -571,7 +572,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       session_id: session.id,
       runner: input.runner,
       instance_id: instanceId,
-      host_id: null,
+      host_id: localHostId(),
     });
 
     const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
@@ -652,7 +653,12 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       sessionId,
       resume: null,
     });
-    const run = await store.createRun({ session_id: sessionId, runner, instance_id: instanceId, host_id: null });
+    const run = await store.createRun({
+      session_id: sessionId,
+      runner,
+      instance_id: instanceId,
+      host_id: localHostId(),
+    });
     const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
 
     await startRun(updated, run, provisioned, instanceEnv, {
@@ -705,7 +711,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       session_id: sessionId,
       runner,
       instance_id: instanceId,
-      host_id: session.host_id,
+      host_id: localHostId(),
       resumed_from_run_id: lastRun?.id ?? null,
       agent_session_id: runStartResume?.agentSessionId ?? null,
     });
@@ -867,7 +873,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       brief: null,
       runner,
       instance_id: oldSession.instance_id,
-      host_id: oldSession.host_id,
+      host_id: localHostId(),
       model: oldSession.model,
       effort: oldSession.effort,
     });
@@ -888,7 +894,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       session_id: newSession.id,
       runner,
       instance_id: oldSession.instance_id,
-      host_id: oldSession.host_id,
+      host_id: localHostId(),
     });
     const instanceEnv = oldSession.instance_id ? ((await getInstanceEnv(oldSession.instance_id)) ?? {}) : {};
 

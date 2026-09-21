@@ -234,11 +234,15 @@ export function fetchSessionSignals(id: string): Promise<SessionSignals> {
 
 // GET /sessions/:id -- the raw session record (apps/server/shared/types.ts's
 // SessionRow, a zod schema server-side, deliberately not imported here so
-// this stays web-safe). SessionSummary's fields are a strict subset of that
-// row with matching names/types, so typing the response as SessionSummary
-// is accurate -- every field SessionChat's header needs is already there.
-export function fetchSession(id: string): Promise<SessionSummary> {
-  return jsonRequest<SessionSummary>("GET", `/sessions/${encodeURIComponent(id)}`);
+// this stays web-safe). Every SessionSummary field except the two the server
+// derives per response -- `write_count` and, since #428, `host_label` -- is
+// on that row under the same name, so the response types as a SessionSummary
+// minus those.
+export function fetchSession(id: string): Promise<Omit<SessionSummary, "write_count" | "host_label">> {
+  return jsonRequest<Omit<SessionSummary, "write_count" | "host_label">>(
+    "GET",
+    `/sessions/${encodeURIComponent(id)}`,
+  );
 }
 
 // POST /sessions -- starts a task (session + first run) as a server-driven

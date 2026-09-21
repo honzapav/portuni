@@ -9,6 +9,7 @@ import {
   countRunningSessions,
   applySessionStateFrame,
   pickOpenChatSession,
+  hostDisplayName,
   mergeSessionIntoNodeMap,
   applyNodeSessionsRefetch,
   dropPromotedDrafts,
@@ -296,5 +297,21 @@ describe("pruneNodeSessions", () => {
     const prev = { n1: [thread("a", "running")], n2: [thread("b", "running", "n2")] };
     assert.deepEqual(Object.keys(pruneNodeSessions(prev, ["n1"])), ["n1"]);
     assert.deepEqual(Object.keys(pruneNodeSessions(prev, [])), []);
+  });
+});
+
+describe("hostDisplayName (#428)", () => {
+  it("prefers the server's label over the raw id", () => {
+    assert.equal(hostDisplayName({ host_id: "honzas-macbook-pro", host_label: "Honzas-MacBook-Pro" }), "Honzas-MacBook-Pro");
+  });
+
+  it("falls back to the id when no label was resolved", () => {
+    assert.equal(hostDisplayName({ host_id: "honzas-macbook-pro", host_label: null }), "honzas-macbook-pro");
+    assert.equal(hostDisplayName({ host_id: "honzas-macbook-pro" }), "honzas-macbook-pro");
+  });
+
+  it("is null when there is no host at all, so the surface hides the slot", () => {
+    assert.equal(hostDisplayName({ host_id: null, host_label: null }), null);
+    assert.equal(hostDisplayName({ host_id: "  ", host_label: "  " }), null);
   });
 });

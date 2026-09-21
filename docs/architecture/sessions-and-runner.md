@@ -149,6 +149,23 @@ live action, `sessions-ws.ts` in the same change.
 
 ## Runs, events, pid files and the boot sweep
 
+- The host of a run is the machine that started it. `domain/runner/hosts.ts`
+  is the whole registry there is: `localHostId()` is `PORTUNI_HOST_ID` or
+  the machine name slugified (`Honzas-MacBook-Pro.local` ->
+  `honzas-macbook-pro`), `localHostLabel()` is `PORTUNI_HOST_LABEL` or that
+  machine name with its case intact, and `resolveHostLabel(id)` answers only
+  for the host this process is -- nothing here can name another machine
+  until the `hosts` table of the remote-hosts spec exists. The runtime
+  stamps `localHostId()` on every session and run it creates, so in a team
+  workspace the sync agent's id is what reaches the central server's record
+  (`POST /sessions/:id/runs` already carried `host_id`). Ids are
+  human-readable rather than ULIDs precisely because the surfaces fall back
+  to them when there is no label.
+- `toSummary` (`api/sessions.ts`) reports the latest run that names a host
+  (`getLatestRunHostId`), falling back to the session row's own -- a thread
+  that started on one machine and last ran on another shows where it last
+  ran. `SessionSummary.host_id` and `host_label` are what the Relace row and
+  the chat header render; neither fetches `GET /sessions/:id/runs` per row.
 - `startRun` writes `<dataDir>/runs/<runId>.pid` (`domain/runner/pid-file.ts`:
   `pid`, `started_at`, `session_id`) right after `adapter.start()` and
   removes it in the `run_ended` branch of `handleAdapterEvent`.
@@ -417,8 +434,10 @@ in the codebase. The desktop bridge is documented with the desktop shell.
 
 ## Known gaps
 
-- `host_id` is stored on `SessionRunRow` only; no surface shows which host
-  ran a session (#428).
+- There is no `hosts` registry: a host has a label only where it is the
+  machine asking (`resolveHostLabel`), so a teammate's device read off the
+  central server shows its id. Registration, heartbeat, capabilities and
+  choosing where a task runs are still only in the remote-hosts spec.
 
 ## See also
 

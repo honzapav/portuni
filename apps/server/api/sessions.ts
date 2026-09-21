@@ -65,6 +65,7 @@ import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../
 import {
   createDraftSession,
   deleteDraftSession,
+  getLatestRunHostId,
   getSession,
   getSessionScope,
   getSessionWriteCount,
@@ -79,12 +80,19 @@ import { getSessionRuntime } from "../boot/session-runtime.js";
 import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
+import { resolveHostLabel } from "../domain/runner/hosts.js";
 import { DbSessionStore } from "../domain/runner/store.js";
 import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
 import type { SessionResumeInfo, SessionScopeRecord, SessionSummary } from "../shared/api-types.js";
 
 export async function toSummary(row: SessionRow): Promise<SessionSummary> {
+  // #428: the host is the latest run's, not the session row's -- the row's
+  // own is where the thread started, the run's is where it last ran. Both
+  // Relace rows and the chat header read it off the summary, so neither
+  // needs a per-row GET /sessions/:id/runs.
+  const db = getDb();
+  const hostId = (await getLatestRunHostId(db, row.id)) ?? row.host_id;
   return {
     id: row.id,
     node_id: row.node_id,
@@ -95,13 +103,14 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
     terminal_id: row.terminal_id,
     brief: row.brief,
     runner: row.runner,
-    host_id: row.host_id,
+    host_id: hostId,
+    host_label: resolveHostLabel(hostId),
     waiting_since: row.waiting_since,
     state: row.state,
     name: row.name,
     name_is_custom: row.name_is_custom === 1,
     handoff_path: row.handoff_path,
-    write_count: await getSessionWriteCount(getDb(), row.id),
+    write_count: await getSessionWriteCount(db, row.id),
     model: row.model,
     effort: row.effort,
     created_at: row.created_at,

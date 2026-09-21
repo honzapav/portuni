@@ -237,3 +237,18 @@ export function pruneNodeSessions<T>(
   }
   return removed ? next : byNode;
 }
+
+// The host to show on a Relace row and in the chat header (#428): the
+// server's display label when it has one, otherwise the host id itself
+// (domain/runner/hosts.ts keeps ids human-readable for exactly this
+// fallback). Null means "nothing to show" -- the surfaces hide the slot
+// rather than rendering an empty separator.
+export function hostDisplayName(session: {
+  host_id: string | null;
+  host_label?: string | null;
+}): string | null {
+  const label = session.host_label?.trim();
+  if (label) return label;
+  const id = session.host_id?.trim();
+  return id || null;
+}

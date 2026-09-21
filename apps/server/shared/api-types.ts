@@ -502,10 +502,16 @@ export type SessionSummary = {
   brief: string | null;
   // Runner adapter id (e.g. "claude") this session's task runs under.
   runner: string | null;
-  // The host whose sidecar is (or last was) running the task -- null for a
-  // hand-opened CLI session or one predating the runner batch. Shown in
-  // the chat header and Relace rows.
+  // The host whose sidecar is (or last was) running the task: the latest
+  // run's host, falling back to the session row's own for a session with no
+  // run yet. Null for a hand-opened CLI session or one predating the runner
+  // batch. Shown in the chat header and Relace rows (#428).
   host_id: string | null;
+  // Display name of that host when something here can name it -- today only
+  // the machine this process is (domain/runner/hosts.ts); null once the
+  // `hosts` registry would be the one to answer, e.g. a teammate's device
+  // read off the central server. The surfaces fall back to `host_id`.
+  host_label: string | null;
   // Set while a `question` event is open (runner batch); cleared when it is
   // answered or the run ends. Drives the "Čeká na mě" status label.
   waiting_since: string | null;
