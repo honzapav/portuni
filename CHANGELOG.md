@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/honzapav/portuni/compare/v0.21.0...v0.22.0) (2026-09-21)
+
+
+### Features
+
+* **web,server,desktop:** session actions reach the live channel; icon actions in Relace and the chat header; suspend ends dangling runs ([#439](https://github.com/honzapav/portuni/issues/439)) ([0468c7a](https://github.com/honzapav/portuni/commit/0468c7a1cf933449d303e93529933d8907d3d476))
+
 ## [0.21.0](https://github.com/honzapav/portuni/compare/v0.20.0...v0.21.0) (2026-09-21)
 
 
