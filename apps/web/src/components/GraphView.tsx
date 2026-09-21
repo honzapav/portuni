@@ -323,7 +323,7 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         // belt-and-braces hides anything cytoscape might still draw.
         label: "",
         "text-opacity": 0,
-        "font-family": "Inter, sans-serif",
+        "font-family": "DM Sans, sans-serif",
         // Cytoscape renders compound parents BEFORE their children, so
         // the org body sits behind the leaf nodes -- the SVG nebula
         // overlay carries the visible "galaxy" effect.
@@ -354,7 +354,7 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         color: theme.text,
         "font-size": 13,
         "font-weight": 500,
-        "font-family": "Inter, sans-serif",
+        "font-family": "DM Sans, sans-serif",
         "text-wrap": "wrap",
         "text-max-width": "110px",
         "text-background-color": theme.bg,
@@ -2222,7 +2222,7 @@ function GraphView({
                 y={0}
                 textAnchor="middle"
                 dominantBaseline="central"
-                fontFamily="Inter, sans-serif"
+                fontFamily="DM Sans, sans-serif"
                 fontSize={fontSize}
                 fontWeight={600}
                 fill={THEMES[theme].textMuted}
@@ -2278,7 +2278,7 @@ function GraphView({
                 y={0.5}
                 textAnchor="middle"
                 dominantBaseline="central"
-                fontFamily="Inter, sans-serif"
+                fontFamily="DM Sans, sans-serif"
                 fontWeight={600}
                 fill={themeColors.text}
               >
