@@ -1,308 +1,239 @@
-# Data modes & the two sync planes
+# Workspaces: team and personal, and the two sync planes
 
-> **Status (2026-09):** Collaboration is central mode only (see
-> `docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md`). A
-> local workspace cannot register or route to a remote at all
-> (`LOCAL_MODE_NO_REMOTE`, #310/#312) — it tracks files on one machine and
-> shares nothing. Central mode serves file **content** and lifecycle
-> (create / rename / delete) over the central server via a mirror-less,
-> Drive-direct service (`file-content-remote.ts`), and runs agent **tasks**
-> (the local sync agent serves the mirror and drives the run; the task's
-> agent reaches the local MCP front door, which proxies to central).
-> So a central-mode teammate gets **both** the graph **and** file bytes today.
-> The historical design rationale lives in
-> [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md).
+> **Purpose:** the canonical mental model for the two kinds of workspace and
+> for the unrelated axis "syncing file bytes to Google Drive". Link here
+> instead of re-explaining. The rule in the next section is the one every
+> server, route and tool change is measured against.
 
-> **Purpose:** settle the recurring confusion between "local vs central mode" and
-> "syncing files to Google Drive." They are different axes. This doc is the
-> canonical mental model; link here instead of re-explaining.
+## The rule
 
-## The one-sentence summary
+A workspace is named by what it is for. A **team workspace** is a shared
+graph with identities and permissions; a **personal workspace** is one
+person's graph on one machine, and nothing in it is shared. **The team
+workspace is Portuni's primary operating environment.** A team runs the
+central server (`api.portuni.com`), every teammate's desktop is a team
+workspace whose sidecar is a *sync agent*, and every agent task, mirror,
+editor save and MCP session in real use happens there. A personal workspace
+is the same server code in a box: a file database, no login, no team. It
+exists so Portuni can be tried and used alone, and it must keep working, but
+it is not the reference environment.
 
-> The owner (**local mode**) tracks files in mirror folders on his own
-> machine and never talks to a remote — sharing files with anyone else means
-> switching to central mode. A **central-mode** teammate reaches the data
-> through `api.portuni.com` with enforced permissions, and gets **both** the
-> **graph** and **file bytes** — the file-bytes half over the server is
-> served mirror-less and Drive-direct by `file-content-remote.ts` (design
-> rationale archived in
-> [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md)).
+Five words, kept apart throughout the docs (code identifiers keep their
+historical names, listed in the last column):
+
+| Word | Means | In code |
+|---|---|---|
+| **team workspace** | a shared graph reached through the central server; the desktop runs its sidecar as the sync agent | `data_mode: "central"` |
+| **personal workspace** | one person, one machine, own graph db, no remote | `data_mode: "local"`, `isLocalWorkspace()`, `SOLO_USER` |
+| **central server** | the process at `api.portuni.com`: graph db, permissions, Drive, remote watcher | `PORTUNI_AUTH_MODE=google` |
+| **sync agent** | the device's sidecar in a team workspace: mirrors, watcher, tasks, MCP front door, no graph db | `PORTUNI_AGENT_MODE=1`, `agent-router.ts`, `agent-transport.ts`, `agent-tools.ts` |
+| **device-local** | a route or tool the sync agent serves itself instead of forwarding to the central server | `is_local_only_path`, `501 local_only`, `LOCAL_TOOLS`, `device-local-routes.json` |
+
+A team workspace therefore always involves two processes. A change that
+works on the central server but not in the sync agent (or the other way
+round) is half done. What a given deployment can do beyond the graph
+(Drive, hosts, routines, OAuth for remote MCP clients) is a property of the
+central server's configuration and of what has been implemented, listed in
+"What runs where" below; it is not part of either name.
+
+Consequences for any change (from `docs/vision/portuni-as-workspace.md`,
+"Local vs. central"):
+
+- A behaviour change to the server, a REST route, an MCP tool or the session
+  runtime works in **both** a personal workspace and team workspace before
+  its issue is closed. A half that is missing is an **open issue named in the
+  PR title**, never a "known gap" note in the docs.
+- New functionality is written **once**, as domain code that runs on the
+  central server and in the sidecar alike. Where the device lacks something
+  only the central server has
+  (the graph db, Drive credentials, the team), the code takes a **seam**
+  (`CentralClient` method, injected dependency) rather than a second
+  implementation. The pairs that exist today (`engine.ts`/`engine-central.ts`,
+  `router.ts`/`agent-router.ts`, `transport.ts`/`agent-transport.ts`,
+  `DbSessionStore`/`CentralSessionStore`, `provision.ts`/`provision-central.ts`)
+  are what new work avoids adding to; a new pair must not appear.
+- What would need a second implementation to run without the central server
+  runs **only on the central server** and says so: Drive sync, the remote
+  watcher, team permissions, hosts and the task queue, routines. A personal
+  workspace never pretends to have them.
+- Tests: the fake `CentralClient` in `test/agent-router*.test.ts` and
+  `test/agent-tools.test.ts` is where the central half is proven. A route the
+  desktop sends to the sidecar in a team workspace is listed in
+  `apps/server/shared/device-local-routes.json`; `is_local_only_path` reads its
+  patterns from that file at compile time and the agent router is tested
+  against it, so a route added on one side without the other fails the gate.
 
 ## "Sync" means two different things
 
-The word *sync* is overloaded. There are two independent data planes:
+Two independent data planes, both called *sync*:
 
 | Plane | What moves | Lives in | Shared via |
 |---|---|---|---|
-| **Graph plane** | nodes, edges, events, file *records* (name, canonical hash, who pushed) | Turso (the DB) | Turso |
-| **File-bytes plane** | the actual file *contents* (markdown, PDFs, transcripts) | local mirror folders -> remote | Google Drive (Service Account on a Shared Drive) |
+| **Graph plane** | nodes, edges, events, file *records* (name, canonical hash, who pushed) | the graph database (Turso today, Postgres after the cutover) | the central server |
+| **File-bytes plane** | the file *contents* (markdown, PDFs, transcripts) | local mirror folders and the remote | Google Drive (service account on a shared drive) |
 
-They are glued by one fact: **Turso stores the canonical content hash** of each
-file (`hash is identity`, see [`file-sync.md`](./file-sync.md)), while the remote
-holds the bytes. So the graph plane knows *the truth about which file is current*,
-and the file-bytes plane holds *the bytes themselves*.
+The graph stores the canonical content hash of each file (`hash is identity`,
+see [`file-sync.md`](./file-sync.md)); the remote holds the bytes. "Sync to
+Drive" is the file-bytes plane; "graph sync" is the graph plane.
 
-When a user says "sync to Drive" they mean the **file-bytes plane**. When the
-code says "graph sync" it means the **Turso plane**.
+## The kind of workspace decides how a client reaches the data
 
-## "local" vs "central" is about *how a client reaches the data*
+`DesktopConfig.data_mode` (`apps/desktop/src/lib.rs`) is a transport and
+trust boundary, not a feature toggle. It is set **per workspace**, so one
+desktop can host a team workspace and a local personal workspace
+side by side, each with its own sidecar, port and credentials.
 
-This is `DesktopConfig.data_mode` (`apps/desktop/src/lib.rs`). It is **not** a
-feature toggle — it is a transport/trust boundary:
+- **Team workspace.** The webview's data requests go through the `api_request`
+  Tauri command to `server_url` with a Google JWT; the server enforces
+  permissions (groups, node access, `apps/server/auth/`). The desktop still
+  runs its sidecar, as the **sync agent** (`PORTUNI_AGENT_MODE=1`): it keeps
+  the device's mirror folders and watcher, moves file bytes between them and
+  central with a device token, serves file content from the mirror when one
+  exists, runs the agent tasks and serves the MCP front door. It never holds
+  the raw database token or Drive credentials and has **no graph db** of its
+  own. Setup is the onboarding wizard ("Připojit se k týmu", server URL only)
+  or a hand-written `config.json` with `data_mode: "central"`.
+- **Personal workspace.** Neither `PORTUNI_AUTH_MODE=google` nor
+  `PORTUNI_AGENT_MODE=1` (`infra/server-config.ts`'s `isLocalWorkspace()`).
+  The sidecar owns the graph db (`file:<dataDir>/portuni.db`, or Turso when
+  `TURSO_URL` is set) and tracks files in mirrors on this machine. It cannot
+  register or route to a remote: `upsertRemote`, `setupRemoteService` and
+  `setRoutingPolicyService` throw `LocalModeNoRemoteError`
+  (`LOCAL_MODE_NO_REMOTE`, REST 409, MCP `isError` with the same code), and
+  so do `storeFile`, `pullFile`, `runNodeSync` and `snapshotService`. Files
+  there classify as `clean` or `deleted_local` only. Legacy `remotes` rows
+  from before this rule log one boot warning and are otherwise ignored.
 
-- **local mode (default, owner):** the desktop spawns the **sidecar**, which
-  talks **directly to Turso** (raw token) and tracks files in mirror folders
-  on your own machine — but never talks to a remote at all
-  (`LOCAL_MODE_NO_REMOTE`, #310/#312). Sharing files is central mode's job.
-- **central mode (teammate):** the webview's data requests go through the
-  `api_request` Tauri command to **`server_url` (`api.portuni.com`)** with a
-  Google **JWT**, so the server can **enforce permissions** (groups, node-access
-  in `apps/server/auth/`). The teammate never holds the raw Turso token. The
-  desktop still runs a **local sidecar as the sync agent** (`PORTUNI_AGENT_MODE=1`)
-  for mirrors, file sync, and the MCP front door that **agent sessions** use —
-  but it never talks to Turso directly (see the agent-mode section below).
+The central server is the same backend deployed to a VPS
+(`scripts/deploy-vps.sh`, auto-deployed from CI on `main`). It has no mirror
+folders of its own; file content it serves is Drive-direct
+(`file-content-remote.ts`).
 
-In multi-workspace setups, **each workspace can have a different `data_mode`**:
-one workspace can be local (direct Turso, no remote) while another is
-central (through the server). This allows a single desktop to host, say, a
-central-mode Tempo workspace and a local-mode personal workspace simultaneously.
+## What runs where
 
-The central server is literally the **same backend codebase** deployed to a VPS
-(`scripts/deploy-vps.sh` rsyncs `dist/`). It just has **no local mirror folders**
-and is reached by JWT instead of a bearer token.
-
-## The 2x2 — both cells filled
-
-|  | Graph plane | File-bytes plane |
-|---|---|---|
-| **local mode** | sidecar -> Turso | sync engine -> tracked locally, no remote |
-| **central mode** | server -> Turso (shipped, the graph cutover) | sync agent -> device mirror; falls back to server -> Drive (mirror-less, `file-content-remote.ts`) |
-
-Central mode does **not** "drop Drive by design," and it no longer lacks file
-bytes: the central server reaches them through a **mirror-less, Drive-direct
-file-content service** (`file-content-remote.ts`) that resolves the Drive
-adapter from the remote's Service Account credential and reads/writes bytes
-without any local mirror. File **content** (`GET/PUT /nodes/:id/file`) routes
-to the **local sync agent first**: when the node has a device mirror the agent
-reads/writes the mirror file directly (so unsynced local files open in the
-editor — a registered-but-unpushed or untracked file does not exist on Drive
-yet), and the agent itself falls back to central when there is no mirror or
-the file is pull-pending. The file **lifecycle** routes forward to the server;
-a `501 local_only` now means only that the **local sync agent is not running**
-(you are not signed in) — see below.
-
-### What `local_only` means in the UI
-
-Device-local routes are served by the **local sync agent** (the sidecar). When
-that agent is **not running** — i.e. the teammate is **not signed in** —
-`is_local_only_path()` (`apps/desktop/src/lib.rs`) short-circuits these routes
-to `501 {error:"local_only", detail:"sync agent not running"}` in central mode
-(in local mode the gate does not apply at all):
-
-```
-/scope
-/sync/pending, /sync/health, /sync/jobs (+ /sync/jobs/:id, /sync/jobs/current)
-/runners (+ /runners/instances..., /runners/:runner/models, /runners/org-defaults/:orgId)
-/nodes/:id/mirror, /nodes/:id/sync-status, /nodes/:id/sync
-/nodes/:id/file
-POST /nodes/:id/files
-DELETE /nodes/:id/files/:fileId
-POST /nodes/:id/files/:fileId/{resolve,rename,move}
-POST /sessions
-/sessions/:id/{messages,interrupt,continue,close,events,signals}
-POST /sessions/:id/questions/:request_id
-```
-
-So `local_only` now means exactly **"the local sync agent isn't up — sign
-in"**, not "this feature is unbuilt." `/nodes/:id/file` (GET/PUT) is on the
-list because the agent serves a device mirror from disk and proxies to central
-itself when there is no mirror. `DELETE /nodes/:id/files/:fileId` is on the
-list too (#254): the record + remote object are still adapter-direct on the
-central server (`agent-router.ts` calls `CentralClient.deleteFileRecord`,
-the exact same endpoint a non-agent-mode delete hits), but the device has to
-run its own disk-cleanup step (`rm` the mirror copy, drop the `file_state`
-row) afterward — the central server has no mirror to clean up, so without
-this the local copy survived every delete and the next backfill sweep
-re-registered it. `POST /nodes/:id/files/:fileId/resolve` (conflict
-resolution — "Ponechat lokální" / "Vzít z remote" / "Obnovit") is on the
-list for the same reason (#264): `agent-router.ts` already implemented it
-correctly against the device's own mirror (`findEntryByFileId` +
-`storeFileCentral`/`pullFileCentral`), but nothing routed the desktop UI's
-REST call there before this fix — it went straight to central, which has no
-mirror to resolve against at all (409 on `keep_local`, 500 on
-`take_remote`/`restore`).
-
-`POST /nodes/:id/files` (create) is on the list too, for a different reason
-(#266): central's own create is adapter-direct — it does the Drive `PUT`
-before answering — so a device with a mirror never got a sync baseline for
-the new file before the editor's own local-only save landed, which the
-watcher then classified as a **permanent conflict** (a local hash with no
-`last_synced_hash` against a remote hash of `md5("")`, indistinguishable
-from a real conflict once it happens). With a mirror on this device,
-`agent-router.ts` instead writes the file into the mirror and registers the
-record **without waiting on the Drive upload** — the response comes back as
-soon as the record exists, not after a round trip to Drive — and pushes in
-the background; until that background push lands, the file reads as an
-ordinary `push` classification (registered, no `current_remote_hash` yet,
-local hash cached), exactly like any other freshly-created local file, then
-`clean` once the push completes. A device with **no** mirror for the node
-still forwards to central via the handler's own fallback
-(`CentralClient.createFile`, a new method wrapping the same
-`POST /nodes/:id/files` central already serves) — this route is unconditional
-in `is_local_only_path`, so the agent-router handler itself decides per node
-whether to serve it locally or forward it, the same shape as the `/file`
-GET/PUT fallback above.
-
-`POST /nodes/:id/files/:fileId/rename` is on the list too: central keeps the
-record + remote step (`CentralClient.renameFile`, the same POST it already
-serves mirror-less), and the agent-router handler renames the device's mirror
-copy afterwards — forwarded straight to central, the local file kept its old
-name and the next scan reported the record missing locally plus a new
-untracked file. Only `/nodes/:id/file-url` and `/nodes/:id/folder-url` still
-forward straight to the central server, which serves them Drive-direct
-(`file-content-remote.ts`). The old
-"available only in local mode" frontend string has been removed; the 501 is
-caught as `LocalOnlyError` (`apps/web/src/api.ts`) and now reads as "not
-signed in."
-
-### Agent-mode MCP: how agent sessions work in central mode
-
-The `local_only` gate above is for the **REST** plane the webview drives. MCP
-sessions are served differently: a teammate's "sync agent" sidecar
-(`PORTUNI_AGENT_MODE=1`, see
-`docs/archive/plans/2026-07-05-agent-mode-mcp-front-door.md`) serves `/mcp`
-itself, and the per-mirror `.mcp.json` in agent mode points at that local front
-door instead of central. Device-local tools (`portuni_mirror`, `portuni_status`,
-`portuni_store`, `portuni_pull`, `portuni_adopt_files`) run on-device against
-the local mirror + the central engine; every other tool (graph reads/writes,
-scope, responsibilities, ...) is proxied to central's `/mcp` unchanged. So a
-teammate's agent works on real files locally, while graph writes land on central
-with permissions enforced. Disk read scope in agent mode is just this device's
-own mirror registry: any node with a local mirror here is read at its real
-path, no matter where it sits relative to the home node; a node with none is
-read via `portuni_read_file` (central/remote-direct, #346 — there is no
-sandbox or hardlink projection layer anymore). The dynamic scope *set* is
-still tracked upstream on the central session, not on the device.
-
-Proxied tools with a device-side step (`apps/server/mcp/agent-tools.ts`):
-- `portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file` run
-  their record/remote step on central; the front door snapshots the affected
-  record before the proxy and applies the local rm/rename + `file_state`
-  cleanup after a confirmed result, rewriting `local_done` /
-  `new_local_path` with this device's outcome.
-- `portuni_snapshot` exports on central (it holds the Drive credentials) and,
-  because central has no mirror, creates the file remote-direct
-  (`createFileRemote`). The front door then pulls the new file into the
-  device mirror and adds `local_path` to the payload (`null` when the node is
-  not mirrored here; `local_error` when the pull was refused, e.g. a dirty
-  untracked file at that path).
-
-### Agent-mode sessions: the task runs on the device, the record lives on central
-
-The runner batch's session runtime (`docs/superpowers/specs/2026-09-12-runner-and-session-design.md`,
-rule 1 "one implementation") follows the same split as everything else on
-this page: the code that actually runs a task — spawning the runner
-adapter, provisioning its mirror and orientation, translating its events —
-is identical in both modes and always runs **on the device** (the sidecar,
-whichever mode it's in). What differs is only which `SessionStore` backs
-it. Locally, `boot/session-runtime.ts`'s `getSessionRuntime()` binds
-`DbSessionStore` straight to this server's own db. In agent mode,
-`agent-router.ts`'s `createAgentRouter(client)` builds its own runtime
-(`createAgentSessionRuntime`) bound to `CentralSessionStore`
-(`domain/runner/store-central.ts`) instead — every `SessionStore` call
-becomes a REST round trip to central's "central record half"
-(`api/sessions.ts`: `POST /sessions/record`, `PATCH /sessions/:id`,
-`POST /sessions/:id/runs`, `PATCH /sessions/:id/runs/:run_id`,
-`GET /sessions/:id/runs`, `POST`/`GET /sessions/:id/events`), which applies
-the exact same `auth/session-access.ts` ownership checks a local call would
-— central IS the graph db here, so it's the one place that can actually
-enforce them.
-
-Provisioning also needed a central-mode counterpart
-(`domain/runner/provision-central.ts`): the mirror is created via
-`createMirrorForNodeCentral` instead of the local `createMirrorForNode`,
-and the task's orientation text comes from `CentralClient.orientation`
-(`GET /nodes/:id/orientation`, computed on central, which has the real
-graph db) instead of `orientationForNode`'s direct db read — this is the
-one orientation gap central mode used to have (materializing a fresh
-mirror's `PORTUNI_SCOPE.md` still has no orientation section; that's a
-different code path, unrelated to a task's own runtime orientation, and
-still cut for the same "no endpoint" reason until it's wired through too).
-Suspend's server-generated-handoff fallback (spec: "Suspend and resume")
-similarly can't write straight to the graph db in agent mode —
-`domain/runner/suspend-fallback-central.ts` writes the handoff file to the
-device's own mirror (mirrors are a per-device concept in every mode) and
-then patches the session record over the same REST route, instead of
-`session-handoff.ts`'s local-db-only `suspendSessionServerSide`.
-
-The third such counterpart is the organization resolver
-(`CreateSessionRuntimeDeps.resolveNodeOrgId`, #407). Promoting a draft by
-its first message picks the organization's default runner instance, which
-means reading the node's `belongs_to` edge — a graph-db query that has no
-answer on a device. `createAgentSessionRuntime` injects
-`CentralClient.nodeOrganizationId` (`GET /nodes/:id`, the organization peer
-of the outgoing `belongs_to` edge in central's own node detail) in place of
-the local query; a resolver error degrades to "no organization" (the
-runner's own default account) and logs one line, it never fails the
-promotion.
-
-## An important subtlety: local-mode editing is mirror-local, central is Drive-direct
-
-In **local mode**, `readFileContent` / `writeFileContent`
-(`apps/server/domain/sync/file-content.ts`) operate on the **local mirror folder**
-(`getMirrorPath` -> `readFile`/`writeFile` on disk). Saving in the editor writes
-the **mirror file only and never pushes**; pushing the bytes to Drive is a
-**separate** step (`POST /nodes/:id/sync`, surfaced as the unsynced overview).
-
-A central client has **no mirror folder** to read or write, so it does **not**
-reuse that path. Instead the central server serves file content through a
-**mirror-less, Drive-direct** service (`file-content-remote.ts`) that talks to
-the Drive adapter directly — reading and writing bytes without any local mirror.
-
-## One collaboration model (the retired alternative)
-
-### Model 1 — shared token (retired, #310/#311)
-
-Early Portuni had a second, unsafe path: everyone ran **local mode** and
-shared **the owner's Turso token** plus Drive access (the same Service
-Account / Shared Drive), so each teammate's desktop mirrored the same nodes
-and synced the same Drive folder, keyed by the same Turso graph. It worked,
-but every teammate held the **raw Turso token — full, unrestricted DB
-access** — with no per-user permissions. This is exactly the problem the
-central server exists to fix, and a local workspace can no longer register
-or route to a remote at all (`LOCAL_MODE_NO_REMOTE`), so this path is not
-just discouraged — it is structurally impossible now.
-
-### Model 2 — brokered / central (the only path, shipped)
-
-- Teammates run **central mode**, authenticate with Google, get **enforced
-  permissions**, never touch the raw Turso token.
-- Both the **graph** and **file bytes** work **today**: file content and
-  lifecycle are served over the server, mirror-less and Drive-direct
-  (`file-content-remote.ts`; design rationale archived in
-  [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md)).
-- Drive credentials live on the central server alone, as a single service
-  account — no device ever holds them.
-
-| | Files work now? | Permissions enforced? | Teammate needs |
+| | Central server | Team-workspace device (sync agent) | Personal workspace |
 |---|---|---|---|
-| **Model 2** (central) | yes | yes | Google login to `api.portuni.com` |
+| Graph db | yes (Turso / Postgres) | none; every graph read is a `CentralClient` call | yes (file / Turso) |
+| Per-device `.portuni/sync.db` (`local-db.ts`) | no | yes | yes |
+| Mirrors, watcher, reconcile | no | yes | yes |
+| File content `GET/PUT /nodes/:id/file` | Drive-direct fallback | mirror first, central fallback | mirror |
+| Remote (Drive) and remote watcher | yes, service account, `RemoteWatchLoop` | through the central server | never |
+| Session runtime (runs the task) | no | yes, `CentralSessionStore` | yes, `DbSessionStore` |
+| Session record, access checks | yes (`api/sessions.ts` record half) | on the central server | local db |
+| Live channel `GET /sessions/ws` | yes | yes (own runtime) | yes |
+| MCP | `/mcp` for remote MCP clients (OAuth grant) and proxied tool calls | front door: device tools local, the rest proxied | `/mcp` |
+| Runner registry `runners.json` | its own host's | this device's | this device's |
+| REST write gate | central auth | `guardAgentRestWrite` (proxy-proven) | `env`-mode gate |
 
-## Glossary (clearer names for the overloaded terms)
+## Request routing in a team workspace
 
-| Term in code/UI today | Clearer meaning |
+`api_request` sends a request to the central server unless `is_local_only_path` matches
+it; then it goes to this device's sidecar, which serves it from
+`agent-router.ts`. Before Google login the sidecar is not running and those
+routes answer `501 {error: "local_only"}`, which the web reads as "not signed
+in", never as "feature unbuilt".
+
+The canonical list of device-local routes is
+`apps/server/shared/device-local-routes.json` (sections `device_local`,
+`central`, `sidecar_direct`). `is_local_only_path` is driven by that file:
+it embeds it with `include_str!` and matches a request path against the
+`device_local` patterns (`{name}` is one segment, the query string is
+ignored). `test/agent-router-route-parity.test.ts` asserts the agent router
+handles every device-local entry and serves nothing the list omits; the Rust
+`local_only_path_tests` assert the `central` examples stay central. **A new
+REST route touches three places at once**: the router that serves it
+locally, `agent-router.ts`, and that JSON file.
+
+Which routes stay central on purpose: graph reads and writes, the session
+record half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`,
+`/runs…`, `/sessions/record`), `GET /nodes/:id/sessions`, `/overview`,
+`/sync/watch`, `/nodes/:id/file-url`, `/nodes/:id/folder-url`. Per-route
+detail: [`desktop-shell.md`](./desktop-shell.md) (routing, write gate),
+[`file-state-and-sync-runs.md`](./file-state-and-sync-runs.md) (file
+lifecycle routes and their device half), [`sessions-and-runner.md`](./sessions-and-runner.md)
+(session routes).
+
+## MCP in sync-agent mode
+
+The sync agent serves `/mcp` itself and the per-mirror `.mcp.json` points at
+it (`http://127.0.0.1:<port>/mcp?home_node_id=…`). Device-local tools
+(`agent-tools.ts`'s `LOCAL_TOOLS`: mirror, status, store, pull, adopt_files)
+run against the device's mirrors and `sync.db`; every other tool is proxied to
+the central server's `/mcp` unchanged, which enforces scope and permissions.
+Proxied tools that also touch the device's disk (`portuni_move_file`,
+`portuni_rename_folder`, `portuni_delete_file`, `portuni_snapshot`) run their
+record and remote step on the central server and their disk step here afterwards, and
+report `repair_needed` when the second half fails. `portuni_get_node`,
+`portuni_get_context` and `portuni_expand_scope` answers are enriched on the
+device with `readable_path`/`local_path` from this device's mirror registry.
+The dynamic scope set lives on the central session. Detail:
+[`mcp-scope-and-integrations.md`](./mcp-scope-and-integrations.md).
+
+## Sessions in sync-agent mode
+
+The code that runs a task (adapter spawn, provisioning, event translation,
+suspend, idle sweep, pid-file boot sweep) is one implementation and always
+runs on the device. What differs is the `SessionStore` behind it and the
+seams a device without a graph db needs: `CentralSessionStore` over the central server's
+record REST routes, `provision-central.ts` (`createMirrorForNodeCentral`,
+`CentralClient.orientation`), `suspend-fallback-central.ts`, and
+`CentralClient.nodeOrganizationId` for the organization's default runner
+instance. Access checks run exactly once, on the central server. Detail:
+[`sessions-and-runner.md`](./sessions-and-runner.md).
+
+## Editing files
+
+In a personal workspace and on a team-workspace device with a mirror, the editor
+reads and writes the **mirror file** (`file-content.ts`); saving never pushes,
+pushing is a deliberate sync. A team-workspace device without a mirror for the
+node, and a remote MCP client session (OAuth grant), go through the central server, which serves the
+bytes **Drive-direct** (`file-content-remote.ts`) and refreshes the canonical
+hash on write. Optimistic concurrency is the same everywhere: a stale base
+version is a conflict, never a silent overwrite.
+
+## Workspace checklist for a change
+
+- **New or changed REST route**: `router.ts` (local) and `agent-router.ts`
+  (device) or a deliberate decision that it stays central; the entry in
+  `device-local-routes.json`; `is_local_only_path` and its tests; a test against
+  the fake `CentralClient`.
+- **New graph read inside domain code that also runs on the device**: a
+  `CentralClient` method or an injected resolver, with the local default being
+  the direct query. Never a `try/catch` that swallows the failure and degrades
+  silently in one mode.
+- **New MCP tool**: decide whether it is device-local (`LOCAL_TOOLS`) or
+  proxied; a proxied tool that touches disk needs its device step in
+  `agent-tools.ts`. A remote MCP client session (OAuth grant) on the central server has no `sync.db`
+  (`requireLocalSyncDb()` fails fast).
+- **Schema change**: both dialects (`MIGRATIONS` and `PG_BASELINE_DDL`), read
+  `docs/lessons-learned.md` §7 first. See
+  [`database-and-dialects.md`](./database-and-dialects.md).
+- **Web**: a feature that has nothing to do on a personal workspace is hidden
+  there (`useDataMode()`), not disabled.
+- **Verification**: name in the PR what changed in `agent-router.ts`,
+  `is_local_only_path`, `CentralClient` and `agent-tools.ts`, or why none of
+  them is affected.
+
+## Glossary
+
+| Term | Meaning |
 |---|---|
-| "sync" (Turso) | **graph sync** — the shared knowledge graph in Turso |
-| "sync" (Drive) | **file sync** — file bytes, local mirror <-> Drive |
-| `data_mode: "local"` | **direct mode** — client holds Turso token + Drive itself (owner) |
-| `data_mode: "central"` | **brokered mode** — client goes through `api.portuni.com`, permissions enforced |
-| `local_only` (501 error) | "the local sync agent isn't running — sign in" (not "feature unbuilt") |
+| team workspace, `data_mode: "central"` | the client reaches data through the central server; permissions enforced; the primary kind |
+| sync agent, `PORTUNI_AGENT_MODE=1` | the team-workspace device's sidecar: mirrors, MCP front door, session runtime, no graph db |
+| personal workspace, `data_mode: "local"` | one person, one machine, own graph db, no remote |
+| graph sync | the graph plane |
+| file sync | the file-bytes plane, mirror to Drive |
+| `local_only` (501) | the sync agent is not running yet (not signed in) |
+| `LOCAL_MODE_NO_REMOTE` (409) | a personal workspace was asked to do something only a team workspace has |
 
 ## See also
 
-- [`file-sync.md`](./file-sync.md) — the file-bytes plane in depth (adapters,
-  hash identity, two-layer state).
-- [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md)
-  — design rationale for file content over the server (now shipped).
-- `docs/archive/plans/2026-06-10-central-cutover.md` — the graph cutover that
-  shipped the graph over the server.
+- [`desktop-shell.md`](./desktop-shell.md), [`file-state-and-sync-runs.md`](./file-state-and-sync-runs.md),
+  [`sessions-and-runner.md`](./sessions-and-runner.md), [`mcp-scope-and-integrations.md`](./mcp-scope-and-integrations.md),
+  [`database-and-dialects.md`](./database-and-dialects.md), [`task-surface-web.md`](./task-surface-web.md).
+- [`file-sync.md`](./file-sync.md), the file-bytes plane design.
+- `docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md`, why
+  collaboration is team workspaces only; `docs/archive/central-file-content-phase-b.md`,
+  file content over the server; `docs/archive/plans/2026-06-10-central-cutover.md`,
+  the graph cutover; `docs/archive/plans/2026-07-05-agent-mode-mcp-front-door.md`,
+  the front door.

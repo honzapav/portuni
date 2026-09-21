@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS remote_stat_cache (
 Two tables:
 
 - `file_state` – the authoritative "what I last saw" record, plus a cached local hash keyed by (mtime, size) so we can skip rehashing unchanged files. Same trick as rsync and git.
-- `remote_stat_cache` – the central engine's record of the remote hash it last observed per file. The local engine no longer reads or writes it: a local workspace has no remote (#312).
+- `remote_stat_cache` – the central engine's record of the remote hash it last observed per file. The local engine no longer reads or writes it: a personal workspace has no remote (#312).
 
 ## FileAdapter interface
 
@@ -392,9 +392,9 @@ last_error, backoff_until, last_full_sweep_at }`, timestamps ISO-8601 UTC.
 The route reads the loop through `domain/sync/remote-watch-status.ts`, a
 one-function seam the loop registers itself with at start -- a server that
 never starts one (an env-mode standalone server, the desktop sidecar in
-either mode) answers an empty list, and `isLocalWorkspace()` short-circuits
-to the same empty answer before anything is read, since a local workspace
-has no remote at all (#310). It is NOT a device-local path: the central-mode
+either kind of workspace) answers an empty list, and `isLocalWorkspace()` short-circuits
+to the same empty answer before anything is read, since a personal workspace
+has no remote at all (#310). It is NOT a device-local path: the team-workspace
 desktop reaches it through the normal proxy to central, like any other
 central route.
 
@@ -446,7 +446,7 @@ per-node down-arrow count read.
 deliberate sync run reconciles the remote; this keeps status polling cheap
 and side-effect-free (see [file-mutation-propagation.md](./file-mutation-propagation.md)).
 
-In central mode (teammate mirrors) the agent has no Drive credentials, so
+In a team workspace (teammate mirrors) the agent has no Drive credentials, so
 it calls `POST /nodes/:id/sync/remote-sweep` on the central server first
 (steps 1–2 run there), then continues with the rest of the run against the
 refreshed sync-info.
@@ -464,7 +464,7 @@ Does:   1. Resolve adapter for doc_url (e.g. Drive adapter if it's a Docs URL).
         3. With a local mirror: feed the buffer into portuni_store logic
            (write to mirror, upload to target remote per routing, create
            files row). Without one (central server): createFileRemote
-           (upload + files row); the agent front door pulls the file into
+           (upload + files row); the sync agent's front door pulls the file into
            the device mirror afterwards.
 
 Output: { file_id, filename, remote_path }
@@ -644,9 +644,9 @@ auto-merges and never silently overwrites.
 
 ## Setup flow
 
-Collaboration is central mode only (see
+Collaboration is team workspaces only (see
 `docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md`): a
-local workspace cannot register or route to a remote at all
+personal workspace cannot register or route to a remote at all
 (`LOCAL_MODE_NO_REMOTE`, #310), and the per-user Drive OAuth connect flow
 that used to run from the desktop's Settings → Synchronizace is retired
 (#311) along with it. Service Account setup, below, is the only path left.
@@ -734,10 +734,10 @@ One remote, one wildcard rule covers the common case. Agents can be walked throu
 
 ## Open questions
 
-1. ~~Token rotation.~~ Moot: collaboration is central mode only, and Drive credentials live on the central server alone as a single service-account key — no per-device token, no per-device re-auth, nothing to rotate across machines (#310/#311).
+1. ~~Token rotation.~~ Moot: collaboration is team workspaces only, and Drive credentials live on the central server alone as a single service-account key — no per-device token, no per-device re-auth, nothing to rotate across machines (#310/#311).
 2. **Large binary quotas.** What is the right user warning threshold? 100 MB feels conservative; 1 GB feels dangerous. Measure in practice.
 3. **Folder move vs delete+recreate semantics.** If a user deletes a folder on Drive web UI and creates a new one with the same name somewhere else, is that a move or two unrelated events? Hash matching handles file content, not folder identity. For now, treat as separate operations.
-4. **Stat cache invalidation for team scenarios.** The local engine dropped its own 30s remote_stat_cache entirely once a local workspace could no longer have a remote to stat (#312) — this question now applies only to `engine-central.ts`'s own remote-hash observation cache (same table, different code path). If user A pushes and user B runs status 10s later, B's cache misses the change; add cache invalidation (e.g. cache key includes `files.last_pushed_at`) if this becomes a real problem in practice.
+4. **Stat cache invalidation for team scenarios.** The local engine dropped its own 30s remote_stat_cache entirely once a personal workspace could no longer have a remote to stat (#312) — this question now applies only to `engine-central.ts`'s own remote-hash observation cache (same table, different code path). If user A pushes and user B runs status 10s later, B's cache misses the change; add cache invalidation (e.g. cache key includes `files.last_pushed_at`) if this becomes a real problem in practice.
 5. ~~Deletion propagation.~~ Resolved in spec. `portuni_status` distinguishes `deleted_local` (files row + sync.db entry present, local missing) from `new_remote` (files row present, no sync.db entry – never pulled locally). `portuni_delete_file` offers `complete` and `unregister_only` modes. No auto-propagation either way.
 6. **Cold-start cost.** On a new device, first `portuni_status` has no sync.db cache, so it rehashes every local file and stats every remote. For a large project this could take minutes. Consider seeding sync.db from an initial pull operation rather than expecting status to bootstrap itself.
 

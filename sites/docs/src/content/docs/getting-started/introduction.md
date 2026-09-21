@@ -33,10 +33,10 @@ Portuni is an HTTP server that speaks MCP (Model Context Protocol). It exposes 4
 You can run it three ways:
 
 - **Desktop app** (`Portuni.app`, macOS) — recommended for daily use. A Tauri-built UI with a graph view, a detail pane, and a task chat in which agents run as runner-managed tasks (there is no embedded terminal). Bundles the MCP server as an embedded sidecar, so you don't have to keep a separate process running. Downloads are on the [GitHub releases](https://github.com/honzapav/portuni/releases) page; see [Desktop App](/clients/desktop-app/) for the details.
-- **Desktop app pointed at your organization's central server** — the teammate setup. You sign in with your Google account; the graph and file content live on the org's server, and you never handle database credentials at all. The local sidecar runs as a sync agent for your mirror folders.
+- **Desktop app in a team workspace** — the teammate setup. You sign in with your Google account; the graph and file content live on the organization's central server, and you never handle database credentials at all. The local sidecar runs as a sync agent for your mirror folders. The two kinds of workspace are explained in [Workspaces](/concepts/workspaces/).
 - **CLI / standalone server** — clone the repo, `npm install && npm run build`, then `npx varlock run -- npm start`. The path most contributors and CI use; same MCP surface as the desktop app's sidecar.
 
-The data itself lives in a database. For a solo setup that's a [Turso](https://turso.tech/) database (a libsql cloud) or a local SQLite fallback — handy for trying things out or working on the server itself. For a team, the intended shape is a **central Portuni server** run by the organization: it owns the database, authenticates people via Google, and teammates' apps and agents talk to it instead of holding shared credentials.
+The data itself lives in a database. A **personal workspace** keeps it in a [Turso](https://turso.tech/) database (a libsql cloud) or a local SQLite fallback — handy for trying things out or working alone. A **team workspace** is the shape Portuni is built around: a **central Portuni server** run by the organization owns the database, authenticates people via Google, and teammates' apps and agents talk to it instead of holding shared credentials.
 
 ```
 Portuni.app (desktop UI)

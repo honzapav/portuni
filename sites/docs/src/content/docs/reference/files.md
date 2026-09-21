@@ -46,7 +46,7 @@ and persist a `files` row + `file_state` cache.
 New files created inside a mirror's `wip/`, `outputs/`, or `resources/`
 (by any tool — Claude Code `Write`/`Edit`, Codex `apply_patch`, shell
 `cp`/`mv`, app save dialog) are registered **automatically** by the mirror
-watcher: a local-only `files` row is created, no upload happens, and file
+watcher: a device-local `files` row is created, no upload happens, and file
 status stays current without any agent action. Such a file reads as
 `push` until someone deliberately pushes it. Reach for `portuni_store`
 when you explicitly want to **push** a file to the remote.
@@ -174,7 +174,7 @@ machine holds
 **no mirror** of the node (the central server, or a remote client such as
 Claude Desktop against `https://…/mcp` with a device token, with no local
 workspace), reads straight from the node's routed remote (Google Drive),
-the same path `GET /nodes/:id/file` takes. In agent mode the sidecar reads
+the same path `GET /nodes/:id/file` takes. In the sync agent the sidecar reads
 its own mirror first and proxies the call to central when it has none.
 
 | Parameter | Type | Required | Description |
@@ -278,7 +278,7 @@ reported as a scan finding.
   gone, and adopts a file newly present anywhere under `wip/`,
   `outputs/`, or `resources/` at any depth (a dot-prefixed filename or subfolder is
   skipped).
-- **A remote is not required for tracking.** In a local-only workspace (no
+- **A remote is not required for tracking.** In a personal workspace (no
   remote configured at all), a new file still registers and reads as
   `push_candidates` — registration never depends on routing resolving.
   Once a remote is connected, `portuni_store` (or any other deliberate

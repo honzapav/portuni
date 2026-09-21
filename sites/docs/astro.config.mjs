@@ -36,6 +36,7 @@ export default defineConfig({
 					label: 'Foundations',
 					items: [
 						{ label: 'Design Principles', slug: 'concepts/design-principles' },
+						{ label: 'Workspaces (Team & Personal)', slug: 'concepts/workspaces' },
 						{ label: 'POPP Framework', slug: 'concepts/popp' },
 						{ label: 'Organization Invariant', slug: 'concepts/organization-invariant' },
 					],
@@ -52,7 +53,7 @@ export default defineConfig({
 				{
 					label: 'Files & Sync',
 					items: [
-						{ label: 'Data Modes (Local vs Central)', slug: 'concepts/data-modes' },
+						{ label: 'Files: The Two Sync Planes', slug: 'concepts/data-modes' },
 						{ label: 'Local Mirrors', slug: 'concepts/mirrors' },
 						{ label: 'Filesystem Permissions', slug: 'concepts/permissions' },
 						{ label: 'Scope Enforcement', slug: 'concepts/scope-enforcement', badge: { text: 'in design', variant: 'caution' } },

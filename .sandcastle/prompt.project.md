@@ -12,6 +12,10 @@ Lockfiles are regenerated, never hand-edited: `npm install --package-lock-only` 
 - Desktop: Rust unit tests in `apps/desktop`.
 - Web: typecheck + build; no browser tests.
 
+## Workspaces
+
+A team workspace (central server + sync agent) is the primary runtime; a personal workspace is the same server in a box for one person. Read `docs/architecture/data-modes.md` before a server, route, MCP tool or session-runtime change and go through its "Workspace checklist"; a route the desktop reaches on the device in a team workspace is added to `apps/server/shared/device-local-routes.json` together with `is_local_only_path` and `agent-router.ts`. The issue's "Workspace: osobní / týmový" section says what must work where; when it is missing, ask in a comment and treat both kinds of workspace as required.
+
 ## Documentation
 
 `CLAUDE.md`, `docs/`, and the public docs site `sites/docs/` for any behaviour, tool or API change. release-please never touches `sites/docs/`, so a change shipped without a docs edit leaves the published site wrong.

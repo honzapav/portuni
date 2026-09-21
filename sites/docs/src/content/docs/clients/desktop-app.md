@@ -14,7 +14,7 @@ A native macOS window (1600×1000 by default, opens maximized) with:
 - **Workspace view** — a node browser with type / status filters, sidebar navigation, and a status footer.
 - **Task chat (Práce)** — a node's action bar is "Nový úkol": one click opens an empty thread (a draft), and your first message is what starts the task — no picker, no required field. The runner and the provider instance are resolved for you (the node's organization default when it has one); model and reasoning effort are per-thread pickers in the composer. See [Working in the app](/guides/working-in-the-app/#task-chat-práce). There is no embedded terminal; an agent runs only as a task.
 - **Actors page** — browse and manage actors and assignments.
-- **Settings page** — workspaces (create, enable, open a window for one, pick each one's data mode), per-workspace Turso credentials and workspace root, a Runnery section (replaces Profily, #344: detected runner adapters with their install/login status, and provider instances — env vars, typically `CLAUDE_CONFIG_DIR`, with a default assignable per organization — edited through the sidecar's `GET/POST/PATCH/DELETE /runners/instances` REST API instead of the desktop's own `config.json`; see [Runners](/reference/runners/)), an Account section (Google sign-in and device tokens for central mode), a Synchronizace section (informational — Drive sync is configured once on the central server via a Service Account, see [Setting Up Remotes](/guides/setting-up-remotes/); a local workspace shows a "no remote" note instead), and an MCP Server section with one-click install buttons for Claude Code, Codex, and Mistral Vibe.
+- **Settings page** — workspaces (create, enable, open a window for one, pick each one's data mode), per-workspace Turso credentials and workspace root, a Runnery section (replaces Profily, #344: detected runner adapters with their install/login status, and provider instances — env vars, typically `CLAUDE_CONFIG_DIR`, with a default assignable per organization — edited through the sidecar's `GET/POST/PATCH/DELETE /runners/instances` REST API instead of the desktop's own `config.json`; see [Runners](/reference/runners/)), an Account section (Google sign-in and device tokens for a team workspace), a Synchronizace section (informational — Drive sync is configured once on the central server via a Service Account, see [Setting Up Remotes](/guides/setting-up-remotes/); a personal workspace shows a "no remote" note instead), and an MCP Server section with one-click install buttons for Claude Code, Codex, and Mistral Vibe.
 - **Create-node modal**, **date picker**, and other interactive controls for editing the graph directly from the UI.
 
 ## Embedded MCP sidecar
@@ -29,7 +29,7 @@ Each enabled **workspace** runs its own sidecar on a fixed loopback port, alloca
 
 ## Workspaces
 
-The app manages one or more workspaces — think of each as an independent Portuni: its own database, its own workspace root for mirrors, its own sidecar port, and its own Keychain-held credentials. All enabled workspaces run concurrently, each in its own window: the switcher in the sidebar (and the workspace list in Settings) opens or focuses a workspace's window rather than swapping the content of the current one, so several workspaces are usable side by side. Each workspace also picks its **data mode**: local (its own Turso/SQLite database) or central (your organization's server — see [Data Modes](/concepts/data-modes/)), so a personal graph and a company graph can live side by side in one app.
+The app manages one or more workspaces — think of each as an independent Portuni: its own database, its own workspace root for mirrors, its own sidecar port, and its own Keychain-held credentials. All enabled workspaces run concurrently, each in its own window: the switcher in the sidebar (and the workspace list in Settings) opens or focuses a workspace's window rather than swapping the content of the current one, so several workspaces are usable side by side. Each workspace also picks its **data mode**: local (its own Turso/SQLite database) or central (your organization's server — see [Files: the two sync planes](/concepts/data-modes/)), so a personal graph and a company graph can live side by side in one app.
 
 ## Install
 
@@ -46,8 +46,8 @@ Release DMGs are Developer ID signed and notarized, so the app opens without Gat
 
 A fresh install creates your first workspace and walks you through its setup. What you're asked depends on the workspace's data mode:
 
-- **Local mode** — paste your `TURSO_URL` and `TURSO_AUTH_TOKEN`, or skip to use a local SQLite database, and pick the root directory where mirror folders will live (e.g. `~/Workspaces/portuni`; the equivalent of `PORTUNI_WORKSPACE_ROOT` in the CLI install). Credentials go to the macOS Keychain — you never edit `.env.local` for the desktop install.
-- **Central mode** — sign in with your Google account instead; no database credentials needed. See [Data Modes](/concepts/data-modes/).
+- **Personal workspace** — paste your `TURSO_URL` and `TURSO_AUTH_TOKEN`, or skip to use a local SQLite database, and pick the root directory where mirror folders will live (e.g. `~/Workspaces/portuni`; the equivalent of `PORTUNI_WORKSPACE_ROOT` in the CLI install). Credentials go to the macOS Keychain — you never edit `.env.local` for the desktop install.
+- **Team workspace** — sign in with your Google account instead; no database credentials needed. See [Files: the two sync planes](/concepts/data-modes/).
 
 After that, you land in the Workspace view. Create your first organization node, then add projects / processes / areas / principles under it. (Upgrading from an older single-workspace install? The app migrates your existing configuration into the first workspace automatically.)
 
@@ -86,4 +86,4 @@ Running multiple graphs side by side used to be a CLI-only affair; today it's a 
 - [Setup](/getting-started/setup/) — install paths and configuration
 - [MCP Clients overview](/clients/overview/) — how each client treats your local files
 - [Local Mirrors](/concepts/mirrors/) — the per-device mirror model the app surfaces in the Workspace view
-- [Data Modes (Local vs Central)](/concepts/data-modes/) — local vs central mode and what each can do with files
+- [Workspaces (Team & Personal)](/concepts/workspaces/) — the two kinds of workspace; [Files: the two sync planes](/concepts/data-modes/) — what each can do with files

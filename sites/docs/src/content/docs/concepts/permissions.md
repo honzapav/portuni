@@ -54,6 +54,6 @@ Portuni is the MCP server. It returns paths and records where files live, but it
 
 The price of that separation is that filesystem permissions need to be set up once per client. Fortunately, that's a five-minute job each.
 
-Two related layers do exist elsewhere: tasks started from the desktop app run through Portuni's runner, whose permission decisions follow the same write-scope rules (see [Scope Enforcement](/concepts/scope-enforcement/)), and access to the graph itself is enforced server-side (see [Data Modes](/concepts/data-modes/)). This page is only about the CLI clients' own filesystem models.
+Two related layers do exist elsewhere: tasks started from the desktop app run through Portuni's runner, whose permission decisions follow the same write-scope rules (see [Scope Enforcement](/concepts/scope-enforcement/)), and access to the graph itself is enforced server-side (see [Files: the two sync planes](/concepts/data-modes/)). This page is only about the CLI clients' own filesystem models.
 
 For exact config blocks, see the per-client pages: [Claude Code](/clients/claude-code/), [Codex CLI](/clients/codex-cli/), [Gemini CLI](/clients/gemini-cli/).

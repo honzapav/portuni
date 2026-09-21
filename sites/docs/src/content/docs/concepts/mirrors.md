@@ -87,11 +87,11 @@ File handling has two halves that are easy to conflate.
 **File-state metadata is kept current automatically.** A mirror watcher
 observes every mirror folder — including mirrors registered while it is
 running, which it picks up immediately — and reacts to each disk change: a new file in a
-tracked section is registered in the local sync DB (local-only — no upload,
+tracked section is registered in the local sync DB (device-local — no upload,
 no graph knowledge created), and edits and deletes are reconciled into the
 cached local hash. The result is that sync status in the UI is always
 correct, without any agent calling `portuni_status` or `portuni_store`. A
-local workspace has no remote at all (collaboration is [central
+personal workspace has no remote at all (collaboration is [central
 mode](/concepts/data-modes/)), so a freshly registered file there just
 shows as tracked/clean — there is nothing to push it to. On a workspace with
 a remote configured it shows "needs push" until someone deliberately pushes
@@ -124,13 +124,13 @@ The watcher also understands the two everyday shell operations:
 A deliberate delete — the Files tab's "Smazat" button, or `portuni_delete_file`
 — is a different action from the on-disk `rm` above: it removes the record,
 the remote object, **and** the local mirror copy, in every data mode. A
-central-mode/agent workspace routes the disk-cleanup half through the local
+team-workspace/agent workspace routes the disk-cleanup half through the local
 sync agent (`DELETE /nodes/:id/files/:fileId` is served by the device, not
 proxied straight to the central server, precisely so the mirror copy does
 not survive the delete and get re-registered by the next backfill sweep).
 
 Creating a file — the Files tab's "+ Nový soubor" button — is served the
-same way in a central-mode/agent workspace: `POST /nodes/:id/files` writes
+same way in a team-workspace/agent workspace: `POST /nodes/:id/files` writes
 the file into the device's own mirror and registers it centrally **without
 waiting on the Drive upload**, so the new file appears and opens instantly
 either way. Central's own create (used only when this device has no mirror
@@ -165,7 +165,7 @@ only gets reconciled by an actual sync run. Moves
 and renames leave their own tombstone, so a device that missed one cleans
 up the stale copy at the old path instead of pushing it back.
 
-**On a team (central mode), the remote side is maintained state too.** The
+**On a team (team workspace), the remote side is maintained state too.** The
 central server watches each remote's own change feed and keeps the file
 records current — a file a teammate adds, edits or deletes on Drive is
 registered, re-hashed or tombstoned within about a minute, without anyone
@@ -174,7 +174,7 @@ still arrive only through a deliberate sync, exactly as the mirror watcher
 registers local files but never pushes them. The sidebar shows „Nové na
 remote: N uzlů" when a node you mirror has such records, and Nastavení ›
 Synchronizace shows one line per remote with what the watcher last saw
-(and its error, if it is failing). A local workspace has no remote, so
+(and its error, if it is failing). A personal workspace has no remote, so
 neither appears there; a backend without a change feed (a plain filesystem
 remote) is covered by the periodic full sweep instead.
 
