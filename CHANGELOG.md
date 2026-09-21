@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.0](https://github.com/honzapav/portuni/compare/v0.20.0...v0.21.0) (2026-09-21)
+
+
+### Features
+
+* **web:** task surface v2 – thread column, activity rows, context ring, runner picker, Přehled, DM Sans ([#437](https://github.com/honzapav/portuni/issues/437)) ([d72b492](https://github.com/honzapav/portuni/commit/d72b492e668a3ec94afefc2f4dc1ae153ca351f9))
+
+
+### Bug Fixes
+
+* **sync:** find a Drive file whose name is the other Unicode form of its path ([#436](https://github.com/honzapav/portuni/issues/436)) ([3f3d339](https://github.com/honzapav/portuni/commit/3f3d339dca8ccf2bd67e563c0949d770cb8083e0))
+
 ## [0.20.0](https://github.com/honzapav/portuni/compare/v0.19.0...v0.20.0) (2026-09-21)
 
 
