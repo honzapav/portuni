@@ -518,6 +518,102 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.runs.size, 2, "continue must create a second run record on central");
   });
 
+  // The four device-local session/runner routes is_local_only_path sends
+  // here that had no behaviour test of their own (the route parity test
+  // only proves they are handled at all).
+  it("POST /sessions/:id/interrupt cancels the current turn and leaves the session running", async () => {
+    stubScript([{ wait: "message" }]);
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    assert.equal(fake.sessions.get(session.id)?.state, "running");
+
+    const res = await fetch(`${base}/sessions/${session.id}/interrupt`, { method: "POST" });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { session: SessionRow };
+    assert.equal(body.session.id, session.id);
+    assert.equal(fake.sessions.get(session.id)?.state, "running");
+
+    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+  });
+
+  it("POST /sessions/:id/close closes the session on central", async () => {
+    stubScript([{ wait: "message" }]);
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+
+    const res = await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { session: SessionRow };
+    assert.equal(body.session.state, "closed");
+    assert.equal(fake.sessions.get(session.id)?.state, "closed");
+    const kinds = (fake.events.get(session.id) ?? []).map((e) => e.kind);
+    assert.ok(kinds.includes("run_ended"), `run must end on close, got ${kinds.join(",")}`);
+    assert.ok(!kinds.includes("handoff"), "an explicit close writes no server summary");
+  });
+
+  it("GET /sessions/:id/signals reads the live run's own in-memory state on this device", async () => {
+    stubScript([{ wait: "message" }]);
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+
+    const res = await fetch(`${base}/sessions/${session.id}/signals`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      runAgeMs: number | null;
+      writeSetSize: number;
+      readSetSize: number;
+      expansionsSinceRunStart: number;
+    };
+    assert.equal(typeof body.runAgeMs, "number", "a live run reports its age");
+    assert.equal(typeof body.writeSetSize, "number");
+    assert.equal(typeof body.readSetSize, "number");
+    assert.equal(body.expansionsSinceRunStart, 0);
+
+    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    const after = await fetch(`${base}/sessions/${session.id}/signals`);
+    assert.equal(after.status, 200);
+    assert.equal(((await after.json()) as { runAgeMs: number | null }).runAgeMs, null);
+  });
+
+  it("GET /runners/:runner/models answers from the adapter registered on this device", async () => {
+    clearRegistryForTests();
+    registerAdapter(
+      new FakeRunnerAdapter({
+        script: [],
+        models: [
+          { id: "m-fast", displayName: "Fast", description: "d", supportsEffort: false, effortLevels: [] },
+          { id: "m-deep", displayName: "Deep", description: "d", supportsEffort: true, effortLevels: ["low", "high"] },
+        ],
+      }),
+    );
+    const res = await fetch(`${base}/runners/fake/models`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { models: Array<{ id: string; supportsEffort: boolean }> };
+    assert.deepEqual(
+      body.models.map((m) => [m.id, m.supportsEffort]),
+      [
+        ["m-fast", false],
+        ["m-deep", true],
+      ],
+    );
+
+    const unknown = await fetch(`${base}/runners/nope/models`);
+    assert.equal(unknown.status, 404);
+    assert.equal(((await unknown.json()) as { code: string }).code, "UNKNOWN_RUNNER");
+  });
+
   it("GET /sessions/:id/events replays exactly what central holds", async () => {
     const start = await fetch(`${base}/sessions`, {
       method: "POST",

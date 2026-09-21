@@ -3867,6 +3867,51 @@ mod fallback_should_fire_tests {
 mod local_only_path_tests {
     use super::is_local_only_path;
 
+    // The shared contract with the server: every route the webview must
+    // reach on THIS device's sidecar in central mode, and the record-half /
+    // graph routes that must keep going to central. agent-router.ts is
+    // checked against the same file by test/agent-router-route-parity
+    // .test.ts, so a route added on one side without the other fails the
+    // gate on whichever side is missing.
+    const LOCAL_ONLY_ROUTES: &str = include_str!("../../server/shared/local-only-routes.json");
+
+    fn route_examples(section: &str) -> Vec<(String, String)> {
+        let doc: serde_json::Value = serde_json::from_str(LOCAL_ONLY_ROUTES).expect("valid json");
+        doc[section]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|e| {
+                (
+                    e["pattern"].as_str().expect("pattern").to_string(),
+                    e["example"].as_str().expect("example").to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_shared_device_local_route_is_local_only() {
+        let routes = route_examples("device_local");
+        assert!(routes.len() >= 30, "the shared list looks truncated");
+        for (pattern, example) in routes {
+            assert!(
+                is_local_only_path(&example),
+                "{pattern} ({example}) is listed as device-local in local-only-routes.json but is_local_only_path says central"
+            );
+        }
+    }
+
+    #[test]
+    fn every_shared_central_route_stays_central() {
+        for (pattern, example) in route_examples("central") {
+            assert!(
+                !is_local_only_path(&example),
+                "{pattern} ({example}) is listed as central in local-only-routes.json but is_local_only_path routes it to the sidecar"
+            );
+        }
+    }
+
     #[test]
     fn scope_is_local_only() {
         assert!(is_local_only_path("/scope"));
