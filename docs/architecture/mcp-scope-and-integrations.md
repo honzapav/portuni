@@ -64,11 +64,9 @@ the next materialization overwrites them.**
 
 | File | Harness | Content |
 |---|---|---|
-| `.mcp.json` | Claude Code | server entry with `?home_node_id=…`, token as `${PORTUNI_MCP_TOKEN}` env expansion |
+| `.mcp.json` | Claude Code | server entry with `?home_node_id=…`, token as `${PORTUNI_MCP_TOKEN}` env expansion; no `X-Portuni-Spawn-Id` header (a runner-driven run gets it from `RunStart.mcp.headers`, a hand-opened CLI has nothing to expand it from) |
 | `.claude/settings.local.json` | Claude Code | declarative write-scope deny list, `portuni_managed` marker, optional `PreToolUse` guard hook |
 | `.codex/config.toml` | Codex | written only when missing or already carrying the Portuni marker comment |
-| `.vibe/config.toml` | Mistral Vibe | project-scoped `mcp_servers` entry with `?home_node_id=…` and the token env var |
-| `.cursor/rules` | Cursor | plain-text write-scope hint, refreshed |
 | `PORTUNI_SCOPE.md` | any | harness-agnostic hint plus the orientation section (below) |
 | `CLAUDE.md` / `AGENTS.md` | any | write-scope hint injected between `BEGIN/END` Portuni-managed markers, only when the file already exists; everything outside the markers is preserved |
 
@@ -79,12 +77,18 @@ Rules that hold in every mode:
   workspace, `<ID>` from `PORTUNI_WORKSPACE_ID`). The desktop app has no
   terminal of its own to inject it into; a shell outside the app exports
   it itself (Settings → MCP Server shows the `export` line).
-- **Vibe must be started with `vibe --trust`.** Vibe loads the per-mirror
-  `.vibe/config.toml` (and therefore auto-seeds) only in a trusted folder;
-  untrusted, it falls back to `~/.vibe/config.toml`, which has no
-  `home_node_id`, and starts unscoped. Vibe union-merges project
-  `mcp_servers` over the user file by `name`, so the per-mirror file stays
-  minimal and never clobbers the user's models or providers.
+- **Mistral Vibe and Cursor connect user-scoped only.** Portuni writes no
+  per-mirror `.vibe/config.toml` or `.cursor/rules`; a Vibe session reads
+  `~/.vibe/config.toml` (`install_vibe_global`), starts unscoped and seeds
+  with `portuni_session_init`. A `.vibe/config.toml` an older Portuni left
+  in a mirror is deleted by `materializeScopeConfig` when it carries the old
+  marker (`LEGACY_VIBE_MARKER`, reported in `MaterializeResult.removed`),
+  because Vibe union-merges a project config over the user one by server
+  `name` and the leftover would keep a `home_node_id` nothing maintains; a
+  file without the marker is the user's and stays, and so does any
+  `.cursor/rules` (it never carried a marker). A hand-written project
+  `.vibe/config.toml` still works and still needs `vibe --trust` to be
+  loaded at all.
 - **User-scoped fallbacks** for a session outside any mirror are the
   desktop commands `install_claude_global` (`~/.claude.json`),
   `install_codex_global` (`~/.codex/config.toml`) and `install_vibe_global`
@@ -150,7 +154,7 @@ Portuni sends nothing to a hand-opened CLI on connect. The orientation a
 session needs (node context, responsibilities, recent events, a handoff
 pointer for a suspended session) is written into **`PORTUNI_SCOPE.md`
 only** (`write-scope.ts`'s `buildOrientationHint`, appended by
-`scope-materialize.ts`); `.cursor/rules` and the `CLAUDE.md`/`AGENTS.md`
+`scope-materialize.ts`); the `CLAUDE.md`/`AGENTS.md`
 marker blocks keep the shorter write-scope hint and never carry it.
 
 - Personal workspace: `orientationForNode` reads the graph db directly.

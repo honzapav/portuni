@@ -6,7 +6,7 @@ description: Connecting Mistral Vibe to Portuni, how its layered config merges, 
 Mistral's [Vibe](https://github.com/mistralai/mistral-vibe) is a terminal coding agent that speaks MCP. Connecting it to Portuni works the same way as the other clients: one entry in `~/.vibe/config.toml`, written for you by the desktop app.
 
 :::note
-Portuni no longer writes a per-mirror `.vibe/config.toml`. That writer existed for the embedded terminal the desktop app used to launch Vibe from, which is gone — an agent runs as a task now, and a Vibe session is something you start yourself. Vibe therefore connects through the user-scoped `~/.vibe/config.toml`, without `?home_node_id=…`: a session starts **unscoped** and seeds its scope with `portuni_session_init` (or `portuni_expand_scope`). If you want auto-seed, write a project `.vibe/config.toml` yourself — the shape is below — and start Vibe with `--trust`.
+Portuni no longer writes a per-mirror `.vibe/config.toml`. That writer existed for the embedded terminal the desktop app used to launch Vibe from, which is gone — an agent runs as a task now, and a Vibe session is something you start yourself. Vibe therefore connects through the user-scoped `~/.vibe/config.toml`, without `?home_node_id=…`: a session starts **unscoped** and seeds its scope with `portuni_session_init` (or `portuni_expand_scope`). If you want auto-seed, write a project `.vibe/config.toml` yourself — the shape is below — and start Vibe with `--trust`. A file the old writer left in a mirror (it carries a `# portuni-managed` marker) is removed the next time the sidecar materializes that mirror; one you wrote yourself is never touched.
 :::
 
 ## Connecting to Portuni

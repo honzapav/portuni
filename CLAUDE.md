@@ -224,7 +224,11 @@ One line each; the linked doc carries the mechanism and the reasoning.
   listed in the doc; do not re-litigate without new reasons.
 - Bulk sync is `POST /sync/jobs` (202, one job per user, reattach appends
   nodes); `total = push + untracked`, `decisions = conflict + deleted_local`,
-  `pull` counts towards neither.
+  `pull` counts towards neither. Every caller of a node sync run takes
+  `withNodeSyncLock`, not only the pool.
+- The remote watcher correlates a change with a record by
+  `files.remote_file_id`, never by path alone; a sweep is recorded when it
+  finishes and backs off on its own schedule.
 
 ### Sessions and runner (`sessions-and-runner.md`)
 
@@ -250,10 +254,11 @@ One line each; the linked doc carries the mechanism and the reasoning.
 ### MCP and scope (`mcp-scope-and-integrations.md`)
 
 - Materialized scope configs (`.mcp.json`, `.claude/settings.local.json`,
-  `.codex/config.toml`, `.vibe/config.toml`, `.cursor/rules`,
-  `PORTUNI_SCOPE.md`, marker blocks in CLAUDE.md/AGENTS.md) are
-  Portuni-managed; never hand-edit them, never write a token literal into
-  them. Vibe launches with `--trust`.
+  `.codex/config.toml`, `PORTUNI_SCOPE.md`, marker blocks in
+  CLAUDE.md/AGENTS.md) are Portuni-managed; never hand-edit them, never
+  write a token literal or an `X-Portuni-Spawn-Id` into them. Vibe and
+  Cursor connect user-scoped only (no per-mirror writer; a legacy marked
+  `.vibe/config.toml` is removed).
 - Auto-seed on connect with `?home_node_id=`; a failure is a 503 with the
   reason, never an empty-scope session. Orientation lives only in
   `PORTUNI_SCOPE.md`; no message is ever sent on connect.

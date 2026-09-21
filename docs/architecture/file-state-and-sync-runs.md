@@ -240,7 +240,20 @@ that follow from it:
   decisions appears with `total: 0`. `SyncOverview.tsx` shows the split as
   `+N k rozhodnutí` and puts only actionable nodes in a job's default set;
   the sidebar's „Nové na remote: N uzlů" and the overview's per-node
-  down-arrow read `pull`.
+  down-arrow read `pull`. A finished run's residual accounting
+  (`apps/web/src/lib/sync-pending-residual.ts`, what clears a just-synced
+  node from the overview before the next aggregate scan) reads
+  `SyncRunResponse.errors[].sync_class`: every error entry carries the class
+  the file had when the run acted on it (`sync-run.ts` and `syncRunCentral`
+  both tag theirs), so a failed pull stays a pending `pull` instead of
+  being counted as a push the user is expected to clear.
+- **Every caller of a node sync run takes the node lock**, not only the
+  pool: `api/nodes.ts`'s `handleSyncRun` (`POST /nodes/:id/sync`) and
+  `handleRemoteSweep` (`POST /nodes/:id/sync/remote-sweep`, what the sync
+  agent asks the central server for), and `agent-router.ts`'s own
+  device-side `POST /nodes/:id/sync`. Without it a user-triggered sync and
+  the watcher's catch-up of the same node interleave (double adopt, double
+  tombstone, unique-constraint errors).
 - `/sync/pending` and `/sync/health` are device aggregates (the device's
   mirrors, the device's watcher errors); central would answer empty, so both
   are device-local routes.
@@ -261,12 +274,49 @@ that follow from it:
   belongs to `files.list` and is rejected here), reports `removed` or
   `trashed` as a `remove` (a hard delete carries no metadata, so `path` is
   null), and answers a 410/404 page token with `reset: true` plus a fresh
-  start token. Paths resolve through `pathFor`/`folderInfo` backed by an
-  adapter-level `folderMemo` (folder id → name + parent): one `files.get`
-  per distinct ancestor per page, a folder's own change refreshes its entry
-  from the change itself, and `invalidatePrefix` drops the memo whole.
-  `remote_folder_cache` (created by the same migration as `remote_cursors`)
-  is reserved for a persistent version of this memo and is not read yet.
+  start token. `RemoteChange.upsert` carries the backend's own `file_id`
+  next to the path.
+- **Ancestor cache, two tiers.** Paths resolve through `pathFor`/
+  `folderInfo` backed by `drive-folder-cache.ts`: `createFolderPathCache`
+  is an insertion-ordered LRU memo bounded by
+  `PORTUNI_DRIVE_FOLDER_MEMO_MAX` (5 000) over `createDbFolderPathStore(db,
+  remoteName)`, one row per folder in `remote_folder_cache` (folder id →
+  path relative to the remote root). `adapter-cache.ts` hands the store to
+  `createDriveAdapter(remote, tokens, { folderCache })`; an adapter built
+  without it (a test) is memo-only. Lookup order is memo → row → Drive;
+  writes go to both tiers, except a negative entry ("this ancestry does not
+  reach the remote root"), which is memo-only. Invalidation is by path: a
+  folder reported by the feed recomputes its own path from the change (no
+  network call) and, when it moved, drops its old path and everything under
+  it in both tiers; a removed folder drops the same subtree; the adapter's
+  own writes narrow `invalidatePrefix` to the written subtree; a feed
+  `reset` truncates the remote's rows, since the full sweep that follows
+  refills them. Descendants refill lazily on the next miss, one `files.get`
+  each.
+- **Correlation by object id, not path alone.** `files.remote_file_id`
+  (migration 038 + `PG_BASELINE_DDL`; the index `(remote_name,
+  remote_file_id)` lives in `DDL_AFTER_MIGRATIONS`, never in the DDL replay)
+  carries Drive's file id; every path that proves an object's identity
+  persists it through `remote-sweep.ts`'s `persistRemoteFileId` (adopt,
+  `storeFile`'s upsert, `createFileRemote`, `writeFileBytesRemote`, the
+  sweep's hash refresh, `backfillRemoteHash`); fs/OpenDAL report none and
+  the column stays NULL. That makes three feed events same-tick work
+  instead of "wait for the sweep": a **hard delete** (no metadata) is
+  planned as `remove_by_id`, `findRecordByRemoteFileId` finds the row and
+  `deleteRemovedRecords` confirms and tombstones it; a **rename or move**
+  arrives as an upsert at a new path whose id already belongs to a record,
+  so the record is relocated (`writeRelocatedRecord`, the same call
+  `moveFile` makes, plus a `sync_move` audit tombstone, which is what makes
+  a device drop its stale copy at the old path instead of re-adopting and
+  pushing it back); a **folder rename or move** reports the folder and
+  nothing for its children, so the reducer resolves it to its node and
+  returns `sweepNodeIds`, which the tick hands to
+  `RemoteWatchTickArgs.sweepNodes`, a bounded catch-up sweep of exactly
+  those nodes that is never recorded as the periodic whole-workspace sweep.
+  `remote_file_id` never leaves the central server: `SyncInfo.files` does
+  not carry it, classification does not read it, and a relocation reaches
+  a device through the `sync_move` tombstone the sync-info tombstone query
+  already ships.
 - **One classification path.** `remote-sweep.ts` exports its three steps
   (`adoptRemoteFiles`, `refreshRemoteHashes` with `needsHashRefresh`,
   `deleteRemovedRecords`) and both `remoteSweep` and the watcher call the
@@ -277,9 +327,10 @@ that follow from it:
   backfill would fetch bytes Drive refuses (403), the batch would error and
   the cursor would never advance. A path whose stat finds nothing (created
   and deleted between change and tick) is skipped.
-- **Reducer and locking.** `planRemoteChanges` is pure: a folder, a pathless
-  hard delete, a path outside every node root and a path outside
-  `wip`/`outputs`/`resources` are dropped; longest node root wins (a child
+- **Reducer and locking.** `planRemoteChanges` is pure: a change with
+  neither a path nor a file id (`no_path`), a path outside every node root
+  and a path outside `wip`/`outputs`/`resources` are dropped; a folder
+  change resolves to its node's catch-up sweep; longest node root wins (a child
   project owns its files, not its organization); last change per path
   wins. `applyRemoteChanges` runs each operation under
   `withPathLock("<remote>:<remote_path>")`, the same key the adapter-direct
@@ -290,14 +341,28 @@ that follow from it:
 - **Cursor and catch-up.** `remote_cursors` is persisted only after every
   change of a batch applied; a failed batch leaves it untouched and is
   replayed, safe because each operation is idempotent. A tick that throws
-  backs off from the tick interval (60 s → 2 → 4 … cap 1 h, `backoffMsFor`)
-  and leaves the cursor alone. Catch-up is the full `remoteSweep` for every
-  node routed to the remote: at boot, after a feed `reset`, and every
-  `PORTUNI_REMOTE_SWEEP_INTERVAL_MS` (6 h), run through `sync-jobs.ts`'s
-  pool.
+  **and** a tick whose batch did not fully apply both back off from the
+  tick interval (60 s → 2 → 4 … cap 1 h, `backoffMsFor`) and leave the
+  cursor alone; without the backoff a failing batch replays once a minute
+  against a remote already answering 429. Catch-up is the full
+  `remoteSweep` for every node routed to the remote: at boot, after a feed
+  `reset`, and every `PORTUNI_REMOTE_SWEEP_INTERVAL_MS` (6 h), run through
+  `sync-jobs.ts`'s pool. **A sweep is recorded when it finishes, not when
+  it starts**: `runCatchUp` awaits the job (`awaitSyncJob`) and throws on
+  the first node error; `beginCatchUp` runs it detached (a tick is a
+  heartbeat, a sweep is a whole-workspace job; `RemoteState.sweepsInFlight`
+  is a counter, since a node-scoped sweep can overlap the periodic one) and
+  sets `lastFullSweepAt` only on a clean finish. **A failed sweep backs off
+  on its own schedule** (`RemoteState.sweepBackoff`/`sweepError`, 60 s →
+  1 h): a node the sweep cannot list is not a feed failure, so the feed
+  keeps being polled and `watching` stays true; `maybeFullSweep` honours
+  the backoff, a full sweep the feed asks for while backing off clears
+  `lastFullSweepAt` so the first tick past the backoff sweeps, and
+  node-scoped sweeps are never gated.
 - **Status seam.** `GET /sync/watch` (read tier) answers `{remotes:
   [{remote_name, watching, cursor_updated_at, last_tick_at, last_error,
-  backoff_until, last_full_sweep_at}]}`, ISO-8601 UTC throughout
+  backoff_until, last_full_sweep_at, sweep_error, sweep_backoff_until}]}`,
+  ISO-8601 UTC throughout
   (`isoFromDbTimestamp` normalizes `remote_cursors.updated_at`'s zone-less
   form). `handleSyncWatch` (`api/nodes.ts`) reads the loop through
   `domain/sync/remote-watch-status.ts`, which the loop registers with at

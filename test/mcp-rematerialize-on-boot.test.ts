@@ -131,7 +131,7 @@ describe("materializeAllRegisteredMirrors", () => {
   it("returns empty result when no mirrors are registered", async () => {
     await makeSharedDb();
     const r = await materializeAllRegisteredMirrors();
-    assert.deepEqual(r, { written: [], errors: [] });
+    assert.deepEqual(r, { written: [], removed: [], errors: [] });
   });
 
   it("lists the node's registered data sources in the soft hint", async () => {
