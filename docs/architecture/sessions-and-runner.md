@@ -99,7 +99,7 @@ orientation, translates events, ends and suspends) is one implementation,
 |---|---|---|
 | `store` | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
 | provisioning | `provision.ts`: `createMirrorForNode`, `orientationForNode` (direct db read) | `provision-central.ts`: `createMirrorForNodeCentral`, `CentralClient.orientation` (`GET /nodes/:id/orientation`) |
-| `suspendFallback` | `suspendSessionServerSide(db, id, reason)` | `domain/runner/suspend-fallback-central.ts`: writes the handoff into the device mirror and patches the record over REST |
+| `suspendFallback` | `suspendSessionServerSide(db, id, reason)` | `domain/runner/suspend-fallback-central.ts`: writes the same handoff into the device mirror (scope sections from `CentralClient.sessionScopeRecord`), registers it record-only and patches the record over REST |
 | `resolveNodeOrgId` | `belongs_to` graph query (a failed lookup is distinguishable from "no organization") | `CentralClient.nodeOrganizationId` (`GET /nodes/:id`, the outgoing `belongs_to` peer that is an organization) |
 | `session_scope` reads (`getSessionScope` in `startRun`/`sessionSignals`) | real | degrade to an empty scope, never throw |
 
@@ -120,10 +120,17 @@ orientation, translates events, ends and suspends) is one implementation,
   never fails a promotion; it logs one warning naming the node, only when
   the fallback is visible (two or more instances for that runner and some
   org default configured).
-- The central suspend fallback writes a handoff whose write/read-set
-  sections are always empty (no local `session_scope`) and does not
-  register the file as tracked; the next sync run's untracked-file
-  discovery picks it up.
+- The team-workspace suspend fallback writes the same summary the personal
+  one does (#427). `session_scope` and the node's name are graph-db reads,
+  so they come from `GET /sessions/:id/scope`
+  (`CentralClient.sessionScopeRecord`, a record-half route like the rest);
+  a scope read that fails logs and degrades to empty sections rather than
+  leaving the thread `running` with no handoff. The file is then registered
+  through `registerLocalFileCentral` -- record-only, exactly what the
+  watcher does for a new file in a mirror -- so it appears under Files at
+  once; a failed registration logs and is left to the next sync run's
+  untracked-file discovery, same best-effort posture as
+  `writeHandoffAndSuspend`.
 
 ### Which routes run where (team workspace)
 
@@ -131,8 +138,9 @@ orientation, translates events, ends and suspends) is one implementation,
 agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
 `messages`, `interrupt`, `continue`, `close`, `events`, `signals`,
 `questions/:request_id`. The record half stays on the central server: bare
-`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs...`,
-`/sessions/record`, plus `GET /nodes/:id/sessions` and `/overview`.
+`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/scope`,
+`/runs...`, `/sessions/record`, plus `GET /nodes/:id/sessions` and
+`/overview`.
 `signals` is device-local because it reads in-memory live-run state
 (`liveRuns`, `runStartScopeSize`) that exists only in the process running
 the task. A new per-session verb must be added to `router.ts`,
@@ -409,8 +417,6 @@ in the codebase. The desktop bridge is documented with the desktop shell.
 
 ## Known gaps
 
-- The central suspend fallback's handoff has empty write/read-set sections
-  and is not registered as a tracked file until the next sync run (#427).
 - `host_id` is stored on `SessionRunRow` only; no surface shows which host
   ran a session (#428).
 

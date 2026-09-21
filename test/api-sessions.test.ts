@@ -17,9 +17,14 @@ import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
-import { createSession, closeSessionIfRunning } from "../apps/server/domain/sessions.js";
+import {
+  createSession,
+  closeSessionIfRunning,
+  setSessionScopeWritable,
+  upsertSessionScopeRead,
+} from "../apps/server/domain/sessions.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
-import type { SessionSummary, SessionResumeInfo } from "../apps/server/shared/api-types.js";
+import type { SessionSummary, SessionResumeInfo, SessionScopeRecord } from "../apps/server/shared/api-types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const SOLO = "01SOLO0000000000000000000";
@@ -324,6 +329,43 @@ describe("session REST endpoints", () => {
 
   test("GET /sessions/:id/signals 404s for an unknown session id", async () => {
     const res = await call(makeIdentity(SOLO), "GET", `/sessions/${ulid()}/signals`);
+    assert.equal(res.statusCode, 404);
+  });
+
+  // #427: the record half of the session's scope, read by a sync agent's
+  // suspend fallback (it has no session_scope table of its own) to fill the
+  // summary's "Zápisový rozsah" / "Čtecí rozsah" sections.
+  test("GET /sessions/:id/scope returns the read set, the write set and the node name", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const otherId = ulid();
+    await db.execute({
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, 'project', 'Druhy', 'druhy', ?)",
+      args: [otherId, SOLO],
+    });
+    await upsertSessionScopeRead(db, session.id, nodeId, "seed", null);
+    await setSessionScopeWritable(db, session.id, nodeId);
+    await upsertSessionScopeRead(db, session.id, otherId, "edge", null);
+
+    const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/scope`);
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as SessionScopeRecord;
+    assert.equal(body.session_id, session.id);
+    assert.equal(body.node_name, "Proj");
+    assert.deepEqual(body.write_set, [nodeId]);
+    assert.deepEqual([...body.read_set].sort(), [nodeId, otherId].sort());
+  });
+
+  test("GET /sessions/:id/scope is empty for a session that never reached a node", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/scope`);
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as SessionScopeRecord;
+    assert.deepEqual(body.write_set, []);
+    assert.deepEqual(body.read_set, []);
+  });
+
+  test("GET /sessions/:id/scope 404s for an unknown session id", async () => {
+    const res = await call(makeIdentity(SOLO), "GET", `/sessions/${ulid()}/scope`);
     assert.equal(res.statusCode, 404);
   });
 

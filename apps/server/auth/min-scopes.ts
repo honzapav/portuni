@@ -237,6 +237,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/sessions\/[^/]+\/state$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/resume-info$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/signals$/.test(pathname) && m === "GET") return "read";
+  if (/^\/sessions\/[^/]+\/scope$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/messages$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/questions\/[^/]+$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/model$/.test(pathname) && m === "POST") return "write";

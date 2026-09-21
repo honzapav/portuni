@@ -162,7 +162,9 @@ summary, the server's own choice), `POST
 /sessions/:id/interrupt` (cancels the current turn only — the run stays
 live), `POST /sessions/:id/continue` (closes this session, seeds a new
 one on the same node from its summary, returns `{ session, run }` for the
-new one), `POST /sessions/:id/close`, `GET /sessions/:id/signals`, and
+new one), `POST /sessions/:id/close`, `GET /sessions/:id/signals`,
+`GET /sessions/:id/scope` (the session's read and write set by node id,
+the same two sets the written summary lists), and
 `GET /sessions/:id/events?after&limit` for the canonical event log the
 chat view above renders from. `POST /sessions/:id/suspend` and `POST
 /sessions/:id/resume` are gone — there is no separate suspend handshake

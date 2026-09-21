@@ -9,6 +9,9 @@
 //   POST  /sessions/:id/state              write   -> state transition (owner or manage)
 //   GET   /sessions/:id/resume-info        read    -> conversation-resumable? handoff changed?
 //   GET   /sessions/:id/signals            read    -> restart indicator (run age, read/write set)
+//   GET   /sessions/:id/scope              read    -> central record half (#427): the session's
+//                                                      read/write set by node id, for the sync
+//                                                      agent's own suspend fallback
 //   POST  /sessions                        write   -> start a task (session + first run)
 //   POST  /sessions/record                 write   -> central record half (#323): create the row
 //                                                      only, no run -- the agent-mode sidecar's own
@@ -63,6 +66,7 @@ import {
   createDraftSession,
   deleteDraftSession,
   getSession,
+  getSessionScope,
   getSessionWriteCount,
   listSessions,
   renameSession,
@@ -78,7 +82,7 @@ import { getInstanceEnv } from "../domain/runner/instances.js";
 import { DbSessionStore } from "../domain/runner/store.js";
 import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
-import type { SessionResumeInfo, SessionSummary } from "../shared/api-types.js";
+import type { SessionResumeInfo, SessionScopeRecord, SessionSummary } from "../shared/api-types.js";
 
 export async function toSummary(row: SessionRow): Promise<SessionSummary> {
   return {
@@ -439,6 +443,41 @@ export async function handleGetSessionSignals(
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/signals`, err);
   }
+}
+
+// #427: the session's persisted scope, by node id, plus the anchor node's
+// name -- everything domain/session-handoff.ts's local suspend path reads
+// off the graph db to fill a summary's "Zápisový rozsah" / "Čtecí rozsah"
+// sections. A sync agent has neither table, so its suspend fallback
+// (domain/runner/suspend-fallback-central.ts) reads them here instead of
+// writing an empty-scope summary. A pure read of the record half, so it
+// follows the same read-tier gate resume-info and signals do.
+export async function handleGetSessionScope(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "read");
+    if (!existing) return;
+    const scope = await getSessionScope(db, sessionId);
+    const payload: SessionScopeRecord = {
+      session_id: existing.id,
+      node_name: existing.node_id ? await sessionNodeName(db, existing.node_id) : null,
+      write_set: scope.filter((s) => s.writable === 1).map((s) => s.node_id),
+      read_set: scope.map((s) => s.node_id),
+    };
+    respondJson(res, 200, payload);
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}/scope`, err);
+  }
+}
+
+async function sessionNodeName(db: DbClient, nodeId: string): Promise<string | null> {
+  const res = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [nodeId] });
+  return res.rows.length > 0 ? String(res.rows[0].name) : null;
 }
 
 // --- Tasks (runner batch): starting a session's task and driving its run --

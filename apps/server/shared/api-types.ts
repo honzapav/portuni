@@ -560,6 +560,19 @@ export type SessionResumeInfo = {
     | null;
 };
 
+// GET /sessions/:id/scope (#427): the session's persisted read/write scope
+// and the anchor node's name, as the record half holds them. Read by the
+// sync agent's suspend fallback (domain/runner/suspend-fallback-central.ts),
+// which has no local `session_scope` table to build the summary's
+// write/read-set sections from; both sets are node ids, the write set a
+// subset of the read set.
+export type SessionScopeRecord = {
+  session_id: string;
+  node_name: string | null;
+  write_set: string[];
+  read_set: string[];
+};
+
 // Runner batch (docs/superpowers/specs/2026-09-12-runner-and-session-design.md):
 // session_runs / session_events row shapes, defined here (rather than only in
 // apps/server/domain/runner/store.ts, which re-exports them) so the web can

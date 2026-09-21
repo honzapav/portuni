@@ -50,6 +50,7 @@
     { "method": "PATCH", "pattern": "/sessions/{id}", "example": "/sessions/abc123" },
     { "method": "GET", "pattern": "/sessions/{id}/state", "example": "/sessions/abc123/state" },
     { "method": "GET", "pattern": "/sessions/{id}/resume-info", "example": "/sessions/abc123/resume-info" },
+    { "method": "GET", "pattern": "/sessions/{id}/scope", "example": "/sessions/abc123/scope" },
     { "method": "GET", "pattern": "/sessions/{id}/runs", "example": "/sessions/abc123/runs" },
     { "method": "PATCH", "pattern": "/sessions/{id}/runs/{runId}", "example": "/sessions/abc123/runs/run1" },
     { "method": "POST", "pattern": "/sessions/record", "example": "/sessions/record" },

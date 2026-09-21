@@ -117,6 +117,7 @@ import {
   handleDeleteSession,
   handleGetSession,
   handleGetSessionResumeInfo,
+  handleGetSessionScope,
   handleGetSessionSignals,
   handleInterruptSession,
   handleListNodeSessions,
@@ -781,6 +782,14 @@ async function routeSessions(
   const signalsMatch = pathname.match(/^\/sessions\/([^/]+)\/signals$/);
   if (signalsMatch && method === "GET") {
     await handleGetSessionSignals(req, res, identity, decodeURIComponent(signalsMatch[1]));
+    return true;
+  }
+  // Central record half (#427): the session's read/write set, read by the
+  // sync agent's suspend fallback -- a central route, never device-local
+  // (the device is exactly the side that has no session_scope table).
+  const scopeMatch = pathname.match(/^\/sessions\/([^/]+)\/scope$/);
+  if (scopeMatch && method === "GET") {
+    await handleGetSessionScope(req, res, identity, decodeURIComponent(scopeMatch[1]));
     return true;
   }
   const messagesMatch = pathname.match(/^\/sessions\/([^/]+)\/messages$/);

@@ -8,7 +8,7 @@
 
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
@@ -37,10 +37,12 @@ import type {
 } from "../apps/server/domain/runner/store.js";
 import type { CanonicalEvent } from "../apps/server/domain/runner/types.js";
 import type { OrientationSummary } from "../apps/server/domain/write-scope.js";
+import type { SessionScopeRecord } from "../apps/server/shared/api-types.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { getMirrorPath } from "../apps/server/domain/sync/mirror-registry.js";
 
 const NODE_ID = "N1";
 const NODE_SYNC_INFO: NodeSyncInfo = {
@@ -234,6 +236,19 @@ class FakeCentral implements CentralClient {
     return this.orientationValue;
   }
 
+  // #427: the session scope the suspend fallback reads instead of writing
+  // an empty-scope summary -- a graph-db table the sidecar does not have.
+  scopeRecord: Omit<SessionScopeRecord, "session_id"> = {
+    node_name: "Proj",
+    write_set: [NODE_ID],
+    read_set: [NODE_ID, "N2"],
+  };
+  scopeReads: string[] = [];
+  async sessionScopeRecord(sessionId: string): Promise<SessionScopeRecord> {
+    this.scopeReads.push(sessionId);
+    return { session_id: sessionId, ...this.scopeRecord };
+  }
+
   // syncInfo/dataSources are real (not stubs): provisionRunCentral's mirror
   // creation calls syncInfo to resolve the node's type/sync_key before it
   // can pick a local path, and dataSources (best-effort, already caught by
@@ -250,8 +265,13 @@ class FakeCentral implements CentralClient {
   async syncInfoBatch(): Promise<NodeSyncInfo[]> {
     throw new Error("not used in this test");
   }
-  async registerFile(): Promise<RegisterFileRecordResult> {
-    throw new Error("not used in this test");
+  // #427: record-only registration -- the suspend fallback registers the
+  // handoff it just wrote, the same way the watcher registers any new file
+  // it finds in a mirror.
+  registered: Array<{ nodeId: string; relPath: string }> = [];
+  async registerFile(nodeId: string, relPath: string): Promise<RegisterFileRecordResult> {
+    this.registered.push({ nodeId, relPath });
+    return { id: ulid(), filename: relPath.split("/").pop() ?? relPath, remote_name: null, remote_path: relPath };
   }
   async registerFiles(): Promise<RegisterFileRecordResult[]> {
     throw new Error("not used in this test");
@@ -470,6 +490,65 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(payload.class, "provider");
     assert.match(payload.message, /spend limit/);
     assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
+  });
+
+  // #427: the sync agent's suspend fallback writes the SAME summary the
+  // personal-workspace path writes -- scope sections filled from central --
+  // and registers the file record-only so it shows under Files at once
+  // instead of waiting for the next sync run's untracked discovery.
+  it("the suspend fallback fills the write/read set from central and registers the handoff", async () => {
+    stubScript([{ end: "completed" }]);
+    fake.registered = [];
+    fake.scopeReads = [];
+    const res = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    assert.equal(res.status, 201);
+    const { session } = (await res.json()) as { session: SessionRow };
+
+    const stored = fake.sessions.get(session.id);
+    assert.equal(stored?.state, "suspended");
+    assert.ok(stored?.handoff_path, "a server-written summary must be recorded on central");
+    assert.deepEqual(fake.scopeReads, [session.id], "the fallback must read the session's scope from central");
+
+    const mirrorRoot = await getMirrorPath(stored!.user_id, NODE_ID);
+    assert.ok(mirrorRoot, "the task's mirror must exist on this device");
+    const content = await readFile(join(mirrorRoot!, stored!.handoff_path!), "utf8");
+    assert.match(content, /## Zápisový rozsah\n- N1/);
+    assert.match(content, /## Čtecí rozsah\n- N1\n- N2/);
+    assert.doesNotMatch(content, /## Zápisový rozsah\n\(žádný\)/);
+    assert.match(content, /Uzel: Proj/);
+
+    assert.deepEqual(
+      fake.registered,
+      [{ nodeId: NODE_ID, relPath: `wip/sessions/${session.id}-handoff.md` }],
+      "the handoff must be registered as a tracked file of the node right away",
+    );
+  });
+
+  // A central that refuses the scope read must not cost the thread its
+  // suspend: the summary is still written, only without its scope sections.
+  it("a failing scope read still suspends the thread with a handoff", async () => {
+    stubScript([{ end: "completed" }]);
+    const realScope = fake.sessionScopeRecord.bind(fake);
+    fake.sessionScopeRecord = async () => {
+      throw new CentralHttpError("scope unavailable", 500);
+    };
+    try {
+      const res = await fetch(`${base}/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+      });
+      const { session } = (await res.json()) as { session: SessionRow };
+      const stored = fake.sessions.get(session.id);
+      assert.equal(stored?.state, "suspended");
+      assert.ok(stored?.handoff_path);
+    } finally {
+      fake.sessionScopeRecord = realScope;
+    }
   });
 
   it("POST /sessions 404s for a draft on a node central does not know about", async () => {
