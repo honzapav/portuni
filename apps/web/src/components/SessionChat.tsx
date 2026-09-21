@@ -20,7 +20,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionState, SessionSummary } from "../types";
-import { fetchSessionSignals, type SessionSignals } from "../api";
 import { hostDisplayName, sessionRowAccess } from "../lib/session-views";
 import {
   decodeRunnerChoice,
@@ -41,7 +40,6 @@ import {
   activitySummary,
   workingPhase,
   WORKING_LABEL,
-  formatRestartHint,
   type ActivityItem,
   type ActivityRow,
   type ChatEvent,
@@ -125,9 +123,6 @@ import {
   type RunnerModel,
 } from "../lib/runners";
 
-// Floor between two restart-indicator reads (see the signals effect).
-const SIGNALS_MIN_INTERVAL_MS = 10_000;
-
 // Spec rule 3 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
 // transcript, notice bar, question panel and composer share one centred
 // column -- 10 % gutters each side, never wider than 768 px. The scroll
@@ -158,7 +153,6 @@ export default function SessionChat({
     state: session.state,
     waiting_since: session.waiting_since,
   });
-  const [signals, setSignals] = useState<SessionSignals | null>(null);
   // The composer's draft belongs to the session, not to this component --
   // see lib/session-drafts.ts. Seeded once per mount (the caller keys this
   // component on session.id, so a different session is a different instance)
@@ -325,47 +319,6 @@ export default function SessionChat({
     // then owned by `live` (updated via onSessionState) from here on.
   }, [session.id, sessionsClient]);
 
-  // Restart indicator (run age, write/read-set size, expansions since the
-  // run started): a REST read, refreshed when something happened on the
-  // session -- a new event arrived, or its state changed -- and at most
-  // once per SIGNALS_MIN_INTERVAL_MS, never on a timer of its own. The
-  // socket replaced polling; the indicator must not bring it back.
-  const lastSignalsAtRef = useRef(0);
-  const signalsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (live.state !== "running") {
-      setSignals(null);
-      return;
-    }
-    let cancelled = false;
-    const refresh = () => {
-      lastSignalsAtRef.current = Date.now();
-      void fetchSessionSignals(session.id)
-        .then((s) => {
-          if (!cancelled) setSignals(s);
-        })
-        .catch(() => undefined);
-    };
-    const schedule = () => {
-      if (signalsTimerRef.current) return;
-      const wait = Math.max(0, SIGNALS_MIN_INTERVAL_MS - (Date.now() - lastSignalsAtRef.current));
-      signalsTimerRef.current = setTimeout(() => {
-        signalsTimerRef.current = null;
-        if (!cancelled) refresh();
-      }, wait);
-    };
-    refresh();
-    const offEvent = sessionsClient.onEvent(session.id, () => schedule());
-    return () => {
-      cancelled = true;
-      offEvent();
-      if (signalsTimerRef.current) {
-        clearTimeout(signalsTimerRef.current);
-        signalsTimerRef.current = null;
-      }
-    };
-  }, [session.id, live.state, sessionsClient]);
-
   // #378: a new run starting is "the thread woken again" -- clear a
   // previous dismissal so the NEXT time this run ends up with nothing
   // live (idle, error, natural completion), the notice shows fresh.
@@ -392,7 +345,6 @@ export default function SessionChat({
   const phase = runIsLive || sentAt !== null ? workingPhase(events, liveRunId, sentAt) : null;
   const showWorking = phase !== null && !streamingText && !streamingReasoning && !isWaiting;
   const chip = sessionStatusChip(live.state, live.waiting_since);
-  const restartHint = signals ? formatRestartHint(signals) : null;
   // #378: an open thread with a run that ended other than by Uzavřít --
   // the next message replays the whole conversation from the summary.
   const showNotice = live.state === "suspended" && !noticeDismissed;
@@ -522,12 +474,6 @@ export default function SessionChat({
           )}
         </div>
       </div>
-
-      {restartHint && (
-        <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-1 text-[11px] text-[var(--color-text-dim)]">
-          <span>{restartHint}</span>
-        </div>
-      )}
 
       {showNotice && (
         <div className={`${THREAD_COLUMN} mt-2 flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] text-[var(--color-text-muted)]`}>
@@ -851,7 +797,11 @@ function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relP
   if (item.kind === "reasoning") {
     return (
       <ChainOfThoughtStep label="Uvažování" icon={BrainIcon}>
-        <Reasoning isStreaming={false} defaultOpen={false}>
+        <Reasoning
+          isStreaming={false}
+          defaultOpen={false}
+          duration={item.durationMs === null ? undefined : Math.max(1, Math.round(item.durationMs / 1000))}
+        >
           <ReasoningTrigger getThinkingMessage={reasoningTriggerMessage} />
           <ReasoningContent>{item.summary}</ReasoningContent>
         </Reasoning>

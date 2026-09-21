@@ -97,7 +97,10 @@ mapping from tool name to verb lives in one table in
 → upraven/vytvořen, `Bash` → příkaz, anything else → its own name). A
 failed call makes the row carry the danger colour and the failed count.
 A group with a single call shows that call's title instead of a
-sentence.
+sentence. The seconds come from the `reasoning` event's `duration_ms`,
+which the adapter measures from the first thinking delta of the block to
+the batched block; a block without a streamed delta carries none and adds
+no time.
 
 Expanded, the group is a `ChainOfThought` whose steps are the calls in
 order, each a `Tool` with the input summary and output excerpt, and the

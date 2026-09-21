@@ -66,9 +66,8 @@ The chat for one thread. Header: status dot, name, status chip
 (`sessionStatusChip`; a draft reads "Nový"), then on the right the context
 ring and "Pokračovat v nové session" / "Uzavřít" as the only header
 actions. Runner, instance, host, model and effort are the composer's, not
-the header's. Below the header: the restart hint line, the
-suspended-thread notice bar, the transcript, the open question's
-confirmation block, the composer.
+the header's. Below the header: the suspended-thread notice bar, the
+transcript, the open question's confirmation block, the composer.
 
 **The thread column.** Transcript content, notice bar, question panel and
 composer share one centred column, `THREAD_COLUMN = "mx-auto
@@ -276,7 +275,9 @@ deduplicates a replay against a frame that raced it.
   `started` and its `completed`/`failed` are one item.
 - **The activity group** (`ActivityGroupRow`) is a `ChainOfThought` whose
   header is `activitySummary(items)`: a sentence from verb counts
-  ("Přečteno 3 soubory · upraveno 1 · 2 příkazy"), a single call's own
+  ("Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval 12 s"; the
+  seconds are `reasoningSeconds(items)`, the reasoning blocks' `duration_ms`
+  added up and rounded, at least 1 s when there is any), a single call's own
   title, the danger colour with the failed count when a call failed. The
   verb table (`TOOL_VERBS`) covers Claude's tool names; anything else shows
   as "N × <tool>". Expanded, one `ChainOfThoughtStep` per item with the
@@ -328,8 +329,10 @@ deduplicates a replay against a frame that raced it.
   `shiki/core` with a curated language list, because `@streamdown/code`
   pulls every shiki grammar into the bundle. Add a language there, not by
   swapping the plugin.
-- Reasoning uses the kit's `Reasoning` with `isStreaming`; the trigger text
-  is Czech (`reasoningTriggerMessage`: "Přemýšlím…" / "Uvažoval N s").
+- Reasoning uses the kit's `Reasoning` with `isStreaming`; a historical
+  block passes its `duration_ms` as the kit's `duration` (seconds). The
+  trigger text is Czech (`reasoningTriggerMessage`: "Přemýšlím…" /
+  "Uvažoval N s" / "Uvažoval několik sekund" without a duration).
 - `react-markdown` / `remark-gfm` stay for `MarkdownPreview` (file
   preview), unrelated to the chat.
 - Bundle rule: the whole kit (radix, shiki, motion, streamdown) must stay
@@ -369,11 +372,6 @@ deduplicates a replay against a frame that raced it.
 - **Continue**: "Pokračovat v nové session" (open thread) and "Navázat"
   (closed row) both call `continueSession`; the caller switches to the
   returned session.
-- **Restart hint**: `formatRestartHint` renders `GET /sessions/:id/signals`
-  ("Běží N min · zápis W · čtení R (+G od startu běhu)"). It is fetched
-  only while `state === "running"`, refreshed when an event or state change
-  arrives and at most once per `SIGNALS_MIN_INTERVAL_MS` (10 s), never on a
-  timer of its own.
 
 ## The composer's rows
 
@@ -421,7 +419,7 @@ Archivováno). "Čeká na mě" overrides "Běží" in both whenever
 
 Pure helpers live in `lib/session-chat.ts` (event types, chip, delta
 buffers and the coalescer, `collapseToolCalls`, `deriveTranscriptRows`,
-`activitySummary`, `workingPhase`, `formatRestartHint`,
+`activitySummary`, `workingPhase`,
 `threadNameFromFirstMessage`), `lib/session-views.ts` (row chip, access
 echo, live overlay, inbox ordering, the node-map folds, `isThreadSession`,
 `nodeRowActive`), `lib/workspace-list.ts` (the node dot, the Stav

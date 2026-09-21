@@ -1,7 +1,7 @@
 // Pure, testable logic for SessionChat (#342, docs/superpowers/specs/
 // 2026-09-12-runner-and-session-design.md "Web: Práce, New task") -- event
 // grouping, status-chip derivation, the open-question panel, streamed-delta
-// buffering, and the restart-indicator hint. Dependency-free (no React) so
+// buffering. Dependency-free (no React) so
 // test/session-chat-helpers.test.ts can exercise it directly against
 // fixture event arrays, same convention as lib/sessions.ts.
 //
@@ -12,7 +12,6 @@
 // wire shape, not an import across that boundary.
 
 import type { SessionState } from "../types";
-import type { SessionSignals } from "../api";
 import { sessionRowChip } from "./session-views";
 
 export type RunEndReason = "completed" | "interrupted" | "suspended" | "error" | "limit" | "host_lost";
@@ -46,7 +45,7 @@ export interface AssistantMessageEvent {
 }
 export interface ReasoningEvent {
   kind: "reasoning";
-  payload: { summary: string };
+  payload: { summary: string; duration_ms?: number };
 }
 export interface ToolCallEvent {
   kind: "tool_call";
@@ -234,18 +233,6 @@ export function collapseToolCalls(events: readonly ChatEvent[]): ChatEvent[] {
   return out;
 }
 
-// --- Restart indicator -------------------------------------------------------
-
-// Null when there is no live run (nothing to report) -- the caller decides
-// whether/where to show this, e.g. only while state === "running".
-export function formatRestartHint(signals: SessionSignals): string | null {
-  if (signals.runAgeMs === null) return null;
-  const minutes = Math.max(0, Math.round(signals.runAgeMs / 60_000));
-  const ageText = minutes < 1 ? "méně než minutu" : `${minutes} min`;
-  const growth = signals.expansionsSinceRunStart > 0 ? ` (+${signals.expansionsSinceRunStart} od startu běhu)` : "";
-  return `Běží ${ageText} · zápis ${signals.writeSetSize} · čtení ${signals.readSetSize}${growth}`;
-}
-
 // --- Naming (#374) -----------------------------------------------------------
 
 const THREAD_NAME_MAX_LENGTH = 60;
@@ -273,7 +260,7 @@ export function threadNameFromFirstMessage(text: string): string {
 // one run folded into one activity group, run bookkeeping into nothing.
 
 export type ActivityItem =
-  | { kind: "reasoning"; seq: number; summary: string }
+  | { kind: "reasoning"; seq: number; summary: string; durationMs: number | null }
   | { kind: "tool"; seq: number; call: ToolCallEvent["payload"] }
   | { kind: "file_change"; seq: number; path: string; op: FileChangeOp };
 
@@ -335,7 +322,7 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
         rows.push({ kind: "answer", key: `e${seq}`, text: event.payload.text });
         break;
       case "reasoning":
-        push({ kind: "reasoning", seq, summary: event.payload.summary });
+        push({ kind: "reasoning", seq, summary: event.payload.summary, durationMs: event.payload.duration_ms ?? null });
         break;
       case "tool_call":
         push({ kind: "tool", seq, call: event.payload });
@@ -384,7 +371,9 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
 // --- The activity sentence ---------------------------------------------------
 // "Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval 12 s". The verb
 // table covers Claude's tool names; another runner's tools fall back to
-// their own names (spec, known gaps).
+// their own names (spec, known gaps). The seconds are the group's
+// reasoning blocks' `duration_ms` added up; a block without one (no
+// delta streamed) counts as reasoning but adds no time.
 
 type ToolVerb = "read" | "edited" | "created" | "command";
 const TOOL_VERBS: Record<string, ToolVerb> = {
@@ -417,14 +406,18 @@ function czechCount(n: number, one: string, few: string, many: string): string {
   return many;
 }
 
-export function activitySummary(
-  items: readonly ActivityItem[],
-  reasoningSeconds?: number | null,
-): { text: string; failed: number } {
+export function reasoningSeconds(items: readonly ActivityItem[]): number {
+  let ms = 0;
+  for (const item of items) if (item.kind === "reasoning" && item.durationMs !== null) ms += item.durationMs;
+  return ms > 0 ? Math.max(1, Math.round(ms / 1000)) : 0;
+}
+
+export function activitySummary(items: readonly ActivityItem[]): { text: string; failed: number } {
+  const seconds = reasoningSeconds(items);
   const tools = items.filter((i): i is Extract<ActivityItem, { kind: "tool" }> => i.kind === "tool");
   const failed = tools.filter((t) => t.call.status === "failed").length;
   // A group with a single call shows that call's title instead of a sentence.
-  if (tools.length === 1 && !reasoningSeconds) {
+  if (tools.length === 1 && !seconds) {
     const t = tools[0];
     const title = t.call.title || t.call.tool;
     return { text: failed ? `${title} · selhal` : title, failed };
@@ -440,7 +433,7 @@ export function activitySummary(
   const cmd = counts.get("command");
   if (cmd) parts.push(`${cmd} ${czechCount(cmd, "příkaz", "příkazy", "příkazů")}`);
   for (const [key, n] of counts) if (key.startsWith("tool:")) parts.push(`${n} × ${key.slice(5)}`);
-  if (reasoningSeconds) parts.push(`uvažoval ${reasoningSeconds} s`);
+  if (seconds) parts.push(`uvažoval ${seconds} s`);
   if (failed) parts.push(`${failed} ${czechCount(failed, "selhal", "selhaly", "selhalo")}`);
   if (parts.length === 0 && items.some((i) => i.kind === "reasoning")) parts.push("uvažoval");
   const text = parts.join(" · ");

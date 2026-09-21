@@ -264,6 +264,10 @@ human verification.
   `"reasoning"` (`domain/runner/types.ts`). The persisted record stays the
   batched `assistant_message` / `reasoning` event; deltas are the live
   preview and are never persisted. Delta frames carry the real `run_id`.
+  The first `thinking_delta` of a block stamps `reasoningStartedAt`; the
+  batched `reasoning` event carries `duration_ms` from that stamp to
+  itself and clears it. A thinking block without a streamed delta has no
+  `duration_ms`.
 - `detect()` runs `claude --version` and `claude auth status`, 5 s timeout
   each.
 - **`context_usage` after every assistant message and every result.**

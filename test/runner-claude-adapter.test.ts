@@ -226,6 +226,7 @@ describe("Claude adapter: message translation", () => {
     assert.deepEqual(kinds, ["reasoning", "assistant_message", "context_usage", "run_ended"]);
     const reasoning = events[0] as Extract<CanonicalEvent, { kind: "reasoning" }>;
     assert.equal(reasoning.payload.summary, "Let me consider the options.");
+    assert.equal(reasoning.payload.duration_ms, undefined, "no delta streamed, so no duration");
   });
 
   it("a failed tool_result translates to a failed tool_call and no file_change", async () => {
@@ -364,7 +365,10 @@ describe("Claude adapter: message translation", () => {
     ];
     const { query } = makeFakeQuery(script);
     const events: (CanonicalEvent | DeltaFrame)[] = [];
-    const adapter = createClaudeAdapter({ query });
+    // The clock advances 1.5 s per read and is read twice: at the first
+    // delta (the second one does not re-stamp) and at the batched block.
+    let t = 1_000_000;
+    const adapter = createClaudeAdapter({ query, now: () => (t += 1_500) });
     const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
     await handle.close();
 
@@ -377,8 +381,9 @@ describe("Claude adapter: message translation", () => {
       ],
     );
 
-    const reasoningEvents = events.filter((e) => "kind" in e && e.kind === "reasoning");
+    const reasoningEvents = events.filter((e) => "kind" in e && e.kind === "reasoning") as Extract<CanonicalEvent, { kind: "reasoning" }>[];
     assert.equal(reasoningEvents.length, 1, "the batched reasoning event must not be duplicated by the deltas");
+    assert.equal(reasoningEvents[0].payload.duration_ms, 1_500, "first delta to the batched block");
   });
 
   it("system/compact_boundary translates to a compaction event", async () => {

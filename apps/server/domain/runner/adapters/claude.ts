@@ -78,6 +78,8 @@ export interface CreateClaudeAdapterDeps {
   closeTimeoutMs?: number;
   closeGraceMs?: number;
   closeTermMs?: number;
+  // Clock for the reasoning duration; tests inject a fake.
+  now?: () => number;
 }
 
 // `signal` lets a caller cancel a still-pending sleep the instant it no
@@ -321,6 +323,9 @@ interface RunTranslationState {
   // context window from the latest result's modelUsage (null until one).
   model: string | null;
   contextMaxTokens: number | null;
+  // When the first thinking delta of the current block arrived; the
+  // batched thinking block reads it as duration_ms and clears it.
+  reasoningStartedAt: number | null;
   pendingToolCalls: Map<string, PendingToolCall>;
   pendingPermissions: Map<string, PendingPermission>;
   ended: boolean;
@@ -347,6 +352,7 @@ function createState(): RunTranslationState {
     latestUsage: null,
     model: null,
     contextMaxTokens: null,
+    reasoningStartedAt: null,
     pendingToolCalls: new Map(),
     pendingPermissions: new Map(),
     ended: false,
@@ -430,6 +436,7 @@ async function translateAssistantMessage(
   cwd: string,
   runId: string,
   sink: EventSink,
+  now: () => number,
 ): Promise<void> {
   const message = msg.message as { model?: unknown; usage?: unknown; content?: unknown };
   if (typeof message.model === "string") state.model = message.model;
@@ -439,7 +446,15 @@ async function translateAssistantMessage(
     if (block.type === "text" && typeof block.text === "string") {
       sink({ kind: "assistant_message", payload: { text: block.text } });
     } else if (block.type === "thinking" && typeof block.thinking === "string") {
-      sink({ kind: "reasoning", payload: { summary: block.thinking } });
+      const startedAt = state.reasoningStartedAt;
+      state.reasoningStartedAt = null;
+      sink({
+        kind: "reasoning",
+        payload:
+          startedAt === null
+            ? { summary: block.thinking }
+            : { summary: block.thinking, duration_ms: Math.max(0, now() - startedAt) },
+      });
     } else if (block.type === "tool_use") {
       const input = (block.input ?? {}) as Record<string, unknown>;
       const category = categorizeTool(block.name);
@@ -520,8 +535,10 @@ function translateUserMessage(
 
 function translateStreamEvent(
   msg: Extract<SDKMessage, { type: "stream_event" }>,
+  state: RunTranslationState,
   runId: string,
   sink: EventSink,
+  now: () => number,
 ): void {
   const event = msg.event;
   if (event.type !== "content_block_delta") return;
@@ -529,6 +546,7 @@ function translateStreamEvent(
   if (delta.type === "text_delta" && typeof delta.text === "string") {
     sink({ type: "delta", run_id: runId, channel: "text", text: delta.text });
   } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+    if (state.reasoningStartedAt === null) state.reasoningStartedAt = now();
     sink({ type: "delta", run_id: runId, channel: "reasoning", text: delta.thinking });
   }
 }
@@ -563,6 +581,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   const closeTimeoutMs = deps.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
   const closeTermMs = deps.closeTermMs ?? DEFAULT_CLOSE_TERM_MS;
+  const now = deps.now ?? Date.now;
   // #376: filled from the first live run's own Query.supportedModels() --
   // null until then (and re-attempted on the next run if that call itself
   // failed), never re-fetched once it holds a real list.
@@ -726,7 +745,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       if (msg.type === "assistant") {
-        await translateAssistantMessage(msg, state, run.cwd, run.runId, sink);
+        await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);
         return;
       }
       if (msg.type === "user") {
@@ -734,7 +753,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       if (msg.type === "stream_event") {
-        translateStreamEvent(msg, run.runId, sink);
+        translateStreamEvent(msg, state, run.runId, sink, now);
         return;
       }
       if (msg.type === "result") {

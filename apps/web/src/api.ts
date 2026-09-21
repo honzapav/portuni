@@ -230,18 +230,6 @@ export function fetchPersistentSessionResumeInfo(
   return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
 }
 
-// The restart indicator (SessionChat header, #342) -- GET /sessions/:id/signals.
-export type SessionSignals = {
-  runAgeMs: number | null;
-  writeSetSize: number;
-  readSetSize: number;
-  expansionsSinceRunStart: number;
-};
-
-export function fetchSessionSignals(id: string): Promise<SessionSignals> {
-  return jsonRequest<SessionSignals>("GET", `/sessions/${encodeURIComponent(id)}/signals`);
-}
-
 // GET /sessions/:id -- the raw session record (apps/server/shared/types.ts's
 // SessionRow, a zod schema server-side, deliberately not imported here so
 // this stays web-safe). Every SessionSummary field except the two the server

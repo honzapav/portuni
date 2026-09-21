@@ -47,7 +47,10 @@ export interface AssistantMessageEvent {
 
 export interface ReasoningEvent {
   kind: "reasoning";
-  payload: { summary: string };
+  // duration_ms: wall time from the first thinking delta of the block to the
+  // batched block itself, measured by the adapter; absent when no delta
+  // streamed (older rows, a runner without partial messages).
+  payload: { summary: string; duration_ms?: number };
 }
 
 export interface ToolCallEvent {

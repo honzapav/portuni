@@ -8,7 +8,6 @@ import {
   appendDelta,
   clearDeltaBuffer,
   collapseToolCalls,
-  formatRestartHint,
   deriveTranscriptRows,
   activitySummary,
   workingPhase,
@@ -121,27 +120,6 @@ describe("collapseToolCalls", () => {
       ev(2, "assistant_message", { text: "b" }),
     ];
     assert.deepEqual(collapseToolCalls(events), events);
-  });
-});
-
-describe("formatRestartHint", () => {
-  it("returns null when there is no live run", () => {
-    assert.equal(formatRestartHint({ runAgeMs: null, writeSetSize: 0, readSetSize: 0, expansionsSinceRunStart: 0 }), null);
-  });
-
-  it("formats age/write/read counts, omitting the growth clause when nothing expanded", () => {
-    const text = formatRestartHint({ runAgeMs: 5 * 60_000, writeSetSize: 2, readSetSize: 10, expansionsSinceRunStart: 0 });
-    assert.equal(text, "Běží 5 min · zápis 2 · čtení 10");
-  });
-
-  it("includes the growth clause when the read set has grown since the run started", () => {
-    const text = formatRestartHint({ runAgeMs: 90_000, writeSetSize: 1, readSetSize: 8, expansionsSinceRunStart: 3 });
-    assert.equal(text, "Běží 2 min · zápis 1 · čtení 8 (+3 od startu běhu)");
-  });
-
-  it("rounds a sub-minute run age to 'méně než minutu'", () => {
-    const text = formatRestartHint({ runAgeMs: 10_000, writeSetSize: 0, readSetSize: 0, expansionsSinceRunStart: 0 });
-    assert.equal(text, "Běží méně než minutu · zápis 0 · čtení 0");
   });
 });
 
@@ -260,13 +238,21 @@ describe("activitySummary", () => {
       call: { tool_use_id: String(i), tool, category: "other" as const, title: tool, input_summary: "{}", status, output_excerpt: null, truncated: false },
     }));
 
-  it("builds the sentence from verb counts", () => {
-    const r = activitySummary(
-      items([["Read", "completed"], ["Grep", "completed"], ["Glob", "completed"], ["Edit", "completed"], ["Bash", "completed"], ["Bash", "completed"]]),
-      12,
-    );
+  const reasoning = (seq: number, durationMs: number | null): ActivityItem => ({ kind: "reasoning", seq, summary: "…", durationMs });
+
+  it("builds the sentence from verb counts; the seconds add up the reasoning blocks' duration_ms", () => {
+    const r = activitySummary([
+      reasoning(100, 7_400),
+      ...items([["Read", "completed"], ["Grep", "completed"], ["Glob", "completed"], ["Edit", "completed"], ["Bash", "completed"], ["Bash", "completed"]]),
+      reasoning(101, 4_900),
+    ]);
     assert.equal(r.text, "Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval 12 s");
     assert.equal(r.failed, 0);
+  });
+
+  it("a reasoning block without a duration adds no seconds; a sub-second one rounds up to 1 s", () => {
+    assert.equal(activitySummary([reasoning(1, null), ...items([["Read", "completed"], ["Read", "completed"]])]).text, "Přečteno 2 soubory");
+    assert.equal(activitySummary([reasoning(1, 300), ...items([["Bash", "completed"]])]).text, "1 příkaz · uvažoval 1 s");
   });
 
   it("a single call shows its title; failures are counted", () => {
@@ -282,7 +268,8 @@ describe("activitySummary", () => {
       activitySummary(items([["mcp__portuni__portuni_get_node", "completed"], ["mcp__portuni__portuni_get_node", "completed"]])).text,
       "2 × mcp__portuni__portuni_get_node",
     );
-    assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x" }]).text, "Uvažoval");
+    assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x", durationMs: null }]).text, "Uvažoval");
+    assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x", durationMs: 2_000 }]).text, "Uvažoval 2 s");
   });
 });
 
