@@ -52,7 +52,7 @@ Requires `admin` scope, same tier as deleting any other entity in this API (acto
 
 Body: `{ org_id: string }`. Sets this instance as the given organization's default — membership is exclusive, so the org is removed from every other instance's `org_defaults` first. Requires `write` scope; 404 for an unknown instance id.
 
-The default is applied when a thread is promoted by its first message (there is no instance picker before then): the server resolves the node's organization and, if that organization has a default instance for the runner it picked, the run starts on it. This works in both kinds of workspace — a personal workspace reads the node's `belongs_to` edge from its own graph db, and a team-workspace device asks the central server for it (`GET /nodes/:id`). When the organization cannot be resolved at all, the run falls back to the runner's own default account and the sidecar logs one line saying so.
+The default is applied when a thread opens: the device resolves the node's organization and, if that organization has a default instance for the runner it picked, writes that pair onto the new draft, where the composer shows it and lets you change it until the first message (`PATCH /sessions/:id` with `runner`/`instance_id`, refused with 409 `SESSION_NOT_DRAFT` afterwards). Promotion then runs the thread on the draft's own pair. This works in both kinds of workspace — a personal workspace reads the node's `belongs_to` edge from its own graph db, and a team-workspace device asks the central server for it (`GET /nodes/:id`). When the organization cannot be resolved at all, the run falls back to the runner's own default account and the sidecar logs one line saying so.
 
 ### DELETE /runners/org-defaults/:orgId
 

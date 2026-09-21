@@ -62,11 +62,28 @@ collapsible right aside.
 
 ### SessionChat (`SessionChat.tsx`)
 
-The chat for one thread. Header: status chip (`sessionStatusChip`), name,
-runner, instance, host and the thread's own model and effort when set;
-"Pokračovat v nové session" and "Uzavřít" as the only header actions. Below
-the header: the restart hint line, the suspended-thread notice bar, the
-transcript, the open question's confirmation block, the composer.
+The chat for one thread. Header: status dot, name, status chip
+(`sessionStatusChip`; a draft reads "Nový"), then on the right the context
+ring and "Pokračovat v nové session" / "Uzavřít" as the only header
+actions. Runner, instance, host, model and effort are the composer's, not
+the header's. Below the header: the restart hint line, the
+suspended-thread notice bar, the transcript, the open question's
+confirmation block, the composer.
+
+**The thread column.** Transcript content, notice bar, question panel and
+composer share one centred column, `THREAD_COLUMN = "mx-auto
+w-[min(80%,768px)]"`: 10 % gutters each side, 768 px at most. The scroll
+container stays full-width so the scrollbar keeps the pane's edge.
+
+**The context ring.** `contextRingState(used, max)` (`lib/context-ring.ts`)
+takes the transcript's latest `context_usage` event when the log is here,
+else the summary's `context_used_tokens` / `context_max_tokens` (a reload
+before the replay). Null means no ring (a draft, a session that never
+reported). Under 80 % the trigger is `text-dim`, from 80 % it is
+`--color-node-process` and "Pokračovat v nové session" becomes the filled
+button. With `max` null the label is a bare count ("12,3 k tokenů"). The
+ring is AI Elements' `context` with the `ai`/`tokenlens` cost estimate
+stripped (`ContextTrigger` shows the `label` prop; `maxTokens` may be null).
 
 Host (#428): both surfaces render `hostDisplayName(session)`
 (`lib/session-views.ts`) -- `host_label` when the server resolved one,
@@ -101,10 +118,26 @@ the card reloads whenever the live-state stamp changes.
 Every open node in Práce lists its running, suspended and draft threads as
 sub-rows, in both arrangements (`NodeTree`'s `TaskRow` under the node row,
 `TaskList`'s grouped rows with `TaskGroupKey` = waiting / running /
-suspended / draft "Nové" / done). The shown thread (`activeSessionId`,
-which is `workspaceOpenSession?.id`) is highlighted. A `TaskRow` renames
-inline on double-click (`onRenameTask`) and has a hover-revealed `×`
-(`onCloseTask`). The node row's `+` (`onNewTask`) opens a new thread.
+suspended / draft "Nové" / done; the grouping lives in
+`lib/workspace-list.ts`). A thread is `session_type = 'interactive_task'`
+with `cli = null` (`isThreadSession`); a hand-opened CLI session has no
+sub-row, Relace keeps it. **One row is active** (`nodeRowActive`): the
+shown thread (`activeSessionId`, which is `workspaceOpenSession?.id`) when
+there is one, otherwise the selected node -- never both. A node row's
+status dot (`summarizeNodeActivity`) appears only while a thread under it
+is running or waiting; suspended and draft threads show none. Metrics:
+node rows 36 px, sub-rows 32 px, 4 px between sub-rows, 8 px between
+nodes, 12 px column padding. A `TaskRow` renames inline on double-click
+(`onRenameTask`) and has a hover-revealed `×` (`onCloseTask`). The node
+row's `+` (`onNewTask`) opens a new thread; `registerSessionStarted` in
+`App.tsx` also requests the new thread by id so it stays in front on a
+node that already had a live one.
+
+The ⌘K node palette (`NodeCommandPalette.tsx`) is shadcn's `CommandDialog`
+on its defaults: a bare 48 px search row with a divider, 40 px rows inset
+8 px with an inset active fill, the type dot in a 20 px icon slot, the type
+name muted on the right (absent under a group heading), and a
+`CommandFooter` of `Kbd` key hints. It finds and opens nodes only.
 
 ## State ownership in `App.tsx`
 
@@ -217,17 +250,44 @@ deduplicates a replay against a frame that raced it.
 - **Live run**: `run_started` sets `liveRunId`, `run_ended` clears it. The
   envelope carries no `run_id`, so the component tracks it from those two
   payloads.
+- **Rows, not events.** `deriveTranscriptRows(events, liveRunId)`
+  (`lib/session-chat.ts`) turns the seq-ordered log into `TranscriptRow`s:
+  `prompt` and `answer` render at full weight (`Message`); every
+  `reasoning`, `tool_call` and `file_change` between two answers of one run
+  folds into one `activity` row; `question`, `compaction` (`Checkpoint`),
+  `handoff` ("Shrnutí uloženo") and `error` keep a small marker; a
+  `run_ended` whose reason is not `completed` is an error row;
+  `run_started`, `run_ended(completed)`, `state_changed` and
+  `context_usage` render nothing. `collapseToolCalls` runs inside, so a
+  `started` and its `completed`/`failed` are one item.
+- **The activity group** (`ActivityGroupRow`) is a `ChainOfThought` whose
+  header is `activitySummary(items)`: a sentence from verb counts
+  ("Přečteno 3 soubory · upraveno 1 · 2 příkazy"), a single call's own
+  title, the danger colour with the failed count when a call failed. The
+  verb table (`TOOL_VERBS`) covers Claude's tool names; anything else shows
+  as "N × <tool>". Expanded, one `ChainOfThoughtStep` per item with the
+  `Tool` card inside; a historical group expands by hand, per mount; the
+  live run's trailing group (`live: true`) stays open on the tool that is
+  running.
+- **The working row** (`WorkingRow`, `workingPhase`): while a run is live
+  (or a send is in flight, `sentAt`) and neither streaming text nor a
+  running tool is on screen, a `Loader` with "Spouštím…" (until
+  `run_started`), "Přemýšlím…" (until the first delta or tool) or
+  "Pokračuji…" (after a tool finished) and a seconds counter. Rule 2 of
+  the v2 spec: a live run with an empty transcript end is a bug.
 - **Deltas**: two `DeltaBuffers` keyed by `run_id`, one for `channel:
   "text"`, one for `channel: "reasoning"`. Each is cleared by its own
   persisted event (`assistant_message` / `reasoning`) and on `run_ended`.
   The persisted event is the record; the delta is only its live preview.
-- `collapseToolCalls` runs before render: a `started` and a `completed` or
-  `failed` sharing `tool_use_id` collapse to the later row in place, one
-  row per invocation.
+  Frames are coalesced first (`createDeltaCoalescer`): buffered per
+  (run, channel) and flushed once per `requestAnimationFrame`, so a burst
+  costs one render; `run_ended` flushes, unmount clears. The desktop
+  bridge forwards frames unchanged.
 - **AI Elements** supply the transcript chrome under
   `src/components/ai-elements/` (`conversation`, `message`, `reasoning`,
   `tool` + `code-block`, `confirmation`, `prompt-input`, `shimmer`,
-  `checkpoint`), pulled with `npx ai-elements@latest add <name>`; each file
+  `checkpoint`, `loader`, `chain-of-thought`, `context`), pulled with
+  `npx ai-elements@latest add <name>`; each file
   keeps its Apache-2.0 header naming the upstream version so a later `add`
   reads as a diff. shadcn/ui primitives live under `src/components/ui`
   (`components.json`, style `radix-nova`, `cn` in `src/lib/utils.ts`).
@@ -301,17 +361,32 @@ deduplicates a replay against a frame that raced it.
   arrives and at most once per `SIGNALS_MIN_INTERVAL_MS` (10 s), never on a
   timer of its own.
 
-## Model and effort picker
+## The composer's rows
 
-The picker lives in the composer's `PromptInputTools`. The model `Select`
-lists `GET /runners/:runner/models` for `session.runner ?? "claude"` (a
-draft has no runner yet, and `claude` is the only registered adapter). The
-effort `Select` appears only when the selected model's `supportsEffort` is
-true and offers that model's own `effortLevels`; its title says it applies
-from the next run. Both are gated on `access.canResume` and both call
-`patchSessionModelEffort` (`PATCH /sessions/:id`), updating the header
-optimistically through `onSessionUpdated`. `SessionSummary` carries `model`
-and `effort`, so no second fetch is needed.
+Two rows under the textarea, inside the composer's border
+(`PromptInputFooter` as a column).
+
+**Row 1 -- the run's choices; send/stop.** The model `Select` lists
+`GET /runners/:runner/models` for `session.runner ?? "claude"`. The effort
+`Select` appears only when the selected model's `supportsEffort` is true
+and offers that model's own `effortLevels`; its title says it applies from
+the next run. Both are gated on `access.canResume` and both call
+`patchSessionModelEffort`, updating the header optimistically through
+`onSessionUpdated`. `SessionSummary` carries `model` and `effort`, so no
+second fetch is needed.
+
+**Row 2 -- where it runs, dimmer.** `runner · instance ▾ · host`. The
+`Select` (`lib/runner-picker.ts`: `runnerPickerGroups`,
+`encodeRunnerChoice`/`decodeRunnerChoice`, `runnerChoiceLabel`) lists every
+logged-in runner from `GET /runners` as a group, its own default instance
+first and every `GET /runners/instances` entry of it after; the draft's
+initial value -- what the organisation's default resolved to at creation
+-- is marked "(výchozí)". It is enabled only while `live.state ===
+"draft"`; a promoted thread renders the pair as a plain label, and a draft
+whose row carries no runner reads "Žádný runner není přihlášený". A change
+calls `patchSessionRunnerInstance` (`PATCH /sessions/:id`, central in a
+team workspace; 409 `SESSION_NOT_DRAFT` once promoted). The host is
+`hostDisplayName(session)`, a label, hidden when unknown.
 
 ## Access echo
 
@@ -331,18 +406,26 @@ Archivováno). "Čeká na mě" overrides "Běží" in both whenever
 ## Helpers and tests
 
 Pure helpers live in `lib/session-chat.ts` (event types, chip, delta
-buffers, `collapseToolCalls`, `formatRestartHint`,
-`threadNameFromFirstMessage`) and `lib/session-views.ts` (row chip, access
-echo, live overlay, inbox ordering, the node-map folds). Both are
-dependency-free and run under the server's `node:test` runner
-(`test/session-chat-helpers.test.ts`, `test/session-views-helpers.test.ts`);
-`apps/web` has no test runner of its own. New logic that can be pure goes
-there first.
+buffers and the coalescer, `collapseToolCalls`, `deriveTranscriptRows`,
+`activitySummary`, `workingPhase`, `formatRestartHint`,
+`threadNameFromFirstMessage`), `lib/session-views.ts` (row chip, access
+echo, live overlay, inbox ordering, the node-map folds, `isThreadSession`,
+`nodeRowActive`), `lib/workspace-list.ts` (the node dot, the Stav
+grouping), `lib/runner-picker.ts` (composer row 2) and
+`lib/context-ring.ts` (the ring). All are dependency-free and run under
+the server's `node:test` runner (`test/session-chat-helpers.test.ts`,
+`test/session-views-helpers.test.ts`, `test/workspace-list-helpers.test.ts`,
+`test/runner-picker.test.ts`, `test/context-ring.test.ts`); `apps/web` has
+no test runner of its own. New logic that can be pure goes there first.
 
 ## Known gaps
 
-- No context-usage ring next to "Pokračovat v nové session": there is no
-  token accounting to drive it.
+- The activity sentence's verb table covers Claude's tool names; another
+  runner's tools show as "N × <tool>" until they are added.
+- The ring's `max` is unknown until the runner's first `result`; until
+  then it shows a bare count.
+- The palette finds nodes only; actions ("Nový uzel", "Nový úkol v…") are
+  a later group.
 
 ## See also
 
