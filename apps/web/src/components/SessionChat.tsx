@@ -21,7 +21,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionState, SessionSummary } from "../types";
 import { fetchSessionSignals, type SessionSignals } from "../api";
-import { hostDisplayName, sessionRowAccess } from "../lib/session-views";
+import { sessionRowAccess } from "../lib/session-views";
 import { useMe } from "../lib/use-me";
 import type { SessionsClient } from "../lib/sessions-client";
 import {
@@ -86,6 +86,12 @@ import { fetchRunnerModels, type RunnerModel } from "../lib/runners";
 
 // Floor between two restart-indicator reads (see the signals effect).
 const SIGNALS_MIN_INTERVAL_MS = 10_000;
+
+// Spec rule 3 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
+// transcript, notice bar, question panel and composer share one centred
+// column -- 10 % gutters each side, never wider than 768 px. The scroll
+// container stays full-width so the scrollbar keeps its edge.
+const THREAD_COLUMN = "mx-auto w-[min(80%,768px)]";
 export default function SessionChat({
   session,
   onSessionUpdated,
@@ -290,7 +296,6 @@ export default function SessionChat({
   const streamingText = liveRunId ? textDeltaBuffers[liveRunId] : undefined;
   const streamingReasoning = liveRunId ? reasoningDeltaBuffers[liveRunId] : undefined;
   const chip = sessionStatusChip(live.state, live.waiting_since);
-  const host = hostDisplayName(session);
   const restartHint = signals ? formatRestartHint(signals) : null;
   // #378: an open thread with a run that ended other than by Uzavřít --
   // the next message replays the whole conversation from the summary.
@@ -364,18 +369,10 @@ export default function SessionChat({
           <span className="truncate text-[13.5px] font-medium text-[var(--color-text)]">{session.name}</span>
           <span className="shrink-0 text-[12px] text-[var(--color-text-dim)]">{chip.label}</span>
         </div>
+        {/* Spec rule 4: facts in the header -- the status, the context ring
+            (phase 4) and the two thread actions. Runner, instance, host,
+            model and effort live in the composer's rows. */}
         <div className="flex shrink-0 items-center gap-1.5 text-[12px] text-[var(--color-text-dim)]">
-          <span>
-            {session.runner ?? "runner neznámý"}
-            {session.instance_id ? ` · ${session.instance_id}` : ""}
-            {/* #428: which host ran it -- the label when central knows one,
-                otherwise the host id. Hidden when neither exists. */}
-            {host ? ` · ${host}` : ""}
-            {/* #375: the thread's own model/effort override, when set --
-                there is no picker yet (phase 5), just the current choice. */}
-            {session.model ? ` · ${session.model}` : ""}
-            {session.effort ? ` · ${session.effort}` : ""}
-          </span>
           {/* #378: Přerušit/Pozastavit are gone -- stopping a turn is the
               composer's own stop button (+ Esc) below, and a run no longer
               needs an explicit suspend, ever. */}
@@ -399,7 +396,7 @@ export default function SessionChat({
       )}
 
       {showNotice && (
-        <div className="mx-4 mt-2 flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] text-[var(--color-text-muted)]">
+        <div className={`${THREAD_COLUMN} mt-2 flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] text-[var(--color-text-muted)]`}>
           <span className="flex-1 leading-[1.5]">
             Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě
             jednou.
@@ -449,7 +446,7 @@ export default function SessionChat({
       )}
 
       <Conversation>
-        <ConversationContent className="gap-5">
+        <ConversationContent className={`${THREAD_COLUMN} gap-5`}>
           {loading ? (
             <Shimmer duration={1.5}>Načítám konverzaci…</Shimmer>
           ) : displayEvents.length === 0 ? (
@@ -482,7 +479,8 @@ export default function SessionChat({
         <QuestionConfirmation question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
       )}
 
-      <div className="border-t border-[var(--color-border)] p-3">
+      <div className="border-t border-[var(--color-border)] py-3">
+        <div className={THREAD_COLUMN}>
         <PromptInput
           onSubmit={(message) => void handlePromptSubmit(message)}
           className="[&_[data-slot=input-group]]:border-[var(--color-border-strong)] [&_[data-slot=input-group]]:bg-[var(--color-surface)] dark:[&_[data-slot=input-group]]:bg-[var(--color-surface)]"
@@ -559,6 +557,7 @@ export default function SessionChat({
             />
           </PromptInputFooter>
         </PromptInput>
+        </div>
       </div>
     </div>
   );
@@ -702,7 +701,8 @@ function QuestionConfirmation({
 }) {
   const [text, setText] = useState("");
   return (
-    <div className="border-t border-[var(--color-border)] px-4 py-2.5">
+    <div className="border-t border-[var(--color-border)]">
+      <div className={`${THREAD_COLUMN} py-2.5`}>
       <Confirmation state="requested" className="border-none bg-[var(--color-surface)] p-0">
         <ConfirmationTitle className="text-[13px] font-medium text-[var(--color-text)]">
           {question.payload.title}
@@ -735,6 +735,7 @@ function QuestionConfirmation({
           )}
         </ConfirmationRequest>
       </Confirmation>
+      </div>
     </div>
   );
 }
