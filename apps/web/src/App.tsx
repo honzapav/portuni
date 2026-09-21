@@ -1015,8 +1015,6 @@ export default function App() {
           onWorkspaceCloseTask={workspaceCloseTask}
           onWorkspaceOpenNode={openNode}
           onWorkspaceCreateNode={workspaceCreateNode}
-          pullNodeCount={pullNodeCount(syncPending.nodes)}
-          onOpenSyncOverview={() => setSyncOverviewOpen(true)}
         />
       )}
 
@@ -1157,6 +1155,7 @@ export default function App() {
         sessionCount={runningSessionCount}
         onOpenWorkspace={openWorkspaceView}
         pendingCount={syncPending.total}
+        pullNodeCount={pullNodeCount(syncPending.nodes)}
         onOpenSyncOverview={() => setSyncOverviewOpen(true)}
         appUpdate={appUpdate}
       />

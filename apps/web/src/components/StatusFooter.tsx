@@ -3,8 +3,9 @@
 // is in flight. Clicking the indicator switches the app to the Settings
 // page so the user can copy URLs / install configs / regenerate token.
 
+import { ArrowDown } from "lucide-react";
 import { useMcpStatus } from "../lib/use-mcp-status";
-import { pluralFiles } from "../lib/plural";
+import { pluralFiles, pluralNodes } from "../lib/plural";
 import type { AppUpdate } from "../lib/updater";
 import { Button } from "@/components/ui/button";
 
@@ -16,6 +17,9 @@ type Props = {
   sessionCount: number;
   onOpenWorkspace: () => void;
   pendingCount: number;
+  // #339: how many nodes hold records the remote watcher registered on
+  // central and this device has not pulled yet. 0 renders nothing.
+  pullNodeCount: number;
   onOpenSyncOverview: () => void;
   appUpdate: AppUpdate;
 };
@@ -29,6 +33,7 @@ export default function StatusFooter({
   sessionCount,
   onOpenWorkspace,
   pendingCount,
+  pullNodeCount,
   onOpenSyncOverview,
   appUpdate,
 }: Props) {
@@ -84,6 +89,18 @@ export default function StatusFooter({
         >
           <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-amber-500" />
           <span className="font-mono">↑ {pendingCount} nesynced</span>
+        </Button>
+      )}
+      {pullNodeCount > 0 && (
+        <Button
+          variant="ghost"
+          size="xs"
+          className={`ml-3 ${PILL}`}
+          title="Remote watcher našel novější verze souborů. Otevřít přehled synchronizace."
+          onClick={onOpenSyncOverview}
+        >
+          <ArrowDown size={12} aria-hidden="true" />
+          <span className="font-mono">{pullNodeCount} {pluralNodes(pullNodeCount)} na remote</span>
         </Button>
       )}
       {updateState.kind === "available" && (
