@@ -106,12 +106,22 @@ after an action.
 
 ### Přehled (`OverviewView.tsx`)
 
+The page is `max-w-[1400px]`: a counter strip on top (`CounterStrip`,
+`overviewCounters` in `lib/overview-view.ts`: Čeká na mě, Běží, Vyžaduje
+pozornost, Nesynchronizováno -- each a button to Práce, Graf or the
+Nesynchronizováno dialog), then the four cards in two columns. Every card
+lists at most `OVERVIEW_ROW_CAP` (8) rows (`capRows`); "Zobrazit všech N"
+in the card's footer expands it in place, per mount.
+
 The Relace card is the caller's own inbox: `sortInboxSessions(running,
 suspended, meId)` orders waiting first, then running, then suspended, and
-keeps only rows with `user_id === meId`. `GET /overview` itself returns
-every session on a node the caller can see; the restriction is the
-client's. Rows are overlaid with live state (`mergeLiveSessionStates`) and
-the card reloads whenever the live-state stamp changes.
+keeps only rows with `user_id === meId`; `splitThreadsAndCli` then keeps
+threads (`isThreadSession`) as rows and puts hand-opened CLI sessions into
+the footer line "K tomu N relací z CLI (N běží)". `GET /overview` itself
+returns every session on a node the caller can see; the restriction is
+the client's. Rows are overlaid with live state (`mergeLiveSessionStates`)
+and the card reloads whenever the live-state stamp changes. The unsynced
+counter is `useSyncPending().pending.total` passed down from `App.tsx`.
 
 ### Sidebar thread rows (`WorkspaceNodeList.tsx`)
 
