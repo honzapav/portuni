@@ -116,6 +116,18 @@ describe("applyLiveSessionState / mergeLiveSessionStates", () => {
     assert.equal(merged.state, "suspended");
   });
 
+  it("overlays the frame's name when it carries one, and leaves the name alone otherwise", () => {
+    const named = { ...base, name: "old" };
+    const withName: Record<string, SessionStateMessage> = {
+      S1: { session_id: "S1", state: "running", waiting_since: null, node_id: "n1", name: "new" },
+    };
+    assert.equal(applyLiveSessionState(named, withName).name, "new");
+    const withoutName: Record<string, SessionStateMessage> = {
+      S1: { session_id: "S1", state: "running", waiting_since: null, node_id: "n1" },
+    };
+    assert.equal(applyLiveSessionState(named, withoutName).name, "old");
+  });
+
   it("returns the input unchanged when no live frame exists for this id", () => {
     const merged = applyLiveSessionState(base, {});
     assert.equal(merged, base);
@@ -419,6 +431,17 @@ describe("mountedChatSessions (#429)", () => {
     const shown = { ...thread("a", "n1"), state: "suspended" as SessionState };
     const byNode = { n1: [thread("a", "n1")] };
     assert.equal(mountedChatSessions(byNode, ["n1"], shown)[0], shown);
+  });
+
+  it("overlays the map copy's name onto the shown thread -- a rename elsewhere reaches the chat header", () => {
+    const shown = { ...thread("a", "n1"), name: "old", model: "opus" };
+    const byNode = { n1: [{ ...thread("a", "n1"), name: "new" }] };
+    const [mounted] = mountedChatSessions(byNode, ["n1"], shown);
+    assert.equal(mounted.name, "new");
+    assert.equal((mounted as { model?: string }).model, "opus", "everything else stays the shown thread's own");
+    // Same name: the shown object itself, so nothing downstream re-renders.
+    const same = { n1: [{ ...thread("a", "n1"), name: "old" }] };
+    assert.equal(mountedChatSessions(same, ["n1"], shown)[0], shown);
   });
 
   it("keeps the same mounted ids when only the shown thread changes -- a switch is not a remount", () => {

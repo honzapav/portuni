@@ -443,6 +443,84 @@ describe("session runtime: close", () => {
     assert.ok(!(await store.getSession(session.id))?.handoff_inline, "Uzavřít does not write a summary");
   });
 
+  // The Relace row, the Práce sidebar and Přehled all learn a state change
+  // only from the live channel's session_state broadcast, which
+  // sessions-ws.ts fires on state_changed/question/run_ended. A close of
+  // a session with NO live run (a suspended one) produces no run_ended, so
+  // without an explicit state_changed nothing in the app ever updates.
+  it("closeSession publishes state_changed to closed for a suspended session (no live run)", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(0, Date.now() + 1);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
+
+    const received: Array<{ kind?: string; payload?: unknown }> = [];
+    const unsubscribe = runtime.subscribe("*", (_sessionId, event) => {
+      received.push(event as { kind?: string; payload?: unknown });
+    });
+    const closed = await runtime.closeSession(session.id);
+    unsubscribe();
+    assert.equal(closed.state, "closed");
+
+    const transitions = received.filter((e) => e.kind === "state_changed");
+    assert.deepEqual(
+      transitions.map((e) => e.payload),
+      [{ from: "suspended", to: "closed", waiting: false }],
+    );
+    const persisted = (await store.listEvents(session.id)).filter((e) => e.kind === "state_changed");
+    assert.ok(
+      persisted.some((e) => (JSON.parse(e.payload) as { to?: string }).to === "closed"),
+      "the transition is in the event log too",
+    );
+  });
+
+  it("renameSession writes the name as custom and publishes a session_changed frame, never an event", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const before = (await store.listEvents(session.id)).length;
+    const received: Array<{ type?: string; session_id?: string }> = [];
+    const unsubscribe = runtime.subscribe("*", (_sessionId, event) => {
+      received.push(event as { type?: string; session_id?: string });
+    });
+    const renamed = await runtime.renameSession(session.id, "  Nový název  ");
+    unsubscribe();
+
+    assert.equal(renamed.name, "Nový název");
+    assert.equal(renamed.name_is_custom, 1);
+    assert.deepEqual(
+      received.filter((e) => e.type === "session_changed"),
+      [{ type: "session_changed", session_id: session.id }],
+    );
+    assert.equal((await store.listEvents(session.id)).length, before, "a rename is not a conversation event");
+    await assert.rejects(runtime.renameSession(session.id, "   "), /must not be empty/);
+  });
+
+  it("closeSession publishes state_changed to closed for a live run as well", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const received: Array<{ kind?: string; payload?: unknown }> = [];
+    const unsubscribe = runtime.subscribe("*", (_sessionId, event) => {
+      received.push(event as { kind?: string; payload?: unknown });
+    });
+    await runtime.closeSession(session.id);
+    unsubscribe();
+
+    const transitions = received.filter((e) => e.kind === "state_changed").map((e) => e.payload);
+    assert.deepEqual(transitions, [{ from: "running", to: "closed", waiting: false }]);
+  });
+
   it("continueSession closes this session (no summary written on it) and starts a new one, seeded", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);

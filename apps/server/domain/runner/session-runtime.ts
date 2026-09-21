@@ -141,7 +141,15 @@ export interface RunnerRegistryLookup {
 // live channel, api/sessions-ws.ts, needs this to reconcile a buffered live
 // event against the replay-from-`after` it raced) -- a delta never persists,
 // so it never gets one.
-export type PublishedEvent = (CanonicalEvent & { seq: number }) | DeltaFrame;
+// A row change that is not an event of the conversation (a rename): never
+// persisted, never replayed, only fans out as the live channel's
+// session_state so every window's sidebar, Relace tab and chat header
+// pick the new row up at once.
+export interface SessionChangedFrame {
+  type: "session_changed";
+  session_id: string;
+}
+export type PublishedEvent = (CanonicalEvent & { seq: number }) | DeltaFrame | SessionChangedFrame;
 export type RuntimeListener = (sessionId: string, event: PublishedEvent) => void;
 
 export interface CreateSessionRuntimeDeps {
@@ -239,6 +247,9 @@ export interface SessionRuntime {
   // implementation"). `effort` has no live setter; it applies from the
   // next run only.
   setModelAndEffort(sessionId: string, patch: SetModelAndEffortInput): Promise<SessionRow>;
+  // Renames the thread (name_is_custom, so handoff-title enrichment at
+  // suspend never overwrites it) and publishes a session_changed frame.
+  renameSession(sessionId: string, name: string): Promise<SessionRow>;
   closeSession(sessionId: string): Promise<SessionRow>;
   // #378: closes THIS session (summary written from what's in the log,
   // used to seed the new one -- not from a fresh suspend, since Uzavřít-
@@ -818,6 +829,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return row;
   }
 
+  async function renameSession(sessionId: string, name: string): Promise<SessionRow> {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) throw new Error("renameSession: name must not be empty");
+    const row = await store.patchSession(sessionId, { name: trimmed, name_is_custom: true });
+    publish(sessionId, { type: "session_changed", session_id: sessionId });
+    return row;
+  }
+
   // #378: the only action that actually ends a live run's process (besides
   // continueSession and the idle sweep) -- close(), not interrupt(), so the
   // run genuinely stops instead of just cancelling the current turn.
@@ -832,7 +851,19 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await live.handle.close();
       await drain(sessionId);
     }
-    return store.patchSession(sessionId, { state: "closed" });
+    const before = await store.getSession(sessionId);
+    const closed = await store.patchSession(sessionId, { state: "closed" });
+    // Published so the live channel's session_state broadcast fires
+    // (api/sessions-ws.ts reacts only to state_changed/question/run_ended):
+    // a suspended session has no live run, so its close produces no
+    // run_ended and without this the Relace row, the Práce sidebar and
+    // Přehled would keep showing it as suspended until an unrelated refetch.
+    if (before && before.state !== "closed") {
+      await appendAndPublish(sessionId, null, [
+        { kind: "state_changed", payload: { from: before.state, to: "closed", waiting: false } },
+      ]);
+    }
+    return closed;
   }
 
   // #378: ends an idle live run (no activity for longer than idleMs) the
@@ -994,6 +1025,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     answer,
     interrupt,
     setModelAndEffort,
+    renameSession,
     closeSession,
     continueSession,
     pendingQuestion,

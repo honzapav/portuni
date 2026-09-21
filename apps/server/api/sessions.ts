@@ -7,6 +7,8 @@
 //   PATCH /sessions/:id                    write   -> rename, or (central record half, #323)
 //                                                      state/waiting_since/handoff_* (owner only)
 //   POST  /sessions/:id/state              write   -> state transition (owner or manage)
+//   POST  /sessions/:id/rename             write   -> rename through the runtime (owner only);
+//                                                      publishes the change to the live channel
 //   GET   /sessions/:id/resume-info        read    -> conversation-resumable? handoff changed?
 //   GET   /sessions/:id/signals            read    -> restart indicator (run age, read/write set)
 //   GET   /sessions/:id/scope              read    -> central record half (#427): the session's
@@ -383,6 +385,34 @@ export async function handleSetSessionModel(
     respondJson(res, 200, updated);
   } catch (err) {
     respondError(res, `POST /sessions/${sessionId}/model`, err);
+  }
+}
+
+// The thread's rename. A device-local route (device-local-routes.json) so
+// it goes through the session runtime, which publishes the change to the
+// live channel; a bare PATCH /sessions/:id writes the row and nothing else
+// learns of it. Owner-only, same tier the PATCH rename has.
+export const RenameSessionBody = z.object({
+  name: z.string().trim().min(1, "name is required"),
+});
+
+export async function handleRenameSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
+    if (!existing) return;
+    const body = await parseJsonBody(req, res, RenameSessionBody);
+    if (!body) return;
+    const updated = await getSessionRuntime().renameSession(sessionId, body.name);
+    await logAudit(identity.userId, "session_rename", "session", sessionId, { from: existing.name, to: updated.name });
+    respondJson(res, 200, await toSummary(updated));
+  } catch (err) {
+    respondError(res, `POST /sessions/${sessionId}/rename`, err);
   }
 }
 

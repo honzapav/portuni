@@ -660,6 +660,36 @@ describe("agent-router: sessions/tasks", () => {
     await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
   });
 
+  it("POST /sessions/:id/rename writes the record on central through this device's runtime", async () => {
+    stubScript([{ wait: "message" }]);
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+
+    const res = await fetch(`${base}/sessions/${session.id}/rename`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Nový název" }),
+    });
+    assert.equal(res.status, 200);
+    const patched = (await res.json()) as SessionRow;
+    assert.equal(patched.name, "Nový název");
+    assert.equal(fake.sessions.get(session.id)?.name, "Nový název", "central holds the record half");
+    assert.equal(fake.sessions.get(session.id)?.name_is_custom, 1);
+
+    const empty = await fetch(`${base}/sessions/${session.id}/rename`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "  " }),
+    });
+    assert.equal(empty.status, 400);
+
+    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+  });
+
   // Effort has no live setter in the SDK, in either kind of workspace --
   // the route is still the one that writes it on central.
   it("POST /sessions/:id/model with effort alone writes central and leaves the live run alone", async () => {

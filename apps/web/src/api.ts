@@ -20,7 +20,6 @@ import type {
   DirectoryGroup,
   AccountUser,
   UserAdmin,
-  SessionState,
   SessionSummary,
   SessionResumeInfo,
   SessionRunRow,
@@ -182,15 +181,26 @@ export function fetchNodePersistentSessions(
   );
 }
 
+// POST /sessions/:id/rename -- through the session runtime, which publishes
+// the new name to the live channel so the Práce sidebar, the Relace tab and
+// the chat header in every window update at once; the bare PATCH writes the
+// row and nothing else learns of it. Device-local, so it works in a team
+// workspace too.
 export function renamePersistentSession(id: string, name: string): Promise<SessionSummary> {
-  return jsonRequest<SessionSummary>("PATCH", `/sessions/${encodeURIComponent(id)}`, { name });
+  return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/rename`, { name });
 }
 
-export function transitionPersistentSessionState(
-  id: string,
-  state: SessionState,
-): Promise<SessionSummary> {
-  return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/state`, { state });
+// POST /sessions/:id/close -- the Relace tab's "Uzavřít". The runtime's
+// own close (ends a live run, publishes the state change so every window's
+// live map, the Práce sidebar and Přehled update), not the bare
+// POST /sessions/:id/state column write, which no runtime ever sees and in
+// a team workspace would land on the central server, where no run lives.
+// A plain REST wrapper (not sessionsClient) for the same reason as
+// continueSession below: the Relace tab has no live-channel client.
+export function closePersistentSession(id: string): Promise<SessionSummary> {
+  return jsonRequest<{ session: SessionSummary }>("POST", `/sessions/${encodeURIComponent(id)}/close`).then(
+    (r) => r.session,
+  );
 }
 
 // #375/#376/#426: sets the thread's own model/effort override. Its own

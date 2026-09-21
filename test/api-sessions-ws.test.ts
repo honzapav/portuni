@@ -336,6 +336,31 @@ describe("GET /sessions/ws", () => {
     await waitClose(ws);
   });
 
+  test("a rename through the runtime fans out as session_state carrying the new name", async () => {
+    installAdapter([{ wait: "message" }]);
+    const runtime = currentRuntime;
+    const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
+
+    const token = await tokenFor(U1);
+    const ws = openSocket(base, token);
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor(
+      (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
+    );
+
+    await runtime.renameSession(session.id, "Přejmenováno");
+    const update = await collector.waitFor(
+      (f) =>
+        f.type === "session_state" &&
+        (f.payload as { session_id: string; name?: string }).session_id === session.id &&
+        (f.payload as { name?: string }).name === "Přejmenováno",
+    );
+    assert.equal((update.payload as { state: string }).state, "running");
+    ws.close();
+    await waitClose(ws);
+  });
+
   test("a second user who can see the node gets session_state and event frames but an error reply to message", async () => {
     installAdapter([{ wait: "message" }]);
     const runtime = currentRuntime;

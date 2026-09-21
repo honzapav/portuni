@@ -7,15 +7,15 @@
 // pattern as DetailPane.access.tsx's AccessSection.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, Pencil, X } from "lucide-react";
+import { Check, CircleX, FileText, MessageSquare, Pencil, Redo2, X } from "lucide-react";
 import type { SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
 import {
   continueSession,
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
   fetchUsers,
+  closePersistentSession,
   renamePersistentSession,
-  transitionPersistentSessionState,
 } from "../api";
 import {
   hostDisplayName,
@@ -168,7 +168,7 @@ export function SessionsSection({
   const [closeConfirm, setCloseConfirm] = useState<SessionSummary | null>(null);
   const handleClose = async (id: string) => {
     try {
-      const updated = await transitionPersistentSessionState(id, "closed");
+      const updated = await closePersistentSession(id);
       updateOne(updated);
     } catch (e) {
       setError(String(e));
@@ -341,8 +341,15 @@ function SessionRow({
   const chip = sessionRowChip(session.state, session.waiting_since);
   const host = hostDisplayName(session);
 
+  // Row actions are icon buttons on the right of the title line, shown on
+  // hover or keyboard focus (the list stays quiet); rename is one of them.
+  // Uzavřít, the one irreversible action, sits last behind a separator.
+  const showChat = (session.state === "running" || session.state === "suspended") && !!onOpenChat;
+  const showContinue = session.state === "closed" && access.canResume;
+  const showClose = (session.state === "running" || session.state === "suspended") && access.canPauseOrClose;
+
   return (
-    <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">
+    <div className="group rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">
       <div className="flex items-center gap-2">
         <span
           className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${chip.pulsing ? "animate-pulse" : ""}`}
@@ -354,47 +361,75 @@ function SessionRow({
             <Input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void save();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setDraft(session.name);
+                  setEditing(false);
+                }
+              }}
               autoFocus
               className="min-w-0 flex-1"
             />
-            <Button
-              variant="ghost"
-              size="icon-xs"
+            <RowIcon
               onClick={() => void save()}
               disabled={saving}
               title="Uložit název"
               className="text-[var(--color-accent)]"
             >
               <Check />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
+            </RowIcon>
+            <RowIcon
               onClick={() => {
                 setDraft(session.name);
                 setEditing(false);
               }}
               disabled={saving}
               title="Zrušit"
-              className="text-muted-foreground"
             >
               <X />
-            </Button>
+            </RowIcon>
           </>
         ) : (
           <>
             <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--color-text)]">
               {session.name}
             </span>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setEditing(true)}
-              title="Přejmenovat"
-              className="shrink-0 text-muted-foreground"
-            >
-              <Pencil />
-            </Button>
+            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+              {showChat && (
+                <RowIcon onClick={() => onOpenChat!(session.id)} title="Otevřít chat">
+                  <MessageSquare />
+                </RowIcon>
+              )}
+              {onOpenHandoff && (
+                <RowIcon onClick={onOpenHandoff} title="Zobrazit handoff">
+                  <FileText />
+                </RowIcon>
+              )}
+              <RowIcon onClick={() => setEditing(true)} title="Přejmenovat">
+                <Pencil />
+              </RowIcon>
+              {(showContinue || showClose) && (
+                <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
+              )}
+              {showContinue && (
+                <RowIcon onClick={onContinue} title="Navázat" className="text-[var(--color-accent)]">
+                  <Redo2 />
+                </RowIcon>
+              )}
+              {showClose && (
+                <RowIcon
+                  onClick={onClose}
+                  title="Uzavřít"
+                  className="hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
+                >
+                  <CircleX />
+                </RowIcon>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -432,34 +467,33 @@ function SessionRow({
           </span>
         )}
       </div>
-
-      <div className="mt-2 flex flex-wrap gap-2">
-        {(session.state === "running" || session.state === "suspended") && onOpenChat && (
-          <RowButton onClick={() => onOpenChat(session.id)}>Otevřít chat</RowButton>
-        )}
-        {onOpenHandoff && <RowButton onClick={onOpenHandoff}>Zobrazit handoff</RowButton>}
-        {session.state === "closed" && access.canResume && (
-          <RowButton onClick={onContinue}>Navázat</RowButton>
-        )}
-        {(session.state === "running" || session.state === "suspended") && access.canPauseOrClose && (
-          <RowButton onClick={onClose}>Uzavřít</RowButton>
-        )}
-      </div>
     </div>
   );
 }
 
-function RowButton({
+function RowIcon({
   onClick,
   children,
   disabled,
+  title,
+  className,
 }: {
   onClick: () => void;
   children: React.ReactNode;
   disabled?: boolean;
+  title: string;
+  className?: string;
 }) {
   return (
-    <Button variant="outline" size="sm" onClick={onClick} disabled={disabled}>
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      className={`text-muted-foreground ${className ?? ""}`}
+    >
       {children}
     </Button>
   );

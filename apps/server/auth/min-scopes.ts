@@ -241,6 +241,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/sessions\/[^/]+\/messages$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/questions\/[^/]+$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/model$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/rename$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/interrupt$/.test(pathname) && m === "POST") return "write";
   // #378: closes this session and starts a new one on the same node.
   if (/^\/sessions\/[^/]+\/continue$/.test(pathname) && m === "POST") return "write";

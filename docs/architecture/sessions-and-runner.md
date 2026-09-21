@@ -64,8 +64,31 @@ Specs: `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`,
 | `closed` | `archived` |
 
 `closed` is reached only by the user's explicit Uzavřít (or `continue`, see
-below) and `archived` only by the auto-archive sweep. Everything else that
-ends a run suspends.
+below) and `archived` only by the auto-archive sweep
+(`sweepArchivedSessionsOnBoot` in `boot/session-sweep.ts`, run at boot of the
+process that owns the graph db: closed for more than 30 days moves to
+archived, an archived session's event log is dropped after 90 days; the
+row, runs, audit and handoff stay). Everything else that ends a run
+suspends.
+
+Every Uzavřít goes through `SessionRuntime.closeSession` (the socket's
+`close` frame from the chat header, `POST /sessions/:id/close` from the
+Relace tab): it ends a live run and appends `state_changed {to: "closed"}`,
+which is what fires the live channel's `session_state` broadcast; a
+suspended session has no run and so no `run_ended`, so without this event
+the Relace row, the Práce sidebar and Přehled would keep it as suspended
+until an unrelated refetch. `POST /sessions/:id/state` is a bare column
+transition with no runtime behind it and is not device-local; the web never
+uses it to close.
+
+A rename is `POST /sessions/:id/rename`, device-local, through
+`SessionRuntime.renameSession`: it writes `name` (`name_is_custom`) and
+publishes a `session_changed` frame, which is never persisted or replayed
+and only makes `sessions-ws.ts` broadcast `session_state`; that frame
+carries `name`, and the web overlays it (`applyLiveSessionState`) so the
+Práce sidebar, the Relace tab and the chat header in every window show the
+new name at once. The plain-rename branch of `PATCH /sessions/:id` remains
+the central record half only.
 
 ## Access tiers
 
