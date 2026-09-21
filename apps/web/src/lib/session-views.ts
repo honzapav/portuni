@@ -174,12 +174,30 @@ export function mergeSessionIntoNodeMap<T extends NodeSession>(
 // One node's refetched list replacing whatever was there. Restricted to
 // what the sidebar shows (a thread still open), same filter the
 // open-node-set fetch applies.
-export function applyNodeSessionsRefetch<T extends NodeSession>(
+export function applyNodeSessionsRefetch<T extends NodeSession & { session_type: string; cli: string | null }>(
   prev: Readonly<Record<string, T[]>>,
   nodeId: string,
   sessions: readonly T[],
 ): Record<string, T[]> {
-  return { ...prev, [nodeId]: sessions.filter((s) => s.state === "running" || s.state === "suspended") };
+  return {
+    ...prev,
+    [nodeId]: sessions.filter((s) => isThreadSession(s) && (s.state === "running" || s.state === "suspended")),
+  };
+}
+
+// ---------------------------------------------------------------- v2
+
+// v2 rule 7 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
+// a thread is a persistent task session the app opened; a hand-opened CLI
+// session (cli set) has no sub-row in Práce, Relace lists it.
+export function isThreadSession(s: { session_type: string; cli: string | null }): boolean {
+  return s.session_type === "interactive_task" && s.cli === null;
+}
+
+// v2 rule 6: the accent bar and the surface-2 fill mark exactly one row --
+// the open thread when there is one, otherwise the selected node.
+export function nodeRowActive(nodeId: string, selectedNodeId: string | null, activeSessionId: string | null): boolean {
+  return activeSessionId === null && selectedNodeId === nodeId;
 }
 
 // A locally-tracked draft (#374 -- the server lists none) is forgotten
