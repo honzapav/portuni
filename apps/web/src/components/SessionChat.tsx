@@ -62,7 +62,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { BrainIcon, X } from "lucide-react";
+import { BrainIcon, Check, CircleX, Pencil, Redo2, X } from "lucide-react";
 import {
   Conversation,
   ConversationContent,
@@ -113,7 +113,7 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
-import { patchSessionModelEffort, patchSessionRunnerInstance } from "../api";
+import { patchSessionModelEffort, patchSessionRunnerInstance, renamePersistentSession } from "../api";
 import {
   fetchRunnerModels,
   listRunnerInstances,
@@ -169,6 +169,38 @@ export default function SessionChat({
   // that asks -- confirmed via this dialog, not window.confirm (a no-op in
   // the Tauri webview).
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  // Inline rename in the header (same affordance as the Relace row): the
+  // rename goes through POST /sessions/:id/rename, whose live frame is what
+  // updates the sidebar and the Relace tab; onSessionUpdated only refreshes
+  // the shown thread's own object.
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(session.name);
+  const [renameSaving, setRenameSaving] = useState(false);
+  const startRename = () => {
+    setNameDraft(session.name);
+    setRenaming(true);
+  };
+  const cancelRename = () => {
+    setNameDraft(session.name);
+    setRenaming(false);
+  };
+  const saveRename = async () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === session.name) {
+      cancelRename();
+      return;
+    }
+    setRenameSaving(true);
+    try {
+      const updated = await renamePersistentSession(session.id, trimmed);
+      onSessionUpdated(updated);
+      setRenaming(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRenameSaving(false);
+    }
+  };
   // The notice bar (#378, "the process was ended, the next message
   // replays the conversation") is dismissible per-occurrence: dismissing
   // hides THIS bar, but the next run that ends up here (liveRunId flips
@@ -413,64 +445,120 @@ export default function SessionChat({
   return (
     <div className="flex h-full min-w-0 flex-col">
       <div className="flex min-h-[42px] items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-1.5">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <span
             className={`inline-flex h-2 w-2 shrink-0 rounded-full ${chip.pulsing ? "animate-pulse" : ""}`}
             style={{ background: chip.color }}
           />
-          <span className="truncate text-[13.5px] font-medium text-[var(--color-text)]">{session.name}</span>
-          <span className="shrink-0 text-[12px] text-[var(--color-text-dim)]">{chip.label}</span>
+          {renaming ? (
+            <Input
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void saveRename();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelRename();
+                }
+              }}
+              autoFocus
+              disabled={renameSaving}
+              className="h-7 min-w-0 flex-1 text-[13.5px]"
+            />
+          ) : (
+            <>
+              <span className="truncate text-[13.5px] font-medium text-[var(--color-text)]">{session.name}</span>
+              <span className="shrink-0 text-[12px] text-[var(--color-text-dim)]">{chip.label}</span>
+            </>
+          )}
         </div>
         {/* Spec rule 4: facts in the header -- the status, the context ring
-            (phase 4) and the two thread actions. Runner, instance, host,
-            model and effort live in the composer's rows. */}
-        <div className="flex shrink-0 items-center gap-1.5 text-[12px] text-[var(--color-text-dim)]">
-          {ring && (
-            <Context
-              usedTokens={ring.used}
-              maxTokens={ring.max}
-              label={ring.label}
-              usage={
-                liveUsage
-                  ? { inputTokens: liveUsage.input, cachedInputTokens: liveUsage.cached, outputTokens: liveUsage.output }
-                  : undefined
-              }
-            >
-              <ContextTrigger
-                className="h-7 gap-1.5 px-1.5 text-[12px]"
-                style={{ color: ring.warn ? "var(--color-node-process)" : "var(--color-text-dim)" }}
-                title="Využití kontextového okna"
-              />
-              <ContextContent align="end">
-                <ContextContentHeader />
-                {liveUsage && (
-                  <ContextContentBody className="space-y-1">
-                    <ContextInputUsage />
-                    <ContextCacheUsage />
-                    <ContextOutputUsage />
-                  </ContextContentBody>
-                )}
-              </ContextContent>
-            </Context>
-          )}
-          {/* #378: Přerušit/Pozastavit are gone -- stopping a turn is the
-              composer's own stop button (+ Esc) below, and a run no longer
-              needs an explicit suspend, ever. */}
-          {(live.state === "running" || live.state === "suspended") && access.canResume && (
-            <HeaderButton
-              disabled={actionPending !== null}
-              onClick={() => void handleContinue()}
-              // From 80 % of the window the fresh session is the advice,
-              // so the button steps up to the filled variant.
-              variant={ring?.warn ? "default" : "outline"}
-            >
-              {actionPending === "continue" ? "Pokračuji…" : "Pokračovat v nové session"}
-            </HeaderButton>
-          )}
-          {(live.state === "running" || live.state === "suspended") && access.canPauseOrClose && (
-            <HeaderButton disabled={actionPending !== null} onClick={() => setCloseConfirmOpen(true)}>
-              {actionPending === "close" ? "Zavírám…" : "Uzavřít"}
-            </HeaderButton>
+            (phase 4) and the thread actions. Runner, instance, host, model
+            and effort live in the composer's rows. Actions are icons on the
+            right, the same set and order as a Relace row: rename, then
+            Pokračovat v nové session, then Uzavřít behind a separator;
+            always visible, this is one line, not a list. #378:
+            Přerušit/Pozastavit are gone -- stopping a turn is the
+            composer's own stop button (+ Esc) below, and a run no longer
+            needs an explicit suspend, ever. */}
+        <div className="flex shrink-0 items-center gap-0.5 text-[12px] text-[var(--color-text-dim)]">
+          {renaming ? (
+            <>
+              <HeaderIcon
+                onClick={() => void saveRename()}
+                disabled={renameSaving}
+                title="Uložit název"
+                className="text-[var(--color-accent)]"
+              >
+                <Check />
+              </HeaderIcon>
+              <HeaderIcon onClick={cancelRename} disabled={renameSaving} title="Zrušit">
+                <X />
+              </HeaderIcon>
+            </>
+          ) : (
+            <>
+              {ring && (
+                <Context
+                  usedTokens={ring.used}
+                  maxTokens={ring.max}
+                  label={ring.label}
+                  usage={
+                    liveUsage
+                      ? { inputTokens: liveUsage.input, cachedInputTokens: liveUsage.cached, outputTokens: liveUsage.output }
+                      : undefined
+                  }
+                >
+                  <ContextTrigger
+                    className="mr-1 h-7 gap-1.5 px-1.5 text-[12px]"
+                    style={{ color: ring.warn ? "var(--color-node-process)" : "var(--color-text-dim)" }}
+                    title="Využití kontextového okna"
+                  />
+                  <ContextContent align="end">
+                    <ContextContentHeader />
+                    {liveUsage && (
+                      <ContextContentBody className="space-y-1">
+                        <ContextInputUsage />
+                        <ContextCacheUsage />
+                        <ContextOutputUsage />
+                      </ContextContentBody>
+                    )}
+                  </ContextContent>
+                </Context>
+              )}
+              {access.canResume && (
+                <HeaderIcon onClick={startRename} disabled={actionPending !== null} title="Přejmenovat">
+                  <Pencil />
+                </HeaderIcon>
+              )}
+              {(live.state === "running" || live.state === "suspended") && access.canResume && (
+                <HeaderIcon
+                  onClick={() => void handleContinue()}
+                  disabled={actionPending !== null}
+                  title={actionPending === "continue" ? "Pokračuji…" : "Pokračovat v nové session"}
+                  // From 80 % of the window the fresh session is the advice,
+                  // so the icon steps up to the accent colour.
+                  className={ring?.warn ? "text-[var(--color-accent)]" : undefined}
+                >
+                  <Redo2 />
+                </HeaderIcon>
+              )}
+              {(live.state === "running" || live.state === "suspended") && access.canPauseOrClose && (
+                <>
+                  <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
+                  <HeaderIcon
+                    onClick={() => setCloseConfirmOpen(true)}
+                    disabled={actionPending !== null}
+                    title={actionPending === "close" ? "Zavírám…" : "Uzavřít"}
+                    className="hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
+                  >
+                    <CircleX />
+                  </HeaderIcon>
+                </>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -684,19 +772,29 @@ export default function SessionChat({
   );
 }
 
-function HeaderButton({
+function HeaderIcon({
   onClick,
   disabled,
+  title,
+  className,
   children,
-  variant = "outline",
 }: {
   onClick: () => void;
   disabled?: boolean;
+  title: string;
+  className?: string;
   children: React.ReactNode;
-  variant?: "outline" | "default";
 }) {
   return (
-    <Button variant={variant} size="sm" onClick={onClick} disabled={disabled}>
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      className={`text-muted-foreground ${className ?? ""}`}
+    >
       {children}
     </Button>
   );
