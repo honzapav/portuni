@@ -46,7 +46,7 @@ import { logAudit } from "../infra/audit.js";
 import { toSummary } from "./sessions.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { DeltaFrame, QuestionDecision } from "../domain/runner/types.js";
-import type { PublishedEvent } from "../domain/runner/session-runtime.js";
+import type { PublishedEvent, SessionChangedFrame } from "../domain/runner/session-runtime.js";
 import type { SessionRow } from "../shared/types.js";
 
 const PING_INTERVAL_MS = 15_000;
@@ -207,7 +207,13 @@ async function canSeeSession(identity: RequestIdentity, row: Pick<SessionRow, "n
 function sessionStateFrame(row: SessionRow): { type: "session_state"; payload: unknown } {
   return {
     type: "session_state",
-    payload: { session_id: row.id, state: row.state, waiting_since: row.waiting_since, node_id: row.node_id },
+    payload: {
+      session_id: row.id,
+      state: row.state,
+      waiting_since: row.waiting_since,
+      node_id: row.node_id,
+      name: row.name,
+    },
   };
 }
 
@@ -215,10 +221,17 @@ function isDeltaFrame(event: PublishedEvent): event is DeltaFrame {
   return "type" in event && event.type === "delta";
 }
 
+function isSessionChangedFrame(event: PublishedEvent): event is SessionChangedFrame {
+  return "type" in event && event.type === "session_changed";
+}
+
 // A live-published event that reached us via the runtime's own subscribe()
 // -- canonical events carry the seq appendAndPublish attached; a delta
 // never persists and never carries one.
-function eventFrame(sessionId: string, event: PublishedEvent): { type: string; payload: unknown } {
+function eventFrame(
+  sessionId: string,
+  event: Exclude<PublishedEvent, SessionChangedFrame>,
+): { type: string; payload: unknown } {
   if (isDeltaFrame(event)) {
     return {
       type: "delta",
@@ -248,6 +261,10 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
   function ensureGlobalSubscription(): void {
     if (globalUnsubscribe) return;
     globalUnsubscribe = deps.runtime().subscribe("*", (sessionId, event) => {
+      if (isSessionChangedFrame(event)) {
+        void broadcastSessionState(sessionId);
+        return;
+      }
       if (isDeltaFrame(event)) return;
       if (event.kind === "state_changed" || event.kind === "question" || event.kind === "run_ended") {
         void broadcastSessionState(sessionId);
@@ -318,6 +335,9 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     let buffering = true;
     const buffer: PublishedEvent[] = [];
     const unsubscribe = runtime.subscribe(sessionId, (_sid, event) => {
+      // A rename is not part of the conversation; it reaches every socket
+      // as session_state through the global subscription instead.
+      if (isSessionChangedFrame(event)) return;
       if (buffering) buffer.push(event);
       else send(conn.ws, eventFrame(sessionId, event));
     });
@@ -337,6 +357,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
 
     buffering = false;
     for (const event of buffer) {
+      if (isSessionChangedFrame(event)) continue;
       if ("seq" in event && event.seq <= lastReplayedSeq) continue;
       send(conn.ws, eventFrame(sessionId, event));
     }

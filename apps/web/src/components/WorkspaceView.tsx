@@ -25,7 +25,7 @@ import { ChevronLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
-import { isChatSessionState } from "../lib/session-views";
+import { shownChatSessionId } from "../lib/session-views";
 import type { FileEditor } from "../lib/use-file-editor";
 import { scopedKey } from "../lib/workspace-storage";
 import WorkspaceEmpty from "./WorkspaceEmpty";
@@ -139,7 +139,6 @@ export default function WorkspaceView({
   // too -- a thread opens empty (#374, rule 5), composer focused, nothing
   // to show yet. closed and archived fall through to the plain node
   // detail, since those are history, not something to keep steering.
-  const hasOpenSession = openSession != null && isChatSessionState(openSession.state);
 
   // The node surface: EditorPane when a file is open for this node, else
   // DetailPane. Centre-stage when the node has no thread, the right aside
@@ -178,7 +177,7 @@ export default function WorkspaceView({
   // Which pane is on screen. Null (nothing selected, or the selected node
   // has no thread) leaves every pane hidden and the node surface centre-
   // stage, without unmounting anything.
-  const shownSessionId = selectedNodeId && hasOpenSession && openSession ? openSession.id : null;
+  const shownSessionId = shownChatSessionId(selectedNodeId, openSession);
 
   // One pane per open thread, each keyed on its session id, so a switch
   // is a visibility flip -- React keeps every keyed child mounted and

@@ -62,16 +62,21 @@ export function sessionRowAccess(ownerId: string, meId: string | null, canManage
 }
 
 // Overlays a live `session_state` frame onto a REST-fetched summary --
-// state/waiting_since only, since that frame carries nothing else. Absent
-// live state (nothing has changed since the fetch, or none was ever
-// received for this id) returns the input unchanged.
+// state, waiting_since and (when the frame carries it) name; the frame has
+// nothing else. Absent live state (nothing has changed since the fetch, or
+// none was ever received for this id) returns the input unchanged.
 export function applyLiveSessionState<T extends { id: string; state: SessionState; waiting_since: string | null }>(
   session: T,
   liveStates: Readonly<Record<string, SessionStateMessage>>,
 ): T {
   const live = liveStates[session.id];
   if (!live) return session;
-  return { ...session, state: live.state, waiting_since: live.waiting_since };
+  return {
+    ...session,
+    state: live.state,
+    waiting_since: live.waiting_since,
+    ...(live.name !== undefined ? { name: live.name } : {}),
+  };
 }
 
 export function mergeLiveSessionStates<T extends { id: string; state: SessionState; waiting_since: string | null }>(
@@ -168,7 +173,7 @@ export function requestChatSession(
 // node -- nothing changed that set. These are the three folds that keep
 // the map current without a refetch-everything pass.
 
-type NodeSession = { id: string; node_id: string | null; state: SessionState };
+type NodeSession = { id: string; node_id: string | null; state: SessionState; name?: string };
 
 // A thread the caller just started, straight into its node's list (the
 // server list is refetched too, but only once the state frame arrives --
@@ -296,6 +301,23 @@ export function isChatSessionState(state: SessionState): boolean {
   return state === "running" || state === "suspended" || state === "draft";
 }
 
+// The pane Práce shows for the selected node: the open session, but only
+// while it is chat-eligible AND anchored on that node. Right after a switch
+// to another node the open session is still the previous node's until its
+// own list is fetched and picked; showing it meanwhile reads as "my click
+// did nothing" (the old thread stays on screen, the sidebar highlight with
+// it) -- and if that fetch never settles, forever. Null shows the node
+// surface instead, which is where the fetch's own error lands.
+export function shownChatSessionId(
+  selectedNodeId: string | null,
+  openSession: { id: string; node_id: string | null; state: SessionState } | null,
+): string | null {
+  if (!selectedNodeId || !openSession) return null;
+  if (!isChatSessionState(openSession.state)) return null;
+  if (openSession.node_id !== selectedNodeId) return null;
+  return openSession.id;
+}
+
 // The threads that keep a mounted SessionChat in this window (#429, the
 // task-surface spec's "mounted for every open thread and toggled"): every
 // chat-eligible thread of an open node, plus the shown one, which the
@@ -308,7 +330,9 @@ export function isChatSessionState(state: SessionState): boolean {
 // switching threads free of a re-subscribe. The shown thread's own object
 // wins over the map's copy of it: it carries whatever the chat has since
 // updated (model, effort, live state), the map's copy is whatever the
-// last refetch returned.
+// last refetch returned -- except the name, which the map's copy carries
+// from the live channel (a rename in the Relace tab or another window
+// reaches this window only that way), so it is overlaid onto the shown one.
 export function mountedChatSessions<T extends NodeSession>(
   byNode: Readonly<Record<string, T[]>>,
   openNodeIds: readonly string[],
@@ -320,7 +344,11 @@ export function mountedChatSessions<T extends NodeSession>(
     for (const session of byNode[nodeId] ?? []) {
       if (!isChatSessionState(session.state) || seen.has(session.id)) continue;
       seen.add(session.id);
-      mounted.push(shown && shown.id === session.id ? shown : session);
+      if (shown && shown.id === session.id) {
+        mounted.push(session.name !== undefined && session.name !== shown.name ? { ...shown, name: session.name } : shown);
+      } else {
+        mounted.push(session);
+      }
     }
   }
   if (shown && isChatSessionState(shown.state) && !seen.has(shown.id)) mounted.push(shown);

@@ -5,7 +5,11 @@
 // or data mode, since the table always exists (schema migration 027).
 
 import { getDb } from "../infra/db.js";
-import { closeStaleRunningSessionsOnBoot, pruneStaleDraftSessions } from "../domain/sessions.js";
+import {
+  autoArchiveClosedSessions,
+  closeStaleRunningSessionsOnBoot,
+  pruneStaleDraftSessions,
+} from "../domain/sessions.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 
 export async function sweepStaleRunningSessionsOnBoot(): Promise<void> {
@@ -30,6 +34,21 @@ export async function sweepStaleDraftSessionsOnBoot(): Promise<void> {
     }
   } catch (e) {
     console.error("[boot] draft session sweep failed:", e);
+  }
+}
+
+// Closed sessions older than 30 days move to 'archived' (a view filter the
+// Relace tab hides behind "Zobrazit archivované", never a delete), and an
+// archived session's event log is dropped after 90 days. Runs at boot of the
+// process that owns the graph db, like the two sweeps above.
+export async function sweepArchivedSessionsOnBoot(): Promise<void> {
+  try {
+    const archived = await autoArchiveClosedSessions(getDb());
+    if (archived > 0) {
+      console.log(`[boot] session sweep archived ${archived} closed session(s)`);
+    }
+  } catch (e) {
+    console.error("[boot] archive session sweep failed:", e);
   }
 }
 

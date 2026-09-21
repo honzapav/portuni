@@ -449,3 +449,15 @@ no test runner of its own. New logic that can be pure goes there first.
   and lifecycle rules this implements.
 - `docs/superpowers/specs/2026-09-12-runner-and-session-design.md` — the
   runner and session model.
+
+## Shown thread and the selected node
+
+The pane Práce shows is `shownChatSessionId(selectedNodeId, openSession)`
+(`apps/web/src/lib/session-views.ts`): the open session only while it is
+chat-eligible and anchored on the selected node. After a switch to another
+node the open session is still the previous node's until that node's own
+list is fetched and picked; nothing is shown meanwhile, so a click never
+reads as ignored, and a failed fetch lands on the node surface as an error
+(`workspaceDetailError`) instead of a silent null. The chat header carries
+the same icon actions as a Relace row (rename, Pokračovat v nové session,
+Uzavřít behind a separator); rename is inline, Enter saves, Escape cancels.

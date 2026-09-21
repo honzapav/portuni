@@ -50,7 +50,7 @@ import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob, withNodeSyncLock } from "../domain/sync/sync-jobs.js";
 import { createAgentSessionRuntime } from "../boot/session-runtime.js";
-import { SetSessionModelBody, StartSessionBody } from "./sessions.js";
+import { RenameSessionBody, SetSessionModelBody, StartSessionBody } from "./sessions.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -567,6 +567,25 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       } catch (err) {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /sessions/${sessionId}/model`, err);
+      }
+      return true;
+    }
+
+    // The thread's rename: through THIS process's runtime so its live
+    // channel fans the new name out to every window; the record half rides
+    // along through CentralSessionStore (a PATCH /sessions/:id on central).
+    const sessionRenameMatch = pathname.match(/^\/sessions\/([^/]+)\/rename$/);
+    if (sessionRenameMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionRenameMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(req, res, RenameSessionBody);
+      if (!body) return true;
+      try {
+        const session = await sessionRuntime.renameSession(sessionId, body.name);
+        respondJson(res, 200, session);
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `POST /sessions/${sessionId}/rename`, err);
       }
       return true;
     }

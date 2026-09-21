@@ -31,6 +31,7 @@ import { sweepReadFileSpillOnBoot } from "./boot/read-file-spill-sweep.js";
 import { CentralSessionStore } from "./domain/runner/store-central.js";
 import {
   startIdleRunSweep,
+  sweepArchivedSessionsOnBoot,
   sweepStaleDraftSessionsOnBoot,
   sweepStaleRunningSessionsOnBoot,
 } from "./boot/session-sweep.js";
@@ -372,6 +373,7 @@ async function main(): Promise<void> {
   // picture instead of racing it.
   void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
   void sweepStaleDraftSessionsOnBoot();
+  void sweepArchivedSessionsOnBoot();
   // #406: no MCP transport survives a restart, so every read-file spill
   // directory left on disk is orphaned.
   void sweepReadFileSpillOnBoot();

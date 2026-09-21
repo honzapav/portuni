@@ -64,8 +64,42 @@ Specs: `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`,
 | `closed` | `archived` |
 
 `closed` is reached only by the user's explicit Uzavřít (or `continue`, see
-below) and `archived` only by the auto-archive sweep. Everything else that
-ends a run suspends.
+below) and `archived` only by the auto-archive sweep
+(`sweepArchivedSessionsOnBoot` in `boot/session-sweep.ts`, run at boot of the
+process that owns the graph db: closed for more than 30 days moves to
+archived, an archived session's event log is dropped after 90 days; the
+row, runs, audit and handoff stay). Everything else that ends a run
+suspends.
+
+Every Uzavřít goes through `SessionRuntime.closeSession` (the socket's
+`close` frame from the chat header, `POST /sessions/:id/close` from the
+Relace tab): it ends a live run and appends `state_changed {to: "closed"}`,
+which is what fires the live channel's `session_state` broadcast; a
+suspended session has no run and so no `run_ended`, so without this event
+the Relace row, the Práce sidebar and Přehled would keep it as suspended
+until an unrelated refetch. `POST /sessions/:id/state` is a bare column
+transition with no runtime behind it and is not device-local; the web never
+uses it to close.
+
+A server-side suspend (`suspendSessionServerSide`: boot sweep, dropped
+transport, lost host) ends every run row of the session still open
+(`ended_at`, `end_reason` `suspended`, or `host_lost` for a lost host),
+appends `run_ended` for each and then `state_changed {to: "suspended"}`;
+without that the log ended on a `run_started` and every client replaying
+it showed a live run (working row, stop button, no composer) on a suspended
+thread. A run the runtime already ended is left alone, so the runtime's
+own suspend path appends nothing twice. The web never trusts the replayed
+log against the server's state: `runIsLiveFor(liveRunId, state)` is live
+only while the session is `running`.
+
+A rename is `POST /sessions/:id/rename`, device-local, through
+`SessionRuntime.renameSession`: it writes `name` (`name_is_custom`) and
+publishes a `session_changed` frame, which is never persisted or replayed
+and only makes `sessions-ws.ts` broadcast `session_state`; that frame
+carries `name`, and the web overlays it (`applyLiveSessionState`) so the
+Práce sidebar, the Relace tab and the chat header in every window show the
+new name at once. The plain-rename branch of `PATCH /sessions/:id` remains
+the central record half only.
 
 ## Access tiers
 

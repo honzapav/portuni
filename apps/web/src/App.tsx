@@ -564,8 +564,13 @@ export default function App() {
         if (cancelled) return;
         setWorkspaceOpenSession(pickOpenChatSession([...res.sessions, ...localForNode], requestedChatSessionId));
       })
-      .catch(() => {
-        if (!cancelled) setWorkspaceOpenSession(pickOpenChatSession(localForNode, requestedChatSessionId));
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setWorkspaceOpenSession(pickOpenChatSession(localForNode, requestedChatSessionId));
+        // Lands on the node surface (the shown chat requires this node's
+        // own list to have been fetched), so the failure is on screen
+        // instead of reading as a click that did nothing.
+        setWorkspaceDetailError(`Vlákna uzlu se nepodařilo načíst: ${String(e)}`);
       });
     return () => {
       cancelled = true;

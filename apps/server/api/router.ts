@@ -125,6 +125,7 @@ import {
   handleListSessionRuns,
   handlePatchSession,
   handleSetSessionModel,
+  handleRenameSession,
   handlePatchSessionRun,
   handleSendSessionMessage,
   handleStartSession,
@@ -815,6 +816,13 @@ async function routeSessions(
   const modelMatch = pathname.match(/^\/sessions\/([^/]+)\/model$/);
   if (modelMatch && method === "POST") {
     await handleSetSessionModel(req, res, identity, decodeURIComponent(modelMatch[1]));
+    return true;
+  }
+  // A rename goes through the runtime so the live channel learns of it
+  // (agent-router.ts serves the same verb in sync-agent mode).
+  const renameMatch = pathname.match(/^\/sessions\/([^/]+)\/rename$/);
+  if (renameMatch && method === "POST") {
+    await handleRenameSession(req, res, identity, decodeURIComponent(renameMatch[1]));
     return true;
   }
   const interruptMatch = pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);

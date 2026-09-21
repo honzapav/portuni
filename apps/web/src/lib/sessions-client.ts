@@ -43,6 +43,10 @@ export interface SessionStateMessage {
   state: SessionState;
   waiting_since: string | null;
   node_id: string | null;
+  // The row's current name -- carried so a rename anywhere (Relace tab,
+  // chat header, another window) lands in every list without a refetch.
+  // Optional only for a server older than this field.
+  name?: string;
 }
 
 interface ReplyFrame {

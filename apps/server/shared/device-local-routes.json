@@ -29,6 +29,7 @@
     { "method": "POST", "pattern": "/sessions", "example": "/sessions" },
     { "method": "POST", "pattern": "/sessions/{id}/messages", "example": "/sessions/abc123/messages" },
     { "method": "POST", "pattern": "/sessions/{id}/model", "example": "/sessions/abc123/model" },
+    { "method": "POST", "pattern": "/sessions/{id}/rename", "example": "/sessions/abc123/rename" },
     { "method": "POST", "pattern": "/sessions/{id}/interrupt", "example": "/sessions/abc123/interrupt" },
     { "method": "POST", "pattern": "/sessions/{id}/continue", "example": "/sessions/abc123/continue" },
     { "method": "POST", "pattern": "/sessions/{id}/close", "example": "/sessions/abc123/close" },
