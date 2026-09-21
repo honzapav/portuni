@@ -297,14 +297,11 @@ export async function handlePatchSession(
       respondJson(res, 200, await toSummary(updated));
       return;
     }
-    // #375: a model change reaches a LIVE run's Query directly (no
-    // restart) -- the column write below is what the NEXT run reads, and
-    // is the only effect for a session with no live run right now. This is
-    // local-process state (session-runtime.ts's in-memory liveRuns), so it
-    // only ever does something on the device actually driving the run.
-    if (body.model !== undefined) {
-      await getSessionRuntime().setModel(sessionId, body.model);
-    }
+    // #426: the live half of a model change (session-runtime.ts's in-memory
+    // liveRuns) belongs to POST /sessions/:id/model, which the desktop
+    // routes to the device driving the run; this route is the record half
+    // only -- in sync-agent mode it IS central, where no run ever lives, so
+    // calling setModel here could never reach one.
     // Central record half (#323): raw SessionRow, same reasoning as
     // handleGetSession above -- the caller is CentralSessionStore, which
     // needs every column back, not the curated summary.
@@ -324,6 +321,40 @@ export async function handlePatchSession(
     respondJson(res, 200, updated);
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}`, err);
+  }
+}
+
+// #426: the thread's model/effort override. A device-local route
+// (apps/server/shared/device-local-routes.json): the live half of a model
+// change only exists in the process that drives the run, which in a team
+// workspace is this device's sync agent, never the central server -- so the
+// desktop sends it here and the record half rides along through the
+// runtime's own store (DbSessionStore locally, CentralSessionStore in
+// sync-agent mode). `effort` carries the same way but has no live setter,
+// so for it this is a plain column write that the next run reads.
+export const SetSessionModelBody = z
+  .object({
+    model: z.string().nullable().optional(),
+    effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+  })
+  .refine((b) => Object.keys(b).length > 0, "model or effort is required");
+
+export async function handleSetSessionModel(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
+    if (!existing) return;
+    const body = await parseJsonBody(req, res, SetSessionModelBody);
+    if (!body) return;
+    const updated = await getSessionRuntime().setModelAndEffort(sessionId, body);
+    respondJson(res, 200, updated);
+  } catch (err) {
+    respondError(res, `POST /sessions/${sessionId}/model`, err);
   }
 }
 

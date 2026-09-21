@@ -193,16 +193,19 @@ export function transitionPersistentSessionState(
   return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/state`, { state });
 }
 
-// #375/#376: sets the thread's own model/effort override. Not a plain
-// rename, so the server's raw-row PATCH branch answers (see
-// handlePatchSession's own comment) -- only the two fields this needs are
-// typed here. A model change also reaches a live run's Query immediately;
-// effort only ever applies from the next run.
+// #375/#376/#426: sets the thread's own model/effort override. Its own
+// device-local route rather than a PATCH /sessions/:id field, because a
+// model change reaches the live run's Query immediately and that run only
+// ever exists on the device driving it -- in a team workspace a PATCH would
+// go to the central server, where no run lives. The answer is the patched
+// session row; only the two fields this needs are typed here. `effort` has
+// no live setter and applies from the next run, in either kind of
+// workspace.
 export function patchSessionModelEffort(
   id: string,
   patch: { model?: string | null; effort?: string | null },
 ): Promise<{ model: string | null; effort: string | null }> {
-  return jsonRequest("PATCH", `/sessions/${encodeURIComponent(id)}`, patch);
+  return jsonRequest("POST", `/sessions/${encodeURIComponent(id)}/model`, patch);
 }
 
 // configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the

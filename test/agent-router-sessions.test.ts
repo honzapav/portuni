@@ -295,9 +295,11 @@ let handle: HttpServerHandle;
 let base: string;
 let fake: FakeCentral;
 
-function stubScript(script: readonly FakeScriptStep[] = []): void {
+function stubScript(script: readonly FakeScriptStep[] = []): FakeRunnerAdapter {
   clearRegistryForTests();
-  registerAdapter(new FakeRunnerAdapter({ script }));
+  const adapter = new FakeRunnerAdapter({ script });
+  registerAdapter(adapter);
+  return adapter;
 }
 
 let workspace: string;
@@ -536,6 +538,61 @@ describe("agent-router: sessions/tasks", () => {
     const body = (await res.json()) as { session: SessionRow };
     assert.equal(body.session.id, session.id);
     assert.equal(fake.sessions.get(session.id)?.state, "running");
+
+    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+  });
+
+  // #426: the composer's model picker. The live half can only happen on
+  // the device driving the run, so the route is device-local and the
+  // record half rides along through CentralSessionStore.
+  it("POST /sessions/:id/model reaches the live run and the record on central", async () => {
+    const adapter = stubScript([{ wait: "message" }]);
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    assert.equal(adapter.getLastSetModel(), null);
+
+    const res = await fetch(`${base}/sessions/${session.id}/model`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-5", effort: "high" }),
+    });
+    assert.equal(res.status, 200);
+    const patched = (await res.json()) as SessionRow;
+    assert.equal(patched.model, "claude-sonnet-5");
+    assert.equal(
+      adapter.getLastSetModel(),
+      "claude-sonnet-5",
+      "the live run's Query must have been told on THIS device",
+    );
+    assert.equal(fake.sessions.get(session.id)?.model, "claude-sonnet-5", "central holds the record half");
+    assert.equal(fake.sessions.get(session.id)?.effort, "high");
+
+    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+  });
+
+  // Effort has no live setter in the SDK, in either kind of workspace --
+  // the route is still the one that writes it on central.
+  it("POST /sessions/:id/model with effort alone writes central and leaves the live run alone", async () => {
+    const adapter = stubScript([{ wait: "message" }]);
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+
+    const res = await fetch(`${base}/sessions/${session.id}/model`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ effort: "xhigh" }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(adapter.getLastSetModel(), null, "effort has no live setter, unlike model");
+    assert.equal(fake.sessions.get(session.id)?.effort, "xhigh");
 
     await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
   });

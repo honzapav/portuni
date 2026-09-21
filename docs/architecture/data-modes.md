@@ -146,7 +146,8 @@ locally, `agent-router.ts`, and that JSON file.
 
 Which routes stay central on purpose: graph reads and writes, the session
 record half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`,
-`/runs…`, `/sessions/record`), `GET /nodes/:id/sessions`, `/overview`,
+`/runs…`, `/sessions/record`; the live half of a model change is
+`POST /sessions/:id/model`, device-local), `GET /nodes/:id/sessions`, `/overview`,
 `/sync/watch`, `/nodes/:id/file-url`, `/nodes/:id/folder-url`. Per-route
 detail: [`desktop-shell.md`](./desktop-shell.md) (routing, write gate),
 [`file-state-and-sync-runs.md`](./file-state-and-sync-runs.md) (file

@@ -50,7 +50,7 @@ import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob, withNodeSyncLock } from "../domain/sync/sync-jobs.js";
 import { createAgentSessionRuntime } from "../boot/session-runtime.js";
-import { StartSessionBody } from "./sessions.js";
+import { SetSessionModelBody, StartSessionBody } from "./sessions.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -546,6 +546,27 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         respondJson(res, 202, { ok: true });
       } catch (err) {
         respondError(res, `POST /sessions/${sessionId}/questions/${requestId}`, err);
+      }
+      return true;
+    }
+
+    // #426: the composer's model/effort change. The live half (the running
+    // Query's own model) only exists in THIS process -- central's runtime
+    // never drives a run -- so the desktop routes the verb here; the record
+    // half rides along through the runtime's CentralSessionStore, i.e. a
+    // PATCH /sessions/:id on central.
+    const sessionModelMatch = pathname.match(/^\/sessions\/([^/]+)\/model$/);
+    if (sessionModelMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionModelMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(req, res, SetSessionModelBody);
+      if (!body) return true;
+      try {
+        const session = await sessionRuntime.setModelAndEffort(sessionId, body);
+        respondJson(res, 200, session);
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `POST /sessions/${sessionId}/model`, err);
       }
       return true;
     }

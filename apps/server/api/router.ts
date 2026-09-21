@@ -123,6 +123,7 @@ import {
   handleListSessionEvents,
   handleListSessionRuns,
   handlePatchSession,
+  handleSetSessionModel,
   handlePatchSessionRun,
   handleSendSessionMessage,
   handleStartSession,
@@ -796,6 +797,15 @@ async function routeSessions(
       decodeURIComponent(questionMatch[1]),
       decodeURIComponent(questionMatch[2]),
     );
+    return true;
+  }
+  // #426: the thread's model/effort override -- a device-local route, so
+  // the live half of a model change lands on the device driving the run
+  // (apps/server/api/agent-router.ts serves the same verb in sync-agent
+  // mode); PATCH /sessions/:id stays the record half.
+  const modelMatch = pathname.match(/^\/sessions\/([^/]+)\/model$/);
+  if (modelMatch && method === "POST") {
+    await handleSetSessionModel(req, res, identity, decodeURIComponent(modelMatch[1]));
     return true;
   }
   const interruptMatch = pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);

@@ -324,10 +324,21 @@ human verification.
   `null` (the runner's own default). Threaded onto `RunStart.model`/
   `.effort`; the adapter never reads config. The Claude adapter omits the
   option entirely when null.
-- `PATCH /sessions/:id` with `model` calls `SessionRuntime.setModel`
-  (`RunHandle.setModel` -> `q.setModel`, no-op after the run ended) and
-  then persists the column. `effort` has no live setter and applies from
-  the next run only; there is no `setEffort`.
+- `POST /sessions/:id/model` (`{model?, effort?}`, at least one; `null`
+  means "no override") is the one way the composer changes either. It calls
+  `SessionRuntime.setModelAndEffort`, which forwards a model change to the
+  live run (`RunHandle.setModel` -> `q.setModel`, no-op after the run ended
+  or when there is no live run) and then persists both columns through the
+  store. `effort` has no live setter and applies from the next run only;
+  there is no `setEffort`.
+- That route is **device-local** (`device-local-routes.json`, #426): the
+  live run only ever exists in the process driving it, which in a team
+  workspace is the sync agent, never the central server. The device's
+  runtime applies the change to the live run and its `CentralSessionStore`
+  writes the record half on central (a `PATCH /sessions/:id`), so one code
+  path covers both kinds of workspace. `PATCH /sessions/:id` still accepts
+  `model`/`effort` as plain columns -- that is exactly what the store
+  forwards -- but it never touches a live run.
 - `SessionSummary` carries `model` and `effort`.
 
 ## Provider instances
@@ -398,10 +409,6 @@ in the codebase. The desktop bridge is documented with the desktop shell.
 
 ## Known gaps
 
-- `PATCH /sessions/:id` with `model` reaches a live run only in a local
-  workspace: in sync-agent mode the route goes to the central server, whose runtime never
-  runs a task, so a live-run model switch is silently a next-run change
-  (#426).
 - The central suspend fallback's handoff has empty write/read-set sections
   and is not registered as a tracked file until the next sync run (#427).
 - `host_id` is stored on `SessionRunRow` only; no surface shows which host
