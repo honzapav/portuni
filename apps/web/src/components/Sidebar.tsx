@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { Plus, Search, Sun, Moon, Settings, Waypoints, MessagesSquare, LayoutDashboard, ArrowDown } from "lucide-react";
+import { Plus, Search, Sun, Moon, Settings, Waypoints, MessagesSquare, LayoutDashboard } from "lucide-react";
 import type { GraphPayload, SessionSummary } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
@@ -8,7 +8,6 @@ import type { WorkspaceNodeRow } from "../lib/sessions";
 import { isTauri } from "../lib/backend-url";
 import { listWorkspaces, openWorkspaceWindow, type WorkspaceInfo } from "../lib/workspaces";
 import { currentWorkspaceId } from "../lib/workspace-storage";
-import { pluralNodes } from "../lib/plural";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -84,11 +83,6 @@ type Props = {
   // its own "Nový uzel" button; the workspace view needs its own. Secondary
   // to the search-first picker -- a quiet "Nebo vytvoř nový uzel…" link.
   onWorkspaceCreateNode: () => void;
-  // #339: how many nodes hold records the remote watcher registered on
-  // central and this device has not pulled yet -- the signal that follows
-  // the watcher outside the node detail. 0 renders nothing.
-  pullNodeCount: number;
-  onOpenSyncOverview: () => void;
 };
 
 function nodeTypeVar(type: string): string {
@@ -155,8 +149,6 @@ function Sidebar({
   onWorkspaceOpenSessionChat,
   onWorkspaceRenameTask,
   onWorkspaceCloseTask,
-  pullNodeCount,
-  onOpenSyncOverview,
 }: Props) {
   const isMac =
     typeof navigator !== "undefined" &&
@@ -271,26 +263,6 @@ function Sidebar({
           Nový uzel
         </Button>
       </div>
-
-      {/* #339: the remote watcher keeps `files` current on central, so a
-          teammate's edit shows up as a pull record without anyone running a
-          sync. Without a signal here it would only ever be visible inside
-          the node's Files tab. Opens the same overview the footer badge
-          does. */}
-      {pullNodeCount > 0 && (
-        <div className="px-4 pt-2.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onOpenSyncOverview}
-            className="w-full justify-start font-normal text-[var(--color-text-muted)]"
-            title="Remote watcher našel novější verze souborů. Otevřít přehled synchronizace."
-          >
-            <ArrowDown />
-            Nové na remote: {pullNodeCount} {pluralNodes(pullNodeCount)}
-          </Button>
-        </div>
-      )}
 
       <NodeCommandPalette
         open={paletteOpen}
