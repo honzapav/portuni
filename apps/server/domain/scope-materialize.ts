@@ -27,7 +27,7 @@
 // so register_mirror itself doesn't fail when, say, .codex/ has restrictive
 // permissions.
 
-import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   buildClaudeMcpJson,
@@ -87,8 +87,17 @@ export interface MaterializeArgs {
 
 export interface MaterializeResult {
   written: string[];
+  // Files a removed writer left behind that this run deleted (today: the
+  // marker-owned per-mirror .vibe/config.toml from before #406).
+  removed: string[];
   errors: { path: string; message: string }[];
 }
+
+// The marker the retired per-mirror .vibe/config.toml writer put on its
+// file. Kept only to recognise that file: Vibe merges a project config over
+// the user-scoped one by server name, so a leftover keeps a home_node_id
+// Portuni no longer maintains. A file without the marker is the user's.
+const LEGACY_VIBE_MARKER = "# portuni-managed: project-scoped MCP for Mistral Vibe";
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -169,7 +178,7 @@ async function refreshMarkdownHint(
 export async function materializeScopeConfig(
   args: MaterializeArgs,
 ): Promise<MaterializeResult> {
-  const result: MaterializeResult = { written: [], errors: [] };
+  const result: MaterializeResult = { written: [], removed: [], errors: [] };
   const cur = normalize(args.currentMirror);
 
   // 1. .claude/settings.local.json (overlay file Claude Code merges on top
@@ -257,6 +266,22 @@ export async function materializeScopeConfig(
     portuniRoot: args.portuniRoot,
     dataSources: args.dataSources,
   });
+
+  // 3b. A per-mirror .vibe/config.toml the retired writer (#406) left in a
+  //     mirror registered before it went: removed when it carries the old
+  //     marker, left alone otherwise (a hand-written project config).
+  const legacyVibePath = join(cur, ".vibe", "config.toml");
+  try {
+    if (await exists(legacyVibePath)) {
+      const raw = await readFile(legacyVibePath, "utf8");
+      if (raw.includes(LEGACY_VIBE_MARKER)) {
+        await unlink(legacyVibePath);
+        result.removed.push(legacyVibePath);
+      }
+    }
+  } catch (e) {
+    result.errors.push({ path: legacyVibePath, message: (e as Error).message });
+  }
 
   // 4. PORTUNI_SCOPE.md (always present, harness-agnostic). Fattened with
   //    orientation data when available -- unlike the CLAUDE.md/AGENTS.md
@@ -375,7 +400,7 @@ export async function materializeAllRegisteredMirrors(opts?: {
   // db read).
   orientationFor?: (nodeId: string) => Promise<OrientationSummary | null>;
 }): Promise<MaterializeResult> {
-  const aggregated: MaterializeResult = { written: [], errors: [] };
+  const aggregated: MaterializeResult = { written: [], removed: [], errors: [] };
   const resolveDataSources = opts?.dataSourcesFor ?? dataSourcesForNode;
   const resolveOrientation = opts?.orientationFor ?? orientationForNode;
   const mirrors = await listUserMirrors(SOLO_USER);
@@ -407,6 +432,7 @@ export async function materializeAllRegisteredMirrors(opts?: {
         orientation,
       });
       aggregated.written.push(...r.written);
+      aggregated.removed.push(...r.removed);
       aggregated.errors.push(...r.errors);
     } catch (e) {
       aggregated.errors.push({

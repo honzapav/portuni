@@ -401,7 +401,13 @@ symlink to this file.
   (#406, finishing #346): both served harnesses the removed embedded
   terminal launched, so a Vibe/Cursor session now connects through its own
   user-scoped config, starts unscoped and seeds with
-  `portuni_session_init`. The
+  `portuni_session_init`. A `.vibe/config.toml` the old writer left in a
+  mirror is deleted by `materializeScopeConfig` when it carries the old
+  marker (`LEGACY_VIBE_MARKER`, reported in `MaterializeResult.removed`) --
+  Vibe merges a project config over the user one by server name, so the
+  leftover would keep a `home_node_id` nothing maintains; a file without
+  the marker is the user's and stays. `.cursor/rules` had no marker and is
+  left where it is. The
   desktop app has no terminal of its own to inject the token into (#345) — a
   shell outside the app exports `PORTUNI_MCP_TOKEN` itself (Settings → Copy
   token). User-scoped fallbacks for sessions outside any mirror:

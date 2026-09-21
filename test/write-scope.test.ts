@@ -901,3 +901,45 @@ describe("buildOrientationHint", () => {
     assert.doesNotMatch(hint, /## Handoff/);
   });
 });
+
+describe("materializeScopeConfig: legacy per-mirror .vibe/config.toml", () => {
+  // The writer went with the embedded terminal (#406); a mirror registered
+  // before that still carries the file it wrote, and Vibe keeps loading it
+  // over the user-scoped config -- with a home_node_id Portuni no longer
+  // maintains. Only a file carrying the old Portuni marker is ours to
+  // remove; a hand-written project config stays.
+  const LEGACY_MARKER = "# portuni-managed: project-scoped MCP for Mistral Vibe";
+
+  it("removes a marker-owned file left by the old writer", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-vibe-legacy-"));
+    const cur = join(dir, "cur");
+    await mkdir(join(cur, ".vibe"), { recursive: true });
+    const legacy = join(cur, ".vibe", "config.toml");
+    await writeFile(legacy, `${LEGACY_MARKER}; regenerated on sidecar boot.\n[[mcp_servers]]\nname = "portuni"\n`, "utf8");
+
+    const r = await materializeScopeConfig({ currentMirror: cur, otherMirrors: [], portuniRoot: dir });
+    assert.equal(r.errors.length, 0, JSON.stringify(r.errors));
+    const still = await stat(legacy).then(() => true).catch(() => false);
+    assert.equal(still, false, "the legacy file must be gone");
+    assert.ok(r.removed.includes(legacy));
+
+    // Idempotent: a second run has nothing to remove and does not complain.
+    const again = await materializeScopeConfig({ currentMirror: cur, otherMirrors: [], portuniRoot: dir });
+    assert.equal(again.errors.length, 0);
+    assert.deepEqual(again.removed, []);
+  });
+
+  it("leaves a hand-written project config alone", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-vibe-user-"));
+    const cur = join(dir, "cur");
+    await mkdir(join(cur, ".vibe"), { recursive: true });
+    const own = join(cur, ".vibe", "config.toml");
+    const content = '[[mcp_servers]]\nname = "my-own-server"\n';
+    await writeFile(own, content, "utf8");
+
+    const r = await materializeScopeConfig({ currentMirror: cur, otherMirrors: [], portuniRoot: dir });
+    assert.equal(r.errors.length, 0, JSON.stringify(r.errors));
+    assert.equal(await readFile(own, "utf8"), content);
+    assert.deepEqual(r.removed, []);
+  });
+});
