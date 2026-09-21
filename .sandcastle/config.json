@@ -40,13 +40,12 @@
   "commitPrefix": "RALPH",
   "promptVars": {
     "runtimeTargets": [
-      "a local workspace (env auth, no remote)",
-      "central mode (desktop as sync agent, PORTUNI_AGENT_MODE=1, everything through the central server)"
+      "a personal workspace (env auth, own graph db, no remote)",
+      "a team workspace (the central server plus the device's sync agent, PORTUNI_AGENT_MODE=1)"
     ],
     "lessonsDoc": "docs/lessons-learned.md",
     "evidenceCommands": [
       "npm run qa",
-      "npm run test:pglite",
       "cargo test (apps/desktop)"
     ]
   },

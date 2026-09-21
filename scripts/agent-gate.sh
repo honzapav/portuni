@@ -7,8 +7,9 @@ cd "$(dirname "$0")/.."
 echo "== server: lint, typecheck, test, build"
 npm run qa
 
-echo "== server: test (pglite driver)"
-npm run test:pglite
+# The PGlite run of the same suite (npm run test:pglite, ~10 min under the
+# container's concurrency cap) is CI's job on every PR; a schema or query
+# change still runs it here by hand before the PR claims both drivers.
 
 echo "== web: typecheck, build"
 npx --prefix apps/web tsc -b apps/web --noEmit

@@ -230,10 +230,11 @@ Never match a driver's error text. `infra/sql.ts` provides:
 
 `npm test` runs the suite on libsql; `npm run test:pglite` runs the same
 files with `PORTUNI_TEST_DB=pglite`. `scripts/agent-gate.sh` runs `npm run
-qa` (lint, typecheck, test on libsql, build) and then `npm run test:pglite`
-as a separate step; `ci.yml`'s `server` job runs both as sequential steps
-in one job. A change is green only when both runs are, and a PR that claims
-"green on both drivers" carries both summary lines.
+qa` (lint, typecheck, test on libsql, build); `ci.yml`'s `server` job runs
+both suites as sequential steps in one job, so every PR is checked on both
+drivers before merge. A schema or query change runs `npm run test:pglite`
+by hand as well, and a PR that claims "green on both drivers" carries both
+summary lines.
 
 Conventions:
 
