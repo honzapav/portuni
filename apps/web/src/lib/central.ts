@@ -19,7 +19,7 @@ export { getDataMode, isCentralMode, type DataMode } from "./data-mode";
 import { getDataModeCached, type DataMode } from "./data-mode";
 
 // Hook: resolves data mode once on mount and caches the result.
-// Returns null while loading (central mode features should be optimistically
+// Returns null while loading (team-workspace features should be optimistically
 // hidden during loading to avoid flicker on initial render).
 export function useDataMode(): DataMode | null {
   const [mode, setMode] = useState<DataMode | null>(null);
@@ -76,7 +76,7 @@ export type NewDeviceToken = {
   expires_at: string | null;
 };
 
-// Connected chat-client connector from GET /auth/oauth-grants.
+// A chat client's OAuth grant from GET /auth/oauth-grants.
 export type OAuthGrant = {
   id: string;
   client_id: string;

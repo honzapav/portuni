@@ -27,7 +27,7 @@ historical names, listed in the last column):
 | **personal workspace** | one person, one machine, own graph db, no remote | `data_mode: "local"`, `isLocalWorkspace()`, `SOLO_USER` |
 | **central server** | the process at `api.portuni.com`: graph db, permissions, Drive, remote watcher | `PORTUNI_AUTH_MODE=google` |
 | **sync agent** | the device's sidecar in a team workspace: mirrors, watcher, tasks, MCP front door, no graph db | `PORTUNI_AGENT_MODE=1`, `agent-router.ts`, `agent-transport.ts`, `agent-tools.ts` |
-| **device-local** | a route or tool the sync agent serves itself instead of forwarding to the central server | `is_local_only_path`, `501 local_only`, `LOCAL_TOOLS`, `device-local-routes.json` |
+| **device-local** | a route or tool the sync agent serves itself instead of forwarding to the central server | `is_device_local_path`, `501 sync_agent_down`, `DEVICE_LOCAL_TOOLS`, `device-local-routes.json` |
 
 A team workspace therefore always involves two processes. A change that
 works on the central server but not in the sync agent (or the other way
@@ -59,7 +59,7 @@ Consequences for any change (from `docs/vision/portuni-as-workspace.md`,
 - Tests: the fake `CentralClient` in `test/agent-router*.test.ts` and
   `test/agent-tools.test.ts` is where the central half is proven. A route the
   desktop sends to the sidecar in a team workspace is listed in
-  `apps/server/shared/device-local-routes.json`; `is_local_only_path` reads its
+  `apps/server/shared/device-local-routes.json`; `is_device_local_path` reads its
   patterns from that file at compile time and the agent router is tested
   against it, so a route added on one side without the other fails the gate.
 
@@ -127,20 +127,20 @@ folders of its own; file content it serves is Drive-direct
 
 ## Request routing in a team workspace
 
-`api_request` sends a request to the central server unless `is_local_only_path` matches
+`api_request` sends a request to the central server unless `is_device_local_path` matches
 it; then it goes to this device's sidecar, which serves it from
 `agent-router.ts`. Before Google login the sidecar is not running and those
-routes answer `501 {error: "local_only"}`, which the web reads as "not signed
+routes answer `501 {error: "sync_agent_down"}`, which the web reads as "not signed
 in", never as "feature unbuilt".
 
 The canonical list of device-local routes is
 `apps/server/shared/device-local-routes.json` (sections `device_local`,
-`central`, `sidecar_direct`). `is_local_only_path` is driven by that file:
+`central`, `sidecar_direct`). `is_device_local_path` is driven by that file:
 it embeds it with `include_str!` and matches a request path against the
 `device_local` patterns (`{name}` is one segment, the query string is
 ignored). `test/agent-router-route-parity.test.ts` asserts the agent router
 handles every device-local entry and serves nothing the list omits; the Rust
-`local_only_path_tests` assert the `central` examples stay central. **A new
+`device_local_path_tests` assert the `central` examples stay central. **A new
 REST route touches three places at once**: the router that serves it
 locally, `agent-router.ts`, and that JSON file.
 
@@ -158,7 +158,7 @@ lifecycle routes and their device half), [`sessions-and-runner.md`](./sessions-a
 
 The sync agent serves `/mcp` itself and the per-mirror `.mcp.json` points at
 it (`http://127.0.0.1:<port>/mcp?home_node_id=…`). Device-local tools
-(`agent-tools.ts`'s `LOCAL_TOOLS`: mirror, status, store, pull, adopt_files)
+(`agent-tools.ts`'s `DEVICE_LOCAL_TOOLS`: mirror, status, store, pull, adopt_files)
 run against the device's mirrors and `sync.db`; every other tool is proxied to
 the central server's `/mcp` unchanged, which enforces scope and permissions.
 Proxied tools that also touch the device's disk (`portuni_move_file`,
@@ -196,13 +196,13 @@ version is a conflict, never a silent overwrite.
 
 - **New or changed REST route**: `router.ts` (local) and `agent-router.ts`
   (device) or a deliberate decision that it stays central; the entry in
-  `device-local-routes.json`; `is_local_only_path` and its tests; a test against
+  `device-local-routes.json`; `is_device_local_path` and its tests; a test against
   the fake `CentralClient`.
 - **New graph read inside domain code that also runs on the device**: a
   `CentralClient` method or an injected resolver, with the local default being
   the direct query. Never a `try/catch` that swallows the failure and degrades
   silently in one mode.
-- **New MCP tool**: decide whether it is device-local (`LOCAL_TOOLS`) or
+- **New MCP tool**: decide whether it is device-local (`DEVICE_LOCAL_TOOLS`) or
   proxied; a proxied tool that touches disk needs its device step in
   `agent-tools.ts`. A remote MCP client session (OAuth grant) on the central server has no `sync.db`
   (`requireLocalSyncDb()` fails fast).
@@ -212,7 +212,7 @@ version is a conflict, never a silent overwrite.
 - **Web**: a feature that has nothing to do on a personal workspace is hidden
   there (`useDataMode()`), not disabled.
 - **Verification**: name in the PR what changed in `agent-router.ts`,
-  `is_local_only_path`, `CentralClient` and `agent-tools.ts`, or why none of
+  `is_device_local_path`, `CentralClient` and `agent-tools.ts`, or why none of
   them is affected.
 
 ## Glossary
@@ -224,7 +224,7 @@ version is a conflict, never a silent overwrite.
 | personal workspace, `data_mode: "local"` | one person, one machine, own graph db, no remote |
 | graph sync | the graph plane |
 | file sync | the file-bytes plane, mirror to Drive |
-| `local_only` (501) | the sync agent is not running yet (not signed in) |
+| `sync_agent_down` (501) | the sync agent is not running yet (not signed in) |
 | `LOCAL_MODE_NO_REMOTE` (409) | a personal workspace was asked to do something only a team workspace has |
 
 ## See also

@@ -252,11 +252,11 @@ export default function App() {
   // Load detail when selection changes. The cancelled flag matters: without
   // it a slow response for node A lands after the user already clicked node
   // B and paints A's detail under B's selection.
-  // Central mode serves node-detail from the central server, which has no
-  // device state, so local_mirror comes back null even when this device owns
-  // the mirror. Overlay it from the local sync agent (GET /nodes/:id/mirror).
-  // Local mode already carries local_mirror in node-detail, so skip the extra
-  // call there; orgs never have a mirror.
+  // A team workspace serves node-detail from the central server, which has
+  // no device state, so local_mirror comes back null even when this device
+  // owns the mirror. Overlay it from the sync agent (GET /nodes/:id/mirror).
+  // A personal workspace already carries local_mirror in node-detail, so skip
+  // the extra call there; orgs never have a mirror.
   // The local_mirror overlay lives in fetchNode (api.ts) — the single fetch
   // point every consumer already goes through. App used to run it a second
   // time on top, re-requesting /nodes/:id/mirror after fetchNode had already

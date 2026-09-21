@@ -73,13 +73,13 @@ export async function fetchNode(id: string): Promise<NodeDetail> {
   const res = await apiFetch(`/nodes/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error(`node: ${res.status}`);
   const node: NodeDetail = await res.json();
-  // Central mode serves node-detail with local_mirror:null (the central server
+  // A team workspace serves node-detail with local_mirror:null (the central server
   // has no device state). Overlay it from the device here, in the single fetch
   // point, so EVERY consumer -- graph view, workspace ("Práce") view, the 5s
   // detail poll -- gets the real path without each having to remember to
   // hydrate. Orgs never have a mirror.
   //
-  // Local mode is skipped outright: loadNodeDetail already read the device's
+  // A personal workspace is skipped outright: loadNodeDetail already read the device's
   // mirror registry, so local_mirror:null there means the node genuinely has
   // none and the extra request can only ever return null again. It fired on
   // every 5 s poll of an unmirrored node -- 12 wasted requests a minute, each
@@ -89,17 +89,17 @@ export async function fetchNode(id: string): Promise<NodeDetail> {
       const { local_mirror } = await fetchNodeMirror(id);
       if (local_mirror) return { ...node, local_mirror };
     } catch {
-      /* mirror endpoint absent (local mode) or errored -- leave null */
+      /* mirror endpoint absent (personal workspace) or errored -- leave null */
     }
   }
   return node;
 }
 
-// Device-local mirror for a node. Central-mode node-detail carries
+// Device-local mirror for a node. In a team workspace node-detail carries
 // local_mirror:null (the central server has no device state); the web reads
-// this from the local sync agent and overlays it. Served by the agent router
-// in central mode; in local mode node-detail already carries the mirror so
-// callers only reach for this when local_mirror is absent.
+// this from the device's sync agent and overlays it. Served by the agent
+// router there; in a personal workspace node-detail already carries the
+// mirror so callers only reach for this when local_mirror is absent.
 export async function fetchNodeMirror(id: string): Promise<NodeMirrorResponse> {
   const res = await apiFetch(`/nodes/${encodeURIComponent(id)}/mirror`);
   if (!res.ok) throw new Error(`mirror: ${res.status}`);
@@ -349,29 +349,29 @@ export function createNode(input: {
 }
 
 // Thrown when a device-local affordance (sync status, folder/file URL) is
-// requested but the local sync agent isn't running yet -- in central mode that
-// means you're not signed in. The backend returns 501 local_only. Components
+// requested but the device's sync agent isn't running yet -- in a team workspace that
+// means you're not signed in. The backend returns 501 sync_agent_down. Components
 // can catch this specific type to show a friendly hint instead of a toast.
-export class LocalOnlyError extends Error {
+export class SyncAgentDownError extends Error {
   constructor() {
     super("Synchronizační agent neběží – přihlas se v Nastavení → Účet.");
-    this.name = "LocalOnlyError";
+    this.name = "SyncAgentDownError";
   }
 }
 
-// Parses a Response and throws LocalOnlyError for 501 local_only or a
+// Parses a Response and throws SyncAgentDownError for 501 sync_agent_down or a
 // generic Error for other non-ok statuses.
 async function throwForStatus(res: Response, label: string): Promise<void> {
   if (res.ok) return;
   if (res.status === 501) {
-    let isLocalOnly = false;
+    let isSyncAgentDown = false;
     try {
       const j = (await res.clone().json()) as { error?: string };
-      if (j.error === "local_only") isLocalOnly = true;
+      if (j.error === "sync_agent_down") isSyncAgentDown = true;
     } catch {
       /* body not JSON — fall through */
     }
-    if (isLocalOnly) throw new LocalOnlyError();
+    if (isSyncAgentDown) throw new SyncAgentDownError();
   }
   const text = await res.text().catch(() => "");
   throw new Error(`${label}: ${res.status} ${text}`);
@@ -691,14 +691,14 @@ export async function saveFileContent(
     },
   );
   if (res.status === 501) {
-    let isLocalOnly = false;
+    let isSyncAgentDown = false;
     try {
       const j = (await res.clone().json()) as { error?: string };
-      if (j.error === "local_only") isLocalOnly = true;
+      if (j.error === "sync_agent_down") isSyncAgentDown = true;
     } catch {
       /* not JSON */
     }
-    if (isLocalOnly) throw new LocalOnlyError();
+    if (isSyncAgentDown) throw new SyncAgentDownError();
   }
   if (res.status === 409) {
     // Both CONFLICT (stale base version) and NO_MIRROR map to 409 on the

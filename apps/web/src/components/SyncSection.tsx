@@ -1,8 +1,8 @@
-// Nastaveni > Synchronizace. Collaboration runs through central mode only
+// Nastaveni > Synchronizace. Collaboration runs through a team workspace only
 // (see docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md):
 // a local workspace tracks files on one machine and never holds Drive
 // credentials or routes to a remote (#310), so there is nothing to connect
-// here anymore. Drive access on central mode is configured once, via the
+// here anymore. Drive access in a team workspace is configured once, via the
 // service account (`portuni_setup_remote`, MCP-only) -- no UI needed. This
 // tab keeps its slot for the watcher-error panel below and for the remote
 // watcher's own per-remote line (#339), neither of which is about Drive
@@ -88,9 +88,9 @@ export default function SyncSection() {
         </p>
       ) : (
         <p className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          Tento workspace běží v lokálním režimu – soubory se ukládají jen na
-          tento počítač a nesdílejí se. Sdílení souborů vyžaduje připojení k
-          týmu (centrální režim).
+          Tohle je osobní workspace – soubory se ukládají jen na tento
+          počítač a nesdílejí se. Sdílení souborů vyžaduje týmový workspace
+          (připojení k týmu).
         </p>
       )}
     </section>

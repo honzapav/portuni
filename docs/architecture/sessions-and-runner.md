@@ -134,7 +134,7 @@ orientation, translates events, ends and suspends) is one implementation,
 
 ### Which routes run where (team workspace)
 
-`is_local_only_path` (`apps/desktop/src/lib.rs`) sends to the device's sync
+`is_device_local_path` (`apps/desktop/src/lib.rs`) sends to the device's sync
 agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
 `messages`, `interrupt`, `continue`, `close`, `events`, `signals`,
 `questions/:request_id`. The record half stays on the central server: bare
@@ -144,7 +144,7 @@ agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
 `signals` is device-local because it reads in-memory live-run state
 (`liveRuns`, `runStartScopeSize`) that exists only in the process running
 the task. A new per-session verb must be added to `router.ts`,
-`agent-router.ts`, `is_local_only_path`, `min-scopes.ts` and, when it is a
+`agent-router.ts`, `is_device_local_path`, `min-scopes.ts` and, when it is a
 live action, `sessions-ws.ts` in the same change.
 
 ## Runs, events, pid files and the boot sweep
@@ -373,7 +373,7 @@ human verification.
 (`GET /runners`, `/runners/instances` CRUD, `PUT .../org-default`,
 `DELETE /runners/org-defaults/:orgId`, `GET /runners/:runner/models`).
 
-- **Device-local in every mode.** `is_local_only_path` routes every
+- **Device-local in every mode.** `is_device_local_path` routes every
   `/runners*` call to the sync agent; `agent-router.ts` mounts the same
   handlers, mutations behind `guardAgentRestWrite`. Central's own registry
   would describe the central host, not the machine running the task.

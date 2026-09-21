@@ -107,12 +107,12 @@ function buildFileTree(files: TreeFile[]): TreeNode {
 // Merge registered + untracked into one row list. Registered wins if a path
 // appears in both (a freshly-adopted file may briefly show in both).
 //
-// Central mode serves node-detail without device-derived paths
+// A team workspace serves node-detail without device-derived paths
 // (relative_path/local_path null, because the central server has no device
 // state). Recover them from the per-node sync-status entry + the device
 // mirror: a file's relative_path is its path within the mirror, i.e. its
 // absolute local_path minus the mirror-root prefix -- the same strip
-// node-detail does server-side in local mode. Without this, central-mode
+// node-detail does server-side in a personal workspace. Without this,
 // registered files fall back to a bare filename and open at the wrong path.
 function toTreeFiles(
   files: DetailFile[],
@@ -415,14 +415,14 @@ export function FileTree({
   nodeId: string;
   syncStatus: Map<string, SyncStatusFile>;
   syncLoaded: boolean;
-  // The node's device mirror root, used to recover file relative paths in
-  // central mode (node-detail omits them there). Null when unknown.
+  // The node's device mirror root, used to recover file relative paths in a
+  // team workspace (node-detail omits them there). Null when unknown.
   mirrorPath: string | null;
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
   onDelete: (fileId: string) => Promise<void>;
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
-  // When true, hide rename/delete actions (e.g. central mode).
+  // When true, hide rename/delete actions (e.g. a team workspace).
   readOnly?: boolean;
   // Per-file outcome of the last sync run (#267): a failed push/pull or a
   // still-pending repair is shown on the affected row, where the transient
@@ -970,11 +970,11 @@ function syncPendingLabel(count: number): string {
   return `${count} souborů ke synchronizaci`;
 }
 
-// Local-workspace hint for the Files tab. Rendered by DetailPane above the
+// Personal-workspace hint for the Files tab. Rendered by DetailPane above the
 // sync bar so it shows even on a node with zero files (where SyncBar is not
-// mounted). A local workspace never holds a remote (#310), so this shows
-// unconditionally for one; central mode syncs through the server and never
-// shows it.
+// mounted). A personal workspace never holds a remote (#310), so this shows
+// unconditionally for one; a team workspace syncs through the central server
+// and never shows it.
 export function LocalWorkspaceFilesBanner() {
   const [show, setShow] = useState(false);
   useEffect(() => {
@@ -992,8 +992,8 @@ export function LocalWorkspaceFilesBanner() {
   if (!show) return null;
   return (
     <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">
-      Soubory se ukládají jen lokálně na tento počítač a nesdílejí se. Sdílení
-      souborů vyžaduje připojení k týmu (centrální režim).
+      Soubory se ukládají jen na tento počítač a nesdílejí se. Sdílení
+      souborů vyžaduje týmový workspace (připojení k týmu).
     </div>
   );
 }

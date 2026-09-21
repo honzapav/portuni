@@ -599,7 +599,7 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.runs.size, 2, "continue must create a second run record on central");
   });
 
-  // The four device-local session/runner routes is_local_only_path sends
+  // The four device-local session/runner routes is_device_local_path sends
   // here that had no behaviour test of their own (the route parity test
   // only proves they are handled at all).
   it("POST /sessions/:id/interrupt cancels the current turn and leaves the session running", async () => {

@@ -2,7 +2,7 @@
 //
 // apps/server/shared/device-local-routes.json is the one list of routes the
 // desktop webview sends to THIS device's sidecar in a team workspace
-// (is_local_only_path, apps/desktop/src/lib.rs, matches request paths
+// (is_device_local_path, apps/desktop/src/lib.rs, matches request paths
 // against its patterns). This test proves the other half: every route
 // on that list is served by createAgentRouter (it must never fall through to
 // the 501 `agent_mode` catch-all, which is what a team-workspace desktop would
@@ -151,7 +151,7 @@ describe("agent-router: parity with the desktop's device-local route list", () =
     assert.deepEqual(
       unhandled,
       [],
-      "routed to this device's sidecar by is_local_only_path but not served by agent-router.ts",
+      "routed to this device's sidecar by is_device_local_path but not served by agent-router.ts",
     );
   });
 

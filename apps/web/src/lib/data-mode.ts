@@ -16,7 +16,8 @@ export type DataMode = {
   server_url: string | null;
 };
 
-// Invoke get_data_mode; non-Tauri environments always return local mode.
+// Invoke get_data_mode; non-Tauri environments always read as a personal
+// workspace.
 export async function getDataMode(): Promise<DataMode> {
   if (!isTauri()) return { mode: "local", server_url: null };
   const { invoke } = await import("@tauri-apps/api/core");
@@ -52,7 +53,7 @@ export async function getDataModeCached(): Promise<DataMode> {
 // Cached, non-hook predicate for module-level code that needs the mode but
 // cannot use the hook (api.ts). Shares the same one-fetch-per-lifetime cache,
 // so this is an IPC call only on the very first use. A rejection (config
-// awaiting workspace migration, non-Tauri host) reads as local mode -- the
+// awaiting workspace migration, non-Tauri host) reads as a personal workspace -- the
 // same optimistic default useDataMode leaves the UI in.
 export async function isCentralMode(): Promise<boolean> {
   try {
