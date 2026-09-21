@@ -61,11 +61,11 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
   `PORTUNI_CENTRAL_TOKEN` (the device token from
   `auth::ensure_device_token`, Keychain label "Sync agent") and
   `PORTUNI_URL`. No Turso token and no Drive credentials reach the device;
-  everything goes to central with the device token. The agent keeps local
+  everything goes to the central server with the device token. The sync agent keeps local
   mirror folders, the mirror watcher and file sync, and serves the MCP
   front door: per-mirror `.mcp.json` points at
-  `http://127.0.0.1:<port>/mcp`, never at central. Graph and scope tools
-  are proxied to central unchanged; device-local tools (mirror, status,
+  `http://127.0.0.1:<port>/mcp`, never at the central server. Graph and scope tools
+  are proxied to the central server unchanged; device-local tools (mirror, status,
   store, pull, adopt_files) run on the device.
 - The agent starts only after Google login. Before that
   `spawn_sidecar_ws` records the sentinel port `0` in `BackendPorts`,
@@ -302,7 +302,7 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   `501 {"error":"local_only","detail":"sync agent not running"}`.
   `apps/web/src/api.ts` turns it into `LocalOnlyError`, which the UI reads
   as "not signed in", never as "feature unavailable".
-- Routes deliberately not local-only, served by central in central mode:
+- Routes deliberately not local-only, served by the central server in central mode:
   `/nodes/:id/file-url`, `/nodes/:id/folder-url`, the session record half
   (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs…`,
   `/sessions/record`), `GET /nodes/:id/sessions`, `/overview`,

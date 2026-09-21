@@ -35,8 +35,8 @@ Specs: `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`,
 - A resumed connection's `bindSession` is a no-op (`resumeSessionPersistence`
   already attached the row).
 - A row is only created once a connection completes a real `initialize`.
-  Agent mode opens its upstream connection to central only for such a
-  request, so a probe at the local front door burns no row on central.
+  Sync-agent mode opens its upstream connection to central only for such a
+  request, so a probe at the local front door burns no row on the central server.
 - `cli` comes from the handshake's `params.clientInfo.name`, normalized to
   `claude | codex | vibe` (`client-name.ts`), never from a header.
 - `wireOngoingSync` persists the session's home node as `writable=1`:
@@ -84,7 +84,7 @@ actions `read | message | stop | resume` (spec: remote-hosts-and-task-queue,
   carrying `by` (`SessionRuntime.recordStoppedBy`) so the chat shows who.
 - Coarse route scopes (`auth/min-scopes.ts`): `GET` routes are `read`,
   every mutating `/sessions*` route and `POST /sessions` are `write`.
-- In central/agent mode these checks run on central, on every store round
+- In central mode these checks run on the central server, on every store round
   trip: the device never re-implements them. A central 404 surfaces as
   `SESSION_NOT_FOUND`.
 
@@ -95,7 +95,7 @@ orientation, translates events, ends and suspends) is one implementation,
 `session-runtime.ts`, and it always runs on the device. Only
 `CreateSessionRuntimeDeps` changes between modes:
 
-| dep | local workspace | central/agent mode |
+| dep | local workspace | central mode |
 |---|---|---|
 | `store` | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
 | provisioning | `provision.ts`: `createMirrorForNode`, `orientationForNode` (direct db read) | `provision-central.ts`: `createMirrorForNodeCentral`, `CentralClient.orientation` (`GET /nodes/:id/orientation`) |
@@ -104,11 +104,11 @@ orientation, translates events, ends and suspends) is one implementation,
 | `session_scope` reads (`getSessionScope` in `startRun`/`sessionSignals`) | real | degrade to an empty scope, never throw |
 
 - `CentralSessionStore` turns every `SessionStore` call into a REST round
-  trip to central's record half (`api/sessions.ts`: `POST /sessions/record`,
+  trip to the central server's record half (`api/sessions.ts`: `POST /sessions/record`,
   `GET`/`PATCH /sessions/:id`, `POST /sessions/:id/runs`,
   `PATCH /sessions/:id/runs/:run_id`, `GET /sessions/:id/runs`,
   `POST`/`GET /sessions/:id/events`), which are thin wrappers over
-  `DbSessionStore` on central's own db. It batches `appendEvents` within a
+  `DbSessionStore` on the central server's own db. It batches `appendEvents` within a
   50 ms window into one POST and keeps an in-process `runId -> sessionId`
   map (filled by `createRun`/`listRuns`) because `patchRun(runId, patch)`
   carries no session id.
@@ -125,12 +125,12 @@ orientation, translates events, ends and suspends) is one implementation,
   register the file as tracked; the next sync run's untracked-file
   discovery picks it up.
 
-### Which routes run where (central/agent mode)
+### Which routes run where (central mode)
 
 `is_local_only_path` (`apps/desktop/src/lib.rs`) sends to the device's sync
 agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
 `messages`, `interrupt`, `continue`, `close`, `events`, `signals`,
-`questions/:request_id`. The record half stays on central: bare
+`questions/:request_id`. The record half stays on the central server: bare
 `GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs...`,
 `/sessions/record`, plus `GET /nodes/:id/sessions` and `/overview`.
 `signals` is device-local because it reads in-memory live-run state
@@ -254,7 +254,7 @@ human verification.
 
 - **Open = draft.** `POST /sessions` without `brief` creates a `draft` row
   (name „Nový úkol", no runner, no run). Locally the route writes through
-  `createDraftSession`; in agent mode `SessionRuntime.createDraft` goes
+  `createDraftSession`; in sync-agent mode `SessionRuntime.createDraft` goes
   through `SessionStore.createDraft` (`CentralSessionStore` ->
   `CentralClient.createDraftSessionRecord`, the same `POST /sessions/record`
   with a `{draft: true, node_id, model, effort}` body; `RecordSessionBody`
@@ -280,7 +280,7 @@ human verification.
   the WS snapshot). A draft is visible only in the window that created it.
 - **Prune.** `sweepStaleDraftSessionsOnBoot` deletes drafts older than 24 h
   at boot of the process that owns the graph db (`index.ts`, `desktop.ts`
-  local branch; on central for central-mode rows). A thread's `×` deletes
+  local branch; on the central server for central-mode rows). A thread's `×` deletes
   an empty draft immediately.
 - **Every non-close end suspends with a server-written summary.**
   `closingSessions: Set<string>` marks an explicit close (`closeSession`,
@@ -378,8 +378,8 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   `snapshot`, `canSee`): `createLocalSessionsWsDeps()` over the graph db;
   `agentMain` passes `createSessionsWsServer(createAgentSessionsWsDeps(
   client, runtime))` with the same runtime instance its router drives. The
-  agent-mode snapshot is `GET /sessions?state=running,suspended&limit=500`
-  on central (`CentralClient.listSessionRecords`), visibility-filtered
+  sync-agent snapshot is `GET /sessions?state=running,suspended&limit=500`
+  on the central server (`CentralClient.listSessionRecords`), visibility-filtered
   there; the local snapshot is bounded by the same `SNAPSHOT_LIMIT`.
 - `subscribe` subscribes to the runtime first, replays
   `store.listEvents(after)` in pages of 200, buffers live events meanwhile
@@ -399,7 +399,7 @@ in the codebase. The desktop bridge is documented with the desktop shell.
 ## Known gaps
 
 - `PATCH /sessions/:id` with `model` reaches a live run only in a local
-  workspace: in agent mode the route goes to central, whose runtime never
+  workspace: in sync-agent mode the route goes to the central server, whose runtime never
   runs a task, so a live-run model switch is silently a next-run change
   (#426).
 - The central suspend fallback's handoff has empty write/read-set sections

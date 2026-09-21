@@ -4,7 +4,7 @@ Knowledge graph for organisations (POPP: organisations, projects, processes,
 areas, principles). Backend Node + libSQL (Turso), frontend React + Vite,
 desktop shell Tauri 2.
 
-**Modes rule, before anything else.** Central/agent mode is the primary
+**Modes rule, before anything else.** Central mode is the primary
 operating mode: a team runs the central server, every teammate's desktop is a
 central-mode workspace whose sidecar is a sync agent, and that is where every
 real task, mirror and MCP session happens. A local workspace is central in a
@@ -12,9 +12,13 @@ box for one person; it must keep working, but it is not the reference. Every
 change to the server, a REST route, an MCP tool or the session runtime works
 in **both** before its issue closes. A half that is missing is an **open issue
 named in the PR title**, never a "known gap" note in the docs. New behaviour
-is written once as domain code that runs on central and in the sidecar; where
+is written once as domain code that runs on the central server and in the
+sidecar; where
 the device lacks the graph db, it takes a `CentralClient` seam, not a second
-implementation. Model and checklist: `docs/architecture/data-modes.md`.
+implementation. Three words, kept apart: **central mode** is a workspace's
+`data_mode`; the **central server** is the process at `api.portuni.com`; the
+**sync agent** (`PORTUNI_AGENT_MODE=1`) is the device's sidecar in
+central mode. Model and checklist: `docs/architecture/data-modes.md`.
 
 ## Where the rules live
 
@@ -24,7 +28,7 @@ its area.
 
 | Doc | Read when touching |
 |---|---|
-| `data-modes.md` | anything that behaves differently on central, on a central-mode device, or in a local workspace; request routing; the modes checklist |
+| `data-modes.md` | anything that behaves differently on the central server, on a central-mode device, or in a local workspace; request routing; the modes checklist |
 | `file-state-and-sync-runs.md` | mirrors, watcher, reconcile, sync runs and jobs, remote watcher, locking, delete/move/rename, `repair_needed` |
 | `file-sync.md`, `file-mutation-propagation.md` | the file-bytes plane design, adapters, tombstones |
 | `sessions-and-runner.md` | sessions, tasks, runs, the Claude adapter, live channel server side, provider instances |
@@ -208,7 +212,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
   before the remote is touched; retries are idempotent.
 - Every delete path clears `file_state` only after the local copy is
   confirmed gone (`removeLocalCopyAndState`). A device step that fails after
-  central committed reports `repair_needed`, never a 500 and never silent
+  the central server committed reports `repair_needed`, never a 500 and never silent
   success; a watcher-driven delete unregisters only on a confirmed `ok`.
 - `relocateRemoteObject` refuses when both source and destination exist; a
   cross-remote move records `source_copied` so the retry can finish.
@@ -225,8 +229,8 @@ One line each; the linked doc carries the mechanism and the reasoning.
   run's MCP connection binds to it via `X-Portuni-Spawn-Id`; a hand-opened CLI
   gets its row at the handshake, `cli` from `clientInfo.name`.
 - The runtime always runs on the device; only the store differs
-  (`DbSessionStore` locally, `CentralSessionStore` in agent mode). Access is
-  enforced once, on central, by `auth/session-access.ts`'s table. A new
+  (`DbSessionStore` locally, `CentralSessionStore` in sync-agent mode). Access is
+  enforced once, on the central server, by `auth/session-access.ts`'s table. A new
   session verb lands in `router.ts`, `agent-router.ts`, `sessions-ws.ts`,
   `min-scopes.ts` and `local-only-routes.json` together.
 - Nothing but Uzavřít and the auto-archive sweep reaches `closed`. Every other

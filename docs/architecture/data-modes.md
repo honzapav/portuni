@@ -7,7 +7,7 @@
 
 ## The rule
 
-**Central/agent mode is Portuni's primary operating mode.** A team runs the
+**Central mode is Portuni's primary operating mode.** A team runs the
 central server (`api.portuni.com`), every teammate's desktop is a central-mode
 workspace whose sidecar is a *sync agent*, and every agent task, mirror,
 editor save and MCP session in real use happens there. A **local workspace**
@@ -15,15 +15,28 @@ is central in a box for one person: the same server code with a file database,
 no Google login, no Drive, no team. It exists so Portuni can be tried and used
 alone, and it must keep working, but it is not the reference environment.
 
+Three words, kept apart throughout the codebase and the docs:
+
+| Word | Means |
+|---|---|
+| **central mode** | a workspace's `data_mode: "central"`: the desktop reaches the graph through the central server and runs its sidecar as the sync agent |
+| **central server** | the process at `api.portuni.com` (`PORTUNI_AUTH_MODE=google`): graph db, permissions, Drive, remote watcher |
+| **sync agent** | the device's sidecar in central mode (`PORTUNI_AGENT_MODE=1`): mirrors, watcher, tasks, MCP front door, no graph db; `agent-router.ts`, `agent-transport.ts`, `agent-tools.ts` are its code |
+
+"Central mode" therefore always involves two processes. A change that works
+on the central server but not in the sync agent (or the other way round) is
+half done.
+
 Consequences for any change (from `docs/vision/portuni-as-workspace.md`,
 "Local vs. central"):
 
 - A behaviour change to the server, a REST route, an MCP tool or the session
-  runtime works in **both** a local workspace and central/agent mode before
+  runtime works in **both** a local workspace and central mode before
   its issue is closed. A half that is missing is an **open issue named in the
   PR title**, never a "known gap" note in the docs.
-- New functionality is written **once**, as domain code that runs on central
-  and in the sidecar alike. Where the device lacks something only central has
+- New functionality is written **once**, as domain code that runs on the
+  central server and in the sidecar alike. Where the device lacks something
+  only the central server has
   (the graph db, Drive credentials, the team), the code takes a **seam**
   (`CentralClient` method, injected dependency) rather than a second
   implementation. The pairs that exist today (`engine.ts`/`engine-central.ts`,
@@ -94,9 +107,9 @@ folders of its own; file content it serves is Drive-direct
 | Per-device `.portuni/sync.db` (`local-db.ts`) | no | yes | yes |
 | Mirrors, watcher, reconcile | no | yes | yes |
 | File content `GET/PUT /nodes/:id/file` | Drive-direct fallback | mirror first, central fallback | mirror |
-| Remote (Drive) and remote watcher | yes, service account, `RemoteWatchLoop` | through central | never |
+| Remote (Drive) and remote watcher | yes, service account, `RemoteWatchLoop` | through the central server | never |
 | Session runtime (runs the task) | no | yes, `CentralSessionStore` | yes, `DbSessionStore` |
-| Session record, access checks | yes (`api/sessions.ts` record half) | on central | local db |
+| Session record, access checks | yes (`api/sessions.ts` record half) | on the central server | local db |
 | Live channel `GET /sessions/ws` | yes | yes (own runtime) | yes |
 | MCP | `/mcp` for connectors and proxied tool calls | front door: device tools local, the rest proxied | `/mcp` |
 | Runner registry `runners.json` | its own host's | this device's | this device's |
@@ -104,7 +117,7 @@ folders of its own; file content it serves is Drive-direct
 
 ## Request routing in central mode
 
-`api_request` sends a request to central unless `is_local_only_path` matches
+`api_request` sends a request to the central server unless `is_local_only_path` matches
 it; then it goes to this device's sidecar, which serves it from
 `agent-router.ts`. Before Google login the sidecar is not running and those
 routes answer `501 {error: "local_only"}`, which the web reads as "not signed
@@ -130,32 +143,32 @@ detail: [`desktop-shell.md`](./desktop-shell.md) (routing, write gate),
 lifecycle routes and their device half), [`sessions-and-runner.md`](./sessions-and-runner.md)
 (session routes).
 
-## MCP in agent mode
+## MCP in sync-agent mode
 
 The sync agent serves `/mcp` itself and the per-mirror `.mcp.json` points at
 it (`http://127.0.0.1:<port>/mcp?home_node_id=…`). Device-local tools
 (`agent-tools.ts`'s `LOCAL_TOOLS`: mirror, status, store, pull, adopt_files)
 run against the device's mirrors and `sync.db`; every other tool is proxied to
-central's `/mcp` unchanged, with central enforcing scope and permissions.
+the central server's `/mcp` unchanged, which enforces scope and permissions.
 Proxied tools that also touch the device's disk (`portuni_move_file`,
 `portuni_rename_folder`, `portuni_delete_file`, `portuni_snapshot`) run their
-record and remote step on central and their disk step here afterwards, and
+record and remote step on the central server and their disk step here afterwards, and
 report `repair_needed` when the second half fails. `portuni_get_node`,
 `portuni_get_context` and `portuni_expand_scope` answers are enriched on the
 device with `readable_path`/`local_path` from this device's mirror registry.
 The dynamic scope set lives on the central session. Detail:
 [`mcp-scope-and-integrations.md`](./mcp-scope-and-integrations.md).
 
-## Sessions in agent mode
+## Sessions in sync-agent mode
 
 The code that runs a task (adapter spawn, provisioning, event translation,
 suspend, idle sweep, pid-file boot sweep) is one implementation and always
 runs on the device. What differs is the `SessionStore` behind it and the
-seams a device without a graph db needs: `CentralSessionStore` over central's
+seams a device without a graph db needs: `CentralSessionStore` over the central server's
 record REST routes, `provision-central.ts` (`createMirrorForNodeCentral`,
 `CentralClient.orientation`), `suspend-fallback-central.ts`, and
 `CentralClient.nodeOrganizationId` for the organization's default runner
-instance. Access checks run exactly once, on central. Detail:
+instance. Access checks run exactly once, on the central server. Detail:
 [`sessions-and-runner.md`](./sessions-and-runner.md).
 
 ## Editing files
@@ -163,7 +176,7 @@ instance. Access checks run exactly once, on central. Detail:
 In a local workspace and on a central-mode device with a mirror, the editor
 reads and writes the **mirror file** (`file-content.ts`); saving never pushes,
 pushing is a deliberate sync. A central-mode device without a mirror for the
-node, and a remote connector session, go through central, which serves the
+node, and a remote connector session, go through the central server, which serves the
 bytes **Drive-direct** (`file-content-remote.ts`) and refreshes the canonical
 hash on write. Optimistic concurrency is the same everywhere: a stale base
 version is a conflict, never a silent overwrite.
@@ -180,7 +193,7 @@ version is a conflict, never a silent overwrite.
   silently in one mode.
 - **New MCP tool**: decide whether it is device-local (`LOCAL_TOOLS`) or
   proxied; a proxied tool that touches disk needs its device step in
-  `agent-tools.ts`. A connector session on central has no `sync.db`
+  `agent-tools.ts`. A connector session on the central server has no `sync.db`
   (`requireLocalSyncDb()` fails fast).
 - **Schema change**: both dialects (`MIGRATIONS` and `PG_BASELINE_DDL`), read
   `docs/lessons-learned.md` §7 first. See
@@ -196,7 +209,7 @@ version is a conflict, never a silent overwrite.
 | Term | Meaning |
 |---|---|
 | central mode, `data_mode: "central"` | the client reaches data through the central server; permissions enforced; the primary mode |
-| agent mode, `PORTUNI_AGENT_MODE=1` | the central-mode device's sidecar: sync agent, MCP front door, session runtime, no graph db |
+| sync-agent mode, `PORTUNI_AGENT_MODE=1` | the central-mode device's sidecar: sync agent, MCP front door, session runtime, no graph db |
 | local workspace, `data_mode: "local"` | one person, one machine, own graph db, no remote |
 | graph sync | the graph plane |
 | file sync | the file-bytes plane, mirror to Drive |

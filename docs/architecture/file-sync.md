@@ -464,7 +464,7 @@ Does:   1. Resolve adapter for doc_url (e.g. Drive adapter if it's a Docs URL).
         3. With a local mirror: feed the buffer into portuni_store logic
            (write to mirror, upload to target remote per routing, create
            files row). Without one (central server): createFileRemote
-           (upload + files row); the agent front door pulls the file into
+           (upload + files row); the sync agent's front door pulls the file into
            the device mirror afterwards.
 
 Output: { file_id, filename, remote_path }

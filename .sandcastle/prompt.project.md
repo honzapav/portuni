@@ -14,7 +14,7 @@ Lockfiles are regenerated, never hand-edited: `npm install --package-lock-only` 
 
 ## Modes
 
-Central/agent mode is the primary runtime; a local workspace is central in a box for one person. Read `docs/architecture/data-modes.md` before a server, route, MCP tool or session-runtime change and go through its "Modes checklist"; a route the desktop reaches on the device in central mode is added to `apps/server/shared/local-only-routes.json` together with `is_local_only_path` and `agent-router.ts`. The issue's "Režimy: local / central" section says what must work where; when it is missing, ask in a comment and treat both modes as required.
+Central mode is the primary runtime; a local workspace is central in a box for one person. Read `docs/architecture/data-modes.md` before a server, route, MCP tool or session-runtime change and go through its "Modes checklist"; a route the desktop reaches on the device in central mode is added to `apps/server/shared/local-only-routes.json` together with `is_local_only_path` and `agent-router.ts`. The issue's "Režimy: local / central" section says what must work where; when it is missing, ask in a comment and treat both modes as required.
 
 ## Documentation
 

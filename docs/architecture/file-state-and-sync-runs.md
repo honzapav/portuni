@@ -2,9 +2,9 @@
 
 File state is maintained, never re-derived by an agent: the mirror watcher
 keeps the local side current on every disk change, the remote watcher on
-central keeps the remote side current, and a deliberate sync run is the only
+the central server keeps the remote side current, and a deliberate sync run is the only
 thing that moves bytes. The same rules hold in a local workspace and in
-central/agent mode; the sections below say where the two differ and why.
+central mode; the sections below say where the two differ and why.
 Design background: [`file-sync.md`](./file-sync.md) (adapters, hash identity,
 data model, tool contracts) and
 [`file-mutation-propagation.md`](./file-mutation-propagation.md) (tombstones,
@@ -13,11 +13,11 @@ top of both.
 
 ## Modes in one table
 
-| | Local workspace (`isLocalWorkspace()`: not `PORTUNI_AUTH_MODE=google`, not `PORTUNI_AGENT_MODE=1`) | Central/agent mode (desktop sidecar as sync agent, `PORTUNI_AGENT_MODE=1`) | Central server itself (`PORTUNI_AUTH_MODE=google`) |
+| | Local workspace (`isLocalWorkspace()`: not `PORTUNI_AUTH_MODE=google`, not `PORTUNI_AGENT_MODE=1`) | Central mode, the device (sidecar as sync agent, `PORTUNI_AGENT_MODE=1`) | Central server itself (`PORTUNI_AUTH_MODE=google`) |
 |---|---|---|---|
 | Engine | `engine.ts`, `sync-run.ts` | `engine-central.ts`, routes in `agent-router.ts`, record half via `CentralClient` | `engine.ts` direct, adapter-direct file lifecycle, `file-content-remote.ts` |
 | Remote | none, ever (`LOCAL_MODE_NO_REMOTE`) | central resolves it; device holds no Drive credentials | Drive via service account |
-| Classification input | `file_state.cached_local_hash` only | `file_state` + `files.current_remote_hash` from central | live adapter stat |
+| Classification input | `file_state.cached_local_hash` only | `file_state` + `files.current_remote_hash` from the central server | live adapter stat |
 | Possible classes | `clean`, `deleted_local`, `new_local` | all | all |
 | Mirror watcher | yes | yes | only if it carries mirrors |
 | Remote watcher | no | no | yes |
@@ -63,7 +63,7 @@ entry in `is_local_only_path` (`apps/desktop/src/lib.rs`) and a handler in
   disables) `SyncBar`/`SyncOverview`'s "Synchronizovat" and the file row's
   "Obnovit" on a local workspace (`useDataMode()` in `DetailPane.tsx`,
   `SyncOverview.tsx`).
-- **Central/agent scan.** `statusScanCentral` reads only
+- **Central-mode scan (device and central server).** `statusScanCentral` reads only
   `file_state.cached_local_hash` and `files.current_remote_hash`; it has no
   `fast` parameter and never stats the remote. Re-deriving what the device
   does not know is the sync run's own reconcile pass
@@ -127,7 +127,7 @@ entry in `is_local_only_path` (`apps/desktop/src/lib.rs`) and a handler in
   one-shot watcher event never silently degrades (same rule as
   `tryApplyDiskMoveCentral`).
 
-## File lifecycle routes in central/agent mode
+## File lifecycle routes in central mode
 
 Central's own create, rename and delete are adapter-direct (it has no device
 mirror). The desktop UI's REST calls for them are routed to the device
@@ -147,7 +147,7 @@ half:
   `conflict` (local hash, no `last_synced_hash`, remote hash `md5("")`);
   `classifyRecord`'s "no baseline → conflict" rule is correct, the inputs
   would be wrong. Without a mirror the handler falls back to
-  `CentralClient.createFile` (the mirror-less create central serves).
+  `CentralClient.createFile` (the mirror-less create the central server serves).
 - **Pending pushes.** The background upload is tracked per mirror path
   (`pending-pushes.ts`); delete, resolve and rename on the same path
   `awaitPendingPush` first so an `adapter.put` cannot land after the record
@@ -158,7 +158,7 @@ half:
   (`CentralClient.renameFile`); the handler waits for a pending upload, then
   renames the mirror copy and refreshes its hash cache.
 - **Move** (`…/move`). `CentralClient.moveFileRecord` first; only after
-  central confirms does the device relocate its mirror copy. A cross-node
+  the central server confirms does the device relocate its mirror copy. A cross-node
   move resolves the target node's mirror root and node root independently
   (`loadNodeContext`); a target with no mirror on this device reports
   `repair_needed` with a hint instead of stranding the old copy.
@@ -176,7 +176,7 @@ half:
   get the same disk step from `agent-tools.ts`'s `isProxiedDiskMutation` /
   `applyLocalAfterProxiedMutation`.
 - **Still central-only.** `/nodes/:id/file-url` and `/nodes/:id/folder-url`
-  are served Drive-direct by central and are deliberately not device-local.
+  are served Drive-direct by the central server and are deliberately not device-local.
 
 Local workspace equivalents: `createFile` (`file-content.ts`) resolves the
 remote first and calls `storeFile` (register + push) or `registerLocalFile`
@@ -188,7 +188,7 @@ process.
 ## Deliberate sync run and remote sweep
 
 `POST /nodes/:id/sync` (`runNodeSync` in `sync-run.ts` locally,
-`syncRunCentral` on the device in agent mode, which calls central's
+`syncRunCentral` on the device in sync-agent mode, which calls the central server's
 `POST /nodes/:id/sync/remote-sweep` for the credential-holding steps) is the
 only operation that moves bytes. Step order is in
 [`file-sync.md`](./file-sync.md#deliberate-sync-run): pending ops retry,
@@ -220,7 +220,7 @@ that follow from it:
   default every node with `computeSyncPending` `total > 0`), answered `202`
   at once. `sync-jobs.ts` runs each node through a `runNode` callback with
   bounded concurrency (`PORTUNI_SYNC_JOB_CONCURRENCY`, default 3):
-  `runNodeSync` locally, `syncRunCentral` in agent mode. `GET
+  `runNodeSync` locally, `syncRunCentral` in sync-agent mode. `GET
   /sync/jobs/:id` polls; `GET /sync/jobs/current` lets a remounted UI
   reattach. One job per user: a second `POST /sync/jobs` reattaches and
   appends any node not already covered. State is in-memory; a restart
@@ -245,11 +245,11 @@ that follow from it:
   mirrors, the device's watcher errors); central would answer empty, so both
   are device-local routes.
 
-## Remote watcher on central
+## Remote watcher on the central server
 
 - **Central only.** `boot/remote-watch.ts`'s `RemoteWatchLoop` starts when
   `authMode() === "google"` and nowhere else; an env-mode standalone server,
-  the desktop sidecar and the agent-mode sync agent skip it. Every
+  the desktop sidecar and the sync agent skip it. Every
   `PORTUNI_REMOTE_WATCH_INTERVAL_MS` (60 s) it calls `changes(cursor)` on
   each remote that implements the feed and applies the batch through
   `domain/sync/remote-watcher.ts`. Spec:
@@ -305,7 +305,7 @@ that follow from it:
   short-circuits to the same. **Deliberately not device-local**: no
   `is_local_only_path` entry, no `agent-router.ts` route, no `CentralClient`
   method, no MCP tool. The central-mode desktop reaches it through the
-  ordinary proxy to central, the only process that runs the loop. Web
+  ordinary proxy to the central server, the only process that runs the loop. Web
   helpers (`apps/web/src/lib/remote-watch-view.ts`: `remoteWatchLine`,
   `pullNodeCount`) are pure and server-tested; Nastavení → Synchronizace
   renders one line per remote and nothing on a local workspace.
@@ -382,7 +382,7 @@ A local step that runs after central already committed reports
 - REST (`agent-router.ts`) answers 200 with `status: "repair_needed"` and a
   hint.
 - MCP (`agent-tools.ts`'s `applyLocalAfterProxiedMutation`) rewrites
-  central's response itself instead of letting the caller's outer `.catch()`
+  the central server's response itself instead of letting the caller's outer `.catch()`
   swallow it. `rename_folder` downgrades only the failed entry and
   recomputes `renamed`/`failed`, keeping the rest of the batch's outcome.
 - The watcher treats `repair_needed` like a thrown failure (see above): the

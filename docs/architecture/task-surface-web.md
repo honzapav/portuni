@@ -322,7 +322,7 @@ there first.
 - The Relace tab shows no host label; `host_id` lives on the run, not the
   summary (#428).
 - A model change reaches a live run only on the device driving it; in
-  central mode `PATCH /sessions/:id` goes to central, which runs nothing
+  central mode `PATCH /sessions/:id` goes to the central server, which runs nothing
   (#426, see `sessions-and-runner.md`).
 
 ## See also
