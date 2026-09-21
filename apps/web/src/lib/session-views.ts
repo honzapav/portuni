@@ -301,6 +301,23 @@ export function isChatSessionState(state: SessionState): boolean {
   return state === "running" || state === "suspended" || state === "draft";
 }
 
+// The pane Práce shows for the selected node: the open session, but only
+// while it is chat-eligible AND anchored on that node. Right after a switch
+// to another node the open session is still the previous node's until its
+// own list is fetched and picked; showing it meanwhile reads as "my click
+// did nothing" (the old thread stays on screen, the sidebar highlight with
+// it) -- and if that fetch never settles, forever. Null shows the node
+// surface instead, which is where the fetch's own error lands.
+export function shownChatSessionId(
+  selectedNodeId: string | null,
+  openSession: { id: string; node_id: string | null; state: SessionState } | null,
+): string | null {
+  if (!selectedNodeId || !openSession) return null;
+  if (!isChatSessionState(openSession.state)) return null;
+  if (openSession.node_id !== selectedNodeId) return null;
+  return openSession.id;
+}
+
 // The threads that keep a mounted SessionChat in this window (#429, the
 // task-surface spec's "mounted for every open thread and toggled"): every
 // chat-eligible thread of an open node, plus the shown one, which the

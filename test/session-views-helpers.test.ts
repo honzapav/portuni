@@ -20,6 +20,7 @@ import {
   mountedChatSessions,
   isThreadSession,
   nodeRowActive,
+  shownChatSessionId,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -390,6 +391,24 @@ describe("hostDisplayName (#428)", () => {
   it("is null when there is no host at all, so the surface hides the slot", () => {
     assert.equal(hostDisplayName({ host_id: null, host_label: null }), null);
     assert.equal(hostDisplayName({ host_id: "  ", host_label: "  " }), null);
+  });
+});
+
+describe("shownChatSessionId", () => {
+  const open = (node_id: string | null, state: SessionState = "suspended") => ({ id: "S1", node_id, state });
+
+  it("shows the open session only for the node it is anchored on", () => {
+    assert.equal(shownChatSessionId("n1", open("n1")), "S1");
+    // Switched to another node: its own list is not picked yet, so nothing
+    // is shown rather than the previous node's thread.
+    assert.equal(shownChatSessionId("n2", open("n1")), null);
+  });
+
+  it("shows nothing without a selection, without a session, or for a closed one", () => {
+    assert.equal(shownChatSessionId(null, open("n1")), null);
+    assert.equal(shownChatSessionId("n1", null), null);
+    assert.equal(shownChatSessionId("n1", open("n1", "closed")), null);
+    assert.equal(shownChatSessionId("n1", open("n1", "draft")), "S1");
   });
 });
 

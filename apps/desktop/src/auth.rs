@@ -645,6 +645,11 @@ pub async fn central_request(
 /// Public alias so lib.rs (api_request routing) and ensure_device_token above
 /// can call the central request helper directly without going through the
 /// full central_request Tauri command.
+/// Deadline for one request to the central server (connect + response).
+/// Generous against a slow Turso-backed answer, short against a dead
+/// connection.
+const CENTRAL_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub async fn do_central_request_raw(
     server_url: &str,
     method: &str,
@@ -670,8 +675,17 @@ async fn do_central_request(
     let method_parsed =
         reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
     let client = crate::http_client();
+    // The shared client has no timeout of its own (the local sidecar path
+    // runs sync jobs through it that legitimately take minutes). A call to
+    // the central server is a short REST round trip -- every central route
+    // answers or polls, none streams -- so it gets a per-request deadline:
+    // a connection left half-open by a central restart (each CI deploy is
+    // one) otherwise hangs the request forever, and in the webview that
+    // reads as a click that did nothing (the pick of a node's thread never
+    // settles, the previous thread stays on screen).
     let mut req = client
         .request(method_parsed, &url)
+        .timeout(CENTRAL_REQUEST_TIMEOUT)
         .header("Authorization", format!("Bearer {jwt}"));
     if let Some(b) = body {
         req = req.json(b);

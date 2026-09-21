@@ -379,3 +379,14 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
 - `docs/env-vars.md`: every env var the sidecar reads; `PORTUNI_ROOT`
   (write-scope tiering) is not `PORTUNI_WORKSPACE_ROOT` (mirrors).
 - `docs/release-process.md`, `CONTRIBUTING.md`: signed builds, rollout.
+
+## Central requests have a deadline
+
+`api_request` in a team workspace forwards to the central server through
+the shared `reqwest` client, which has no timeout of its own (the local
+sidecar path runs sync jobs through it that take minutes). Every central
+call gets a per-request deadline instead (`CENTRAL_REQUEST_TIMEOUT` in
+`auth.rs`, 30 s): each CI deploy restarts central, and a connection left
+half-open by that otherwise hangs the request forever, which the webview
+shows as a click that did nothing. No central route streams; `GET
+/sync/watch` is a poll.
