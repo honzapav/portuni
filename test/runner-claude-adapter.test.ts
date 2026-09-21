@@ -194,10 +194,10 @@ describe("Claude adapter: message translation", () => {
     assert.equal(started.payload.status, "started");
     assert.equal(started.payload.category, "command");
     assert.equal(started.payload.title, "Bash: ls -la");
-    const completed = events[2] as Extract<CanonicalEvent, { kind: "tool_call" }>;
+    const completed = events[3] as Extract<CanonicalEvent, { kind: "tool_call" }>;
     assert.equal(completed.payload.status, "completed");
     assert.equal(completed.payload.output_excerpt, "file1\nfile2");
-    const ended = events[3] as Extract<CanonicalEvent, { kind: "run_ended" }>;
+    const ended = events[4] as Extract<CanonicalEvent, { kind: "run_ended" }>;
     assert.equal(ended.payload.reason, "completed");
   });
 
@@ -248,7 +248,7 @@ describe("Claude adapter: message translation", () => {
     await handle.close();
     const kinds = events.map((e) => ("kind" in e ? e.kind : e.type));
     assert.deepEqual(kinds, ["tool_call", "context_usage", "tool_call", "run_ended"]);
-    const completed = events[1] as Extract<CanonicalEvent, { kind: "tool_call" }>;
+    const completed = events[2] as Extract<CanonicalEvent, { kind: "tool_call" }>;
     assert.equal(completed.payload.status, "failed");
   });
 
