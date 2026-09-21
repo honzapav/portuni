@@ -3,14 +3,14 @@ title: Team Setup
 description: How to run Portuni for an organization — a central server with Google sign-in, and the teammate desktop setup.
 ---
 
-The [Setup](/getting-started/setup/) page covers the individual install. This page covers the organization: one **central Portuni server** that owns the database and enforces permissions, and teammates who connect to it with their Google accounts — never holding shared database or Drive credentials.
+The [Setup](/getting-started/setup/) page covers a personal workspace. This page covers a **team workspace** (see [Workspaces](/concepts/workspaces/)): one **central Portuni server** that owns the database and enforces permissions, and teammates who connect to it with their Google accounts — never holding shared database or Drive credentials.
 
 If you're a teammate whose organization already runs a server, skip to [Join as a teammate](#join-as-a-teammate).
 
 ## Two ways to share a graph
 
 - **Central server (recommended).** The org deploys the Portuni server with `PORTUNI_AUTH_MODE=google`. Teammates sign in with Google; the server checks Google Workspace group membership on every request and enforces per-user permissions and node visibility. Graph and file content both travel through the server.
-- **Shared credentials.** No longer possible. A local workspace cannot be given a remote or routed to one (`LOCAL_MODE_NO_REMOTE`), and sharing the raw database token gave every teammate full, unrestricted access with no per-user permissions. See [Data Modes](/concepts/data-modes/) for the full comparison.
+- **Shared credentials.** No longer possible. A personal workspace cannot be given a remote or routed to one (`LOCAL_MODE_NO_REMOTE`), and sharing the raw database token gave every teammate full, unrestricted access with no per-user permissions. See [Files: the two sync planes](/concepts/data-modes/) for how bytes move in a team workspace.
 
 The rest of this page describes the central-server path.
 
@@ -73,7 +73,7 @@ As a teammate you install the regular desktop app and point it at your organizat
 
 That's it. The graph you see — and everything your AI agents can do — is filtered through your permissions on the server.
 
-Mirror folders work in central mode too: the local sidecar runs as a **sync agent** that keeps your mirror folders and file status current, brokering every read and write through the central server with your device token. Folders materialize per node — open a node and hit **Vytvořit pracovní složku** (or run a sync) and the app creates the local mirror for you. The app walks you through this right after your first sign-in.
+Mirror folders work in a team workspace too: the local sidecar runs as a **sync agent** that keeps your mirror folders and file status current, brokering every read and write through the central server with your device token. Folders materialize per node — open a node and hit **Vytvořit pracovní složku** (or run a sync) and the app creates the local mirror for you. The app walks you through this right after your first sign-in.
 
 Advanced: the same settings can still be written by hand into the app's `config.json` (`~/Library/Application Support/ooo.workflow.portuni/config.json`, keys `server_url`, `google_client_id`, `google_client_secret`, `data_mode: "central"`) — useful when the server does not serve `/auth/desktop-config`.
 
@@ -84,5 +84,5 @@ Teammates' agents normally connect through the desktop app (per-mirror configs p
 ## See also
 
 - [Setup](/getting-started/setup/) — the individual install this builds on
-- [Data Modes (Local vs Central)](/concepts/data-modes/) — the underlying model
+- [Workspaces (Team & Personal)](/concepts/workspaces/) — the underlying model; [Files: the two sync planes](/concepts/data-modes/) — how file bytes move
 - [Desktop App](/clients/desktop-app/) — workspaces, sidecar ports, and tokens

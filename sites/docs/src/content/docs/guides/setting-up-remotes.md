@@ -1,12 +1,12 @@
 ---
 title: Setting Up Remotes
-description: Set up a Google Drive Service Account remote for central mode — the only way Portuni shares files across a team.
+description: Set up a Google Drive Service Account remote for a team workspace — the only way Portuni shares files across a team.
 ---
 
-Collaboration in Portuni is central mode: the central server is the only
+Collaboration in Portuni is team workspace: the central server is the only
 thing that ever holds Drive credentials, and it reaches Drive with a single
 Service Account. A local (single-machine) workspace cannot register or
-route to a remote at all — see [Data Modes](/concepts/data-modes/). There is
+route to a remote at all — see [Files: the two sync planes](/concepts/data-modes/). There is
 no per-user Google sign-in for Drive; only an admin or agent with access to
 the central server's MCP tools configures a remote.
 

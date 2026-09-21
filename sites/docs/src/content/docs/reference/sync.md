@@ -11,9 +11,9 @@ For the conceptual model see [Local Mirrors](/concepts/mirrors/).
 
 A **remote** is a backend storage configuration. One row per remote in the `remotes` table. The same Portuni instance can have many remotes – e.g. one Google Shared Drive per organization.
 
-A **local workspace** (neither central mode nor a central-mode sync agent — see [Data Modes](/concepts/data-modes/)) cannot register or route to a remote at all. `portuni_setup_remote` and `portuni_set_routing_policy` refuse with error code `LOCAL_MODE_NO_REMOTE` there, and so does every push/pull operation: `portuni_store`, `portuni_pull`, `portuni_snapshot`, `POST /nodes/:id/sync`, and `POST /nodes/:id/files/:fileId/resolve`. Sharing files across machines runs through central mode instead.
+A **personal workspace** (neither team workspace nor a sync agent — see [Files: the two sync planes](/concepts/data-modes/)) cannot register or route to a remote at all. `portuni_setup_remote` and `portuni_set_routing_policy` refuse with error code `LOCAL_MODE_NO_REMOTE` there, and so does every push/pull operation: `portuni_store`, `portuni_pull`, `portuni_snapshot`, `POST /nodes/:id/sync`, and `POST /nodes/:id/files/:fileId/resolve`. Sharing files across machines runs through team workspace instead.
 
-A local workspace's `portuni_status` still works — it just never reports anything push/pull/conflict-shaped. Tracked files there classify as only `clean` (present on disk) or `deleted_local` (tracked, gone from disk); an untracked file is `new_local`. `push`, `pull`, `conflict`, `remote_missing`, and `remote_error` cannot occur without a remote to compare against.
+A personal workspace's `portuni_status` still works — it just never reports anything push/pull/conflict-shaped. Tracked files there classify as only `clean` (present on disk) or `deleted_local` (tracked, gone from disk); an untracked file is `new_local`. `push`, `pull`, `conflict`, `remote_missing`, and `remote_error` cannot occur without a remote to compare against.
 
 ### portuni_setup_remote
 
@@ -28,7 +28,7 @@ Create **or update** a named remote (upsert) and store its credentials. Calling 
 
 For a **Service Account** remote the `shared_drive_id` is mandatory – service accounts have no My Drive storage quota, so they can only write into Shared Drives.
 
-`portuni_setup_remote` (service account, central-mode only) is the only way to configure a Drive remote — there is no per-user OAuth connect flow. See [Setting Up Remotes](/guides/setting-up-remotes/).
+`portuni_setup_remote` (service account, team-workspace only) is the only way to configure a Drive remote — there is no per-user OAuth connect flow. See [Setting Up Remotes](/guides/setting-up-remotes/).
 
 ### portuni_list_remotes
 
@@ -89,14 +89,14 @@ Export a Google Docs/Sheets/Slides URL to PDF / Markdown / DOCX and store it as 
 | `filename` | string | no | Override the default filename (`snapshot-<timestamp>.<ext>`) |
 | `subpath` | string \| null | no | Optional subfolder within the node's section |
 
-Returns: `{ file_id, filename, remote_path }`. With a local mirror the exported buffer is stored via the same flow as `portuni_store`; without one (central server, teammate session) it is created directly on the remote and registered. In agent mode the device then pulls the file into its mirror and adds `local_path` (`null` when the node is not mirrored on that device).
+Returns: `{ file_id, filename, remote_path }`. With a local mirror the exported buffer is stored via the same flow as `portuni_store`; without one (central server, teammate session) it is created directly on the remote and registered. In the sync agent the device then pulls the file into its mirror and adds `local_path` (`null` when the node is not mirrored on that device).
 
 ## Deliberate sync run
 
-`portuni_status` only reports the current classification — it never touches the remote or cleans anything up. Reconciling drift against the remote happens in a **deliberate sync run**, triggered by the desktop/web UI's "Synchronizovat" action (or, for a teammate mirror in central mode, by the sync agent). One run does, in order:
+`portuni_status` only reports the current classification — it never touches the remote or cleans anything up. Reconciling drift against the remote happens in a **deliberate sync run**, triggered by the desktop/web UI's "Synchronizovat" action (or, for a teammate mirror in a team workspace, by the sync agent). One run does, in order:
 
 1. **Retry pending file ops** — replays any move/rename/delete whose remote step didn't finish last time (see [Destructive operations](#destructive-operations) below).
-2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared anywhere under `wip/`, `outputs/`, or `resources/` (at any depth) is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable. The sweep also refreshes `current_remote_hash` for any tracked, present record — central-mode classification reads that column as its only source of remote truth, so a record with a NULL hash used to read as `remote_missing` forever even though the object was right there in the sweep's own listing (#273), and a record whose hash went stale (a teammate editing the file directly in Drive) used to read as permanently clean, so the edit was never pulled by any device (#276). For a backend that reports a content hash on listing (Drive) this refresh costs no extra remote call; a backend that doesn't (e.g. a plain filesystem remote) only gets a NULL hash resolved (by downloading and hashing), since re-verifying an already-known hash there would mean downloading every tracked file's content on every sync.
+2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared anywhere under `wip/`, `outputs/`, or `resources/` (at any depth) is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable. The sweep also refreshes `current_remote_hash` for any tracked, present record — team-workspace classification reads that column as its only source of remote truth, so a record with a NULL hash used to read as `remote_missing` forever even though the object was right there in the sweep's own listing (#273), and a record whose hash went stale (a teammate editing the file directly in Drive) used to read as permanently clean, so the edit was never pulled by any device (#276). For a backend that reports a content hash on listing (Drive) this refresh costs no extra remote call; a backend that doesn't (e.g. a plain filesystem remote) only gets a NULL hash resolved (by downloading and hashing), since re-verifying an already-known hash there would mean downloading every tracked file's content on every sync.
 3. **Reconcile.** Resolve every tracked record whose remote state is *unknown* — central holds no hash for it and this device has never observed one. A missing hash means "nobody has looked", never "the object is gone" (the sweep proves absence by deleting the record), so without this step such a record is skipped as `remote_missing` on every run, forever. Bounded per run, and self-extinguishing: a resolved record never comes back.
 4. Status scan — a pure read of what is now known. `statusScanCentral` has no `fast` parameter: re-deriving truth is the step above, not a mode of reading.
 5. Push every `push` candidate, pull every `pull` candidate. A push the remote refuses because it already holds *different* content is reported under `conflicts`, not `errors` — the refusal itself proves the remote object exists, and the device records the hash it just observed, so the file reads as a `conflict` from then on and the row offers "Ponechat lokální"/"Vzít z remote" instead of a push that can never land. This matters most when central's own `current_remote_hash` is NULL: classification would otherwise keep reading the file as an ordinary pending upload forever. A `deleted_local` file is reported, not auto-restored — that needs an explicit decision (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)). Every push and pull is serialized per local path against any other push/pull of that same file on this device (a background push from `portuni_store`'s create flow, a sync-run push, a foreground pull, an editor save) — an edit landing mid-push is rehashed and stays a push candidate instead of being masked as clean, and a pull's dirty-local check can't be raced by a write landing after the check but before the overwrite (#277). Every entry in `errors` carries the `sync_class` the file had when the run tried to act on it, so a failed pull stays an incoming pull in the overview instead of being counted as local work to push.
@@ -124,7 +124,7 @@ The cross-mirror aggregate behind the footer badge, the quit guard, and `/sync/j
 
 - **`pull`** — the remote side: records whose remote copy is newer than this device's. On central the [remote watcher](#get-syncwatch--remote-watcher-state) keeps these current without anyone running a sync, so a teammate's edit shows up here on its own. A run *does* clear them, but the work is not the caller's own, so `pull` counts towards neither `total` nor `decisions` — the "unsynced local work" badge would otherwise report someone else's edits. A node holding only `pull` records still appears in the overview (and is what the sidebar's „Nové na remote" signal counts).
 
-`remote_missing` is reported per node but counted in neither — a run does not push or pull it either, and (per the remote-sweep hash backfill above) most `remote_missing` misclassifications now self-correct on the next sweep instead of needing a decision at all. In central mode a device also falls back to a remote hash it observed first-hand on an earlier push or pull when central's record carries none, so a file it has provably reached stops reading as `remote_missing` even before the next sweep.
+`remote_missing` is reported per node but counted in neither — a run does not push or pull it either, and (per the remote-sweep hash backfill above) most `remote_missing` misclassifications now self-correct on the next sweep instead of needing a decision at all. In a team workspace a device also falls back to a remote hash it observed first-hand on an earlier push or pull when central's record carries none, so a file it has provably reached stops reading as `remote_missing` even before the next sweep.
 
 ### `GET /sync/watch` — remote watcher state
 
@@ -133,7 +133,7 @@ What the remote watcher is doing, one entry per remote it knows about:
 Read scope, no body.
 
 The watcher runs on the central server only — Drive credentials live there,
-and a local workspace has no remote at all — so a local workspace answers
+and a personal workspace has no remote at all — so a personal workspace answers
 `{ "remotes": [] }` and the desktop renders no watcher line. `watching` is
 false for a backend with no change feed (fs, OpenDAL: the periodic full
 sweep is all there is for it) and while a remote is failing;
@@ -259,7 +259,7 @@ Register existing **remote** files (not currently tracked) as `files` rows for t
 
 :::note[Adopt vs store]
 - `portuni_adopt_files` is for files that already live on the remote (created by a teammate or another device). It pulls metadata only, no upload.
-- [`portuni_store`](/reference/files/#portuni_store) is for a deliberate **push** to the remote. New local files in a mirror are registered automatically (local-only, no upload) by the mirror watcher, so `portuni_store` is not needed just to make a file visible – only to push it. The watcher is default-on in the desktop sidecar; the standalone server needs `PORTUNI_WATCH_MIRRORS=1`. In a watcher-less environment, call `portuni_store` right after creating a file in a mirror – nothing else registers it there.
+- [`portuni_store`](/reference/files/#portuni_store) is for a deliberate **push** to the remote. New local files in a mirror are registered automatically (device-local, no upload) by the mirror watcher, so `portuni_store` is not needed just to make a file visible – only to push it. The watcher is default-on in the desktop sidecar; the standalone server needs `PORTUNI_WATCH_MIRRORS=1`. In a watcher-less environment, call `portuni_store` right after creating a file in a mirror – nothing else registers it there.
 :::
 
 | Parameter | Type | Required | Description |

@@ -5,7 +5,7 @@ description: How to install and run Portuni.
 
 If you're reading this, you're about to get Portuni running on your machine. This page walks you through the install, the environment variables, and starting the server – so that by the end, your AI agents have something to talk to.
 
-Two install paths: the desktop app (recommended) or the standalone CLI server (for contributors and CI). Setting Portuni up for a whole organization — a central server with Google sign-in that teammates connect to — has its own page: [Team Setup](/getting-started/team-setup/).
+This page sets up a **personal workspace**: one person, one machine (see [Workspaces](/concepts/workspaces/) for the two kinds). Two install paths: the desktop app (recommended) or the standalone CLI server (for contributors and CI). Setting Portuni up for a whole organization — a **team workspace** with a central server and Google sign-in that teammates connect to — has its own page: [Team Setup](/getting-started/team-setup/).
 
 ## Install the desktop app (recommended)
 
