@@ -389,14 +389,22 @@ symlink to this file.
   note; both show mirror-watcher errors, unrelated to Drive.
 - **Mirror scope configs are Portuni-managed.** `portuni_mirror` materializes
   `.mcp.json`, `.claude/settings.local.json`, `.codex/config.toml`,
-  `.vibe/config.toml`, `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks
+  `PORTUNI_SCOPE.md` and marker blocks
   in CLAUDE.md/AGENTS.md – don't hand-edit those blocks
-  (`apps/server/domain/scope-materialize.ts`). The per-mirror `.mcp.json` (Claude)
-  and `.vibe/config.toml` (Mistral Vibe) carry `?home_node_id=…` (scope
-  auto-seed) and reference the token via env var – never a literal. The
-  desktop app has no terminal of its own to inject it into (#345) — a shell
-  outside the app exports `PORTUNI_MCP_TOKEN` itself (Settings → Copy token).
-  User-scoped fallbacks for sessions outside any mirror:
+  (`apps/server/domain/scope-materialize.ts`). The per-mirror `.mcp.json`
+  (Claude) carries `?home_node_id=…` (scope auto-seed) and references the
+  token via env var – never a literal, and **no `X-Portuni-Spawn-Id`**
+  (#406: a runner-driven run gets that header from `RunStart.mcp.headers`,
+  and nothing exports `PORTUNI_SPAWN_SESSION_ID` into a hand-opened CLI's
+  shell since #345, so materializing it could only expand to an empty
+  header). The `.vibe/config.toml` and `.cursor/rules` writers are **gone**
+  (#406, finishing #346): both served harnesses the removed embedded
+  terminal launched, so a Vibe/Cursor session now connects through its own
+  user-scoped config, starts unscoped and seeds with
+  `portuni_session_init`. The
+  desktop app has no terminal of its own to inject the token into (#345) — a
+  shell outside the app exports `PORTUNI_MCP_TOKEN` itself (Settings → Copy
+  token). User-scoped fallbacks for sessions outside any mirror:
   `~/.claude.json` (`install_claude_global`), `~/.codex/config.toml`
   (`install_codex_global`), `~/.vibe/config.toml` (`install_vibe_global`).
 - **A `.showtime` file reads as its bundled `preview.html`.** A Showtime deck
@@ -431,13 +439,15 @@ symlink to this file.
   Showtime found, and is disabled without a mirror. Portuni does nothing
   after the link: Showtime creates the bundle, the watcher registers it.
   Spec: `docs/superpowers/specs/2026-09-02-showtime-handoff-design.md`.
-- **Mistral Vibe needs `--trust`.** Vibe only loads the per-mirror
-  `.vibe/config.toml` (and thus auto-seeds) when the folder is trusted, so
-  the desktop "Mistral Vibe" preset launches `vibe --trust`
-  (session-only trust). Without it Vibe falls back to `~/.vibe/config.toml`
-  (no `home_node_id`) and starts unscoped. Vibe merges project over user
-  config (union-merge of `mcp_servers` by `name`), so the per-mirror file is
-  minimal and never clobbers the user's models/providers.
+- **Mistral Vibe connects user-scoped only.** Portuni writes no per-mirror
+  `.vibe/config.toml` any more (#406), and the desktop launch preset that
+  used to run `vibe --trust` went with the embedded terminal (#345), so Vibe
+  reads `~/.vibe/config.toml` (`install_vibe_global`), which carries no
+  `home_node_id` — a Vibe session starts unscoped and seeds with
+  `portuni_session_init`. A hand-written project `.vibe/config.toml` still
+  works, and still needs `vibe --trust` to be loaded at all: Vibe merges
+  project over user config (union-merge of `mcp_servers` by `name`), so such
+  a file is minimal and never clobbers the user's models/providers.
 - **A confirmation dialog must never outlive the client's tool-call
   deadline, and a tool that cannot possibly succeed never opens one
   (#409).** `portuni_store` through the remote connector (claude.ai →
@@ -827,8 +837,8 @@ symlink to this file.
   for a suspended session) is written into `PORTUNI_SCOPE.md`
   instead (`domain/write-scope.ts` `buildOrientationHint`,
   `domain/scope-materialize.ts` `orientationForNode`) — appended there only,
-  never into `.cursor/rules` or the `CLAUDE.md`/`AGENTS.md` marker blocks,
-  which stay on the terser write-scope hint. **Central-mode mirrors get a
+  never into the `CLAUDE.md`/`AGENTS.md` marker blocks, which stay on the
+  terser write-scope hint. **Central-mode mirrors get a
   real orientation section too now (#323 ends the cut):**
   `CentralClient.orientation` (`GET /nodes/:id/orientation`, computed on
   central, which has the real graph db) backs
@@ -1252,7 +1262,14 @@ symlink to this file.
     human via `POST /nodes/:id/files/:fileId/resolve`). A node with only
     decisions still appears in the overview with `total: 0`.
     `SyncOverview.tsx` shows the split as `+N k rozhodnutí` and puts only
-    actionable nodes in a job's default node set.
+    actionable nodes in a job's default node set. A finished run's own
+    residual accounting (`apps/web/src/lib/sync-pending-residual.ts`, what
+    clears a just-synced node from the overview before the next aggregate
+    scan lands) reads `SyncRunResponse.errors[].sync_class`: every error
+    entry carries the class the file had when the run tried to act on it
+    (`sync-run.ts` and `engine-central.ts`'s `syncRunCentral` both tag
+    theirs), so a failed pull stays a pending `pull` instead of being
+    counted as a push the user is expected to clear.
   - **Central hash tracking**: `current_remote_hash` is central-mode
     classification's only source of remote truth, so every path that proves
     the remote's identity persists it -- `writeFileBytesRemote`'s `ifAbsent`
@@ -1313,12 +1330,40 @@ symlink to this file.
     tick) is skipped the way a listing that no longer shows it would be.
     `planRemoteChanges` is the pure reducer
     (`RemoteChange[]` + the watched node roots -> per-file operations; a
-    folder, a pathless hard delete, a path outside every node root and a
-    path outside `wip`/`outputs`/`resources` are dropped, longest node root
+    path outside every node root and a path outside
+    `wip`/`outputs`/`resources` are dropped, longest node root
     wins so a child project owns its files rather than its organization,
     last change per path wins). `applyRemoteChanges` runs each one under
     the same `withPathLock("<remote>:<remote_path>")` key the adapter-direct
-    central write path uses. **Registration only, never bytes** (rule 2): a
+    central write path uses. **A change is correlated with a record by the
+    backend's own object id, not by path alone (#418).** `files
+    .remote_file_id` (migration 038 + `PG_BASELINE_DDL`, index
+    `(remote_name, remote_file_id)` in `DDL_AFTER_MIGRATIONS` -- never in
+    the DDL replay, which runs BEFORE the migration pass) carries Drive's
+    file id; `FileRef.remote_file_id` is where it comes from and every path
+    that proves an object's identity persists it through
+    `remote-sweep.ts`'s `persistRemoteFileId` (adopt, `storeFile`'s upsert,
+    `createFileRemote`, `writeFileBytesRemote`, the sweep's hash refresh,
+    `backfillRemoteHash`); fs/OpenDAL report none and the column stays
+    NULL. `RemoteChange`'s `upsert` carries `file_id` too. That turns the
+    three events the old path-only correlation degraded to "wait for the
+    6 h sweep" into same-tick work: a **hard delete** (`removed: true`, no
+    metadata at all) is planned as `remove_by_id` and `findRecordByRemoteFileId`
+    finds the row, which `deleteRemovedRecords` then confirms and
+    tombstones as usual; a **rename/move** arrives as an upsert at a new
+    path whose id already belongs to a record, so the record is
+    RELOCATED (`writeRelocatedRecord`, the same call `moveFile` makes, plus
+    a `sync_move` audit tombstone -- which is what makes a device drop its
+    stale copy at the old path instead of re-adopting and pushing it back)
+    rather than a second row adopted; a **folder rename/move** reports the
+    folder and nothing for its children, so the reducer resolves it to its
+    node and returns `sweepNodeIds`, which the tick hands to
+    `RemoteWatchTickArgs.sweepNodes` -- a bounded catch-up sweep of exactly
+    those nodes, deliberately NOT recorded as the periodic whole-workspace
+    sweep (`beginCatchUp(..., isFullSweep)`, and `RemoteState.sweepsInFlight`
+    is a counter now, since a node sweep can overlap the periodic one).
+    `planRemoteChanges` drops a change as `no_path` only when it carries
+    neither a path nor a file id. **Registration only, never bytes** (rule 2): a
     device with a mirror reads `pull` on its next status read, because
     `statusScanCentral` classifies off `files.current_remote_hash` -- which
     is exactly what the watcher maintains -- and the bytes still arrive
@@ -1328,18 +1373,74 @@ symlink to this file.
     safe because each operation is idempotent. Catch-up is the full
     `remoteSweep` for every node routed to the remote -- at boot, after a
     feed `reset`, and every `PORTUNI_REMOTE_SWEEP_INTERVAL_MS` (6 h) -- run
-    through `sync-jobs.ts`'s worker pool; that pool now serializes per node
+    through `sync-jobs.ts`'s worker pool; that pool serializes per node
     (`withNodeSyncLock`, path-lock keyed `sync-node:<id>`), so a catch-up
     and a user-triggered "Synchronizovat vše" of the same node never
-    overlap, the later one waits. A tick that throws backs off from the tick
-    interval (60 s -> 2 -> 4 -> ... cap 1 h, `backoffMsFor`'s new `baseMs`
-    argument) and leaves the cursor alone. Nothing device-side changed: no
-    `agent-router.ts` route, no `is_local_only_path` entry, no
-    `CentralClient` method, no MCP tool -- the device already reads the
-    maintained state. `remote_folder_cache` is created by the same migration as the
-    persistent backing the spec reserves for the Drive adapter's ancestor
-    cache and is not read yet (#337's in-process `folderMemo` is what fills
-    the role today).
+    overlap, the later one waits. **The pool is not the only caller of that
+    lock (#417)**: `api/nodes.ts`'s `handleSyncRun` (`POST /nodes/:id/sync`
+    -- the single-node button and the MCP tools) and `handleRemoteSweep`
+    (`POST /nodes/:id/sync/remote-sweep`, what an agent-mode device asks
+    central for) take it in the handler, as does `agent-router.ts`'s own
+    device-side `POST /nodes/:id/sync`; without it a user-triggered sync and
+    the watcher's catch-up of the same node still interleaved (double adopt,
+    double tombstone, unique-constraint errors). **A tick that throws AND a
+    tick whose batch did not fully apply both back off (#417)** from the
+    tick interval (60 s -> 2 -> 4 -> ... cap 1 h, `backoffMsFor`'s `baseMs`
+    argument) and leave the cursor alone -- an apply error is what keeps the
+    cursor unpersisted, so without the backoff the same batch replayed once
+    a minute forever against a remote already answering 429. **A sweep is
+    recorded when it finishes, not when it starts (#417)**: the default
+    `runCatchUp` awaits the job through `sync-jobs.ts`'s new
+    `awaitSyncJob(jobId)` and throws on the first node error;
+    `beginCatchUp` runs that detached (a tick is a 60 s heartbeat, a sweep
+    is a whole-workspace job -- `RemoteState.sweepsInFlight` is what keeps
+    the next tick from starting a second one) and sets `lastFullSweepAt`
+    only on a clean finish. **A failed sweep backs off on its own schedule
+    (#422)**: `RemoteState.sweepBackoff`/`sweepError` are separate from the
+    tick's `backoff`/`lastError`, since a node the sweep cannot list is not
+    a feed failure -- the feed keeps being polled, `watching` stays true,
+    and `GET /sync/watch` reports `sweep_error` + `sweep_backoff_until`
+    (60 s -> 1 h, same `recordUnreachable` schedule) next to the feed's
+    fields; sharing the tick's slot would be wiped by the next clean tick.
+    `maybeFullSweep` honours it; a full sweep the feed asks for
+    (baseline/reset) while backing off clears `lastFullSweepAt` instead of
+    starting, so the first tick past the backoff sweeps. Node-scoped sweeps
+    (#418) are never gated. Without this, one permanently failing node ran
+    whole-workspace sweeps back to back forever.
+    Device-side: `agent-router.ts`'s single-node sync route took the same
+    lock, nothing else changed -- no new `is_local_only_path` entry, no
+    `CentralClient` method, no MCP tool; the device already reads the
+    maintained state. #418 needed nothing there either: the watcher is
+    central-only, `remote_file_id` never leaves central (`SyncInfo.files`
+    does not carry it and classification does not read it), and a
+    relocation reaches a device through the `sync_move` tombstone the
+    sync-info tombstone query already ships. **The ancestor cache the
+    watcher's path resolution rides on is two tiers, and the lower one is
+    `remote_folder_cache` (#419).** `drive-folder-cache.ts` is the whole of
+    it: `createDbFolderPathStore(db, remoteName)` over the table migration
+    037 created (folder id -> path relative to the remote root, one row per
+    folder), and `createFolderPathCache(store, max)` over that -- an
+    insertion-ordered LRU memo bounded by
+    `PORTUNI_DRIVE_FOLDER_MEMO_MAX` (5 000), so Drive's folder history
+    cannot grow it without limit and an eviction costs a DB read rather
+    than a `files.get`. `adapter-cache.ts` is what hands the store to
+    `createDriveAdapter(remote, tokens, { folderCache })`; the third
+    parameter is optional and an adapter built without it (a test) behaves
+    exactly as #337's memo-only version did. Lookup order is memo -> row ->
+    Drive, writes go to both tiers (a *negative* entry -- "this ancestry
+    does not reach the remote root" -- is memo-only and never persisted),
+    and the first tick after a restart resolves a changed file's path from
+    the table instead of re-walking every ancestor over the network.
+    **Invalidation is by path, which is what the table stores**: a folder
+    reported by the change feed recomputes its own path from the change
+    (still no network call -- the change carries the name and the parent)
+    and, when that path moved, drops the folder's OLD path and everything
+    under it in both tiers; a removed folder drops the same subtree; the
+    adapter's own writes go through `invalidatePrefix`, which now narrows
+    to the written subtree instead of clearing the whole memo; and a
+    change-feed `reset` truncates the remote's rows, since the full sweep
+    that follows refills them. Descendants are never recomputed eagerly --
+    dropped rows refill lazily on the next miss, one `files.get` each.
   - **Watcher state is read through a seam, and its device-side signal is a
     `pull` count (#339).** `GET /sync/watch` (read tier) answers
     `{remotes: [{remote_name, watching, cursor_updated_at, last_tick_at,

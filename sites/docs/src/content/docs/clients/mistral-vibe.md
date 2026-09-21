@@ -1,9 +1,13 @@
 ---
 title: Mistral Vibe
-description: Connecting Mistral Vibe to Portuni, why it needs --trust to auto-seed scope, and how its layered config merges.
+description: Connecting Mistral Vibe to Portuni, how its layered config merges, and why a mirror needs --trust.
 ---
 
-Mistral's [Vibe](https://github.com/mistralai/mistral-vibe) is a terminal coding agent that speaks MCP. Connecting it to Portuni works the same way as the other clients, with one Vibe-specific wrinkle: **Vibe only loads a project's `.vibe/config.toml` when the folder is trusted**, and that's exactly the file Portuni uses to auto-seed your scope. Get the trust step right and Vibe behaves like Claude Code — start in a mirror, and the home node is already in scope.
+Mistral's [Vibe](https://github.com/mistralai/mistral-vibe) is a terminal coding agent that speaks MCP. Connecting it to Portuni works the same way as the other clients: one entry in `~/.vibe/config.toml`, written for you by the desktop app.
+
+:::note
+Portuni no longer writes a per-mirror `.vibe/config.toml`. That writer existed for the embedded terminal the desktop app used to launch Vibe from, which is gone — an agent runs as a task now, and a Vibe session is something you start yourself. Vibe therefore connects through the user-scoped `~/.vibe/config.toml`, without `?home_node_id=…`: a session starts **unscoped** and seeds its scope with `portuni_session_init` (or `portuni_expand_scope`). If you want auto-seed, write a project `.vibe/config.toml` yourself — the shape is below — and start Vibe with `--trust`.
+:::
 
 ## Connecting to Portuni
 
@@ -26,11 +30,13 @@ The bearer token is read from an environment variable (`api_key_env`), never wri
 
 In the desktop app, **Settings → MCP server → "Přidat do Vibu (~/.vibe/config.toml)"** writes this for you — one entry per enabled workspace, named `portuni-<workspace-id>` (a workspace migrated from a single-workspace install keeps the historical name `portuni`) — merging the Portuni servers into your existing config without disturbing your models or providers.
 
-## Why `--trust` matters
+## Auto-seed, if you want it: a hand-written project config
+
+Appending `?home_node_id=<node id>` to the server URL is what makes a session seed its own read scope on connect — the same mechanism Claude Code gets from the per-mirror `.mcp.json` Portuni does still write. Vibe has no equivalent Portuni-managed file any more, so write one yourself in the mirror (`./.vibe/config.toml`, the block above with `?home_node_id=<id>` on the `url`).
+
+## Why `--trust` matters for a project config
 
 Vibe loads a project-level `./.vibe/config.toml` **only when the working directory is trusted**. If a folder isn't on Vibe's trust list (or you declined the trust prompt once — it then sits in `~/.vibe/trusted_folders.toml` under `untrusted` and is never asked about again), Vibe silently ignores the project config and falls back to `~/.vibe/config.toml`.
-
-That fallback connection has no `?home_node_id=…`, so the session starts **unscoped** — and the agent has to call `portuni_expand_scope` (and confirm) before it can read its own node.
 
 The fix is to launch with `--trust`, which trusts the working directory **for that session only** (it is *not* persisted to `trusted_folders.toml`):
 
@@ -38,21 +44,17 @@ The fix is to launch with `--trust`, which trusts the working directory **for th
 vibe --trust
 ```
 
-Start Vibe inside a mirror as `vibe --trust` precisely for this reason, so it loads the project config and auto-seeds. (Session trust overrides an `untrusted` entry, so you don't have to clean that file up.)
-
-## Auto-seed, the same as Claude Code
-
-When `portuni_mirror` materialises a mirror, it writes a `.vibe/config.toml` whose Portuni server URL carries `?home_node_id=<id>` — the same mechanism Claude Code gets from `.mcp.json`. The first time Vibe opens an MCP session inside that mirror (with `--trust`), the Portuni server reads the param and seeds the read scope with the home node plus its depth-1 neighbors. No opening tool call, no expand-scope prompt — scope is just ready.
+(Session trust overrides an `untrusted` entry, so you don't have to clean that file up.)
 
 ## How the config merges
 
 Vibe layers config: the project file is merged **over** the user file rather than replacing it. Lists like `mcp_servers` use a union merge keyed by `name`, so:
 
 - Your `~/.vibe/config.toml` keeps your models, providers, API key, and tool settings.
-- The mirror's `.vibe/config.toml` only needs the single `portuni` server entry.
+- A mirror's own `.vibe/config.toml` only needs the single `portuni` server entry.
 - When both define `portuni`, the project entry (with `home_node_id`) wins.
 
-That's why the per-mirror file Portuni writes is minimal and safe — it never clobbers your global setup. The mirror file is a dot-path, so Portuni's sync walker ignores it and the device-specific URL/port never propagates to teammates.
+So a project file can stay minimal and never clobbers your global setup. It is a dot-path, so Portuni's sync walker ignores it and the device-specific URL/port never propagates to teammates.
 
 ## Filesystem access
 

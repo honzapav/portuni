@@ -21,6 +21,7 @@ import {
 } from "../apps/server/domain/sync/adapter-cache.js";
 import {
   applyRemoteChanges,
+  catchUpSweepNode,
   getRemoteCursor,
   planRemoteChanges,
   runRemoteWatchTick,
@@ -74,9 +75,14 @@ afterEach(async () => {
 // the bytes to hash them.
 interface FakeBackend extends FileAdapter {
   objects: Map<string, Buffer>;
+  // The backend's own stable object id per path, like Drive's file id: what
+  // survives a rename/move and is all a hard delete reports (#418). A path
+  // with no entry behaves like a backend without stable ids (fs/OpenDAL).
+  ids: Map<string, string>;
   native: Set<string>;
   hashless: Set<string>;
   getFails: Set<string>;
+  statFails: Set<string>;
   feed: RemoteChanges[];
   statCalls: string[];
   getCalls: string[];
@@ -88,9 +94,11 @@ const DRIVE_NATIVE_403 =
 
 function fakeBackend(): FakeBackend {
   const objects = new Map<string, Buffer>();
+  const ids = new Map<string, string>();
   const native = new Set<string>();
   const hashless = new Set<string>();
   const getFails = new Set<string>();
+  const statFails = new Set<string>();
   const feed: RemoteChanges[] = [];
   const statCalls: string[] = [];
   const getCalls: string[] = [];
@@ -101,12 +109,15 @@ function fakeBackend(): FakeBackend {
     size: body.length,
     modified_at: new Date(0),
     is_native_format: native.has(path),
+    remote_file_id: ids.get(path) ?? null,
   });
   return {
     objects,
+    ids,
     native,
     hashless,
     getFails,
+    statFails,
     feed,
     statCalls,
     getCalls,
@@ -125,6 +136,7 @@ function fakeBackend(): FakeBackend {
     },
     async stat(path) {
       statCalls.push(path);
+      if (statFails.has(path)) throw new Error(`Drive stat: 429 rate limited for ${path}`);
       const b = objects.get(path);
       return b ? refFor(path, b) : null;
     },
@@ -151,12 +163,18 @@ function fakeBackend(): FakeBackend {
   };
 }
 
-const upsert = (path: string, hash: string | null, is_folder = false): RemoteChange => ({
+const upsert = (
+  path: string,
+  hash: string | null,
+  is_folder = false,
+  file_id: string | null = null,
+): RemoteChange => ({
   kind: "upsert",
   path,
   hash,
   modified_at: new Date(0),
   is_folder,
+  file_id,
 });
 const remove = (path: string | null, file_id = "drive-id"): RemoteChange => ({
   kind: "remove",
@@ -166,7 +184,7 @@ const remove = (path: string | null, file_id = "drive-id"): RemoteChange => ({
 
 async function recordRow(db: DbClient, remotePath: string) {
   const r = await db.execute({
-    sql: "SELECT id, filename, current_remote_hash, status, is_native_format FROM files WHERE remote_path = ?",
+    sql: "SELECT id, filename, current_remote_hash, status, is_native_format, remote_file_id FROM files WHERE remote_path = ?",
     args: [remotePath],
   });
   return r.rows[0] ?? null;
@@ -183,8 +201,8 @@ describe("planRemoteChanges (pure reducer)", () => {
     { name: "a file under outputs/ is planned", change: upsert(`${NODE_ROOT}/outputs/b.md`, "h"), expect: "N-PROJ" },
     { name: "a file under resources/ is planned", change: upsert(`${NODE_ROOT}/resources/c.md`, "h"), expect: "N-PROJ" },
     { name: "a remove under wip/ is planned", change: remove(`${NODE_ROOT}/wip/a.md`), expect: "N-PROJ" },
-    { name: "a folder is dropped", change: upsert(`${NODE_ROOT}/wip/sub`, null, true), expect: "folder" },
-    { name: "a pathless hard delete is dropped", change: remove(null), expect: "no_path" },
+    { name: "a folder outside every node root is dropped", change: upsert("elsewhere/wip/sub", null, true), expect: "folder" },
+    { name: "a folder inside the root but outside a section is dropped", change: upsert(`${NODE_ROOT}/notes`, null, true), expect: "folder" },
     { name: "a path outside every node root is dropped", change: upsert("elsewhere/wip/a.md", "h"), expect: "out_of_root" },
     { name: "a path inside the root but outside a section is dropped", change: upsert(`${NODE_ROOT}/notes/a.md`, "h"), expect: "out_of_section" },
     { name: "a dot-prefixed segment is dropped", change: upsert(`${NODE_ROOT}/wip/.git/a.md`, "h"), expect: "out_of_section" },
@@ -207,6 +225,21 @@ describe("planRemoteChanges (pure reducer)", () => {
       }
     });
   }
+
+  it("a folder under a tracked section asks for that node's catch-up sweep, not a drop", () => {
+    // Drive reports one change for the renamed folder and none for its
+    // children, whose recorded paths just went stale (#418).
+    const plan = planRemoteChanges([upsert(`${NODE_ROOT}/wip/sub`, null, true, "folder-1")], nodes);
+    assert.deepEqual(plan.planned, []);
+    assert.deepEqual(plan.dropped, []);
+    assert.deepEqual(plan.sweepNodeIds, ["N-PROJ"]);
+  });
+
+  it("a pathless hard delete is planned by file id, not dropped", () => {
+    const plan = planRemoteChanges([remove(null, "drive-9")], nodes);
+    assert.equal(plan.dropped.length, 0);
+    assert.deepEqual(plan.planned, [{ kind: "remove_by_id", fileId: "drive-9" }]);
+  });
 
   it("keeps only the last change for a path", () => {
     const path = `${NODE_ROOT}/wip/a.md`;
@@ -337,6 +370,240 @@ describe("applyRemoteChanges", () => {
     });
     assert.deepEqual(res.deleted, []);
     assert.ok(await recordRow(db, path));
+  });
+});
+
+// #418: a change is correlated with a record by the backend's own object id,
+// not by path alone. Without it a hard delete (no path at all), a rename and
+// a folder move all degraded to "wait for the 6 h full sweep".
+describe("a change correlated by file id", () => {
+  const OLD = `${NODE_ROOT}/wip/stary.md`;
+  const NEW = `${NODE_ROOT}/wip/novy.md`;
+  const BODY = Buffer.from("v1");
+
+  // Adopt OLD through the watcher, so the record carries the backend's id
+  // exactly as a real adopt would.
+  async function adopted(db: DbClient, backend: FakeBackend): Promise<string> {
+    backend.objects.set(OLD, BODY);
+    backend.ids.set(OLD, "drive-1");
+    const nodes = await watchedNodesForRemote(db, "test-fs");
+    const res = await applyRemoteChanges(db, {
+      userId: "U1",
+      remoteName: "test-fs",
+      adapter: backend,
+      plan: planRemoteChanges([upsert(OLD, sha(BODY), false, "drive-1")], nodes).planned,
+    });
+    assert.equal(res.adopted.length, 1);
+    const row = await recordRow(db, OLD);
+    assert.equal(row!.remote_file_id, "drive-1");
+    return row!.id as string;
+  }
+
+  async function fileRows(db: DbClient) {
+    const r = await db.execute("SELECT id, remote_path, remote_file_id, current_remote_hash FROM files ORDER BY remote_path");
+    return r.rows;
+  }
+
+  it("a hard delete with no path removes the record, tombstones it, and the cursor advances", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    const fileId = await adopted(db, backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+
+    // Drive's own shape for a hard delete: the file id and nothing else.
+    backend.objects.delete(OLD);
+    backend.feed.push({ cursor: "c2", reset: false, changes: [remove(null, "drive-1")] });
+    const res = await runRemoteWatchTick(db, {
+      remoteName: "test-fs",
+      userId: "U1",
+      adapter: backend,
+      fullSweep: () => undefined,
+    });
+
+    assert.deepEqual(res.applied.errors, []);
+    assert.deepEqual(res.applied.deleted.map((d) => d.file_id), [fileId]);
+    assert.equal(res.cursor_persisted, true);
+    assert.equal((await getRemoteCursor(db, "test-fs"))?.cursor, "c2");
+    assert.equal(await recordRow(db, OLD), null);
+    const audit = await db.execute({
+      sql: "SELECT target_id FROM audit_log WHERE action = 'sync_delete_remote'",
+      args: [],
+    });
+    assert.deepEqual(audit.rows.map((r) => r.target_id), [fileId]);
+  });
+
+  it("a hard delete whose object is still there keeps the record (the confirmation stat decides)", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await adopted(db, backend);
+    const res = await applyRemoteChanges(db, {
+      userId: "U1",
+      remoteName: "test-fs",
+      adapter: backend,
+      plan: planRemoteChanges(
+        [remove(null, "drive-1")],
+        await watchedNodesForRemote(db, "test-fs"),
+      ).planned,
+    });
+    assert.deepEqual(res.deleted, []);
+    assert.ok(await recordRow(db, OLD));
+  });
+
+  it("a rename relocates the record instead of adopting a second one", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    const fileId = await adopted(db, backend);
+
+    // Renamed on the remote: same object (same id), new path.
+    backend.objects.delete(OLD);
+    backend.ids.delete(OLD);
+    backend.objects.set(NEW, BODY);
+    backend.ids.set(NEW, "drive-1");
+    const res = await applyRemoteChanges(db, {
+      userId: "U1",
+      remoteName: "test-fs",
+      adapter: backend,
+      plan: planRemoteChanges(
+        [upsert(NEW, sha(BODY), false, "drive-1")],
+        await watchedNodesForRemote(db, "test-fs"),
+      ).planned,
+    });
+
+    assert.deepEqual(res.errors, []);
+    assert.deepEqual(res.adopted, []);
+    assert.deepEqual(res.relocated, [
+      { file_id: fileId, from_remote_path: OLD, remote_path: NEW },
+    ]);
+    const rows = await fileRows(db);
+    assert.equal(rows.length, 1, "one row, not a delete plus an add");
+    assert.equal(rows[0].id, fileId, "the record keeps its id");
+    assert.equal(rows[0].remote_path, NEW);
+    assert.equal(rows[0].current_remote_hash, sha(BODY));
+    assert.equal((await recordRow(db, NEW))!.filename, "novy.md");
+    // A relocation is a move, not a deletion: no delete tombstone, and the
+    // sync_move row is what tells a device to drop its stale local copy.
+    const audit = await db.execute("SELECT action FROM audit_log WHERE action IN ('sync_delete_remote', 'sync_move')");
+    assert.deepEqual(audit.rows.map((r) => r.action), ["sync_move"]);
+  });
+
+  it("a relocated record is what a full remoteSweep would leave behind too (rule 4)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await adopted(db, backend);
+    backend.objects.delete(OLD);
+    backend.ids.delete(OLD);
+    backend.objects.set(NEW, BODY);
+    backend.ids.set(NEW, "drive-1");
+    await applyRemoteChanges(db, {
+      userId: "U1",
+      remoteName: "test-fs",
+      adapter: backend,
+      plan: planRemoteChanges(
+        [upsert(NEW, sha(BODY), false, "drive-1")],
+        await watchedNodesForRemote(db, "test-fs"),
+      ).planned,
+    });
+    const before = await fileRows(db);
+
+    // The sweep that follows has nothing left to do: no adopt, no delete,
+    // and the same single row.
+    const sweep = await remoteSweep(db, { userId: "U1", nodeId });
+    assert.deepEqual(sweep.errors, []);
+    assert.deepEqual(sweep.adopted, []);
+    assert.deepEqual(sweep.deleted_on_remote, []);
+    assert.deepEqual(await fileRows(db), before);
+  });
+
+  it("a rename inside the batch that also carries the old path's remove ends with one row at the new path", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    const fileId = await adopted(db, backend);
+    backend.objects.delete(OLD);
+    backend.ids.delete(OLD);
+    backend.objects.set(NEW, BODY);
+    backend.ids.set(NEW, "drive-1");
+
+    await applyRemoteChanges(db, {
+      userId: "U1",
+      remoteName: "test-fs",
+      adapter: backend,
+      plan: planRemoteChanges(
+        [upsert(NEW, sha(BODY), false, "drive-1"), remove(OLD, "drive-1")],
+        await watchedNodesForRemote(db, "test-fs"),
+      ).planned,
+    });
+    // The remove's own confirmation stat finds the object alive at the path
+    // the record now records, so the relocation is not undone.
+    const rows = await fileRows(db);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, fileId);
+    assert.equal(rows[0].remote_path, NEW);
+  });
+
+  it("a folder rename asks for that node's catch-up sweep, which lands every child at its new path", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    // The node root has to be visible for the sweep's reachability guard.
+    backend.objects.set(NODE_ROOT, Buffer.from(""));
+    const children = ["a.md", "b.md"];
+    for (const [i, name] of children.entries()) {
+      const path = `${NODE_ROOT}/wip/stara/${name}`;
+      backend.objects.set(path, Buffer.from(`c${i}`));
+      backend.ids.set(path, `drive-c${i}`);
+    }
+    const nodes = await watchedNodesForRemote(db, "test-fs");
+    await applyRemoteChanges(db, {
+      userId: "U1",
+      remoteName: "test-fs",
+      adapter: backend,
+      plan: planRemoteChanges(
+        children.map((name, i) =>
+          upsert(`${NODE_ROOT}/wip/stara/${name}`, sha(Buffer.from(`c${i}`)), false, `drive-c${i}`),
+        ),
+        nodes,
+      ).planned,
+    });
+    assert.equal((await fileRows(db)).length, 2);
+
+    // The folder is renamed on the remote: Drive reports the folder and
+    // nothing for its children.
+    for (const [i, name] of children.entries()) {
+      backend.objects.delete(`${NODE_ROOT}/wip/stara/${name}`);
+      backend.objects.set(`${NODE_ROOT}/wip/nova/${name}`, Buffer.from(`c${i}`));
+      backend.ids.set(`${NODE_ROOT}/wip/nova/${name}`, `drive-c${i}`);
+    }
+    await setRemoteCursor(db, "test-fs", "c1");
+    backend.feed.push({
+      cursor: "c2",
+      reset: false,
+      changes: [upsert(`${NODE_ROOT}/wip/nova`, null, true, "drive-folder")],
+    });
+    const sweptNodes: string[][] = [];
+    const res = await runRemoteWatchTick(db, {
+      remoteName: "test-fs",
+      userId: "U1",
+      adapter: backend,
+      fullSweep: () => assert.fail("a folder change must not ask for the whole-workspace sweep"),
+      sweepNodes: async (ids) => {
+        sweptNodes.push(ids);
+        for (const id of ids) await catchUpSweepNode(db, { userId: "U1", nodeId: id });
+      },
+    });
+
+    assert.deepEqual(res.swept_nodes, [nodeId]);
+    assert.deepEqual(sweptNodes, [[nodeId]]);
+    assert.equal(res.cursor_persisted, true);
+    const rows = await fileRows(db);
+    assert.deepEqual(
+      rows.map((r) => r.remote_path),
+      [`${NODE_ROOT}/wip/nova/a.md`, `${NODE_ROOT}/wip/nova/b.md`],
+    );
   });
 });
 
@@ -640,6 +907,325 @@ describe("RemoteWatchLoop", () => {
     await loop.tick();
     assert.equal(sweeps.length, 1);
     assert.equal((await getRemoteCursor(db, "test-fs")), null);
+  });
+
+  // Flush the detached catch-up sweep's own promise chain. beginCatchUp
+  // deliberately does not hold the tick open for the sweep, so its outcome
+  // lands a few microtasks later -- no timer, no sleep.
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
+  };
+
+  it("an apply error backs the remote off instead of replaying the batch every minute", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    const path = `${NODE_ROOT}/wip/a.md`;
+    backend.objects.set(path, Buffer.from("v1"));
+    // Drive answering 429 on the adopt's own stat: the batch cannot apply,
+    // the cursor stays put, and the very same batch is what the next tick
+    // would read again.
+    backend.statFails.add(path);
+    const batch = (): RemoteChanges => ({
+      cursor: "c2",
+      reset: false,
+      changes: [upsert(path, null)],
+    });
+    backend.feed.push(batch(), batch(), batch());
+    let clock = 1_000_000;
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: () => undefined,
+    });
+
+    await loop.tick();
+    assert.match(loop.status()[0].last_error ?? "", /429/);
+    assert.equal(loop.status()[0].backoff_until, new Date(clock + 60_000).toISOString());
+    assert.equal((await getRemoteCursor(db, "test-fs"))?.cursor, "c1");
+    assert.equal(loop.status()[0].last_tick_at, new Date(clock).toISOString());
+
+    // Inside the backoff window nothing is asked of the remote at all.
+    clock += 30_000;
+    const calls = backend.changesCalls.length;
+    await loop.tick();
+    assert.equal(backend.changesCalls.length, calls);
+
+    // Past it, one more failing batch doubles the wait.
+    clock += 40_000;
+    await loop.tick();
+    assert.equal(loop.status()[0].backoff_until, new Date(clock + 120_000).toISOString());
+
+    // The remote recovers: a clean tick clears the error and persists the
+    // cursor the failed batches never advanced.
+    clock += 200_000;
+    backend.statFails.delete(path);
+    await loop.tick();
+    assert.equal(loop.status()[0].last_error, null);
+    assert.equal(loop.status()[0].backoff_until, null);
+    assert.equal((await getRemoteCursor(db, "test-fs"))?.cursor, "c2");
+  });
+
+  it("a failed hash fetch backs the remote off the same way a failed stat does", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    const path = `${NODE_ROOT}/wip/b.md`;
+    backend.objects.set(path, Buffer.from("v1"));
+    // A backend that reports no hash on the change: the adopt fetches the
+    // bytes to hash them, and that GET is what fails.
+    backend.hashless.add(path);
+    backend.getFails.add(path);
+    backend.feed.push({ cursor: "c2", reset: false, changes: [upsert(path, null)] });
+    const clock = 1_000_000;
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: () => undefined,
+    });
+
+    await loop.tick();
+    assert.match(loop.status()[0].last_error ?? "", /get refused/);
+    assert.equal(loop.status()[0].backoff_until, new Date(clock + 60_000).toISOString());
+    assert.equal((await getRemoteCursor(db, "test-fs"))?.cursor, "c1");
+  });
+
+  it("records a catch-up sweep only once it finished clean, and retries a failed one", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    const sweeps: string[][] = [];
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async (ids) => {
+        sweeps.push(ids);
+        if (sweeps.length === 1) throw new Error("catch-up sweep failed for N: Drive 500");
+      },
+    });
+
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1);
+    assert.ok(sweeps[0].includes(nodeId));
+    assert.equal(loop.status()[0].last_full_sweep_at, null, "a job that failed is not a sweep");
+    // The sweep's failure is its own: the feed was polled fine, so the
+    // remote is still watched and the tick's error slot stays empty (#422).
+    assert.match(loop.status()[0].sweep_error ?? "", /Drive 500/);
+    assert.equal(loop.status()[0].last_error, null);
+    assert.equal(loop.status()[0].watching, true);
+
+    // The next tick after the backoff sweeps again instead of waiting out
+    // the 6 h interval on the strength of a job that never worked.
+    clock += 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 2);
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(clock).toISOString());
+    assert.equal(loop.status()[0].sweep_error, null);
+    assert.equal(loop.status()[0].sweep_backoff_until, null);
+
+    // And once one did finish, the interval applies as before.
+    clock += 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 2);
+  });
+
+  it("a failed catch-up sweep backs the periodic sweep off while the feed keeps being polled (#422)", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    const sweeps: string[][] = [];
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async (ids) => {
+        sweeps.push(ids);
+        throw new Error("catch-up sweep failed for N: Drive 403 on the node root");
+      },
+    });
+
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1);
+    let st = loop.status()[0];
+    assert.match(st.sweep_error ?? "", /403/);
+    assert.equal(st.sweep_backoff_until, new Date(clock + 60_000).toISOString());
+    // Feed healthy: still watched, no tick error, no tick backoff.
+    assert.equal(st.watching, true);
+    assert.equal(st.last_error, null);
+    assert.equal(st.backoff_until, null);
+
+    // Inside the window: no second sweep, but the change feed IS polled --
+    // a broken sweep is no reason to stop applying live changes.
+    clock += 30_000;
+    const polls = backend.changesCalls.length;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1, "no sweep inside the backoff window");
+    assert.equal(backend.changesCalls.length, polls + 1, "the feed is still polled");
+
+    // Past it: the sweep is retried, and its second failure doubles the wait.
+    clock += 30_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 2);
+    st = loop.status()[0];
+    assert.equal(st.sweep_backoff_until, new Date(clock + 120_000).toISOString());
+
+    clock += 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 2, "still backing off after one interval");
+  });
+
+  it("a sweep that fails and then succeeds resets its backoff and records the sweep", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    let calls = 0;
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("catch-up sweep failed for N: transient");
+      },
+    });
+
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 1);
+    assert.notEqual(loop.status()[0].sweep_backoff_until, null);
+
+    clock += 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 2);
+    const st = loop.status()[0];
+    assert.equal(st.sweep_error, null);
+    assert.equal(st.sweep_backoff_until, null);
+    assert.equal(st.last_full_sweep_at, new Date(clock).toISOString());
+  });
+
+  it("a full sweep the feed asks for during the backoff is deferred to the next allowed tick, not lost", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    let calls = 0;
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async () => {
+        calls += 1;
+        if (calls === 2) throw new Error("catch-up sweep failed for N: Drive 500");
+      },
+    });
+
+    // Boot sweep lands clean: the 6 h clock is set.
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 1);
+    const firstSweepAt = clock;
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(firstSweepAt).toISOString());
+
+    // The feed resets, which asks for a full sweep; that one fails.
+    clock += 60_000;
+    backend.changes = async () => ({ cursor: "fresh", changes: [], reset: true });
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 2);
+    assert.equal(loop.status()[0].sweep_backoff_until, new Date(clock + 60_000).toISOString());
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(firstSweepAt).toISOString());
+
+    // Another reset inside the window: the sweep it asks for cannot start,
+    // so the clock is cleared instead -- the request must survive the wait.
+    clock += 30_000;
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 2, "no sweep inside the backoff window");
+    assert.equal(loop.status()[0].last_full_sweep_at, null);
+
+    // Feed back to normal, backoff over: the deferred sweep runs now, not in
+    // six hours.
+    clock += 30_000;
+    backend.changes = async (cursor) => ({ cursor: cursor ?? "c0", changes: [], reset: false });
+    await loop.tick();
+    await settle();
+    assert.equal(calls, 3);
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(clock).toISOString());
+    assert.equal(loop.status()[0].sweep_error, null);
+  });
+
+  it("does not start a second sweep while one is still running", async () => {
+    const { db } = await makeSharedDb();
+    const backend = fakeBackend();
+    setAdapterForTests("test-fs", backend);
+    await setRemoteCursor(db, "test-fs", "c1");
+    let clock = 1_000_000;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const sweeps: string[][] = [];
+    const loop = new RemoteWatchLoop({
+      db,
+      userId: "U1",
+      intervalMs: 60_000,
+      sweepIntervalMs: 6 * 60 * 60_000,
+      now: () => clock,
+      schedule: () => ({}),
+      runCatchUp: async (ids) => {
+        sweeps.push(ids);
+        await gate;
+      },
+    });
+
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1);
+    clock += 6 * 60 * 60_000;
+    await loop.tick();
+    await settle();
+    assert.equal(sweeps.length, 1, "the first sweep is still running");
+    release();
+    await settle();
+    assert.equal(loop.status()[0].last_full_sweep_at, new Date(clock).toISOString());
   });
 
   it("runs the catch-up sweep at boot and again after the sweep interval, not before", async () => {

@@ -99,7 +99,7 @@ Returns: `{ file_id, filename, remote_path }`. With a local mirror the exported 
 2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared anywhere under `wip/`, `outputs/`, or `resources/` (at any depth) is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable. The sweep also refreshes `current_remote_hash` for any tracked, present record — central-mode classification reads that column as its only source of remote truth, so a record with a NULL hash used to read as `remote_missing` forever even though the object was right there in the sweep's own listing (#273), and a record whose hash went stale (a teammate editing the file directly in Drive) used to read as permanently clean, so the edit was never pulled by any device (#276). For a backend that reports a content hash on listing (Drive) this refresh costs no extra remote call; a backend that doesn't (e.g. a plain filesystem remote) only gets a NULL hash resolved (by downloading and hashing), since re-verifying an already-known hash there would mean downloading every tracked file's content on every sync.
 3. **Reconcile.** Resolve every tracked record whose remote state is *unknown* — central holds no hash for it and this device has never observed one. A missing hash means "nobody has looked", never "the object is gone" (the sweep proves absence by deleting the record), so without this step such a record is skipped as `remote_missing` on every run, forever. Bounded per run, and self-extinguishing: a resolved record never comes back.
 4. Status scan — a pure read of what is now known. `statusScanCentral` has no `fast` parameter: re-deriving truth is the step above, not a mode of reading.
-5. Push every `push` candidate, pull every `pull` candidate. A push the remote refuses because it already holds *different* content is reported under `conflicts`, not `errors` — the refusal itself proves the remote object exists, and the device records the hash it just observed, so the file reads as a `conflict` from then on and the row offers "Ponechat lokální"/"Vzít z remote" instead of a push that can never land. This matters most when central's own `current_remote_hash` is NULL: classification would otherwise keep reading the file as an ordinary pending upload forever. A `deleted_local` file is reported, not auto-restored — that needs an explicit decision (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)). Every push and pull is serialized per local path against any other push/pull of that same file on this device (a background push from `portuni_store`'s create flow, a sync-run push, a foreground pull, an editor save) — an edit landing mid-push is rehashed and stays a push candidate instead of being masked as clean, and a pull's dirty-local check can't be raced by a write landing after the check but before the overwrite (#277).
+5. Push every `push` candidate, pull every `pull` candidate. A push the remote refuses because it already holds *different* content is reported under `conflicts`, not `errors` — the refusal itself proves the remote object exists, and the device records the hash it just observed, so the file reads as a `conflict` from then on and the row offers "Ponechat lokální"/"Vzít z remote" instead of a push that can never land. This matters most when central's own `current_remote_hash` is NULL: classification would otherwise keep reading the file as an ordinary pending upload forever. A `deleted_local` file is reported, not auto-restored — that needs an explicit decision (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)). Every push and pull is serialized per local path against any other push/pull of that same file on this device (a background push from `portuni_store`'s create flow, a sync-run push, a foreground pull, an editor save) — an edit landing mid-push is rehashed and stays a push candidate instead of being masked as clean, and a pull's dirty-local check can't be raced by a write landing after the check but before the overwrite (#277). Every entry in `errors` carries the `sync_class` the file had when the run tried to act on it, so a failed pull stays an incoming pull in the overview instead of being counted as local work to push.
 6. Clean up untracked local copies that match a delete or move/rename tombstone.
 7. Adopt whatever local files are still untracked — including an edited copy of a file just deleted on the remote, which wins over the deletion and gets pushed back.
 
@@ -129,7 +129,7 @@ The cross-mirror aggregate behind the footer badge, the quit guard, and `/sync/j
 ### `GET /sync/watch` — remote watcher state
 
 What the remote watcher is doing, one entry per remote it knows about:
-`{ remotes: [{ remote_name, watching, cursor_updated_at, last_tick_at, last_error, backoff_until, last_full_sweep_at }] }`.
+`{ remotes: [{ remote_name, watching, cursor_updated_at, last_tick_at, last_error, backoff_until, last_full_sweep_at, sweep_error, sweep_backoff_until }] }`.
 Read scope, no body.
 
 The watcher runs on the central server only — Drive credentials live there,
@@ -140,7 +140,24 @@ sweep is all there is for it) and while a remote is failing;
 `cursor_updated_at` is when a batch of remote changes was last applied end
 to end, which is what Nastavení › Synchronizace shows as „poslední změna
 před 2 min". A failing remote reports `last_error` and, while it is backing
-off, `backoff_until`. Every timestamp is ISO-8601 UTC.
+off, `backoff_until` — a tick that fails outright (the change feed itself
+refusing) and a tick whose batch could not be fully applied (one object
+answering 429/5xx on a stat or a download) both back off the same way,
+exponentially from the one-minute tick interval up to an hour. That
+matters because a partly-applied batch deliberately leaves the cursor
+where it was, so the same batch is what the next tick reads: without the
+backoff, one permanently failing object would be retried once a minute
+forever. `last_full_sweep_at` records a periodic full sweep that actually
+**finished** with no node error. A sweep that failed leaves the field as it
+was and reports `sweep_error` and `sweep_backoff_until` — the sweep's own
+backoff, on the same one-minute-to-one-hour schedule, separate from the
+feed's: a node the sweep cannot list (a Drive folder the service account
+does not see, a 403 on one node's root) is not a feed failure, so
+`watching` stays true and live changes keep being applied while only the
+sweep waits. Once the wait is over the next tick sweeps again, rather than
+waiting out the six-hour interval; a sweep the feed itself asks for during
+that wait (a baseline or a reset) runs on the first tick after it. Every
+timestamp is ISO-8601 UTC.
 
 What the watcher registers for one changed file is exactly what a full
 sweep would register for it, including a Google Doc/Sheet/Slide created
@@ -149,6 +166,44 @@ file (the `native` sync class on every device), which has no content hash
 by construction — the watcher asks the backend what the file is rather
 than guessing from the change feed, and never tries to download bytes
 Drive does not serve for a Docs-editors file.
+
+### What the watcher applies live, and what waits for the sweep
+
+The watcher correlates a change with a record by the backend's own object
+id (Drive's file id), not by path alone, so the three events a path could
+never explain are applied within a tick instead of waiting out the
+six-hour sweep:
+
+- **A file created or edited on the remote** — adopted, or its recorded
+  hash refreshed. Devices read it as `pull` on their next status read.
+- **A file renamed or moved** (still under `wip/`, `outputs/` or
+  `resources/` of a node) — the record *moves*: same row, same id, new
+  path, and a move tombstone so a device drops its stale copy at the old
+  path instead of pushing it back. Before this it landed as a delete and
+  an unrelated add, potentially hours apart.
+- **A file deleted outright** (emptied from the trash, so Drive reports
+  only the id) — the record is found by that id, its absence confirmed
+  with a stat, and the record deleted and tombstoned.
+- **A folder renamed or moved** — Drive reports the folder and nothing for
+  its children, so the watcher asks for a catch-up sweep of **that node
+  only** and the children land at their new paths in the same tick. It is
+  not the periodic whole-workspace sweep and does not reset its clock.
+
+Still the sweep's job: anything the change feed cannot report at all — a
+remote the feed skipped while the cursor was expired (a `reset`, which
+triggers a full sweep of its own), a backend with no change feed (fs,
+OpenDAL), and the periodic six-hour catch-up that re-verifies everything
+regardless.
+
+The watcher never moves bytes (a rename does not re-download the file);
+it only maintains what the remote holds, and the bytes still arrive
+through a deliberate sync.
+
+Turning a change into a path means walking the file's Drive folders up to
+the remote root. Those folder paths are cached on the server — in memory
+and in the database — so a restarted server resolves them without asking
+Drive again, and a folder renamed or moved drops its own cached path and
+everything under it, which the next changes refill.
 
 ## Destructive operations
 

@@ -17,7 +17,7 @@
 // goes through the same validation buildRemotePath applies.
 
 import { randomUUID } from "node:crypto";
-import { readFile, mkdir, writeFile, stat } from "node:fs/promises";
+import { readFile, mkdir, rm, writeFile, stat } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import type { DbClient } from "../infra/db.js";
 import { getMirrorPath } from "./sync/mirror-registry.js";
@@ -270,14 +270,46 @@ function spilledResult(
   };
 }
 
+// Root of the spill area: a plain scratch location under the runner data
+// dir (the same PORTUNI_DATA_DIR-derived directory run pid files and
+// runners.json use). There is no sandbox boundary to respect here anymore
+// (#346) -- these are ordinary files the agent's own Read/Grep tools open.
+export function readFileSpillRoot(): string {
+  return join(resolveRunnerDataDir(), "read-file-spill");
+}
+
 // Where a remote-fetched file lands when as_path is requested (or the file
-// is over the inline cap) and the node has no local mirror on this device:
-// a plain, uniquely-named file under the runner data dir (the same
-// PORTUNI_DATA_DIR-derived location run pid files and runners.json use).
-// There is no sandbox boundary to respect here anymore (#346) -- this is
-// purely a scratch location the agent's own Read/Grep tools can open.
-function spillPath(relPath: string): string {
-  return join(resolveRunnerDataDir(), "read-file-spill", randomUUID(), basename(relPath));
+// is over the inline cap) and the node has no local mirror on this device.
+//
+// Keyed by the MCP TRANSPORT's own session id (#406), not the durable
+// `sessions` row: a durable session can have more than one live connection,
+// and one connection closing must not delete another's spilled files. The
+// inner uuid keeps two spills of the same basename in one connection apart.
+function spillPath(spillSessionId: string, relPath: string): string {
+  return join(readFileSpillRoot(), spillSessionId, randomUUID(), basename(relPath));
+}
+
+// Remove one transport's spill directory. Called from the transport's own
+// onclose (mcp/transport.ts, mcp/agent-transport.ts); idempotent (a session
+// that never spilled has no directory) and never able to remove anything
+// outside the spill root -- a session id that would escape it (or name the
+// root itself) is refused rather than deleted.
+export async function disposeReadFileSpill(spillSessionId: string): Promise<void> {
+  const root = readFileSpillRoot();
+  let dir: string;
+  try {
+    dir = ensureUnderRoot(root, spillSessionId);
+  } catch {
+    return;
+  }
+  if (dir === ensureUnderRoot(root, ".")) return;
+  await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+}
+
+// Boot sweep: no transport survives a restart, so every directory left
+// under the spill root belongs to a connection that is already gone.
+export async function sweepReadFileSpillRoot(): Promise<void> {
+  await rm(readFileSpillRoot(), { recursive: true, force: true }).catch(() => undefined);
 }
 
 // Fetches a node file's raw bytes when it has no local mirror on this
@@ -294,6 +326,11 @@ export interface ReadNodeFileOrPathArgs {
   relPath: string;
   asPath: boolean;
   remote: RemoteRawFetch;
+  // The MCP transport session this read belongs to -- the spill directory
+  // it may write into is keyed by it and removed when that transport
+  // closes. Only consulted on the no-local-mirror branch; a node WITH a
+  // mirror reports its real path and spills nothing.
+  spillSessionId: string;
 }
 
 // Serves portuni_read_file either inline (the common case: small text/binary
@@ -307,7 +344,7 @@ export interface ReadNodeFileOrPathArgs {
 export async function readNodeFileOrPath(
   args: ReadNodeFileOrPathArgs,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
-  const { userId, nodeId, relPath, asPath, remote } = args;
+  const { userId, nodeId, relPath, asPath, remote, spillSessionId } = args;
   const mirrorPath = await getMirrorPath(userId, nodeId);
 
   if (mirrorPath) {
@@ -344,7 +381,7 @@ export async function readNodeFileOrPath(
     const classified = classifyBytes(raw.bytes);
     if (classified.kind !== "too_large") return formatNodeFileContent(classified, relPath);
   }
-  const destPath = spillPath(relPath);
+  const destPath = spillPath(spillSessionId, relPath);
   await writeBytesToPath(destPath, raw.bytes);
   return spilledResult(destPath, raw.bytes.length, relPath);
 }

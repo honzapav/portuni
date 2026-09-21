@@ -304,6 +304,10 @@ export const PG_BASELINE_DDL: string[] = [
     filename TEXT NOT NULL,
     remote_name TEXT,
     remote_path TEXT,
+    -- The backend's own stable object id (Drive's file id), migration 038
+    -- on the libsql side (#418): what lets the remote watcher correlate a
+    -- rename/move/hard delete with a record whose path has changed.
+    remote_file_id TEXT,
     current_remote_hash TEXT,
     last_pushed_by TEXT,
     last_pushed_at TIMESTAMPTZ,
@@ -318,6 +322,7 @@ export const PG_BASELINE_DDL: string[] = [
   // Migration 031 on the libsql side: remote_name deliberately dropped from
   // the key (#201) -- see the libsql DDL's own comment for the full reason.
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unique_remote ON files(node_id, remote_path) WHERE remote_path IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_files_remote_file_id ON files(remote_name, remote_file_id)`,
 
   `CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,

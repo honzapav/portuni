@@ -20,6 +20,7 @@ import { extractClientNameFromInitializeBody } from "./client-name.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
 import { closeSessionIfRunning } from "../domain/sessions.js";
+import { disposeReadFileSpill } from "../domain/read-node-file.js";
 import type { SessionRow } from "../shared/types.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -166,12 +167,19 @@ export function createMcpTransport(): McpTransport {
         if (lookup.kind === "bindable") boundExistingSession = lookup.row;
       }
 
+      // Generated here rather than inside the transport's own
+      // sessionIdGenerator so this connection's read-file spill directory
+      // can be keyed by it (#406) -- the tools need it from the first call,
+      // which is well before onsessioninitialized fires.
+      const transportSessionId = randomUUID();
+
       const { server, scope, bindSession } = createMcpServer(
         identity,
         homeNodeId,
         resumeSessionId,
         spawnSessionId,
         boundExistingSession?.id ?? null,
+        transportSessionId,
       );
 
       if (boundExistingSession) {
@@ -266,7 +274,7 @@ export function createMcpTransport(): McpTransport {
       }
 
       const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
+        sessionIdGenerator: () => transportSessionId,
         onsessioninitialized: (newSessionId) => {
           sessions.set(newSessionId, { transport, lastUsedAt: Date.now(), userId: identity.userId });
           // #272: only now -- a genuine initialize request has been
@@ -282,6 +290,10 @@ export function createMcpTransport(): McpTransport {
         if (transport.sessionId) {
           sessions.delete(transport.sessionId);
         }
+        // #406: whatever portuni_read_file spilled for THIS connection goes
+        // with it. Keyed by the transport's own id, so a sibling connection
+        // of the same durable session keeps its own files.
+        void disposeReadFileSpill(transportSessionId);
         // GC backstop: a genuine client disconnect or a crash would
         // otherwise leave its session row stuck 'running' until the
         // 30-minute idle GC. closeSessionIfRunning (#329: suspends, not

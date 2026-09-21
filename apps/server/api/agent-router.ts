@@ -48,7 +48,7 @@ import {
 } from "../domain/sync/central/engine-central.js";
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
-import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
+import { startSyncJob, getSyncJob, getCurrentSyncJob, withNodeSyncLock } from "../domain/sync/sync-jobs.js";
 import { createAgentSessionRuntime } from "../boot/session-runtime.js";
 import { StartSessionBody } from "./sessions.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
@@ -334,7 +334,15 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       const nodeId = decodeURIComponent(syncRunMatch[1]);
       if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
       try {
-        respondJson(res, 200, await syncRunCentral(client, { userId: identity.userId, nodeId }));
+        // Device-side counterpart of the same node lock api/nodes.ts's
+        // handleSyncRun takes (#417): this route and this device's own
+        // bulk sync job pool run in the same process, so a single-node
+        // sync must not overlap the pool's run of that node.
+        respondJson(
+          res,
+          200,
+          await withNodeSyncLock(nodeId, () => syncRunCentral(client, { userId: identity.userId, nodeId })),
+        );
       } catch (err) {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/sync`, err);

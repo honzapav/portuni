@@ -69,6 +69,11 @@ export interface RemoteRecordRow {
   remote_path: string;
   current_remote_hash: string | null;
   is_native_format: number;
+  // The backend's own object id, when one was ever observed (#418). NULL for
+  // a backend without stable ids, and for a row registered before the
+  // column existed -- every path that proves the object's identity backfills
+  // it, so it fills in on its own.
+  remote_file_id?: string | null;
 }
 
 // The row a change/listing entry refers to, if this node tracks it. Both
@@ -81,20 +86,62 @@ export async function findRemoteRecord(
   a: { nodeId: string; remoteName: string; remotePath: string },
 ): Promise<RemoteRecordRow | null> {
   const r = await db.execute({
-    sql: `SELECT id, filename, remote_path, current_remote_hash, is_native_format
+    sql: `SELECT id, filename, remote_path, current_remote_hash, is_native_format, remote_file_id
           FROM files
           WHERE node_id = ? AND remote_name = ? AND remote_path IN (?, ?)`,
     args: [a.nodeId, a.remoteName, a.remotePath, a.remotePath.normalize("NFC")],
   });
   if (r.rows.length === 0) return null;
-  const row = r.rows[0];
+  return toRemoteRecordRow(r.rows[0]);
+}
+
+function toRemoteRecordRow(row: Record<string, unknown>): RemoteRecordRow {
   return {
     id: row.id as string,
     filename: row.filename as string,
     remote_path: row.remote_path as string,
     current_remote_hash: row.current_remote_hash as string | null,
     is_native_format: Number(row.is_native_format),
+    remote_file_id: (row.remote_file_id as string | null) ?? null,
   };
+}
+
+// The record the backend's own object id names, wherever it currently sits.
+// This is what a change feed needs that a path lookup cannot give: a
+// rename/move reports the same id at a new path, and a hard delete reports
+// the id and nothing else (#418). Scoped to the remote, since ids are only
+// unique within one backend; `node_id` comes back because the record may
+// have moved between node roots.
+export async function findRecordByRemoteFileId(
+  db: DbClient,
+  a: { remoteName: string; remoteFileId: string },
+): Promise<(RemoteRecordRow & { node_id: string }) | null> {
+  const r = await db.execute({
+    sql: `SELECT id, node_id, filename, remote_path, current_remote_hash, is_native_format, remote_file_id
+          FROM files
+          WHERE remote_name = ? AND remote_file_id = ?`,
+    args: [a.remoteName, a.remoteFileId],
+  });
+  if (r.rows.length === 0) return null;
+  const row = r.rows[0];
+  return { ...toRemoteRecordRow(row), node_id: row.node_id as string };
+}
+
+// Every path that PROVES a record's remote identity writes the backend's own
+// object id onto it, the same way it writes the hash (#418) -- adopt, store,
+// sweep hash refresh, backfillRemoteHash. No-op when the backend has no id
+// to report or the row already carries this one.
+export async function persistRemoteFileId(
+  db: DbClient,
+  fileId: string,
+  remoteFileId: string | null | undefined,
+): Promise<void> {
+  if (!remoteFileId) return;
+  await db.execute({
+    sql: `UPDATE files SET remote_file_id = ?
+          WHERE id = ? AND (remote_file_id IS NULL OR remote_file_id != ?)`,
+    args: [remoteFileId, fileId, remoteFileId],
+  });
 }
 
 // Sweep step 1.5's own rule, as a predicate: an unknown hash is always
@@ -179,7 +226,14 @@ export async function refreshRemoteHashes(
   db: DbClient,
   a: {
     adapter: FileAdapter;
-    candidates: Array<{ id: string; remote_path: string; listed_hash: string | null }>;
+    candidates: Array<{
+      id: string;
+      remote_path: string;
+      listed_hash: string | null;
+      // Whatever the listing/change entry reported as the object's own id;
+      // persisted alongside the hash (#418).
+      remote_file_id?: string | null;
+    }>;
   },
 ): Promise<{ refreshed: Array<{ id: string; hash: string }>; errors: Array<{ remote_path: string; error: string }> }> {
   const refreshed: Array<{ id: string; hash: string }> = [];
@@ -202,6 +256,7 @@ export async function refreshRemoteHashes(
       sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
       args: [b.hash, b.c.id],
     });
+    await persistRemoteFileId(db, b.c.id, b.c.remote_file_id);
     refreshed.push({ id: b.c.id, hash: b.hash });
   }
   return { refreshed, errors };
@@ -258,6 +313,7 @@ export async function adoptRemoteFiles(
       // alt=media, `hash: null` is by design, and there is nothing to
       // backfill.
       const isNative = refsByPath.get(f.remote_path)?.is_native_format === true;
+      await persistRemoteFileId(db, f.file_id, refsByPath.get(f.remote_path)?.remote_file_id);
       if (!f.hash && !isNative) needsBackfill.push(f);
     }
     // Downloading these one after another made a bulk adoption as slow as the
@@ -343,17 +399,11 @@ export async function remoteSweep(db: DbClient, a: RemoteSweepArgs): Promise<Rem
   // 1. Deleted on the remote. Only rows that once had a remote object
   // (pushed or native) -- a never-pushed registration has nothing to lose.
   const rows = await db.execute({
-    sql: `SELECT id, filename, remote_path, current_remote_hash, is_native_format
+    sql: `SELECT id, filename, remote_path, current_remote_hash, is_native_format, remote_file_id
           FROM files WHERE node_id = ? AND remote_name = ? AND remote_path IS NOT NULL`,
     args: [a.nodeId, remoteName],
   });
-  const records: RemoteRecordRow[] = rows.rows.map((r) => ({
-    id: r.id as string,
-    filename: r.filename as string,
-    remote_path: r.remote_path as string,
-    current_remote_hash: r.current_remote_hash as string | null,
-    is_native_format: Number(r.is_native_format),
-  }));
+  const records: RemoteRecordRow[] = rows.rows.map(toRemoteRecordRow);
   const missingCandidates = records.filter((r) => {
     const hadObject = r.current_remote_hash !== null || r.is_native_format === 1;
     return hadObject && !present.has(r.remote_path.normalize("NFC"));
@@ -411,12 +461,27 @@ export async function remoteSweep(db: DbClient, a: RemoteSweepArgs): Promise<Rem
   // is left alone -- with no free staleness signal, refreshing it would
   // mean downloading and hashing every tracked file's full content on
   // every sync run.
-  const hashCandidates: Array<{ id: string; remote_path: string; listed_hash: string | null }> = [];
+  const hashCandidates: Array<{
+    id: string;
+    remote_path: string;
+    listed_hash: string | null;
+    remote_file_id?: string | null;
+  }> = [];
   for (const r of records) {
     const ref = present.get(r.remote_path.normalize("NFC"));
     if (!ref) continue;
+    // The listing proves this object's id even when its hash needs nothing
+    // done, so backfill the id on its own (#418) -- otherwise a record that
+    // was registered before the column existed and never changes again
+    // would never gain one.
+    await persistRemoteFileId(db, r.id, ref.remote_file_id);
     if (!needsHashRefresh(r, ref.hash)) continue;
-    hashCandidates.push({ id: r.id, remote_path: r.remote_path, listed_hash: ref.hash });
+    hashCandidates.push({
+      id: r.id,
+      remote_path: r.remote_path,
+      listed_hash: ref.hash,
+      remote_file_id: ref.remote_file_id,
+    });
   }
   // A hash the sweep could not resolve is not an error worth surfacing: the
   // record keeps its previous value and the next run tries again (this is

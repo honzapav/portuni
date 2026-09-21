@@ -34,15 +34,25 @@ interface SyncJob {
   started_at: string;
   finished_at: string | null;
   nodes: SyncJobNode[];
+  // Resolves once runJob has drained the pool. A caller that needs the
+  // job's OUTCOME rather than its progress (the remote watcher's catch-up,
+  // #417) awaits this instead of polling; the promise keeps the job object
+  // alive past its retention window, so awaiting it can never lose the
+  // result to the cleanup timer.
+  done: Promise<void>;
 }
 
-// Serializes every job's per-node work, across jobs and across users: the
-// remote watcher's catch-up sweep (#338) runs through this same pool under
-// its own identity, and a catch-up must never overlap a user-triggered sync
-// of the same node -- the later one waits. path-lock's keyed mutex is
-// exactly that primitive; the key namespace is disjoint from the local
-// paths and `<remote>:<remote_path>` keys the sync engine itself locks on,
-// so a run taking this lock and then a path lock inside cannot deadlock.
+// Serializes per-node sync work across every entry point, jobs and users
+// alike: the remote watcher's catch-up sweep (#338) runs through this
+// pool under its own identity, and a catch-up must never overlap a
+// user-triggered sync of the same node -- the later one waits. The pool is
+// NOT the only caller (#417): POST /nodes/:id/sync and
+// POST /nodes/:id/sync/remote-sweep take this same lock in their handlers,
+// so a single-node "Synchronizovat" and a catch-up of that node cannot
+// interleave either. path-lock's keyed mutex is exactly that primitive; the
+// key namespace is disjoint from the local paths and
+// `<remote>:<remote_path>` keys the sync engine itself locks on, so a run
+// taking this lock and then a path lock inside cannot deadlock.
 export function withNodeSyncLock<T>(nodeId: string, fn: () => Promise<T>): Promise<T> {
   return withPathLock(`sync-node:${nodeId}`, fn);
 }
@@ -93,6 +103,10 @@ export function startSyncJob(
   }
 
   const id = ulid();
+  let finished!: () => void;
+  const done = new Promise<void>((resolve) => {
+    finished = resolve;
+  });
   const job: SyncJob = {
     id,
     user_id: a.userId,
@@ -100,11 +114,12 @@ export function startSyncJob(
     started_at: new Date().toISOString(),
     finished_at: null,
     nodes: a.nodeIds.map((node_id) => ({ node_id, status: "pending" })),
+    done,
   };
   jobs.set(id, job);
   currentJobIdByUser.set(a.userId, id);
 
-  void runJob(job, a.runNode);
+  void runJob(job, a.runNode).finally(finished);
   return toSummary(job);
 }
 
@@ -146,6 +161,17 @@ async function runJob(job: SyncJob, runNode: (nodeId: string) => Promise<SyncRun
   }
   const timer = setTimeout(() => jobs.delete(job.id), JOB_RETENTION_MS);
   timer.unref?.();
+}
+
+// Await a job's completion and read its final state. Used by the remote
+// watcher, which must know whether its catch-up sweep actually finished
+// clean before it records the sweep as done (#417) -- starting the job is
+// not evidence that it worked. A reattaching startSyncJob returns the
+// RUNNING job's id, so awaiting that id covers the nodes it appended too.
+export function awaitSyncJob(jobId: string): Promise<SyncJobSummary | null> {
+  const job = jobs.get(jobId);
+  if (!job) return Promise.resolve(null);
+  return job.done.then(() => toSummary(job));
 }
 
 export function getSyncJob(userId: string, jobId: string): SyncJobSummary | null {

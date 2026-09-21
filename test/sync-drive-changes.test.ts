@@ -124,6 +124,9 @@ describe("DriveAdapter changes()", () => {
         hash: "h1",
         modified_at: new Date("2026-09-01T10:00:00.000Z"),
         is_folder: false,
+        // Drive's own file id, which is what lets the watcher correlate a
+        // later rename/move/hard delete with this record (#418).
+        file_id: "f1",
       },
       // A hard delete carries no file metadata, so there is no path to report.
       { kind: "remove", path: null, file_id: "f2" },
@@ -182,6 +185,41 @@ describe("DriveAdapter changes()", () => {
     const out = await adapter.changes!("T1");
     assert.deepEqual(out.changes, [
       { kind: "remove", path: "projects/stan-gws/a.md", file_id: "f1" },
+    ]);
+  });
+
+  // #418: a rename or a move arrives as an ordinary upsert at a NEW path.
+  // Only the file id tells it apart from a brand-new file, so the change
+  // has to carry it.
+  it("a renamed or moved file reports the new path under the same file id", async () => {
+    mockDrive({
+      calls,
+      pages: [{
+        changes: [{
+          fileId: "f1",
+          file: {
+            id: "f1",
+            name: "prejmenovany.md",
+            mimeType: "text/markdown",
+            parents: ["fNode"],
+            md5Checksum: "h1",
+            modifiedTime: "2026-09-01T10:00:00.000Z",
+          },
+        }],
+        newStartPageToken: "T2",
+      }],
+    });
+    const adapter = createDriveAdapter(remote, tokens);
+    const out = await adapter.changes!("T1");
+    assert.deepEqual(out.changes, [
+      {
+        kind: "upsert",
+        path: "projects/stan-gws/prejmenovany.md",
+        hash: "h1",
+        modified_at: new Date("2026-09-01T10:00:00.000Z"),
+        is_folder: false,
+        file_id: "f1",
+      },
     ]);
   });
 
@@ -282,6 +320,7 @@ describe("DriveAdapter changes()", () => {
         hash: "h2",
         modified_at: new Date("2026-09-01T10:00:00.000Z"),
         is_folder: false,
+        file_id: "f2",
       },
     ]);
   });

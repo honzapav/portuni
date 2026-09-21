@@ -55,8 +55,8 @@ function classifyNode(scope: SessionScope, nodeId: string): { addedVia: AddedVia
   return { addedVia: "seed", reason: "seed" };
 }
 
-// Every scope-mutating call site does `scope.add(id)` (or addWritable/
-// addSeed, which call it internally) THEN `scope.recordExpansion({...})` --
+// Every scope-mutating call site does `scope.add(id)` (or addWritable,
+// which calls it internally) THEN `scope.recordExpansion({...})` --
 // onAdd fires synchronously from inside add(), i.e. BEFORE that following
 // recordExpansion call runs, so classifyNode would see stale history if it
 // ran inline. queueMicrotask defers the read to after the current

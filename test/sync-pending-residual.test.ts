@@ -50,7 +50,10 @@ describe("residualPendingNode", () => {
   it("keeps a failed transfer in total, a conflict in decisions (a run never resolves a conflict)", () => {
     const r = residualPendingNode(
       node("a", 3),
-      run({ conflicts: [file("f1")], errors: [{ ...file("f2"), error: "boom" }] }),
+      run({
+        conflicts: [file("f1")],
+        errors: [{ ...file("f2"), error: "boom", sync_class: "push" }],
+      }),
     );
     assert.deepEqual(
       r && { push: r.push, conflict: r.conflict, total: r.total, decisions: r.decisions },
@@ -61,6 +64,36 @@ describe("residualPendingNode", () => {
         decisions: 1,
       },
     );
+  });
+
+  it("counts a failed pull as a pending pull, never as a push (#420)", () => {
+    const r = residualPendingNode(
+      node("a", 0),
+      run({ errors: [{ ...file("f1"), error: "drive 429", sync_class: "pull" }] }),
+    );
+    assert.deepEqual(r && { pull: r.pull, push: r.push, total: r.total, decisions: r.decisions }, {
+      pull: 1,
+      push: 0,
+      total: 0,
+      decisions: 0,
+    });
+  });
+
+  it("splits a run that failed one push and one pull", () => {
+    const r = residualPendingNode(
+      node("a", 2),
+      run({
+        errors: [
+          { ...file("f1"), error: "boom", sync_class: "push" },
+          { ...file("f2"), error: "drive 500", sync_class: "pull" },
+        ],
+      }),
+    );
+    assert.deepEqual(r && { pull: r.pull, push: r.push, total: r.total }, {
+      pull: 1,
+      push: 1,
+      total: 1,
+    });
   });
 
   it("counts a skipped push but not a skipped remote_missing", () => {

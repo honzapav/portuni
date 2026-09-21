@@ -5,7 +5,7 @@ description: Tools for managing the per-session read-scope set (session init, ex
 
 Every MCP session carries a read-scope set — the explicit list of node IDs the agent is allowed to read in this session. Reads of nodes outside the set return `{error: scope_expansion_required, ...}` until the user authorises expansion (or, for a client that declares the MCP `elicitation` capability, confirms a real dialog). See [Scope Enforcement](/concepts/scope-enforcement/) for the conceptual model, including session types and how the separate write-scope set is gated.
 
-The scope set is normally seeded automatically when an MCP client opens the session with `?home_node_id=<id>` in the URL. `portuni_mirror` materializes that URL into every mirror's `.mcp.json` (Claude Code) and `.vibe/config.toml` (Mistral Vibe); it also writes `.claude/settings.local.json`, `.codex/config.toml` (sandbox config only — the Codex MCP connection lives in the user-scoped `~/.codex/config.toml`), `.cursor/rules`, `PORTUNI_SCOPE.md`, and marker blocks in `CLAUDE.md` / `AGENTS.md` when those files already exist. The tools below cover the cases where auto-seed is absent, where reads need to reach beyond the seed, and where you want to audit what the agent has looked at.
+The scope set is normally seeded automatically when an MCP client opens the session with `?home_node_id=<id>` in the URL. `portuni_mirror` materializes that URL into every mirror's `.mcp.json` (Claude Code); it also writes `.claude/settings.local.json`, `.codex/config.toml` (sandbox config only — the Codex MCP connection lives in the user-scoped `~/.codex/config.toml`), `PORTUNI_SCOPE.md`, and marker blocks in `CLAUDE.md` / `AGENTS.md` when those files already exist. The tools below cover the cases where auto-seed is absent, where reads need to reach beyond the seed, and where you want to audit what the agent has looked at.
 
 ## portuni_session_init
 
@@ -46,7 +46,7 @@ Returns: `{ session_id, home_node_id, session_type, created_at, scope_size, scop
 
 Suspend this session: writes `content` to `wip/sessions/<session-id>-handoff.md` (a normal synced path, visible to the whole team on the routed remote), stores its hash and this session's agent-conversation id, and marks the session `suspended` so it can be resumed later — respawned in the same mirror, continuing the underlying CLI's own conversation when it still exists (`claude --resume <id>`), or starting fresh from the handoff otherwise. Requires a home node: `interactive_chat` sessions have no anchor to write into, and this tool errors for them.
 
-Call this before the terminal closes — at the end of a task, or (for a RALPH-style autonomous loop) between iterations. Callable again on an already-suspended session to update the handoff with newer content; the stored hash changes, so a later resume can tell a human edited the handoff since suspend.
+Call this before your session ends — at the end of a task, or (for a RALPH-style autonomous loop) between iterations. Callable again on an already-suspended session to update the handoff with newer content; the stored hash changes, so a later resume can tell a human edited the handoff since suspend.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

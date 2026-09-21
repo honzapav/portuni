@@ -8,7 +8,7 @@ truth for the team) and the **local mirror** on each device. The metadata
 row in `files` binds a node to a remote location; the path on the current
 device is derived from the per-device mirror root, the file's `remote_path`,
 and the node's `sync_key`. There is no persisted `local_path` column on
-`files` -- it would go stale across devices and renames.
+`files` — it would go stale across devices and renames.
 
 ## portuni_mirror
 
@@ -85,16 +85,16 @@ The node must have a local mirror on the current device. Run
 
 :::caution[Device-only tool]
 `portuni_store` needs this device's own sync registry
-(`{PORTUNI_WORKSPACE_ROOT}/.portuni/sync.db`). A session that has none --
+(`{PORTUNI_WORKSPACE_ROOT}/.portuni/sync.db`). A session that has none —
 a connector session (claude.ai, Claude Desktop) talking to the central
-server over HTTP -- gets
+server over HTTP — gets
 `PORTUNI_WORKSPACE_ROOT must be set for local sync.db` **immediately**,
 the same error [`portuni_status`](#portuni_status) gives there, and before
 any write-scope confirmation dialog: an upload that cannot start must never
 make the agent wait on a human. Upload from the
 desktop app or a CLI running in the mirror instead. For files that
 already exist on the remote, [`portuni_adopt_files`](/reference/sync/#portuni_adopt_files)
-works from a connector session -- it registers remote files and touches
+works from a connector session — it registers remote files and touches
 no local disk.
 :::
 
@@ -102,10 +102,10 @@ no local disk.
 
 Two modes:
 
-- **`file_id`** -- download the remote version into the mirror, refresh
+- **`file_id`** — download the remote version into the mirror, refresh
   the local hash cache. Used to restore a deleted local copy or pull a
   teammate's update.
-- **`node_id`** -- preview only. Classifies each file as
+- **`node_id`** — preview only. Classifies each file as
   `unchanged | updated | conflict | remote_missing | remote_error | native`
   without modifying anything. Use this before pulling to see what would
   change.

@@ -27,6 +27,7 @@ import { createAgentSessionsWsDeps, createSessionsWsServer } from "./api/session
 import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepOrphanedRunsOnBoot, sweepOrphanedRunsOnBootCentral } from "./boot/run-sweep.js";
+import { sweepReadFileSpillOnBoot } from "./boot/read-file-spill-sweep.js";
 import { CentralSessionStore } from "./domain/runner/store-central.js";
 import {
   startIdleRunSweep,
@@ -205,6 +206,10 @@ async function agentMain(client: CentralClient): Promise<void> {
   // its session read "running" forever. The idle sweep cannot see them: it
   // filters an in-process map that is empty after a restart.
   void sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client));
+  // #406: agent mode spills too (readNodeFileOrPath downloads through
+  // CentralClient.getFileRaw for a node this device does not mirror), and no
+  // MCP transport survives a restart.
+  void sweepReadFileSpillOnBoot();
 
   // Watcher with the central reconcile; the boot backfill is done below (the
   // built-in backfill needs the local graph db the agent doesn't have), and
@@ -367,6 +372,9 @@ async function main(): Promise<void> {
   // picture instead of racing it.
   void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
   void sweepStaleDraftSessionsOnBoot();
+  // #406: no MCP transport survives a restart, so every read-file spill
+  // directory left on disk is orphaned.
+  void sweepReadFileSpillOnBoot();
   void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
   startIdleRunSweep(getSessionRuntime());
 

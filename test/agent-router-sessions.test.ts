@@ -286,9 +286,6 @@ class FakeCentral implements CentralClient {
   async nodeOrganizationId(nodeId: string): Promise<string | null> {
     return this.nodeOrgs.get(nodeId) ?? null;
   }
-  async nodeNeighbours(): Promise<string[]> {
-    return [];
-  }
   invalidateSyncInfo(): void {
     // No cache in this fake.
   }

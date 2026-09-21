@@ -34,6 +34,8 @@ const watching: RemoteWatchStatus = {
   last_error: null,
   backoff_until: null,
   last_full_sweep_at: "2026-09-19T06:00:00.000Z",
+  sweep_error: null,
+  sweep_backoff_until: null,
 };
 
 const failing: RemoteWatchStatus = {
@@ -44,6 +46,8 @@ const failing: RemoteWatchStatus = {
   last_error: "Drive changes.list: 429 rate limit",
   backoff_until: "2026-09-19T10:07:00.000Z",
   last_full_sweep_at: null,
+  sweep_error: null,
+  sweep_backoff_until: null,
 };
 
 beforeEach(async () => {

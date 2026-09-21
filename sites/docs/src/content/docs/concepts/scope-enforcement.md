@@ -67,10 +67,10 @@ The generated files:
 - **`.codex/config.toml`** – a `[sandbox_workspace_write]` block with `writable_roots = [<this mirror>]`, under a Portuni-managed marker. Codex's Seatbelt / Landlock enforces this at the kernel level. The MCP server registration itself lives in the user-scoped `~/.codex/config.toml`, referencing the token via the same env var.
 
   Portuni writes this file only when it is missing or already carries the Portuni marker comment; a hand-edited Codex config is preserved.
-- **`.vibe/config.toml`** – project-scoped MCP server for Mistral Vibe: an `[[mcp_servers]]` entry named `portuni` (transport `streamable-http`, `url = <PORTUNI_URL>?home_node_id=<id>`) plus a `[mcp_servers.auth]` block using `api_key_env = "PORTUNI_MCP_TOKEN"`. Vibe merges this over `~/.vibe/config.toml` (union-merge by `name`), so it adds only the Portuni server. Vibe loads project config **only in trusted folders**, so launch it with `vibe --trust` (the desktop preset does). Marker-guarded like Codex. See [Mistral Vibe](/clients/mistral-vibe/).
-- **`.cursor/rules`** – plain-text write-scope rules so the agent has the same picture even if the harness config is missing.
 - **`PORTUNI_SCOPE.md`** – the same write-scope rules, plus an orientation section (node context, responsibilities, recent events, and a handoff pointer for a suspended session) when that data is available. There is no automatic first prompt (spec: "Spawn UX") — the agent reads this file on its own instead of being told its contents upfront.
 - **`CLAUDE.md` / `AGENTS.md`** – refreshed only if they already exist, between BEGIN/END `portuni-scope` markers. User content outside the markers is preserved.
+
+Portuni no longer writes a per-mirror `.vibe/config.toml` or `.cursor/rules`: both served harnesses the embedded terminal used to launch, and that terminal is gone. Any MCP-speaking client can still connect to a mirror — point it at the Portuni server the way [Mistral Vibe](/clients/mistral-vibe/) does, and read `PORTUNI_SCOPE.md` for the scope rules.
 
 When the registry changes (mirror added, removed, or renamed), every affected mirror's config is regenerated. Result of every regen:
 
@@ -86,7 +86,7 @@ When the registry changes (mirror added, removed, or renamed), every affected mi
 |----------|------------------|---------|
 | `PORTUNI_ROOT` | Tier 1/2 boundary. The directory containing every Portuni mirror on this machine. | Nearest common ancestor of every registered mirror |
 | `PORTUNI_GUARD_SCRIPT` | Absolute path of `portuni-guard.sh` written into `.claude/settings.local.json` as the PreToolUse hook command. | Resolved relative to the Portuni install (`scripts/portuni-guard.sh`) |
-| `PORTUNI_URL` | MCP server base URL written into `.mcp.json`, `.codex/config.toml`, and `.vibe/config.toml`. The `/mcp` suffix is appended if missing. | `http://${HOST}:${PORT}/mcp`, defaulting to `http://127.0.0.1:4011/mcp` |
+| `PORTUNI_URL` | MCP server base URL written into `.mcp.json`. The `/mcp` suffix is appended if missing. | `http://${HOST}:${PORT}/mcp`, defaulting to `http://127.0.0.1:4011/mcp` |
 | `PORTUNI_MCP_TOKEN` (or `PORTUNI_MCP_TOKEN_<ID>` per workspace) | The bearer token the generated configs *reference* via env expansion – never written into them. Set it in the shell that runs the agent (Settings → MCP Server → Copy token in the desktop app). | unset (header degrades to empty) |
 
 ### Backstop hook

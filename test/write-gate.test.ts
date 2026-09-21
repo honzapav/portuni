@@ -94,7 +94,7 @@ function payloadOf(result: ToolResult): Record<string, unknown> {
 }
 
 async function connect(scope: SessionScope, ident: RequestIdentity): Promise<McpClient> {
-  const ctx: SessionCtx = { scope, identity: ident };
+  const ctx: SessionCtx = { scope, identity: ident, spillSessionId: "test-spill" };
   const server = new McpServer({ name: "write-gate-test", version: "0.0.1" }, {});
   registerNodeTools(server, ctx);
   registerScopeTools(server, ctx);
@@ -114,7 +114,7 @@ async function connectWithElicitation(
   dialogAnswer: "accept" | "decline" | undefined,
 ): Promise<McpClient> {
   const server = new McpServer({ name: "write-gate-elicit-test", version: "0.0.1" }, {});
-  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server) };
+  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server), spillSessionId: "test-spill" };
   registerNodeTools(server, ctx);
   registerGetNodeTool(server, ctx);
   registerScopeTools(server, ctx);
@@ -142,7 +142,7 @@ async function connectCapturingDialogs(
   seen: string[],
 ): Promise<McpClient> {
   const server = new McpServer({ name: "write-gate-dialog-test", version: "0.0.1" }, {});
-  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server) };
+  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server), spillSessionId: "test-spill" };
   registerNodeTools(server, ctx);
   registerGetNodeTool(server, ctx);
   registerScopeTools(server, ctx);

@@ -92,20 +92,16 @@ Returns: Full node object including:
 - `local_mirror` — `{ local_path, registered_at }` if mirrored on this device, else `null`
 - `readable_path` — the actual disk path this session may read the node's files from (see below), or `null`
 
-File `local_path`s are the node's **real** mirror for the home node. For
-every other in-scope node with a local mirror on this device — including a
-depth-1 neighbour — file `local_path`s point at that node's hardlink
-projection directory instead (created on first touch, cleaned up at session
-end): the projection is preferred over the real mirror even for a depth-1
-neighbour, because the projection directory is unconditionally granted while
-the real-mirror grant is frozen at spawn and can occasionally not yet cover a
-neighbour added between spawn and connect. A node with no local mirror on
-this device has `local_path: null` either way — read the content with
-[`portuni_read_file`](/reference/files/). `local_mirror` is always the
-node's real mirror registration path (metadata, not a read path);
-`readable_path` is that same file `local_path` value promoted to the
-top level, for when you want to Read/Grep the node's whole folder rather
-than one file at a time.
+File `local_path`s are always the node's **real** mirror path on this
+device — home node, depth-1 neighbour and ad-hoc node alike. There is no
+projection directory and no spawn-frozen read grant any more: a node
+mirrored here is readable at the path it actually occupies. A node with no
+local mirror on this device has `local_path: null` — read the content with
+[`portuni_read_file`](/reference/files/), which serves the mirror when
+there is one and otherwise fetches the file from the node's routed remote.
+`local_mirror` is the node's mirror registration (metadata);
+`readable_path` is that same path promoted to the top level, for when you
+want to Read/Grep the node's whole folder rather than one file at a time.
 
 ## portuni_delete_node
 

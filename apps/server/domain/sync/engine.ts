@@ -183,7 +183,7 @@ export async function storeFile(db: DbClient, a: StoreFileArgs): Promise<StoreFi
     // Upload.
     const adapter = await getAdapter(db, remoteName);
     const mt = mimeFor(filename);
-    await adapter.put(remotePath, content, mt ? { mimeType: mt } : undefined);
+    const putRef = await adapter.put(remotePath, content, mt ? { mimeType: mt } : undefined);
 
     // Post-upload verification + canonical hash selection. Backends report
     // different hash algorithms: Drive returns md5Checksum (32 hex), fs returns
@@ -219,14 +219,18 @@ export async function storeFile(db: DbClient, a: StoreFileArgs): Promise<StoreFi
     const now = new Date().toISOString();
     const upsert = await db.execute({
       sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
-                                remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
+                                remote_name, remote_path, remote_file_id, current_remote_hash, last_pushed_by, last_pushed_at,
                                 is_native_format, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
             DO UPDATE SET
               remote_name = excluded.remote_name,
               filename = excluded.filename,
               status = COALESCE(?, files.status),
+              -- The upload just proved which backend object this path is
+              -- (#418); never clobber a known id with a NULL from a backend
+              -- that reports none.
+              remote_file_id = COALESCE(excluded.remote_file_id, files.remote_file_id),
               current_remote_hash = excluded.current_remote_hash,
               last_pushed_by = excluded.last_pushed_by,
               last_pushed_at = excluded.last_pushed_at,
@@ -241,6 +245,7 @@ export async function storeFile(db: DbClient, a: StoreFileArgs): Promise<StoreFi
         mt,
         remoteName,
         remotePath,
+        putRef.remote_file_id ?? null,
         hash,
         a.userId,
         now,

@@ -39,7 +39,7 @@ const identity: RequestIdentity = {
 };
 
 async function connect(scope: SessionScope): Promise<McpClient> {
-  const ctx: SessionCtx = { scope, identity };
+  const ctx: SessionCtx = { scope, identity, spillSessionId: "test-spill" };
   const server = new McpServer({ name: "session-suspend-test", version: "0.0.1" }, {});
   registerScopeTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

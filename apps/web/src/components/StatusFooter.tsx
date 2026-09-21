@@ -4,7 +4,7 @@
 // page so the user can copy URLs / install configs / regenerate token.
 
 import { useMcpStatus } from "../lib/use-mcp-status";
-import { pluralFiles } from "../lib/plural-files";
+import { pluralFiles } from "../lib/plural";
 import type { AppUpdate } from "../lib/updater";
 import { Button } from "@/components/ui/button";
 

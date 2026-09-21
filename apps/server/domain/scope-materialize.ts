@@ -11,19 +11,20 @@
 //   - .codex/config.toml — written ONLY when missing or when the existing
 //     file already carries the Portuni marker comment (we don't clobber a
 //     hand-edited Codex config).
-//   - .vibe/config.toml — project-scoped MCP server for Mistral Vibe, with
-//     ?home_node_id=... so a `vibe` session in the mirror auto-seeds its
-//     scope. Vibe merges this over ~/.vibe/config.toml (union-merge by
-//     name), so it adds only the Portuni server. Marker-guarded like Codex.
-//   - .cursor/rules — soft hint, plain text, refreshed.
 //   - PORTUNI_SCOPE.md — soft hint, harness-agnostic, refreshed.
+//
+// The per-mirror .vibe/config.toml and .cursor/rules writers are gone
+// (#406, finishing #346): both existed for harnesses Portuni launched from
+// the embedded terminal, which was removed in #345. A Vibe session still
+// reaches Portuni through the user-scoped ~/.vibe/config.toml the
+// install_vibe_global Tauri command writes.
 //
 // Soft hints are also injected into CLAUDE.md / AGENTS.md if those files
 // already exist, between BEGIN/END Portuni-managed markers — anything
 // outside the markers is preserved untouched.
 //
 // This is best-effort: any individual write failure logs and is swallowed
-// so register_mirror itself doesn't fail when, say, .cursor/ has restrictive
+// so register_mirror itself doesn't fail when, say, .codex/ has restrictive
 // permissions.
 
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
@@ -34,12 +35,10 @@ import {
   buildCodexSandboxConfig,
   buildOrientationHint,
   buildSoftHint,
-  buildVibeMcpToml,
   normalize,
   resolveGuardScriptPath,
   resolvePortuniMcpUrl,
   resolvePortuniRoot,
-  VIBE_PROJECT_MARKER,
   type OrientationSummary,
 } from "./write-scope.js";
 import { listUserMirrors } from "./sync/mirror-registry.js";
@@ -251,58 +250,17 @@ export async function materializeScopeConfig(
     } catch (e) {
       result.errors.push({ path: mcpPath, message: (e as Error).message });
     }
-
-    // 3b. Project-scoped .vibe/config.toml — Vibe merges this over the
-    //     user's ~/.vibe/config.toml (union-merge of mcp_servers by name),
-    //     so a `vibe` session started inside the mirror auto-seeds its read
-    //     scope from ?home_node_id=... — same effect as Claude's .mcp.json,
-    //     no portuni_expand_scope dance. Marker-guarded: refresh only when
-    //     missing or carrying our marker (never clobber a hand-edited file).
-    const vibePath = join(cur, ".vibe", "config.toml");
-    try {
-      let mayWrite = true;
-      if (await exists(vibePath)) {
-        const raw = await readFile(vibePath, "utf8");
-        if (!raw.includes(VIBE_PROJECT_MARKER)) {
-          mayWrite = false;
-          result.errors.push({
-            path: vibePath,
-            message: "existing .vibe/config.toml is user-owned (no portuni marker); skipped",
-          });
-        }
-      }
-      if (mayWrite) {
-        await safeWrite(
-          vibePath,
-          buildVibeMcpToml({
-            url: args.mcpUrl ?? resolvePortuniMcpUrl(),
-            homeNodeId: args.nodeId,
-          }),
-        );
-        result.written.push(vibePath);
-      }
-    } catch (e) {
-      result.errors.push({ path: vibePath, message: (e as Error).message });
-    }
   }
 
-  // 4. .cursor/rules (always written, plain text)
   const hint = buildSoftHint({
     currentMirror: cur,
     portuniRoot: args.portuniRoot,
     dataSources: args.dataSources,
   });
-  try {
-    const path = join(cur, ".cursor", "rules");
-    await safeWrite(path, hint);
-    result.written.push(path);
-  } catch (e) {
-    result.errors.push({ path: ".cursor/rules", message: (e as Error).message });
-  }
 
-  // 5. PORTUNI_SCOPE.md (always present, harness-agnostic). Fattened with
-  //    orientation data when available -- unlike .cursor/rules and the
-  //    CLAUDE.md/AGENTS.md hint blocks, which stay on the leaner `hint`.
+  // 4. PORTUNI_SCOPE.md (always present, harness-agnostic). Fattened with
+  //    orientation data when available -- unlike the CLAUDE.md/AGENTS.md
+  //    hint blocks, which stay on the leaner `hint`.
   try {
     const path = join(cur, "PORTUNI_SCOPE.md");
     const scopeMdContent = args.orientation
@@ -314,7 +272,7 @@ export async function materializeScopeConfig(
     result.errors.push({ path: "PORTUNI_SCOPE.md", message: (e as Error).message });
   }
 
-  // 6. Refresh CLAUDE.md / AGENTS.md ONLY if they already exist (don't create
+  // 5. Refresh CLAUDE.md / AGENTS.md ONLY if they already exist (don't create
   //    them — those files are user-owned).
   await refreshMarkdownHint(join(cur, "CLAUDE.md"), hint, result);
   await refreshMarkdownHint(join(cur, "AGENTS.md"), hint, result);

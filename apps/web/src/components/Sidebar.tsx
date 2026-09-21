@@ -8,6 +8,7 @@ import type { WorkspaceNodeRow } from "../lib/sessions";
 import { isTauri } from "../lib/backend-url";
 import { listWorkspaces, openWorkspaceWindow, type WorkspaceInfo } from "../lib/workspaces";
 import { currentWorkspaceId } from "../lib/workspace-storage";
+import { pluralNodes } from "../lib/plural";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -286,7 +287,7 @@ function Sidebar({
             title="Remote watcher našel novější verze souborů. Otevřít přehled synchronizace."
           >
             <ArrowDown />
-            Nové na remote: {pullNodeCount} {pullNodeWord(pullNodeCount)}
+            Nové na remote: {pullNodeCount} {pluralNodes(pullNodeCount)}
           </Button>
         </div>
       )}
@@ -356,13 +357,6 @@ function Sidebar({
       )}
     </aside>
   );
-}
-
-// Czech counts the noun by the number: 1 uzel, 2-4 uzly, 0 and 5+ uzlů.
-function pullNodeWord(n: number): string {
-  if (n === 1) return "uzel";
-  if (n >= 2 && n <= 4) return "uzly";
-  return "uzlů";
 }
 
 const MANAGE_WORKSPACES = "__manage__";

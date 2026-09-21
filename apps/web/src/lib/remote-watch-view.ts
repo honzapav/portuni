@@ -14,7 +14,8 @@ export type RemoteWatchLine = {
   remote_name: string;
   tone: RemoteWatchTone;
   text: string;
-  // Present only while the remote is backing off after a failed tick.
+  // Present while the remote is backing off after a failed tick, or (with
+  // the feed healthy) while the catch-up sweep is backing off.
   retry: string | null;
 };
 
@@ -45,29 +46,37 @@ function parse(ts: string | null): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
+function retryAt(until: string | null, nowMs: number): string | null {
+  const ms = parse(until);
+  return ms !== null && ms > nowMs ? `další pokus ${relativeCzech(ms, nowMs)}` : null;
+}
+
 export function remoteWatchLine(s: RemoteWatchStatus, nowMs: number): RemoteWatchLine {
-  const backoffMs = parse(s.backoff_until);
-  const retry =
-    backoffMs !== null && backoffMs > nowMs ? `další pokus ${relativeCzech(backoffMs, nowMs)}` : null;
   if (s.last_error) {
     return {
       remote_name: s.remote_name,
       tone: "error",
       text: `${s.remote_name}: sledování hlásí chybu – ${s.last_error}`,
-      retry,
+      retry: retryAt(s.backoff_until, nowMs),
     };
   }
+  // The catch-up sweep failing is not the feed failing (#422): live changes
+  // still land, so the feed's own line stays and the sweep's error is added
+  // to it, with the sweep's retry.
+  const sweepError = s.sweep_error ? `pravidelná kontrola hlásí chybu – ${s.sweep_error}` : null;
+  const sweepRetry = sweepError ? retryAt(s.sweep_backoff_until, nowMs) : null;
   if (!s.watching) {
     // A backend with no change feed (fs/OpenDAL): the periodic full sweep
     // is all there is for it.
     const sweep = parse(s.last_full_sweep_at);
     return {
       remote_name: s.remote_name,
-      tone: "idle",
-      text:
-        `${s.remote_name}: bez sledování změn, jen pravidelná kontrola` +
-        (sweep === null ? "" : ` (naposledy ${relativeCzech(sweep, nowMs)})`),
-      retry,
+      tone: sweepError ? "error" : "idle",
+      text: sweepError
+        ? `${s.remote_name}: bez sledování změn, ${sweepError}`
+        : `${s.remote_name}: bez sledování změn, jen pravidelná kontrola` +
+          (sweep === null ? "" : ` (naposledy ${relativeCzech(sweep, nowMs)})`),
+      retry: sweepRetry,
     };
   }
   const cursor = parse(s.cursor_updated_at);
@@ -80,9 +89,9 @@ export function remoteWatchLine(s: RemoteWatchStatus, nowMs: number): RemoteWatc
         : "zatím bez kontroly";
   return {
     remote_name: s.remote_name,
-    tone: "ok",
-    text: `${s.remote_name} sledován, ${detail}`,
-    retry,
+    tone: sweepError ? "error" : "ok",
+    text: `${s.remote_name} sledován, ${detail}` + (sweepError ? `; ${sweepError}` : ""),
+    retry: sweepRetry,
   };
 }
 

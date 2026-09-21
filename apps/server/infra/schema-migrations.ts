@@ -1501,7 +1501,8 @@ const MIGRATIONS: Migration[] = [
   // #338 (remote watcher on central): two new tables, no rebuild and no
   // index on an added column -- see docs/lessons-learned.md section 7.
   // remote_cursors holds the change-feed page token per remote,
-  // remote_folder_cache the persistent folder id -> path ancestor cache.
+  // remote_folder_cache the persistent folder id -> path ancestor cache
+  // (read/written by domain/sync/drive-folder-cache.ts, #419).
   // The same two tables are in PG_BASELINE_DDL (schema.pg.ts); the Postgres
   // cutover has not run, so there is no pg-002.
   {
@@ -1514,7 +1515,27 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration037,
   },
+  // #418 (correlate Drive changes by file id): the backend's own stable
+  // object id on every record, so a rename/move/hard delete reported by the
+  // change feed finds the record whose path no longer matches. One ADD
+  // COLUMN, no rebuild; the index on it lives in DDL_AFTER_MIGRATIONS
+  // (schema-triggers.ts), never in the DDL replay that runs BEFORE this
+  // migration -- docs/lessons-learned.md section 7. The same column is in
+  // PG_BASELINE_DDL (schema.pg.ts); the Postgres cutover has not run, so
+  // there is no pg-002.
+  {
+    id: "038_files_remote_file_id",
+    isApplied: async (db) => {
+      const r = await db.execute("PRAGMA table_info(files)");
+      return r.rows.some((row) => String(row.name) === "remote_file_id");
+    },
+    up: runMigration038,
+  },
 ];
+
+export async function runMigration038(db: DbClient): Promise<void> {
+  await db.execute("ALTER TABLE files ADD COLUMN remote_file_id TEXT");
+}
 
 export async function runMigration037(db: DbClient): Promise<void> {
   await db.execute(`CREATE TABLE IF NOT EXISTS remote_cursors (

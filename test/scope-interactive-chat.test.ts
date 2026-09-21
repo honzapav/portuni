@@ -56,7 +56,7 @@ async function connect(
   scope: SessionScope,
   ident: RequestIdentity,
 ): Promise<{ client: McpClient; scope: SessionScope }> {
-  const ctx: SessionCtx = { scope, identity: ident };
+  const ctx: SessionCtx = { scope, identity: ident, spillSessionId: "test-spill" };
   const server = new McpServer({ name: "chat-scope-test", version: "0.0.1" }, {});
   registerEventTools(server, ctx);
   registerFileTools(server, ctx);

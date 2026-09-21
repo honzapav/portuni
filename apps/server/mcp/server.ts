@@ -3,6 +3,7 @@
 // tools. Each new MCP HTTP session gets its own server (this is what the
 // transport layer calls).
 
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SessionScope, deriveSessionType } from "./scope.js";
 import { registerResources } from "./resources/index.js";
@@ -46,6 +47,12 @@ export interface SessionCtx {
   // (the pre-elicitation honor-system fallback). createMcpServer always
   // provides a real one.
   elicit?: Elicitor;
+  // Key of the disk area portuni_read_file may spill a mirror-less node's
+  // bytes into (#406). It is the MCP TRANSPORT's own session id, not the
+  // durable `sessions` row: the transport that owns it removes the
+  // directory when it closes, and a durable session can have several live
+  // connections. createMcpServer always provides one.
+  spillSessionId: string;
 }
 
 // Default identity used when createMcpServer() is called without arguments
@@ -191,12 +198,21 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
 // rehydration on `scope` before this function was even called -- bindSession
 // then only fills in the CLI name and touches last_active_at
 // (bindExistingSessionHandshake) instead of creating a second row.
+//
+// `transportSessionId` is the id the caller's own transport will report as
+// its MCP session id -- transport.ts/agent-transport.ts generate it up front
+// so they can both feed it to their StreamableHTTPServerTransport and key
+// this session's read-file spill directory by it (#406). stdio mode has no
+// such id and gets a fresh uuid instead; either way the directory is removed
+// when the connection closes, and the boot sweep clears whatever a crash
+// left behind.
 export function createMcpServer(
   identity: RequestIdentity,
   homeNodeId: string | null = null,
   resumeSessionId: string | null = null,
   spawnSessionId: string | null = null,
   boundExistingSessionId: string | null = null,
+  transportSessionId: string | null = null,
 ): { server: McpServer; scope: SessionScope; bindSession: (cli?: string | null) => void } {
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
   const bindSession =
@@ -217,7 +233,12 @@ export function createMcpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },
   );
-  const ctx: SessionCtx = { scope, identity, elicit: createElicitor(server) };
+  const ctx: SessionCtx = {
+    scope,
+    identity,
+    elicit: createElicitor(server),
+    spillSessionId: transportSessionId ?? randomUUID(),
+  };
   gateToolsByScope(server, identity);
   registerResources(server);
   registerScopeTools(server, ctx);

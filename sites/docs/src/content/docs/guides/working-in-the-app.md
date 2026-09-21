@@ -235,7 +235,7 @@ Sections worth highlighting:
 
 - **Theme** — light / dark; the choice persists in `localStorage` and is reapplied on launch.
 - **MCP server** — shows the sidecar's URL (typically `http://localhost:4011/mcp`), port, and whether an auth token is set. The bearer token itself lives in macOS Keychain (Tauri-only); reveal it on demand or rotate with one click. The install buttons write the URL + token into `~/.claude.json`, `~/.codex/config.toml`, and `~/.vibe/config.toml` so external clients can talk to the app's sidecar without manual config editing.
-- **Synchronizace** — informational. See below.
+- **Synchronizace** — informational: the server URL plus the remote watcher's and the mirror watcher's current state. See below.
 - **Integrace → Showtime** — off by default, stored in `localStorage` like the other settings. On, a `.showtime` deck in a node's files opens as a rendered preview (the `preview.html` Showtime packs into the bundle at every save; `GET /nodes/:id/file` returns that entry as `text/html` for a `.showtime` path) and the preview offers „Otevřít v Showtime" when Showtime.app is installed — the section shows whether Showtime.app was found (`/Applications` or `~/Applications`) and what the button hands over: the node's Portuni connection for the agent and the node's mirror as a working directory. It also puts „Nová prezentace" behind „+ Nový soubor" on the Files tab (see Files above). Off, the bundle is a binary file like any other.
 
 ## Synchronizace
@@ -248,6 +248,22 @@ banner. A **central** workspace shows the server URL that manages file sync
 — nothing to configure client-side either. Configuring the actual Google
 Drive remote (a Service Account on the central server) is an MCP-only,
 one-time admin task; see [Setting Up Remotes](/guides/setting-up-remotes/).
+
+The tab does report one live thing, though: a **remote watcher** line per
+remote. „Sledován" means the central server is polling Drive's change feed
+about once a minute, so a file a teammate adds, renames or deletes on Drive
+shows up as a pending pull within a minute instead of waiting for the next
+full check. A line reading „sledování hlásí chybu" (optionally with „další
+pokus za …", the watcher's `backoff_until`) means that polling is currently
+failing — Drive changes are **not** being applied live, and the fallback is
+the periodic full sweep every 6 hours. „Sledován, … ; pravidelná kontrola
+hlásí chybu" is the other way round: live changes still land, but the
+periodic full sweep failed on some node (its error is quoted) and is
+waiting for its own „další pokus za …" — files that only the sweep can pick
+up wait with it. „Bez sledování změn, jen pravidelná kontrola" is not an
+error: that backend has no change feed at all, so the 6-hour sweep is all
+there is for it. Mirror-watcher errors (the local half — the disk watcher
+on this device) are listed in the same tab.
 
 ## Recommended daily flow
 

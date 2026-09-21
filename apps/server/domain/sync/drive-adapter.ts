@@ -3,6 +3,7 @@ import { parseDriveConfig, parseServiceAccountJson, assertSaDriveConfig, type Se
 import { getDriveAccessToken, __setTokenFetchForTests } from "./drive-sa-auth.js";
 import { detectNativeFormat, EXPORT_MIME } from "./native-format.js";
 import { SEARCH_SNIPPET_MAX_CHARS } from "./types.js";
+import { createFolderPathCache, type FolderPathStore } from "./drive-folder-cache.js";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -77,7 +78,18 @@ interface DriveChangeItem { fileId?: string; removed?: boolean; file?: DriveFile
 
 interface DriveFile { id: string; name: string; mimeType: string; parents?: string[]; size?: string; md5Checksum?: string; modifiedTime?: string; createdTime?: string; trashed?: boolean; }
 
-export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): FileAdapter {
+export interface DriveAdapterDeps {
+  // Persistent tier of the ancestor cache (#419). Omitted -- a test, or any
+  // caller with no graph db at hand -- leaves the adapter on its in-process
+  // memo alone, exactly as it behaved before the table was wired up.
+  folderCache?: FolderPathStore | null;
+}
+
+export function createDriveAdapter(
+  remote: RemoteConfig,
+  tokens: DeviceTokens,
+  deps: DriveAdapterDeps = {},
+): FileAdapter {
   const cfg: DriveConfig = parseDriveConfig(remote.config);
   const t = tokens[remote.name];
   let getAccessToken: () => Promise<string>;
@@ -102,12 +114,12 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
   const inflight = new Map<string, Promise<string>>();
   const warnedDuplicates = new Set<string>();
 
-  function invalidatePrefix(prefix: string): void {
-    // The ancestor memo is keyed by id, not by path, so there is nothing to
-    // narrow a prefix against: drop it whole. It is rebuilt one files.get per
-    // distinct ancestor, and every caller of this function has just changed
-    // the tree.
-    folderMemo.clear();
+  async function invalidatePrefix(prefix: string): Promise<void> {
+    // The ancestor cache is keyed by folder id but its values ARE paths, so
+    // a prefix does narrow it (#419): drop the folders at or under `prefix`
+    // in both tiers instead of clearing the whole memo. Whatever is dropped
+    // is rebuilt one DB read -- or one files.get -- per distinct ancestor.
+    await folderPaths.invalidateSubtree(prefix);
     if (prefix === "") {
       pathCache.clear();
       pathCache.set("", driveRoot);
@@ -195,49 +207,56 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
   }
 
   // Ancestor cache for the reverse direction of pathCache: folder id ->
-  // { name, parent }, so a flat Drive file object (a search hit, a Changes
-  // API entry) can be turned back into a path relative to driveRoot without
-  // walking to the root over the network every time. A null entry marks an
-  // id whose ancestry is unreachable from here (deleted, or not readable by
-  // this account) so it is not re-fetched on every hit.
+  // path relative to driveRoot, so a flat Drive file object (a search hit,
+  // a Changes API entry) can be turned back into a path without walking to
+  // the root over the network every time. Two tiers -- a bounded in-process
+  // memo over `remote_folder_cache` -- see drive-folder-cache.ts (#419). A
+  // null entry marks an id whose ancestry is unreachable from here
+  // (deleted, or not readable by this account) so it is not re-fetched on
+  // every hit; those live in the memo only.
   //
-  // Invalidated wholesale by invalidatePrefix: this adapter's own writes are
-  // the only local source of staleness, and they already go through it.
-  const folderMemo = new Map<string, { name: string; parent: string | null } | null>();
+  // Invalidated by path: this adapter's own writes go through
+  // invalidatePrefix, and a folder reported by the change feed refreshes
+  // (or drops) its own entry.
+  const folderPaths = createFolderPathCache(deps.folderCache ?? null);
 
-  async function folderInfo(id: string): Promise<{ name: string; parent: string | null } | null> {
-    if (folderMemo.has(id)) return folderMemo.get(id)!;
+  function joinPath(parentPath: string, name: string): string {
+    return parentPath === "" ? name : `${parentPath}/${name}`;
+  }
+
+  async function fetchFolderInfo(id: string): Promise<{ name: string; parent: string | null } | null> {
     const params = withSAD(new URLSearchParams({ fields: "id,name,parents" }));
     const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, { headers: await authHeaders() });
-    let info: { name: string; parent: string | null } | null;
-    if (res.status === 404) {
-      info = null;
-    } else if (!res.ok) {
-      throw new Error(`Drive get: ${res.status} ${await res.text()}`);
-    } else {
-      const f = (await res.json()) as DriveFile;
-      info = { name: f.name, parent: f.parents?.[0] ?? null };
-    }
-    folderMemo.set(id, info);
-    return info;
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`Drive get: ${res.status} ${await res.text()}`);
+    const f = (await res.json()) as DriveFile;
+    return { name: f.name, parent: f.parents?.[0] ?? null };
+  }
+
+  // Path of the folder `id` relative to driveRoot ("" for driveRoot
+  // itself), or null when its ancestry does not reach driveRoot. Bounded so
+  // a cyclic/corrupt parent chain cannot spin forever.
+  async function folderPathOf(id: string, depth = 0): Promise<string | null> {
+    if (id === driveRoot) return "";
+    if (depth >= 64) return null;
+    const cached = await folderPaths.get(id);
+    if (cached !== undefined) return cached;
+    const info = await fetchFolderInfo(id);
+    const parentPath =
+      info === null || info.parent === null ? null : await folderPathOf(info.parent, depth + 1);
+    const path = info === null || parentPath === null ? null : joinPath(parentPath, info.name);
+    await folderPaths.set(id, path);
+    return path;
   }
 
   // Path of `f` relative to driveRoot, or null when its ancestry does not
   // reach driveRoot (a loose file elsewhere on the drive, or one under a
-  // folder this account cannot read). Bounded so a cyclic/corrupt parent
-  // chain cannot spin forever.
+  // folder this account cannot read).
   async function pathFor(f: DriveFile): Promise<string | null> {
-    const segments: string[] = [f.name];
-    let cursor = f.parents?.[0] ?? null;
-    for (let depth = 0; depth < 64; depth++) {
-      if (cursor === null) return null;
-      if (cursor === driveRoot) return segments.reverse().join("/");
-      const info = await folderInfo(cursor);
-      if (!info) return null;
-      segments.push(info.name);
-      cursor = info.parent;
-    }
-    return null;
+    const parent = f.parents?.[0] ?? null;
+    if (parent === null) return null;
+    const parentPath = await folderPathOf(parent);
+    return parentPath === null ? null : joinPath(parentPath, f.name);
   }
 
   async function resolvePathToFileId(path: string): Promise<string | null> {
@@ -349,6 +368,10 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       modified_at: f.modifiedTime ? new Date(f.modifiedTime) : new Date(0),
       is_native_format: native.is_native_format,
       native_format: native.native_format,
+      // Drive's own stable id, persisted as files.remote_file_id so a later
+      // rename/move/hard delete can be correlated with the record even
+      // though its path changed (#418).
+      remote_file_id: f.id,
     };
   }
 
@@ -425,7 +448,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         const params = withSAD(new URLSearchParams({ fields: "id,name,mimeType,size,md5Checksum,modifiedTime,parents,trashed" }));
         const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, { headers: await authHeaders() });
         if (!res.ok) {
-          if (res.status === 404) { invalidatePrefix(path); return null; }
+          if (res.status === 404) { await invalidatePrefix(path); return null; }
           throw new Error(`Drive stat: ${res.status} ${await res.text()}`);
         }
         const file = (await res.json()) as DriveFile;
@@ -437,7 +460,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         // the cached mapping (and anything under it, if this is a folder)
         // and, if that mapping is what we just used, resolve again from
         // Drive -- a fresh search may find the real object at this path.
-        invalidatePrefix(path);
+        await invalidatePrefix(path);
         if (!fromCache) return null;
       }
       return null;
@@ -506,7 +529,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         body: JSON.stringify({ trashed: true }),
       });
       if (!res.ok) throw new Error(`Drive trash: ${res.status} ${await res.text()}`);
-      invalidatePrefix(path);
+      await invalidatePrefix(path);
     },
 
     async rename(from, to) {
@@ -531,7 +554,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         body: JSON.stringify({ name: newName }),
       });
       if (!res.ok) throw new Error(`Drive rename: ${res.status} ${await res.text()}`);
-      invalidatePrefix(from);
+      await invalidatePrefix(from);
       pathCache.set(to, id);
     },
 
@@ -713,8 +736,27 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       // ancestor memo wrong: the change itself carries the folder's current
       // name and parent, so refresh the entry from it instead of dropping
       // the whole memo and re-walking every ancestor over the network.
-      const rememberFolder = (f: DriveFile): void => {
-        folderMemo.set(f.id, { name: f.name, parent: f.parents?.[0] ?? null });
+      const rememberFolder = async (f: DriveFile): Promise<void> => {
+        const previous = await folderPaths.get(f.id);
+        const parent = f.parents?.[0] ?? null;
+        const parentPath = parent === null ? null : await folderPathOf(parent);
+        const path = parentPath === null ? null : joinPath(parentPath, f.name);
+        // A rename or a move leaves every descendant's cached path stale;
+        // drop the old subtree in both tiers and let the misses refill.
+        if (typeof previous === "string" && previous !== path) {
+          await folderPaths.invalidateSubtree(previous);
+        }
+        await folderPaths.set(f.id, path);
+      };
+
+      // A removed folder: drop its own entry and everything under it, same
+      // path-keyed invalidation. A hard delete carries no metadata, so the
+      // id is looked up first -- one that neither tier knows was never a
+      // cached folder and there is nothing to drop.
+      const forgetFolder = async (id: string): Promise<void> => {
+        const known = await folderPaths.get(id);
+        if (typeof known === "string") await folderPaths.invalidateSubtree(known);
+        else folderPaths.forgetMemo(id);
       };
 
       const toRemoteChange = async (c: DriveChangeItem): Promise<RemoteChange | null> => {
@@ -724,12 +766,12 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         // A hard delete carries no file metadata at all; a trash carries it
         // with trashed = true. Both are a remove.
         if (c.removed === true || f === undefined || f.trashed === true) {
-          if (f !== undefined && isFolder(f)) folderMemo.delete(fileId);
+          if (f === undefined || isFolder(f)) await forgetFolder(fileId);
           const path = f !== undefined ? await pathFor(f) : null;
           return { kind: "remove", path, file_id: fileId };
         }
         const folder = isFolder(f);
-        if (folder) rememberFolder(f);
+        if (folder) await rememberFolder(f);
         const path = await pathFor(f);
         if (path === null) return null; // outside driveRoot: not ours
         return {
@@ -738,6 +780,10 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
           hash: f.md5Checksum ?? null,
           modified_at: f.modifiedTime ? new Date(f.modifiedTime) : new Date(0),
           is_folder: folder,
+          // Same id the record carries as remote_file_id (#418): a rename or
+          // move arrives as an upsert at a NEW path under the SAME id, which
+          // is the only thing that tells it apart from a brand-new file.
+          file_id: fileId,
         };
       };
 
@@ -758,6 +804,10 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         // complete account of what happened: hand back a fresh start token
         // and let the caller full-sweep.
         if (res.status === 410 || res.status === 404) {
+          // Nothing cached about this remote's folder tree is provably
+          // current any more, and the full sweep that follows a reset
+          // refills it (#419).
+          await folderPaths.clear();
           return { cursor: await startPageToken(), changes: [], reset: true };
         }
         if (!res.ok) throw new Error(`Drive changes: ${res.status} ${await res.text()}`);

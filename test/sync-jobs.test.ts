@@ -18,13 +18,19 @@ import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import { resetAdapterCacheForTests, setAdapterForTests } from "../apps/server/domain/sync/adapter-cache.js";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
-import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../apps/server/domain/sync/sync-jobs.js";
+import {
+  startSyncJob,
+  getSyncJob,
+  getCurrentSyncJob,
+  awaitSyncJob,
+} from "../apps/server/domain/sync/sync-jobs.js";
 import { runNodeSync } from "../apps/server/domain/sync/sync-run.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import type { Client } from "@libsql/client";
 import type { SyncRunResponse } from "../apps/server/shared/api-types.js";
+import type { FileAdapter } from "../apps/server/domain/sync/types.js";
 
 // The domain-level tests below drive startSyncJob directly (not through the
 // REST handler), so they supply the same runNode callback
@@ -265,6 +271,120 @@ describe("per-node serialization across jobs (#338 catch-up)", () => {
     releaseFirst();
     await started;
     assert.deepEqual(order, ["first:start", "first:end", "second:start"]);
+  });
+
+  it("awaitSyncJob resolves once the job has finished, with its final state", async () => {
+    // The remote watcher's catch-up (#417) needs the OUTCOME, not the
+    // progress: starting a job is not evidence that it worked.
+    const nodeId = "N000000000000000000000PROJ";
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const started = startSyncJob({
+      userId: "U-watcher",
+      nodeIds: [nodeId],
+      runNode: async () => {
+        await gate;
+        throw new Error("Drive 500");
+      },
+    });
+    assert.equal(started.status, "running");
+    let finished: Awaited<ReturnType<typeof awaitSyncJob>> = null;
+    const waiter = awaitSyncJob(started.id).then((j) => {
+      finished = j;
+    });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(finished, null, "the job is still running");
+    release();
+    await waiter;
+    assert.equal(finished!.status, "done");
+    assert.equal(finished!.errored, 1);
+    assert.equal(finished!.nodes[0].error, "Drive 500");
+    assert.equal(await awaitSyncJob("nonexistent"), null);
+  });
+
+  it("POST /nodes/:id/sync holds the node lock for the whole run", async () => {
+    // #417: the route used to call runNodeSync bare, so a user-triggered
+    // sync and the watcher's catch-up sweep of the same node could
+    // interleave. The lock is what serializes them -- proven here by a job
+    // on the same node not starting while the route is mid-run.
+    const shared = await makeSharedDb();
+    setDbForTesting(shared.db);
+    const mirrorRoot = join(workspace, "mirror-lock");
+    await registerMirror(SOLO_USER, shared.nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    await writeFile(join(mirrorRoot, "wip", "locked.md"), "unsynced");
+
+    let entered!: () => void;
+    const inRun = new Promise<void>((r) => {
+      entered = r;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    // A backend whose first call (the run's own remote sweep listing) blocks
+    // until the test lets it go, so the route is provably mid-run.
+    const blocking: FileAdapter = {
+      async list() {
+        entered();
+        await gate;
+        return [];
+      },
+      async stat() {
+        return null;
+      },
+      async put(path, content) {
+        return {
+          path,
+          hash: null,
+          size: content.length,
+          modified_at: new Date(0),
+          is_native_format: false,
+        };
+      },
+      async get() {
+        throw new Error("blocking adapter: get not implemented");
+      },
+      async delete() {
+        /* nothing to delete */
+      },
+      async rename() {
+        throw new Error("blocking adapter: rename not implemented");
+      },
+      async url(path) {
+        return `fake://${path}`;
+      },
+    };
+    setAdapterForTests("test-fs", blocking);
+
+    const routeDone = fetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
+    await inRun;
+
+    let jobRan!: () => void;
+    const jobStarted = new Promise<void>((r) => {
+      jobRan = r;
+    });
+    let jobEntered = false;
+    startSyncJob({
+      userId: "U-watcher",
+      nodeIds: [shared.nodeId],
+      runNode: async () => {
+        jobEntered = true;
+        jobRan();
+        return emptyRun();
+      },
+    });
+    // Drain the microtask and immediate queues: without the lock in the
+    // handler, the job's worker would already have entered this node.
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    assert.equal(jobEntered, false, "the job must wait for the route's run");
+
+    release();
+    const res = await routeDone;
+    assert.equal(res.status, 200);
+    await jobStarted;
   });
 });
 
