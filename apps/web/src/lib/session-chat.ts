@@ -1,7 +1,7 @@
 // Pure, testable logic for SessionChat (#342, docs/superpowers/specs/
 // 2026-09-12-runner-and-session-design.md "Web: Práce, New task") -- event
 // grouping, status-chip derivation, the open-question panel, streamed-delta
-// buffering, and the restart-indicator hint. Dependency-free (no React) so
+// buffering. Dependency-free (no React) so
 // test/session-chat-helpers.test.ts can exercise it directly against
 // fixture event arrays, same convention as lib/sessions.ts.
 //
@@ -12,7 +12,6 @@
 // wire shape, not an import across that boundary.
 
 import type { SessionState } from "../types";
-import type { SessionSignals } from "../api";
 import { sessionRowChip } from "./session-views";
 
 export type RunEndReason = "completed" | "interrupted" | "suspended" | "error" | "limit" | "host_lost";
@@ -46,7 +45,7 @@ export interface AssistantMessageEvent {
 }
 export interface ReasoningEvent {
   kind: "reasoning";
-  payload: { summary: string };
+  payload: { summary: string; duration_ms?: number };
 }
 export interface ToolCallEvent {
   kind: "tool_call";
@@ -95,6 +94,27 @@ export interface ErrorEvent {
   payload: { class: ErrorClass; message: string };
 }
 
+// v2 task surface (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md,
+// "The context ring"): emitted by the adapter after every provider
+// assistant message and every result. used_tokens is what the model's
+// context currently holds (input + cache creation + cache read of the
+// latest assistant usage); max_tokens is the model's window from the
+// latest result, null until one arrived. Persisted like every event, so a
+// replay rebuilds the ring; the runtime also folds the latest one onto
+// sessions.context_used_tokens / context_max_tokens.
+export interface ContextUsageEvent {
+  kind: "context_usage";
+  payload: {
+    run_id: string;
+    model: string | null;
+    used_tokens: number;
+    max_tokens: number | null;
+    input_tokens: number;
+    cached_tokens: number;
+    output_tokens: number;
+  };
+}
+
 export type CanonicalEvent =
   | RunStartedEvent
   | RunEndedEvent
@@ -107,7 +127,8 @@ export type CanonicalEvent =
   | CompactionEvent
   | HandoffEvent
   | StateChangedEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | ContextUsageEvent;
 
 export type CanonicalEventKind = CanonicalEvent["kind"];
 
@@ -212,18 +233,6 @@ export function collapseToolCalls(events: readonly ChatEvent[]): ChatEvent[] {
   return out;
 }
 
-// --- Restart indicator -------------------------------------------------------
-
-// Null when there is no live run (nothing to report) -- the caller decides
-// whether/where to show this, e.g. only while state === "running".
-export function formatRestartHint(signals: SessionSignals): string | null {
-  if (signals.runAgeMs === null) return null;
-  const minutes = Math.max(0, Math.round(signals.runAgeMs / 60_000));
-  const ageText = minutes < 1 ? "méně než minutu" : `${minutes} min`;
-  const growth = signals.expansionsSinceRunStart > 0 ? ` (+${signals.expansionsSinceRunStart} od startu běhu)` : "";
-  return `Běží ${ageText} · zápis ${signals.writeSetSize} · čtení ${signals.readSetSize}${growth}`;
-}
-
 // --- Naming (#374) -----------------------------------------------------------
 
 const THREAD_NAME_MAX_LENGTH = 60;
@@ -243,4 +252,271 @@ export function threadNameFromFirstMessage(text: string): string {
   const lastSpace = truncated.lastIndexOf(" ");
   const cut = lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated;
   return `${cut}…`;
+}
+
+// --- Transcript rows (v2 spec, "The activity model") -------------------------
+// The transcript is a list of rows derived from the canonical events: the
+// prompt and the answer at full weight, everything between two answers of
+// one run folded into one activity group, run bookkeeping into nothing.
+
+export type ActivityItem =
+  | { kind: "reasoning"; seq: number; summary: string; durationMs: number | null }
+  | { kind: "tool"; seq: number; call: ToolCallEvent["payload"] }
+  | { kind: "file_change"; seq: number; path: string; op: FileChangeOp };
+
+export type ActivityRow = { kind: "activity"; key: string; runId: string | null; items: ActivityItem[]; live: boolean };
+
+export type TranscriptRow =
+  | { kind: "prompt"; key: string; text: string }
+  | { kind: "answer"; key: string; text: string }
+  | ActivityRow
+  | { kind: "question"; key: string; title: string }
+  | { kind: "compaction"; key: string }
+  | { kind: "summary"; key: string }
+  | { kind: "note"; key: string; text: string }
+  | { kind: "error"; key: string; message: string };
+
+export function runEndReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    completed: "dokončeno",
+    interrupted: "přerušeno",
+    suspended: "pozastaveno",
+    error: "chyba",
+    limit: "limit",
+    host_lost: "proces osiřel",
+  };
+  return labels[reason] ?? reason;
+}
+
+// `liveRunId` says which run is live: its trailing activity group (after
+// the last answer) is marked live, so the renderer keeps it expanded on
+// the running tool. run_started and state_changed yield nothing. A
+// run_ended yields nothing for `completed` and `suspended` (the ordinary
+// ends -- the notice bar already says the process is gone), a neutral
+// note for `interrupted`, and an error row for `error`, `limit` and
+// `host_lost`.
+export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: string | null): TranscriptRow[] {
+  const rows: TranscriptRow[] = [];
+  // Held in an object so the closures below can reset it -- a plain `let`
+  // narrows to `null` for the reader after the loop.
+  const group: { open: ActivityRow | null } = { open: null };
+  let currentRun: string | null = null;
+  const close = (): void => {
+    group.open = null;
+  };
+  const push = (item: ActivityItem): void => {
+    if (!group.open) {
+      group.open = { kind: "activity", key: `a${item.seq}`, runId: currentRun, items: [], live: false };
+      rows.push(group.open);
+    }
+    group.open.items.push(item);
+  };
+  for (const { seq, event } of collapseToolCalls(events)) {
+    switch (event.kind) {
+      case "user_message":
+        close();
+        rows.push({ kind: "prompt", key: `e${seq}`, text: event.payload.text });
+        break;
+      case "assistant_message":
+        close();
+        rows.push({ kind: "answer", key: `e${seq}`, text: event.payload.text });
+        break;
+      case "reasoning":
+        push({ kind: "reasoning", seq, summary: event.payload.summary, durationMs: event.payload.duration_ms ?? null });
+        break;
+      case "tool_call":
+        push({ kind: "tool", seq, call: event.payload });
+        break;
+      case "file_change":
+        push({ kind: "file_change", seq, path: event.payload.path, op: event.payload.op });
+        break;
+      case "run_started":
+        currentRun = event.payload.run_id;
+        close();
+        break;
+      case "run_ended":
+        close();
+        if (event.payload.reason === "interrupted") {
+          rows.push({ kind: "note", key: `e${seq}`, text: "Přerušeno" });
+        } else if (event.payload.reason !== "completed" && event.payload.reason !== "suspended") {
+          rows.push({ kind: "error", key: `e${seq}`, message: `Běh skončil: ${runEndReasonLabel(event.payload.reason)}` });
+        }
+        currentRun = null;
+        break;
+      case "question":
+        close();
+        rows.push({ kind: "question", key: `e${seq}`, title: event.payload.title });
+        break;
+      case "compaction":
+        close();
+        rows.push({ kind: "compaction", key: `e${seq}` });
+        break;
+      case "handoff":
+        close();
+        rows.push({ kind: "summary", key: `e${seq}` });
+        break;
+      case "error":
+        close();
+        rows.push({ kind: "error", key: `e${seq}`, message: event.payload.message });
+        break;
+      default:
+        break;
+    }
+  }
+  const trailing = group.open;
+  if (trailing && liveRunId !== null && trailing.runId === liveRunId) trailing.live = true;
+  return rows;
+}
+
+// --- The activity sentence ---------------------------------------------------
+// "Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval 12 s". The verb
+// table covers Claude's tool names; another runner's tools fall back to
+// their own names (spec, known gaps). The seconds are the group's
+// reasoning blocks' `duration_ms` added up; a block without one (no
+// delta streamed) counts as reasoning but adds no time.
+
+type ToolVerb = "read" | "edited" | "created" | "command";
+const TOOL_VERBS: Record<string, ToolVerb> = {
+  Read: "read",
+  Glob: "read",
+  Grep: "read",
+  LS: "read",
+  WebFetch: "read",
+  WebSearch: "read",
+  Edit: "edited",
+  MultiEdit: "edited",
+  NotebookEdit: "edited",
+  Write: "created",
+  Bash: "command",
+};
+
+export function toolVerbCounts(items: readonly ActivityItem[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (item.kind !== "tool") continue;
+    const key = TOOL_VERBS[item.call.tool] ?? `tool:${item.call.tool}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function czechCount(n: number, one: string, few: string, many: string): string {
+  if (n === 1) return one;
+  if (n >= 2 && n <= 4) return few;
+  return many;
+}
+
+export function reasoningSeconds(items: readonly ActivityItem[]): number {
+  let ms = 0;
+  for (const item of items) if (item.kind === "reasoning" && item.durationMs !== null) ms += item.durationMs;
+  return ms > 0 ? Math.max(1, Math.round(ms / 1000)) : 0;
+}
+
+export function activitySummary(items: readonly ActivityItem[]): { text: string; failed: number } {
+  const seconds = reasoningSeconds(items);
+  const tools = items.filter((i): i is Extract<ActivityItem, { kind: "tool" }> => i.kind === "tool");
+  const failed = tools.filter((t) => t.call.status === "failed").length;
+  // A group with a single call shows that call's title instead of a sentence.
+  if (tools.length === 1 && !seconds) {
+    const t = tools[0];
+    const title = t.call.title || t.call.tool;
+    return { text: failed ? `${title} · selhal` : title, failed };
+  }
+  const parts: string[] = [];
+  const counts = toolVerbCounts(items);
+  const read = counts.get("read");
+  if (read) parts.push(`přečteno ${read} ${czechCount(read, "soubor", "soubory", "souborů")}`);
+  const edited = counts.get("edited");
+  if (edited) parts.push(`upraveno ${edited}`);
+  const created = counts.get("created");
+  if (created) parts.push(`vytvořeno ${created}`);
+  const cmd = counts.get("command");
+  if (cmd) parts.push(`${cmd} ${czechCount(cmd, "příkaz", "příkazy", "příkazů")}`);
+  for (const [key, n] of counts) if (key.startsWith("tool:")) parts.push(`${n} × ${key.slice(5)}`);
+  if (seconds) parts.push(`uvažoval ${seconds} s`);
+  if (failed) parts.push(`${failed} ${czechCount(failed, "selhal", "selhaly", "selhalo")}`);
+  if (parts.length === 0 && items.some((i) => i.kind === "reasoning")) parts.push("uvažoval");
+  const text = parts.join(" · ");
+  return { text: text.charAt(0).toUpperCase() + text.slice(1), failed };
+}
+
+// --- The working row -----------------------------------------------------------
+// Rule 2: something is always on screen while a run is live. When neither
+// streaming text nor a running tool is, this row is, labelled by the last
+// thing that happened.
+
+export type WorkingPhase = "starting" | "thinking" | "continuing";
+export const WORKING_LABEL: Record<WorkingPhase, string> = {
+  starting: "Spouštím…",
+  thinking: "Přemýšlím…",
+  continuing: "Pokračuji…",
+};
+
+// null = nothing to show: no run and no send in flight, or the run's last
+// event is a still-running tool (the live activity row shows that one).
+export function workingPhase(
+  events: readonly ChatEvent[],
+  liveRunId: string | null,
+  sentAt: number | null,
+): WorkingPhase | null {
+  if (liveRunId === null) return sentAt !== null ? "starting" : null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i].event;
+    if (e.kind === "run_started" && e.payload.run_id === liveRunId) return "thinking";
+    if (e.kind === "tool_call") return e.payload.status === "started" ? null : "continuing";
+    if (e.kind === "assistant_message" || e.kind === "reasoning") return "continuing";
+  }
+  return "thinking";
+}
+
+// --- Delta coalescing (v2 spec, "Streaming") ----------------------------------
+// A burst of delta frames costs one render: frames are buffered per
+// (run, channel) and delivered once per scheduler tick. The desktop bridge
+// forwards frames unchanged; this is the webview's own batching.
+
+export type StreamDelta = { run_id: string; channel: "text" | "reasoning"; text: string };
+
+export interface DeltaCoalescer {
+  push(delta: StreamDelta): void;
+  // Deliver what is buffered now (a run_ended, an unmount) and cancel the tick.
+  flush(): void;
+  // Drop what is buffered without delivering.
+  clear(): void;
+}
+
+export function createDeltaCoalescer(
+  deliver: (batch: StreamDelta[]) => void,
+  schedule: (cb: () => void) => () => void,
+): DeltaCoalescer {
+  const buffer = new Map<string, StreamDelta>();
+  let cancel: (() => void) | null = null;
+  const drain = (): void => {
+    cancel = null;
+    if (buffer.size === 0) return;
+    const batch = [...buffer.values()];
+    buffer.clear();
+    deliver(batch);
+  };
+  return {
+    push(delta) {
+      const key = `${delta.run_id}\u0000${delta.channel}`;
+      const prev = buffer.get(key);
+      buffer.set(key, prev ? { ...prev, text: prev.text + delta.text } : { ...delta });
+      if (!cancel) cancel = schedule(drain);
+    },
+    flush() {
+      if (cancel) {
+        cancel();
+        cancel = null;
+      }
+      drain();
+    },
+    clear() {
+      buffer.clear();
+      if (cancel) {
+        cancel();
+        cancel = null;
+      }
+    },
+  };
 }

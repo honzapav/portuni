@@ -194,6 +194,8 @@ export const PG_BASELINE_DDL: string[] = [
     name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
     model TEXT,
     effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
+    context_used_tokens INTEGER,
+    context_max_tokens INTEGER,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_active_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     closed_at TIMESTAMPTZ

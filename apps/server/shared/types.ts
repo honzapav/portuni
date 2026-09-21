@@ -164,6 +164,10 @@ export const SessionRow = z.object({
   // RunStart -- null means "no override here", not "off".
   model: z.union([z.string(), z.null()]),
   effort: z.union([z.string(), z.null()]),
+  // v2 context ring: the latest context_usage event's counters (migration
+  // 039), null until a run reported any.
+  context_used_tokens: z.union([z.number(), z.null()]),
+  context_max_tokens: z.union([z.number(), z.null()]),
   created_at: z.string(),
   last_active_at: z.string(),
   closed_at: z.union([z.string(), z.null()]),

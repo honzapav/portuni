@@ -47,6 +47,20 @@ describe("DbSessionStore.createDraft", () => {
     assert.equal(draft.model, "sonnet");
     assert.equal(draft.effort, "medium");
   });
+
+  // v2 rule 5: the device resolves the organisation's default runner and
+  // instance before the request; the store only records, nulls included.
+  it("records the runner and instance the device resolved, or nulls", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const store = new DbSessionStore(db);
+    const withRunner = await store.createDraft({ node_id: nodeId, user_id: "U1", runner: "claude", instance_id: "01INST" });
+    assert.equal(withRunner.state, "draft");
+    assert.equal(withRunner.runner, "claude");
+    assert.equal(withRunner.instance_id, "01INST");
+    const bare = await store.createDraft({ node_id: nodeId, user_id: "U1" });
+    assert.equal(bare.runner, null);
+    assert.equal(bare.instance_id, null);
+  });
 });
 
 describe("draft -> running transition", () => {

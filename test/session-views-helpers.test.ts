@@ -18,6 +18,8 @@ import {
   pruneNodeSessions,
   isChatSessionState,
   mountedChatSessions,
+  isThreadSession,
+  nodeRowActive,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -68,6 +70,12 @@ describe("sessionRowChip", () => {
     const chip = sessionRowChip("suspended", null);
     assert.equal(chip.label, "Pozastaveno");
     assert.equal(chip.pulsing, false);
+  });
+
+  it("a draft's chip reads 'Nový' in both variants, so the header never repeats the draft's name", () => {
+    assert.equal(sessionRowChip("draft", null, "row").label, "Nový");
+    assert.equal(sessionRowChip("draft", null, "header").label, "Nový");
+    assert.equal(sessionRowChip("draft", null).pulsing, false);
   });
 });
 
@@ -229,11 +237,19 @@ describe("requestChatSession", () => {
 // it in the window between the promotion frame and the refetch it
 // triggers.
 
-type Thread = { id: string; node_id: string | null; state: "running" | "suspended" | "closed" | "draft" };
+type Thread = {
+  id: string;
+  node_id: string | null;
+  state: "running" | "suspended" | "closed" | "draft";
+  session_type: string;
+  cli: string | null;
+};
 const thread = (id: string, state: Thread["state"], node_id: string | null = "n1"): Thread => ({
   id,
   node_id,
   state,
+  session_type: "interactive_task",
+  cli: null,
 });
 
 describe("mergeSessionIntoNodeMap", () => {
@@ -268,6 +284,34 @@ describe("applyNodeSessionsRefetch", () => {
     ]);
     assert.deepEqual(next.n1.map((s) => s.id), ["a", "b"]);
     assert.deepEqual(next.n2.map((s) => s.id), ["other"]);
+  });
+
+  it("keeps threads only: a hand-opened CLI session has no sub-row (v2 rule 7)", () => {
+    const next = applyNodeSessionsRefetch({}, "n1", [
+      { ...thread("a", "running"), cli: "claude" },
+      { ...thread("b", "running"), session_type: "interactive_chat" },
+      thread("c", "running"),
+    ]);
+    assert.deepEqual(next.n1.map((s) => s.id), ["c"]);
+  });
+});
+
+describe("isThreadSession (v2 rule 7)", () => {
+  it("an interactive_task with no cli is a thread", () => {
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: null }), true);
+  });
+  it("a hand-opened CLI session or a chat session is not", () => {
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: "claude" }), false);
+    assert.equal(isThreadSession({ session_type: "interactive_chat", cli: null }), false);
+  });
+});
+
+describe("nodeRowActive (v2 rule 6)", () => {
+  it("the selected node is active only while no thread is shown", () => {
+    assert.equal(nodeRowActive("N1", "N1", null), true);
+    assert.equal(nodeRowActive("N1", "N1", "S1"), false);
+    assert.equal(nodeRowActive("N2", "N1", null), false);
+    assert.equal(nodeRowActive("N1", null, null), false);
   });
 });
 

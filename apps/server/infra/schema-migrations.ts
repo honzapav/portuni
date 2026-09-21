@@ -1531,7 +1531,25 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration038,
   },
+  // v2 task surface (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md,
+  // "The context ring"): two nullable counters, two ADD COLUMNs, no
+  // rebuild, no index -- docs/lessons-learned.md section 7. The same
+  // columns are in DDL_SESSIONS, the 030/036 rebuild shapes and
+  // PG_BASELINE_DDL; the Postgres cutover has not run, so no pg-002.
+  {
+    id: "039_sessions_context_counters",
+    isApplied: async (db) => {
+      const r = await db.execute("PRAGMA table_info(sessions)");
+      return r.rows.some((row) => String(row.name) === "context_max_tokens");
+    },
+    up: runMigration039,
+  },
 ];
+
+export async function runMigration039(db: DbClient): Promise<void> {
+  await db.execute("ALTER TABLE sessions ADD COLUMN context_used_tokens INTEGER");
+  await db.execute("ALTER TABLE sessions ADD COLUMN context_max_tokens INTEGER");
+}
 
 export async function runMigration038(db: DbClient): Promise<void> {
   await db.execute("ALTER TABLE files ADD COLUMN remote_file_id TEXT");
@@ -1682,6 +1700,8 @@ export async function runMigration030(db: DbClient): Promise<void> {
       name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
       model TEXT,
       effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
+      context_used_tokens INTEGER,
+      context_max_tokens INTEGER,
       created_at DATETIME NOT NULL DEFAULT (datetime('now')),
       last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
       closed_at DATETIME
@@ -1741,6 +1761,8 @@ export async function runMigration036(db: DbClient): Promise<void> {
       name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
       model TEXT,
       effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
+      context_used_tokens INTEGER,
+      context_max_tokens INTEGER,
       created_at DATETIME NOT NULL DEFAULT (datetime('now')),
       last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
       closed_at DATETIME

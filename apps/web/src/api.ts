@@ -208,6 +208,16 @@ export function patchSessionModelEffort(
   return jsonRequest("POST", `/sessions/${encodeURIComponent(id)}/model`, patch);
 }
 
+// v2 rule 5: the draft's runner/instance choice, PATCH /sessions/:id --
+// central in a team workspace (the record is there), refused with 409
+// SESSION_NOT_DRAFT once the thread is promoted.
+export function patchSessionRunnerInstance(
+  id: string,
+  patch: { runner: string; instance_id: string | null },
+): Promise<{ runner: string | null; instance_id: string | null }> {
+  return jsonRequest("PATCH", `/sessions/${encodeURIComponent(id)}`, patch);
+}
+
 // configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
 // caller can resolve one from the desktop profiles registry (#204) --
 // lets the server check conversation-resumability at the right transcript
@@ -218,18 +228,6 @@ export function fetchPersistentSessionResumeInfo(
 ): Promise<SessionResumeInfo> {
   const qs = configDir ? `?config_dir=${encodeURIComponent(configDir)}` : "";
   return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
-}
-
-// The restart indicator (SessionChat header, #342) -- GET /sessions/:id/signals.
-export type SessionSignals = {
-  runAgeMs: number | null;
-  writeSetSize: number;
-  readSetSize: number;
-  expansionsSinceRunStart: number;
-};
-
-export function fetchSessionSignals(id: string): Promise<SessionSignals> {
-  return jsonRequest<SessionSignals>("GET", `/sessions/${encodeURIComponent(id)}/signals`);
 }
 
 // GET /sessions/:id -- the raw session record (apps/server/shared/types.ts's

@@ -14,7 +14,15 @@
 import { useState } from "react";
 import { Plus, X } from "lucide-react";
 import type { WorkspaceNodeRow } from "../lib/sessions";
+import { nodeRowActive } from "../lib/session-views";
 import { scopedKey } from "../lib/workspace-storage";
+import {
+  type NodeActivity,
+  TASK_GROUPS,
+  type TaskGroupKey,
+  summarizeNodeActivity,
+  taskGroupOf,
+} from "../lib/workspace-list";
 import type { SessionSummary } from "../types";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -64,41 +72,12 @@ function nodeTypeVar(type: string): string {
   return known.includes(type) ? `var(--color-node-${type})` : "var(--color-node-default)";
 }
 
-// The one state a node's dot summarises, highest first. `null` = nothing
-// is happening, so no dot at all (an idle node used to show an amber dot
-// that read as a warning).
-export type NodeActivity = "waiting" | "running" | "suspended" | null;
-
-export function summarizeNodeActivity(
-  tasks: readonly Pick<SessionSummary, "state" | "waiting_since">[],
-): NodeActivity {
-  if (tasks.some((t) => t.state === "running" && t.waiting_since !== null)) return "waiting";
-  if (tasks.some((t) => t.state === "running")) return "running";
-  if (tasks.some((t) => t.state === "suspended")) return "suspended";
-  return null;
-}
-
+// The node's status dot (lib/workspace-list.ts decides which): waiting or
+// running only -- a suspended or draft thread is not activity.
 const ACTIVITY_DOT: Record<Exclude<NodeActivity, null>, { color: string; title: string; pulse: boolean }> = {
   waiting: { color: "var(--color-node-process)", title: "Úkol čeká na odpověď", pulse: true },
   running: { color: "var(--color-status-active)", title: "Úkol běží", pulse: true },
-  suspended: { color: "var(--color-node-process)", title: "Úkol pozastaven", pulse: false },
 };
-
-export type TaskGroupKey = "waiting" | "running" | "suspended" | "draft" | "done";
-export const TASK_GROUPS: { key: TaskGroupKey; label: string }[] = [
-  { key: "waiting", label: "Vyžadují pozornost" },
-  { key: "running", label: "Pracují" },
-  { key: "suspended", label: "Pozastavené" },
-  { key: "draft", label: "Nové" },
-  { key: "done", label: "Hotové" },
-];
-
-export function taskGroupOf(s: Pick<SessionSummary, "state" | "waiting_since">): TaskGroupKey {
-  if (s.state === "running") return s.waiting_since !== null ? "waiting" : "running";
-  if (s.state === "suspended") return "suspended";
-  if (s.state === "draft") return "draft";
-  return "done";
-}
 
 export default function WorkspaceNodeList(props: Props) {
   const [mode, setMode] = useState<ListMode>(readListMode);
@@ -114,7 +93,7 @@ export default function WorkspaceNodeList(props: Props) {
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center gap-2 px-4 pt-6 pb-1.5">
+      <div className="flex items-center gap-2 px-3 pt-4 pb-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-dim)]">
           Otevřené
         </span>
@@ -169,11 +148,13 @@ function NodeTree({
   }
 
   return (
-    <ul className="flex flex-col gap-2 px-2.5 pb-4">
+    <ul className="flex flex-col gap-2 px-3 pb-4">
       {rows.map((r) => {
         const tasks = openSessionsByNode[r.id] ?? [];
         const activity = summarizeNodeActivity(tasks);
-        const selected = r.id === selectedNodeId;
+        // v2 rule 6: the node row is marked only while the centre shows the
+        // node itself; with a thread open, that thread's row is the one.
+        const selected = nodeRowActive(r.id, selectedNodeId, activeSessionId);
         return (
           <li key={r.id}>
             {/* Node row. The row itself selects the node; the + / × controls
@@ -189,7 +170,7 @@ function NodeTree({
                   onSelectNode(r.id);
                 }
               }}
-              className={`group relative flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] transition-colors ${
+              className={`group relative flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] transition-colors ${
                 selected
                   ? "bg-[var(--color-surface-2)] font-medium text-[var(--color-text)]"
                   : "text-[var(--color-text)] hover:bg-[var(--color-surface-2)]"
@@ -198,7 +179,7 @@ function NodeTree({
               {selected && (
                 <span
                   aria-hidden
-                  className="pointer-events-none absolute inset-y-1.5 -left-2.5 w-0.5 rounded-full bg-[var(--color-accent)]"
+                  className="pointer-events-none absolute inset-y-2 -left-3 w-0.5 rounded-full bg-[var(--color-accent)]"
                 />
               )}
               <span
@@ -253,7 +234,7 @@ function NodeTree({
             </div>
 
             {tasks.length > 0 && (
-              <ul className="mt-0.5 flex flex-col gap-0.5">
+              <ul className="mt-1 flex flex-col gap-1">
                 {tasks.map((s) => (
                   <li key={s.id}>
                     <TaskRow
@@ -284,7 +265,7 @@ function taskTitle(s: Pick<SessionSummary, "state" | "waiting_since">): string {
     case "suspended":
       return "Pozastaveno";
     case "draft":
-      return "Nový úkol";
+      return "Nový";
     default:
       return "Hotovo";
   }
@@ -410,7 +391,7 @@ function TaskList({ rows, openSessionsByNode, activeSessionId, onOpenSessionChat
   }
 
   return (
-    <ul className="flex flex-col px-2.5 pb-4">
+    <ul className="flex flex-col px-3 pb-4">
       {TASK_GROUPS.map(({ key, label }) => {
         const items = byGroup.get(key);
         if (!items || items.length === 0) return null;
@@ -418,7 +399,7 @@ function TaskList({ rows, openSessionsByNode, activeSessionId, onOpenSessionChat
         return (
           <li key={key} className={dim ? "opacity-60" : ""}>
             <GroupHeader label={label} count={items.length} />
-            <ul className="flex flex-col gap-0.5">
+            <ul className="flex flex-col gap-1">
               {items.map(({ node, task }) => (
                 <li key={task.id}>
                   <Button

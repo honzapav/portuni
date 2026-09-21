@@ -63,7 +63,6 @@ import {
 import { nodeVisibleTo } from "../auth/node-access.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import {
-  createDraftSession,
   deleteDraftSession,
   getLatestRunHostId,
   getSession,
@@ -113,6 +112,8 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
     write_count: await getSessionWriteCount(db, row.id),
     model: row.model,
     effort: row.effort,
+    context_used_tokens: row.context_used_tokens,
+    context_max_tokens: row.context_max_tokens,
     created_at: row.created_at,
     last_active_at: row.last_active_at,
     closed_at: row.closed_at,
@@ -287,6 +288,10 @@ const PatchSessionBody = z
     // #375: the thread's own model/effort override.
     model: z.string().nullable().optional(),
     effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+    // v2 context ring: the runtime folds each context_usage event here
+    // (CentralSessionStore.patchSession in a team workspace).
+    context_used_tokens: z.number().int().nullable().optional(),
+    context_max_tokens: z.number().int().nullable().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, "at least one field is required");
 
@@ -310,6 +315,14 @@ export async function handlePatchSession(
       respondJson(res, 200, await toSummary(updated));
       return;
     }
+    // v2 rule 5: runner and instance are the thread's, chosen while it is
+    // a draft. The promotion patch sets them together with state:
+    // "running" and passes; a bare change on any other state is refused.
+    const touchesRunner = body.runner !== undefined || body.instance_id !== undefined;
+    if (touchesRunner && existing.state !== "draft" && body.state === undefined) {
+      respondJson(res, 409, { error: "runner and instance can only change on a draft", code: "SESSION_NOT_DRAFT" });
+      return;
+    }
     // #426: the live half of a model change (session-runtime.ts's in-memory
     // liveRuns) belongs to POST /sessions/:id/model, which the desktop
     // routes to the device driving the run; this route is the record half
@@ -330,6 +343,8 @@ export async function handlePatchSession(
       name_is_custom: body.name_is_custom,
       model: body.model,
       effort: body.effort,
+      context_used_tokens: body.context_used_tokens,
+      context_max_tokens: body.context_max_tokens,
     });
     respondJson(res, 200, updated);
   } catch (err) {
@@ -525,9 +540,14 @@ export async function handleStartSession(
 
     if (body.brief === undefined) {
       // No brief yet: a draft, not a task -- the first message
-      // (POST /sessions/:id/messages) promotes it and resolves runner/
-      // instance itself (session-runtime.ts's promoteDraftAndStart).
-      const session = await createDraftSession(db, identity.userId, body.node_id, {
+      // (POST /sessions/:id/messages) promotes it. Through the runtime, not
+      // createDraftSession directly, because the runtime is what resolves
+      // the organisation's default runner/instance onto the row (v2 rule
+      // 5); its store here is DbSessionStore, so the row still lands in
+      // this db.
+      const session = await getSessionRuntime().createDraft({
+        userId: identity.userId,
+        nodeId: body.node_id,
         model: body.model,
         effort: body.effort,
       });
@@ -775,6 +795,9 @@ const RecordSessionBody = z.union([
     node_id: z.string().min(1),
     model: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),
+    // v2 rule 5: resolved on the device, recorded here.
+    runner: z.string().nullable().optional(),
+    instance_id: z.string().nullable().optional(),
   }),
   z.object({
     draft: z.literal(false).optional(),
@@ -816,6 +839,8 @@ export async function handleCreateSessionRecord(
             user_id: identity.userId,
             model: body.model,
             effort: body.effort,
+            runner: body.runner ?? null,
+            instance_id: body.instance_id ?? null,
           })
         : await store.createSession({
             node_id: body.node_id,

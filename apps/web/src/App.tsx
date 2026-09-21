@@ -1050,7 +1050,15 @@ export default function App() {
           </div>
         )}
         {view === "overview" && (
-          <OverviewView onSelectNode={overviewSelectNode} onOpenSession={openSessionChat} liveStates={sessionStates} />
+          <OverviewView
+            onSelectNode={overviewSelectNode}
+            onOpenSession={openSessionChat}
+            liveStates={sessionStates}
+            unsyncedCount={syncPending.total}
+            onOpenWorkspace={() => setView("workspace")}
+            onOpenGraph={() => setView("graph")}
+            onOpenSyncOverview={() => setSyncOverviewOpen(true)}
+          />
         )}
         {graph && view === "graph" && (
           <Suspense
@@ -1296,7 +1304,7 @@ export default function App() {
           }}
           onSelectNode={(id) => {
             setSyncOverviewOpen(false);
-            setSelectedId(id);
+            overviewSelectNode(id);
           }}
         />
       )}

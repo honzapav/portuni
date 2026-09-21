@@ -16,9 +16,9 @@ The currently selected node lives in the URL as `?node=<id>`, so deep-linking an
 
 ## Overview (Přehled)
 
-The default landing view: one aggregate, permission-filtered snapshot of the whole workspace (`GET /overview`), composed deterministically — no LLM involved. Four cards:
+The default landing view: one aggregate, permission-filtered snapshot of the whole workspace (`GET /overview`), composed deterministically — no LLM involved. A strip of four counters on top — Čeká na mě, Běží, Vyžaduje pozornost, Nesynchronizováno — each a shortcut to the place it counts (Práce, Graf, the Nesynchronizováno dialog). Under it, four cards; each shows at most eight rows and a "Zobrazit všech N" link for the rest:
 
-- **Relace** — your own inbox: running/suspended sessions you started, ordered "Čeká na mě" (an open question) first, then running, then suspended (`GET /overview` itself returns every session on a node you can see, workspace-wide; the card narrows that to yours — the team-wide view is a later, host-aware feature), plus a headless review queue: nodes a `headless` session reached only via search with no edge path (`session_scope.added_via = 'disconnected'`) — see [Scope Enforcement](/concepts/scope-enforcement/).
+- **Relace** — your own inbox: running/suspended threads you started, ordered "Čeká na mě" (an open question) first, then running, then suspended (`GET /overview` itself returns every session on a node you can see, workspace-wide; the card narrows that to yours — the team-wide view is a later, host-aware feature). Sessions opened by hand from a CLI are not rows here; the card's footer says how many there are and how many run, and the node's Relace tab lists them. Plus a headless review queue: nodes a `headless` session reached only via search with no edge path (`session_scope.added_via = 'disconnected'`) — see [Scope Enforcement](/concepts/scope-enforcement/).
 - **Vyžaduje pozornost** — processes in `at_risk`/`broken`, areas in `needs_attention`, projects with `health != on_track` (see [Lifecycle States](/concepts/lifecycle-states/#project-health)), plus pending access requests (visible to `manage` scope and above only) and stuck sync operations (`pending_file_ops` rows with a recorded `last_error` — the closest server-visible signal to a sync issue; true file-conflict state is computed on-device and is not aggregated server-side).
 - **Poslední aktivita** — recent events and recent session writes (nodes added to a session's write scope), interleaved by timestamp.
 - **Nové nody** — recently created nodes, human- and agent-created alike.
@@ -53,8 +53,8 @@ When a node is selected, the detail pane on the right shows the same payload `po
 └──────────────┴──────────────────────────────┴──────────────┘
 ```
 
-- **Sidebar header** (every tab) — the workspace switcher under the brand, the Přehled / Graf / Práce toggle, "Hledat uzel…" (also `⌘K` / `Ctrl+K`) opening a command palette that filters nodes by name, description and type (a longer result list is grouped by node type — Organizace, Oblast, Projekt, Proces, Princip — a short one stays flat), and "Nový uzel". The block is identical on every tab; in Graf a pick selects the node in the graph, in Práce it opens the node.
-- **Node list** (left, "Otevřené") — two arrangements, switched by the Uzly | Stav toggle (remembered per workspace). **Uzly**: every open node in the order you opened them, with a node-type dot and at most one activity dot (waiting on an answer, running, or suspended, from live `session_state` frames); its task sessions (including an empty, just-opened draft) sit as sub-rows flush under the node name, the state in the tooltip — click one to jump straight to the chat, double-click to rename inline, and the `×` revealed on hover closes it (a draft is deleted outright; anything else asks first). The thread the centre column is showing is highlighted the same way a selected node row is, in both arrangements. A thread started anywhere else — the detail pane's "Nový úkol", the Relace tab's "Navázat", another window — appears here as soon as its first `session_state` frame arrives, without reopening the node. Hovering a node itself shows `+` (opens a new, empty thread on that node — the same one-click action as the detail pane's "Nový úkol") and `×` (close the node — its sessions keep running on the sidecar). **Stav**: tasks only, grouped Vyžadují pozornost / Pracují / Pozastavené / Nové / Hotové, each with its node's name underneath.
+- **Sidebar header** (every tab) — the workspace switcher under the brand, the Přehled / Graf / Práce toggle, "Hledat uzel…" (also `⌘K` / `Ctrl+K`) opening a command palette that filters nodes by name, description and type (a longer result list is grouped by node type — Organizace, Oblast, Projekt, Proces, Princip — a short one shows the type beside each name; ↑↓ / Enter / Esc hints sit in the footer), and "Nový uzel". The block is identical on every tab; in Graf a pick selects the node in the graph, in Práce it opens the node.
+- **Node list** (left, "Otevřené") — two arrangements, switched by the Uzly | Stav toggle (remembered per workspace). **Uzly**: every open node in the order you opened them, with a node-type dot and at most one activity dot (waiting on an answer or running, from live `session_state` frames — a suspended or new thread shows none); its threads (including an empty, just-opened draft) sit as sub-rows under the node name, the state in the tooltip — click one to jump straight to the chat, double-click to rename inline, and the `×` revealed on hover closes it (a draft is deleted outright; anything else asks first). Sessions opened by hand from a CLI are not threads; they stay on the node's Relace tab. Exactly one row is marked: the thread the centre column is showing, or, when it shows the node itself, the node. A thread started anywhere else — the detail pane's "Nový úkol", the Relace tab's "Navázat", another window — appears here as soon as its first `session_state` frame arrives, without reopening the node. Hovering a node itself shows `+` (opens a new, empty thread on that node — the same one-click action as the detail pane's "Nový úkol") and `×` (close the node — its sessions keep running on the sidecar). **Stav**: tasks only, grouped Vyžadují pozornost / Pracují / Pozastavené / Nové / Hotové, each with its node's name underneath.
 - **Centre** — [the task chat](#task-chat-práce) when the selected node has an open (running/suspended/draft) session; otherwise the same `DetailPane` the graph view uses, in "embedded" mode.
 - **Node detail** (right) — shown only while a chat occupies the centre, so the node stays visible next to its thread. The chevron at the top collapses it; the state persists in `localStorage` under `portuni:workspace.detailVisible`. A file opened from the Files tab replaces the detail with the editor in the same column.
 
@@ -154,10 +154,22 @@ when Portuni can name it and by its id otherwise, and left out entirely for
 a session no run ever claimed — plus the thread's own model/reasoning-effort
 override when it has one (see
 [Runners: model and reasoning effort](/reference/runners/#model-and-reasoning-effort)).
-The composer has a model selector (`GET /runners/:runner/models` —
-documented aliases until this device has run a task, the real list after)
-and, only when the chosen model supports it, a reasoning-effort selector
-labelled as applying from the next run, not the current one. While a run
+The composer has two rows under the text. The first holds the model
+selector (`GET /runners/:runner/models` — documented aliases until this
+device has run a task, the real list after) and, only when the chosen
+model supports it, a reasoning-effort selector labelled as applying from
+the next run, not the current one. The second, dimmer row says where the
+thread runs: runner and instance, chosen from a list of every logged-in
+runner and its instances while the thread is still new (the organisation's
+default is preselected and marked "(výchozí)"; the choice is fixed once
+the first message goes out), and the host. The header shows the name, the
+state and, once the run has reported, a context ring with the share of the
+model's window in use; from 80 % it turns amber and "Pokračovat v nové
+session" becomes the primary button. While the agent works, the
+transcript always shows what is happening: streaming text, the tool that
+is running, or a "Spouštím… / Přemýšlím… / Pokračuji…" line with a
+counter. Tool calls and reasoning fold into one line per turn ("Přečteno
+3 soubory · 2 příkazy"); expand it to see each call. While a run
 is live the header also shows the restart indicator (run age, write/read-set
 size, scope expansions since the run started) as plain information — no
 action of its own; **Pokračovat v nové session** above is what carries the
@@ -281,7 +293,7 @@ on this device) are listed in the same tab.
 
 1. Open `Portuni.app`. Workspace view.
 2. Pick the node you're working on from the left list (or jump from the graph view).
-3. "Nový úkol": opens an empty thread right away. Write the first message; it picks a runner for you and starts the run.
+3. "Nový úkol": opens an empty thread right away with the organisation's default runner and instance preselected in the composer; change them there if you want to. Write the first message and the run starts.
 4. Work. The agent uses Portuni MCP tools (`get_node`, `get_context`, `log`, `store`, etc.) via the embedded sidecar — same surface external clients see.
 5. When done, `portuni_status` (or rely on the agent to call it) before ending the session so disk / DB / remote stay consistent — this rule is enforced by the server-level instructions.
 

@@ -1,5 +1,9 @@
 # The task surface: a thread is a canvas, not a detail pane
 
+The sections **Inside the thread**, **Left column** and the picker
+placement in **Model and reasoning effort** are superseded by
+`docs/superpowers/specs/2026-09-21-task-surface-v2-design.md`.
+
 Supersedes the **Web** section of
 `docs/superpowers/specs/2026-09-12-runner-and-session-design.md` for
 everything about where a task lives and how one is started. The rest of

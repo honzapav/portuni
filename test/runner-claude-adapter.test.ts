@@ -188,15 +188,16 @@ describe("Claude adapter: message translation", () => {
     await handle.close();
 
     const kinds = events.map((e) => ("kind" in e ? e.kind : e.type));
-    assert.deepEqual(kinds, ["assistant_message", "tool_call", "tool_call", "run_ended"]);
+    // v2: every assistant message is followed by its context_usage.
+    assert.deepEqual(kinds, ["assistant_message", "tool_call", "context_usage", "tool_call", "run_ended"]);
     const started = events[1] as Extract<CanonicalEvent, { kind: "tool_call" }>;
     assert.equal(started.payload.status, "started");
     assert.equal(started.payload.category, "command");
     assert.equal(started.payload.title, "Bash: ls -la");
-    const completed = events[2] as Extract<CanonicalEvent, { kind: "tool_call" }>;
+    const completed = events[3] as Extract<CanonicalEvent, { kind: "tool_call" }>;
     assert.equal(completed.payload.status, "completed");
     assert.equal(completed.payload.output_excerpt, "file1\nfile2");
-    const ended = events[3] as Extract<CanonicalEvent, { kind: "run_ended" }>;
+    const ended = events[4] as Extract<CanonicalEvent, { kind: "run_ended" }>;
     assert.equal(ended.payload.reason, "completed");
   });
 
@@ -222,9 +223,10 @@ describe("Claude adapter: message translation", () => {
     await handle.close();
 
     const kinds = events.map((e) => ("kind" in e ? e.kind : e.type));
-    assert.deepEqual(kinds, ["reasoning", "assistant_message", "run_ended"]);
+    assert.deepEqual(kinds, ["reasoning", "assistant_message", "context_usage", "run_ended"]);
     const reasoning = events[0] as Extract<CanonicalEvent, { kind: "reasoning" }>;
     assert.equal(reasoning.payload.summary, "Let me consider the options.");
+    assert.equal(reasoning.payload.duration_ms, undefined, "no delta streamed, so no duration");
   });
 
   it("a failed tool_result translates to a failed tool_call and no file_change", async () => {
@@ -246,8 +248,8 @@ describe("Claude adapter: message translation", () => {
     const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
     await handle.close();
     const kinds = events.map((e) => ("kind" in e ? e.kind : e.type));
-    assert.deepEqual(kinds, ["tool_call", "tool_call", "run_ended"]);
-    const completed = events[1] as Extract<CanonicalEvent, { kind: "tool_call" }>;
+    assert.deepEqual(kinds, ["tool_call", "context_usage", "tool_call", "run_ended"]);
+    const completed = events[2] as Extract<CanonicalEvent, { kind: "tool_call" }>;
     assert.equal(completed.payload.status, "failed");
   });
 
@@ -363,7 +365,10 @@ describe("Claude adapter: message translation", () => {
     ];
     const { query } = makeFakeQuery(script);
     const events: (CanonicalEvent | DeltaFrame)[] = [];
-    const adapter = createClaudeAdapter({ query });
+    // The clock advances 1.5 s per read and is read twice: at the first
+    // delta (the second one does not re-stamp) and at the batched block.
+    let t = 1_000_000;
+    const adapter = createClaudeAdapter({ query, now: () => (t += 1_500) });
     const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
     await handle.close();
 
@@ -376,8 +381,9 @@ describe("Claude adapter: message translation", () => {
       ],
     );
 
-    const reasoningEvents = events.filter((e) => "kind" in e && e.kind === "reasoning");
+    const reasoningEvents = events.filter((e) => "kind" in e && e.kind === "reasoning") as Extract<CanonicalEvent, { kind: "reasoning" }>[];
     assert.equal(reasoningEvents.length, 1, "the batched reasoning event must not be duplicated by the deltas");
+    assert.equal(reasoningEvents[0].payload.duration_ms, 1_500, "first delta to the batched block");
   });
 
   it("system/compact_boundary translates to a compaction event", async () => {
@@ -416,6 +422,62 @@ describe("Claude adapter: message translation", () => {
     const compactions = events.filter((e) => "kind" in e && e.kind === "compaction");
     assert.equal(compactions.length, 1);
     assert.deepEqual((compactions[0] as Extract<CanonicalEvent, { kind: "compaction" }>).payload, { trigger: "manual" });
+  });
+
+  // v2 context ring: one context_usage per assistant message and per
+  // result; the window is unknown until the first result names it.
+  it("emits context_usage after every assistant message and every result; max_tokens is null before the first result", async () => {
+    const script: SDKMessage[] = [
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [{ type: "text", text: "hi" }],
+          usage: { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 30, output_tokens: 5 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        result: "done",
+        stop_reason: null,
+        total_cost_usd: 0.05,
+        usage: { input_tokens: 150, output_tokens: 7, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        modelUsage: { "claude-opus-5": { contextWindow: 200000, inputTokens: 150, outputTokens: 7 } },
+        permission_denials: [],
+        duration_ms: 1,
+        duration_api_ms: 1,
+        uuid: "u1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+    ];
+    const { query } = makeFakeQuery(script);
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    await handle.close();
+    const usages = events.filter(
+      (e): e is Extract<CanonicalEvent, { kind: "context_usage" }> => "kind" in e && e.kind === "context_usage",
+    );
+    assert.equal(usages.length, 2);
+    assert.deepEqual(usages[0].payload, {
+      run_id: "R1",
+      model: "claude-opus-5",
+      used_tokens: 150,
+      max_tokens: null,
+      input_tokens: 100,
+      cached_tokens: 50,
+      output_tokens: 5,
+    });
+    assert.equal(usages[1].payload.max_tokens, 200000);
+    assert.equal(usages[1].payload.used_tokens, 150);
+    assert.equal(usages[1].payload.output_tokens, 7);
   });
 
   it("a result message's usage/cost folds into the run_ended event", async () => {

@@ -264,8 +264,24 @@ human verification.
   `"reasoning"` (`domain/runner/types.ts`). The persisted record stays the
   batched `assistant_message` / `reasoning` event; deltas are the live
   preview and are never persisted. Delta frames carry the real `run_id`.
+  The first `thinking_delta` of a block stamps `reasoningStartedAt`; the
+  batched `reasoning` event carries `duration_ms` from that stamp to
+  itself and clears it. A thinking block without a streamed delta has no
+  `duration_ms`.
 - `detect()` runs `claude --version` and `claude auth status`, 5 s timeout
   each.
+- **`context_usage` after every assistant message and every result.**
+  `contextUsageFrom` reads the message's `usage`: `used_tokens` =
+  `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`
+  (what the model's context holds), plus `input_tokens`, `cached_tokens`,
+  `output_tokens` and the `model` the message named. `max_tokens` is
+  `modelUsage[model].contextWindow` from the latest `result`, null until
+  one arrived. The event is persisted like every other; the runtime's
+  `handleAdapterEvent` also writes the latest pair onto
+  `sessions.context_used_tokens` / `context_max_tokens` (migration 039;
+  `PatchSessionInput`, central `PatchSessionBody`), so a list row and the
+  chat header render the ring without reading the log. `run_ended.usage`
+  stays as it was.
 - **`models()` never starts a process.** A module-wide `modelsCache`
   starts `null` and is filled from the first live run's
   `Query.supportedModels()` (called inside the promise chain so a missing
@@ -278,19 +294,26 @@ human verification.
 ## Thread lifecycle
 
 - **Open = draft.** `POST /sessions` without `brief` creates a `draft` row
-  (name „Nový úkol", no runner, no run). Locally the route writes through
-  `createDraftSession`; in sync-agent mode `SessionRuntime.createDraft` goes
-  through `SessionStore.createDraft` (`CentralSessionStore` ->
-  `CentralClient.createDraftSessionRecord`, the same `POST /sessions/record`
-  with a `{draft: true, node_id, model, effort}` body; `RecordSessionBody`
-  is a two-shape union).
+  (name „Nový úkol", no run) through `SessionRuntime.createDraft` in both
+  workspaces. The runtime resolves the organisation's defaults first
+  (`resolveDraftDefaults` = `resolveTaskDefaults` with "no runner" as a
+  legal answer, both null) and the store only records: `DbSessionStore` in
+  a personal workspace, `CentralSessionStore` ->
+  `CentralClient.createDraftSessionRecord` (`POST /sessions/record` with a
+  `{draft: true, node_id, model, effort, runner, instance_id}` body;
+  `RecordSessionBody` is a two-shape union) in a team workspace.
+- **Runner and instance are the thread's, chosen while it is a draft.**
+  `PATCH /sessions/:id` accepts `runner`/`instance_id` from a client only
+  while `state = 'draft'`; on any other state, without a `state` field in
+  the same body, the route answers 409 `SESSION_NOT_DRAFT`. The promotion
+  patch (`state: "running"` together with them) passes.
 - **The first message promotes.** `sendMessage` with no live run:
   `draft` -> `promoteDraftAndStart`; `suspended` -> `resumeByWriting`; any
-  other state refuses. Promotion resolves the runner itself
-  (`resolveTaskDefaults`: the first `detectAll()` runner with
-  `installed && logged_in`, and the node organization's default instance
-  for it; `NoRunnerAvailableError` -> `400 NO_RUNNER_AVAILABLE`). There is
-  no picker before the first message. Central's `PatchSessionBody` accepts
+  other state refuses. Promotion uses the draft's own `runner`/`instance_id`
+  and resolves them (`resolveTaskDefaults`: the first `detectAll()` runner
+  with `installed && logged_in`, and the node organization's default
+  instance for it; `NoRunnerAvailableError` -> `400 NO_RUNNER_AVAILABLE`)
+  only when the draft carries none. Central's `PatchSessionBody` accepts
   the promotion fields (`brief`, `runner`, `instance_id`, `name_is_custom`).
 - **Naming.** `threadNameFromFirstMessage` (`domain/sessions.ts`, mirrored
   by hand in `apps/web/src/lib/session-chat.ts`) takes the first line of

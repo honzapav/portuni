@@ -247,9 +247,10 @@ One line each; the linked doc carries the mechanism and the reasoning.
 - `@anthropic-ai/claude-agent-sdk` is pinned exact; never let `npm update`
   touch it. The adapter always uses streaming input, never starts a process
   to answer `models()`, and ends a run on a `result` that carries an error.
-- Migration 036 carries `draft`, `model`, `effort`; migration 030's rebuild
-  and `PG_BASELINE_DDL` carry the current full shape too. A new `sessions`
-  column goes into all three.
+- Migration 036 carries `draft`, `model`, `effort`; migration 039 the
+  context counters; the 030 and 036 rebuilds, `DDL_SESSIONS` and
+  `PG_BASELINE_DDL` carry the current full shape too. A new `sessions`
+  column goes into all of them.
 
 ### MCP and scope (`mcp-scope-and-integrations.md`)
 

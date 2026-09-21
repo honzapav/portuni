@@ -30,6 +30,7 @@ import { isPortuniEnvKey } from "../../../shared/runner-env.js";
 import { decidePermission } from "../permissions.js";
 import { isProcessAlive } from "../process-liveness.js";
 import type {
+  CanonicalEvent,
   EventSink,
   QuestionDecision,
   RunEndReason,
@@ -77,6 +78,8 @@ export interface CreateClaudeAdapterDeps {
   closeTimeoutMs?: number;
   closeGraceMs?: number;
   closeTermMs?: number;
+  // Clock for the reasoning duration; tests inject a fake.
+  now?: () => number;
 }
 
 // `signal` lets a caller cancel a still-pending sleep the instant it no
@@ -316,6 +319,13 @@ interface PendingPermission {
 interface RunTranslationState {
   agentSessionId: string | null;
   latestUsage: unknown;
+  // v2 context ring: the model the latest assistant message named and its
+  // context window from the latest result's modelUsage (null until one).
+  model: string | null;
+  contextMaxTokens: number | null;
+  // When the first thinking delta of the current block arrived; the
+  // batched thinking block reads it as duration_ms and clears it.
+  reasoningStartedAt: number | null;
   pendingToolCalls: Map<string, PendingToolCall>;
   pendingPermissions: Map<string, PendingPermission>;
   ended: boolean;
@@ -340,6 +350,9 @@ function createState(): RunTranslationState {
   return {
     agentSessionId: null,
     latestUsage: null,
+    model: null,
+    contextMaxTokens: null,
+    reasoningStartedAt: null,
     pendingToolCalls: new Map(),
     pendingPermissions: new Map(),
     ended: false,
@@ -389,19 +402,59 @@ export function providerResultFailure(
 
 // --- message translation --------------------------------------------------
 
+function usageNumber(usage: Record<string, unknown> | undefined, key: string): number {
+  const v = usage?.[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+// The context ring's event (v2 spec): what the model's context holds
+// after this message -- input plus both cache buckets of its usage.
+function contextUsageFrom(
+  runId: string,
+  state: RunTranslationState,
+  usage: Record<string, unknown> | undefined,
+): CanonicalEvent {
+  const input = usageNumber(usage, "input_tokens");
+  const cached = usageNumber(usage, "cache_creation_input_tokens") + usageNumber(usage, "cache_read_input_tokens");
+  return {
+    kind: "context_usage",
+    payload: {
+      run_id: runId,
+      model: state.model,
+      used_tokens: input + cached,
+      max_tokens: state.contextMaxTokens,
+      input_tokens: input,
+      cached_tokens: cached,
+      output_tokens: usageNumber(usage, "output_tokens"),
+    },
+  };
+}
+
 async function translateAssistantMessage(
   msg: Extract<SDKMessage, { type: "assistant" }>,
   state: RunTranslationState,
   cwd: string,
+  runId: string,
   sink: EventSink,
+  now: () => number,
 ): Promise<void> {
-  const blocks = msg.message.content;
+  const message = msg.message as { model?: unknown; usage?: unknown; content?: unknown };
+  if (typeof message.model === "string") state.model = message.model;
+  const blocks = message.content;
   if (!Array.isArray(blocks)) return;
   for (const block of blocks) {
     if (block.type === "text" && typeof block.text === "string") {
       sink({ kind: "assistant_message", payload: { text: block.text } });
     } else if (block.type === "thinking" && typeof block.thinking === "string") {
-      sink({ kind: "reasoning", payload: { summary: block.thinking } });
+      const startedAt = state.reasoningStartedAt;
+      state.reasoningStartedAt = null;
+      sink({
+        kind: "reasoning",
+        payload:
+          startedAt === null
+            ? { summary: block.thinking }
+            : { summary: block.thinking, duration_ms: Math.max(0, now() - startedAt) },
+      });
     } else if (block.type === "tool_use") {
       const input = (block.input ?? {}) as Record<string, unknown>;
       const category = categorizeTool(block.name);
@@ -423,6 +476,7 @@ async function translateAssistantMessage(
       });
     }
   }
+  sink(contextUsageFrom(runId, state, message.usage as Record<string, unknown> | undefined));
 }
 
 function excerptFromToolResultContent(content: unknown): string | null {
@@ -481,8 +535,10 @@ function translateUserMessage(
 
 function translateStreamEvent(
   msg: Extract<SDKMessage, { type: "stream_event" }>,
+  state: RunTranslationState,
   runId: string,
   sink: EventSink,
+  now: () => number,
 ): void {
   const event = msg.event;
   if (event.type !== "content_block_delta") return;
@@ -490,6 +546,7 @@ function translateStreamEvent(
   if (delta.type === "text_delta" && typeof delta.text === "string") {
     sink({ type: "delta", run_id: runId, channel: "text", text: delta.text });
   } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+    if (state.reasoningStartedAt === null) state.reasoningStartedAt = now();
     sink({ type: "delta", run_id: runId, channel: "reasoning", text: delta.thinking });
   }
 }
@@ -524,6 +581,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   const closeTimeoutMs = deps.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
   const closeTermMs = deps.closeTermMs ?? DEFAULT_CLOSE_TERM_MS;
+  const now = deps.now ?? Date.now;
   // #376: filled from the first live run's own Query.supportedModels() --
   // null until then (and re-attempted on the next run if that call itself
   // failed), never re-fetched once it holds a real list.
@@ -687,7 +745,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       if (msg.type === "assistant") {
-        await translateAssistantMessage(msg, state, run.cwd, sink);
+        await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);
         return;
       }
       if (msg.type === "user") {
@@ -695,11 +753,17 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       if (msg.type === "stream_event") {
-        translateStreamEvent(msg, run.runId, sink);
+        translateStreamEvent(msg, state, run.runId, sink, now);
         return;
       }
       if (msg.type === "result") {
         state.latestUsage = { usage: msg.usage, total_cost_usd: msg.total_cost_usd };
+        // The window comes with the result's per-model usage; the ring
+        // shows a bare count until the first one (spec, known gaps).
+        const modelUsage = (msg as { modelUsage?: Record<string, { contextWindow?: unknown }> }).modelUsage ?? {};
+        const entry = state.model ? modelUsage[state.model] : Object.values(modelUsage)[0];
+        if (entry && typeof entry.contextWindow === "number") state.contextMaxTokens = entry.contextWindow;
+        sink(contextUsageFrom(run.runId, state, msg.usage as unknown as Record<string, unknown> | undefined));
         // #411: a provider limit/error ends the run. The provider's own text
         // goes into the transcript once, then the prompt stream is ended so
         // the CLI exits and the translate loop below reports the run_ended
