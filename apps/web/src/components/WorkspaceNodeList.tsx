@@ -284,7 +284,7 @@ function taskTitle(s: Pick<SessionSummary, "state" | "waiting_since">): string {
     case "suspended":
       return "Pozastaveno";
     case "draft":
-      return "Nový úkol";
+      return "Nový";
     default:
       return "Hotovo";
   }

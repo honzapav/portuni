@@ -16,13 +16,13 @@ export type SessionRowChip = { label: string; color: string; pulsing: boolean };
 export type SessionChipVariant = "row" | "header";
 
 const STATE_LABEL: Record<SessionChipVariant, Record<SessionState, string>> = {
-  row: { running: "Běží", suspended: "Pozastaveno", closed: "Hotovo", archived: "Archiv", draft: "Nový úkol" },
+  row: { running: "Běží", suspended: "Pozastaveno", closed: "Hotovo", archived: "Archiv", draft: "Nový" },
   header: {
     running: "Běží",
     suspended: "Pozastaveno",
     closed: "Uzavřeno",
     archived: "Archivováno",
-    draft: "Nový úkol",
+    draft: "Nový",
   },
 };
 

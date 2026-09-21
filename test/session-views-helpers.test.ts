@@ -68,6 +68,12 @@ describe("sessionRowChip", () => {
     assert.equal(chip.label, "Pozastaveno");
     assert.equal(chip.pulsing, false);
   });
+
+  it("a draft's chip reads 'Nový' in both variants, so the header never repeats the draft's name", () => {
+    assert.equal(sessionRowChip("draft", null, "row").label, "Nový");
+    assert.equal(sessionRowChip("draft", null, "header").label, "Nový");
+    assert.equal(sessionRowChip("draft", null).pulsing, false);
+  });
 });
 
 describe("sessionRowAccess", () => {
