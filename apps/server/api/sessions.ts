@@ -280,6 +280,11 @@ const PatchSessionBody = z
     waiting_since: z.string().nullable().optional(),
     handoff_path: z.string().nullable().optional(),
     handoff_hash: z.string().nullable().optional(),
+    // #434: the suspend fallback's summary when this device had no mirror
+    // to write a handoff file into -- the same column the local half
+    // (suspendSession) writes, so a team-workspace suspend without a
+    // mirror resumes from the summary exactly as a personal one does.
+    handoff_inline: z.string().nullable().optional(),
     // Set together with state: "running" when a draft is promoted by its
     // first message (#374's CentralSessionStore.patchSession, in agent
     // mode, forwards these here).
@@ -339,6 +344,7 @@ export async function handlePatchSession(
       waiting_since: body.waiting_since,
       handoff_path: body.handoff_path,
       handoff_hash: body.handoff_hash,
+      handoff_inline: body.handoff_inline,
       brief: body.brief,
       runner: body.runner,
       instance_id: body.instance_id,

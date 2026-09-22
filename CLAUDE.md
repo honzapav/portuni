@@ -297,7 +297,10 @@ One line each; the linked doc carries the mechanism and the reasoning.
 
 - Windows are created at runtime (`ws:<id>`, `bootstrap`); every
   workspace-bound command resolves `ws_of(&window)`, never the active
-  workspace. Every `config.json` mutation goes through `ConfigLock`
+  workspace. Every window is built with
+  `.disable_drag_drop_handler()`: Tauri's handler blocks HTML drag and drop
+  in the webview on macOS and Portuni handles no Finder drops. Every
+  `config.json` mutation goes through `ConfigLock`
   (`with_config_mut`/`with_config_write_lock`) and emits `workspaces-changed`.
 - Backend events are emitted per window with replay on window create.
   localStorage keys are `portuni:<ws_id>:<key>`; `theme` stays global.

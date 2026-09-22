@@ -100,11 +100,18 @@ export function createSuspendFallbackCentral(
       }
     }
 
+    // #434: without a mirror there is no file to point at, so the summary
+    // itself rides along in handoff_inline -- the same column the local
+    // half (suspendWithSummary) writes in that case, and the one
+    // getResumeInfo falls back to when handoff_path is null. Writing only
+    // the hash, as this used to, left the thread with a handoff it could
+    // never resume from.
     return store.patchSession(sessionId, {
       state: "suspended",
       waiting_since: null,
       handoff_path: handoffPath,
       handoff_hash: handoffHash,
+      handoff_inline: handoffPath ? null : content,
     });
   };
 }

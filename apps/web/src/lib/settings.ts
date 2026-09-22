@@ -1,7 +1,9 @@
 // User settings persisted in localStorage: the Showtime integration flag,
-// the workspace's open-node set and the file tree's collapsed folders.
+// the workspace's open-node set, the file tree's collapsed folders and the
+// Files tab's move plan.
 
 import { scopedKey } from "./workspace-storage";
+import type { FilePlan } from "./file-plan";
 
 // Showtime integration (Settings -> Integrace). Off by default: with it on, a
 // `.showtime` deck opens in the rendered preview (the preview.html Showtime
@@ -91,5 +93,67 @@ export function saveCollapsedFolders(nodeId: string, paths: Set<string>): void {
     window.localStorage.setItem(key, JSON.stringify(all));
   } catch {
     // localStorage unavailable/full — collapsed state stays in-memory only.
+  }
+}
+
+// --- File tab move plan -----------------------------------------------------
+//
+// The Files tab's plan (#445): dragging, "Nová složka" and folder renames edit
+// it and nothing else until "Použít". It belongs to the node on this device
+// and is never sent anywhere (rule 8 of the spec), so it lives beside the
+// collapsed folders: { [nodeId]: FilePlan }, workspace-scoped, a node's entry
+// removed once its plan is empty.
+const FILE_PLAN_KEY = "fileTreePlan";
+
+function parseFilePlan(value: unknown): FilePlan | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as { moves?: unknown; folders?: unknown };
+  const moves: FilePlan["moves"] = {};
+  if (raw.moves && typeof raw.moves === "object" && !Array.isArray(raw.moves)) {
+    for (const [fileId, target] of Object.entries(raw.moves as Record<string, unknown>)) {
+      if (!target || typeof target !== "object") continue;
+      const t = target as { section?: unknown; subpath?: unknown };
+      if (t.section !== "wip" && t.section !== "outputs" && t.section !== "resources") continue;
+      const subpath = typeof t.subpath === "string" ? t.subpath : null;
+      moves[fileId] = { section: t.section, subpath };
+    }
+  }
+  const folders = Array.isArray(raw.folders)
+    ? raw.folders.filter((p): p is string => typeof p === "string")
+    : [];
+  return { moves, folders };
+}
+
+export function loadFilePlan(nodeId: string): FilePlan {
+  const empty: FilePlan = { moves: {}, folders: [] };
+  if (typeof window === "undefined") return empty;
+  try {
+    const raw = window.localStorage.getItem(scopedKey(FILE_PLAN_KEY));
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return empty;
+    return parseFilePlan((parsed as Record<string, unknown>)[nodeId]) ?? empty;
+  } catch {
+    return empty;
+  }
+}
+
+export function saveFilePlan(nodeId: string, plan: FilePlan): void {
+  if (typeof window === "undefined") return;
+  try {
+    const key = scopedKey(FILE_PLAN_KEY);
+    const raw = window.localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const all = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    const empty = Object.keys(plan.moves).length === 0 && plan.folders.length === 0;
+    if (empty) {
+      delete all[nodeId];
+    } else {
+      all[nodeId] = plan;
+    }
+    if (Object.keys(all).length === 0) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, JSON.stringify(all));
+  } catch {
+    // localStorage unavailable/full — the plan stays in-memory only.
   }
 }
