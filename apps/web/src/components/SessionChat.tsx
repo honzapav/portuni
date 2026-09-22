@@ -40,6 +40,7 @@ import {
   activitySummary,
   workingPhase,
   runIsLiveFor,
+  turnInFlight,
   WORKING_LABEL,
   type ActivityItem,
   type ActivityRow,
@@ -217,6 +218,12 @@ export default function SessionChat({
   const [runners, setRunners] = useState<RunnerInfo[]>([]);
   const [instances, setInstances] = useState<RunnerInstanceSummary[]>([]);
   const initialChoiceRef = useRef({ runner: session.runner, instanceId: session.instance_id });
+  // The latest session prop for callbacks created in an effect keyed on
+  // session.id (the live state handler): spreading a stale closure's copy
+  // into onSessionUpdated would hand the runner/instance/model the thread
+  // had at mount back to the app.
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
   useEffect(() => {
     let cancelled = false;
     void Promise.all([listRunners(), listRunnerInstances()])
@@ -232,8 +239,17 @@ export default function SessionChat({
   }, []);
   const handleRunnerChange = (value: string) => {
     const { runner, instanceId } = decodeRunnerChoice(value);
+    const before = { runner: session.runner, instance_id: session.instance_id };
     onSessionUpdated({ ...session, runner, instance_id: instanceId });
-    void patchSessionRunnerInstance(session.id, { runner, instance_id: instanceId }).catch((e) => setError(String(e)));
+    // What the row actually holds is what the picker shows: the server's
+    // answer replaces the optimistic value, a refusal puts the previous
+    // choice back and says why.
+    void patchSessionRunnerInstance(session.id, { runner, instance_id: instanceId })
+      .then((saved) => onSessionUpdated({ ...sessionRef.current, runner: saved.runner, instance_id: saved.instance_id }))
+      .catch((e) => {
+        onSessionUpdated({ ...sessionRef.current, ...before });
+        setError(`Runner a instanci se nepodařilo uložit: ${String(e)}`);
+      });
   };
   const host = hostDisplayName(session);
 
@@ -311,6 +327,8 @@ export default function SessionChat({
         setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setLiveRunId(null);
+        // A run that ended (an error at start included) is not starting.
+        setSentAt(null);
       } else if (event.kind === "assistant_message") {
         setLiveRunId((current) => {
           if (current) setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, current));
@@ -327,7 +345,7 @@ export default function SessionChat({
     const offState = sessionsClient.onSessionState((s) => {
       if (s.session_id !== session.id) return;
       setLive({ state: s.state, waiting_since: s.waiting_since });
-      onSessionUpdated({ ...session, state: s.state, waiting_since: s.waiting_since });
+      onSessionUpdated({ ...sessionRef.current, state: s.state, waiting_since: s.waiting_since });
     });
 
     void sessionsClient
@@ -371,6 +389,9 @@ export default function SessionChat({
   const openQuestion = latestQuestionEvent(events);
   const isWaiting = live.state === "running" && live.waiting_since !== null;
   const runIsLive = runIsLiveFor(liveRunId, live.state);
+  // A live run between turns only waits for the next message: the composer
+  // sends, nothing to stop, nothing "working".
+  const turnActive = runIsLive && turnInFlight(events, liveRunId);
   const streamingText = liveRunId ? textDeltaBuffers[liveRunId] : undefined;
   const streamingReasoning = liveRunId ? reasoningDeltaBuffers[liveRunId] : undefined;
   // The working row (rule 2): shown while a run is live (or a send is in
@@ -416,14 +437,19 @@ export default function SessionChat({
     if (!text) return;
     setSending(true);
     setError(null);
+    // Until run_started lands (a promotion or a resume starts a process
+    // first), the working row says "Spouštím…". A live run's own message
+    // needs none: its run_started already happened. Set before the send
+    // is awaited: run_started (and a run_ended right behind it) can arrive
+    // while the reply is still in flight, and each clears this -- set
+    // afterwards it would outlive the run it was announcing.
+    const startsRun = liveRunId === null;
+    if (startsRun) setSentAt(Date.now());
     try {
       await sessionsClient.message(session.id, text);
       setComposerText("");
-      // Until run_started lands (a promotion or a resume starts a process
-      // first), the working row says "Spouštím…". A live run's own
-      // message needs none: its run_started already happened.
-      if (liveRunId === null) setSentAt(Date.now());
     } catch (e) {
+      if (startsRun) setSentAt(null);
       setError(String(e));
     } finally {
       setSending(false);
@@ -664,7 +690,7 @@ export default function SessionChat({
               // own stop button does -- a no-op when nothing is live, so
               // this is safe to fire regardless of runIsLive.
               onKeyDown={(e) => {
-                if (e.key === "Escape" && runIsLive) {
+                if (e.key === "Escape" && turnActive) {
                   e.preventDefault();
                   void runAction("interrupt");
                 }
@@ -724,9 +750,9 @@ export default function SessionChat({
               // (a stop square, click -> interrupt()) -- Enter in the
               // textarea still submits normally either way, since that goes
               // through the form's own onSubmit, not this button's click.
-              disabled={runIsLive ? actionPending !== null : composerDisabled || sending || !composerText.trim()}
-              status={sending ? "submitted" : runIsLive ? "streaming" : undefined}
-              onStop={runIsLive ? () => void runAction("interrupt") : undefined}
+              disabled={turnActive ? actionPending !== null : composerDisabled || sending || !composerText.trim()}
+              status={sending ? "submitted" : turnActive ? "streaming" : undefined}
+              onStop={turnActive ? () => void runAction("interrupt") : undefined}
             />
             </div>
             <div className="flex min-h-6 items-center gap-1.5 px-1 text-[11.5px] text-[var(--color-text-dim)]">

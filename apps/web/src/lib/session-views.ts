@@ -354,3 +354,16 @@ export function mountedChatSessions<T extends NodeSession>(
   if (shown && isChatSessionState(shown.state) && !seen.has(shown.id)) mounted.push(shown);
   return mounted;
 }
+
+// A chat reporting its session back (the picker's runner/instance, a
+// model change, a live state frame) has to reach the tracked draft too:
+// the shown-thread pick on a node switch reads the draft map, so a copy
+// left behind there is what the composer shows next. Same reference when
+// the session is no tracked draft.
+export function applySessionUpdateToDrafts<T extends { id: string }>(
+  drafts: Readonly<Record<string, T>>,
+  updated: T,
+): Record<string, T> {
+  if (!(updated.id in drafts)) return drafts as Record<string, T>;
+  return { ...drafts, [updated.id]: updated };
+}

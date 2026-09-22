@@ -134,9 +134,21 @@ export interface ContextUsageEvent {
   };
 }
 
+// The turn-complete signal. A run in streaming-input mode stays alive
+// between turns (the CLI waits for the next prompt), so the run being live
+// says nothing about whether the agent is working: this event does. Emitted
+// by the adapter on a successful provider result; a failed result ends the
+// run instead (run_ended with its reason). Persisted like every event so a
+// replay knows the last turn is over. Renders nothing.
+export interface TurnEndedEvent {
+  kind: "turn_ended";
+  payload: { run_id: string };
+}
+
 export type CanonicalEvent =
   | RunStartedEvent
   | RunEndedEvent
+  | TurnEndedEvent
   | UserMessageEvent
   | AssistantMessageEvent
   | ReasoningEvent

@@ -115,9 +115,18 @@ export interface ContextUsageEvent {
   };
 }
 
+// The turn-complete signal (server: TurnEndedEvent). A live run is not a
+// working agent: between turns the process only waits for the next
+// message, and this is the event that says the last turn is over.
+export interface TurnEndedEvent {
+  kind: "turn_ended";
+  payload: { run_id: string };
+}
+
 export type CanonicalEvent =
   | RunStartedEvent
   | RunEndedEvent
+  | TurnEndedEvent
   | UserMessageEvent
   | AssistantMessageEvent
   | ReasoningEvent
@@ -449,10 +458,31 @@ export function runIsLiveFor(liveRunId: string | null, state: SessionState): boo
   return liveRunId !== null && state === "running";
 }
 
+// Whether the live run is in the middle of a turn: the working row, the
+// stop button and Escape apply only then. A turn opens with a
+// user_message and closes with the run's turn_ended; the run start alone
+// opens none -- a promotion writes the brief as a user_message right
+// after it, while Navázat and a resume start the process with no prompt
+// and wait for the first message. Walks back from the newest event;
+// bookkeeping events in between decide nothing.
+export function turnInFlight(events: readonly ChatEvent[], liveRunId: string | null): boolean {
+  if (liveRunId === null) return false;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i].event;
+    if (e.kind === "turn_ended") {
+      if (e.payload.run_id === liveRunId) return false;
+      continue;
+    }
+    if (e.kind === "user_message") return true;
+    if (e.kind === "run_started" && e.payload.run_id === liveRunId) return false;
+  }
+  return false;
+}
+
 // --- The working row -----------------------------------------------------------
-// Rule 2: something is always on screen while a run is live. When neither
-// streaming text nor a running tool is, this row is, labelled by the last
-// thing that happened.
+// Rule 2: something is always on screen while a turn is in flight. When
+// neither streaming text nor a running tool is, this row is, labelled by
+// the last thing that happened. Between turns (turn_ended) nothing is.
 
 export type WorkingPhase = "starting" | "thinking" | "continuing";
 export const WORKING_LABEL: Record<WorkingPhase, string> = {
@@ -469,9 +499,13 @@ export function workingPhase(
   sentAt: number | null,
 ): WorkingPhase | null {
   if (liveRunId === null) return sentAt !== null ? "starting" : null;
+  if (!turnInFlight(events, liveRunId)) return null;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i].event;
     if (e.kind === "run_started" && e.payload.run_id === liveRunId) return "thinking";
+    // A message into a live run opens a new turn: nothing has happened in
+    // it yet, whatever the previous turn ended with.
+    if (e.kind === "user_message") return "thinking";
     if (e.kind === "tool_call") return e.payload.status === "started" ? null : "continuing";
     if (e.kind === "assistant_message" || e.kind === "reasoning") return "continuing";
   }

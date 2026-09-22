@@ -293,12 +293,18 @@ deduplicates a replay against a frame that raced it.
   `Tool` card inside; a historical group expands by hand, per mount; the
   live run's trailing group (`live: true`) stays open on the tool that is
   running.
-- **The working row** (`WorkingRow`, `workingPhase`): while a run is live
-  (or a send is in flight, `sentAt`) and neither streaming text nor a
-  running tool is on screen, a `Loader` with "Spouštím…" (until
-  `run_started`), "Přemýšlím…" (until the first delta or tool) or
-  "Pokračuji…" (after a tool finished) and a seconds counter. Rule 2 of
-  the v2 spec: a live run with an empty transcript end is a bug.
+- **The working row** (`WorkingRow`, `workingPhase`): while a turn is in
+  flight (`turnInFlight`: a `user_message` on the live run with no
+  `turn_ended` after it; the run start alone opens no turn, so a thread
+  started by Navázat or a resume waits idle for its first message) or a
+  send is in flight (`sentAt`), and
+  neither streaming text nor a running tool is on screen, a `Loader` with
+  "Spouštím…" (until `run_started`), "Přemýšlím…" (until the first delta
+  or tool) or "Pokračuji…" (after a tool finished) and a seconds counter.
+  Rule 2 of the v2 spec: a turn in flight with an empty transcript end is
+  a bug. Between turns nothing shows: the run is alive only to take the
+  next message, and the composer's stop button and Escape apply to a turn
+  in flight only (`turnActive`), never to the idle run.
 - **Deltas**: two `DeltaBuffers` keyed by `run_id`, one for `channel:
   "text"`, one for `channel: "reasoning"`. Each is cleared by its own
   persisted event (`assistant_message` / `reasoning`) and on `run_ended`.
