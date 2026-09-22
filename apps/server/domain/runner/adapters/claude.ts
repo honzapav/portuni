@@ -240,9 +240,20 @@ export function buildEnv(instanceEnv: Readonly<Record<string, string>>): Record<
   if (process.env.LOGNAME) env.LOGNAME = process.env.LOGNAME;
   for (const [key, value] of Object.entries(instanceEnv)) {
     if (isPortuniEnvKey(key) || key === "HOME" || key === "USER" || key === "LOGNAME") continue;
+    // The CLI keys its Keychain login by whether CLAUDE_CONFIG_DIR is set,
+    // not only by where it points: with the variable set to its own
+    // default (~/.claude) it looks for a different item than a plain
+    // `claude` login wrote, and reports "Not logged in". An instance that
+    // names the default dir is the unset case.
+    if (key === "CLAUDE_CONFIG_DIR" && env.HOME && isDefaultClaudeConfigDir(value, env.HOME)) continue;
     env[key] = value;
   }
   return env;
+}
+
+function isDefaultClaudeConfigDir(value: string, home: string): boolean {
+  const strip = (p: string) => p.replace(/\/+$/, "");
+  return strip(value) === strip(join(home, ".claude"));
 }
 
 // --- tool categorization / titling --------------------------------------
@@ -774,6 +785,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           state.providerEndReason = failure.reason;
           sink({ kind: "error", payload: { class: "provider", message: failure.message } });
           void endAfterProviderFailure(failure.reason);
+        } else if (failure === null) {
+          // The turn is over and the process waits for the next prompt: say
+          // so, or the surface keeps showing the run as working.
+          sink({ kind: "turn_ended", payload: { run_id: run.runId } });
         }
       }
     }

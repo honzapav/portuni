@@ -304,6 +304,10 @@ human verification.
   `duration_ms`.
 - `detect()` runs `claude --version` and `claude auth status`, 5 s timeout
   each.
+- **`turn_ended` on every successful result.** The CLI stays alive between
+  turns, so this is the only signal that the agent stopped working; the
+  web's working row, stop button and Escape key on a turn in flight
+  (`turnInFlight`). A failed result ends the run instead and emits none.
 - **`context_usage` after every assistant message and every result.**
   `contextUsageFrom` reads the message's `usage`: `used_tokens` =
   `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`

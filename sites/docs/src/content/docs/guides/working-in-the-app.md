@@ -110,10 +110,12 @@ thread or close its node in the left column.
 `state` and `waiting_since` ("Běží", "Čeká na mě" when a question is
 open, "Pozastaveno", "Uzavřeno", "Archivováno"), and the runner/instance.
 Stopping a turn is not a header action any more: the composer's own
-submit button doubles as a stop control (a stop square) whenever a run is
-live, and Esc does the same — both just call `interrupt()`, which cancels
-whatever the model is doing right now without ending the run, so you can
-keep typing straight after. The two remaining header actions are
+submit button doubles as a stop control (a stop square) while a turn is
+in flight, and Esc does the same — both just call `interrupt()`, which
+cancels whatever the model is doing right now without ending the run, so
+you can keep typing straight after. Once the agent has answered, the run
+stays alive only to take your next message: the button is a plain send
+again and nothing is shown as working. The two remaining header actions are
 **Pokračovat v nové session** (offered any time there's an open thread —
 `POST /sessions/:id/continue`, which closes this session, seeds a new one
 with its summary, and switches Práce to it) and **Uzavřít**, which asks
@@ -165,10 +167,10 @@ default is preselected and marked "(výchozí)"; the choice is fixed once
 the first message goes out), and the host. The header shows the name, the
 state and, once the run has reported, a context ring with the share of the
 model's window in use; from 80 % it turns amber and "Pokračovat v nové
-session" becomes the primary button. While the agent works, the
-transcript always shows what is happening: streaming text, the tool that
-is running, or a "Spouštím… / Přemýšlím… / Pokračuji…" line with a
-counter. Tool calls and reasoning fold into one line per turn ("Přečteno
+session" becomes the primary button. While the agent works on a turn,
+the transcript always shows what is happening: streaming text, the tool
+that is running, or a "Spouštím… / Přemýšlím… / Pokračuji…" line with a
+counter; between turns it shows nothing. Tool calls and reasoning fold into one line per turn ("Přečteno
 3 soubory · 2 příkazy"); expand it to see each call. While a run
 is live the header also shows the restart indicator (run age, write/read-set
 size, scope expansions since the run started) as plain information — no
