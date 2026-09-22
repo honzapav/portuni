@@ -25,6 +25,18 @@ export type FilePlan = {
 
 export const EMPTY_PLAN: FilePlan = { moves: {}, folders: [] };
 
+// How many changes the plan holds -- a move and a virtual folder each count
+// as one (the bar's "N změn čeká na použití", issue #452). A folder with no
+// move in it still counts: it is a change waiting to be used, just not one
+// "Použít" can act on.
+export function planChangeCount(plan: FilePlan): number {
+  return Object.keys(plan.moves).length + plan.folders.length;
+}
+
+export function planIsEmpty(plan: FilePlan): boolean {
+  return planChangeCount(plan) === 0;
+}
+
 // What the plan helpers need from a tree row. DetailPane's TreeFile is a
 // superset, so it passes through applyPlan unchanged.
 export type PlanFile = {

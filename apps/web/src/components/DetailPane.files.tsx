@@ -43,6 +43,7 @@ import {
   planMove,
   orderMoves,
   pruneEmptyFolders,
+  planChangeCount,
   EMPTY_PLAN,
   type FilePlan,
   type MoveTarget,
@@ -513,11 +514,13 @@ const IDLE_APPLY: ApplyState = { phase: "idle" };
 // danger colours with "Použít znovu" after a failure (mockup, frames 4 and 6).
 function PlanBar({
   count,
+  canApply,
   state,
   onDiscard,
   onApply,
 }: {
   count: number;
+  canApply: boolean;
   state: ApplyState;
   onDiscard: () => void;
   onApply: () => void;
@@ -570,7 +573,7 @@ function PlanBar({
       <Button variant="ghost" size="sm" disabled={applying} onClick={onDiscard}>
         Zahodit
       </Button>
-      <Button size="sm" disabled={applying} onClick={onApply}>
+      <Button size="sm" disabled={applying || !canApply} onClick={onApply}>
         {applying && <Loader2 className="animate-spin" />}
         {applying ? "Používám" : failed ? "Použít znovu" : "Použít"}
       </Button>
@@ -811,10 +814,11 @@ export function FileTree({
     };
   };
 
-  const planCount = Object.keys(plan.moves).length;
+  const movesCount = Object.keys(plan.moves).length;
+  const planCount = planChangeCount(plan);
 
   const runApply = async () => {
-    if (!onMove || applying || planCount === 0) return;
+    if (!onMove || applying || movesCount === 0) return;
     const total = orderMoves(plan).length;
     setApplyState({ phase: "applying", index: 0, total, fileId: null });
     const outcome = await applyMoves(plan, onMove, (progress) =>
@@ -884,6 +888,7 @@ export function FileTree({
       {planCount > 0 && onMove && (
         <PlanBar
           count={planCount}
+          canApply={movesCount > 0}
           state={applyState}
           onDiscard={() => {
             updatePlan(EMPTY_PLAN);

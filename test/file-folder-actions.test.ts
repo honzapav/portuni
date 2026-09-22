@@ -14,6 +14,8 @@ import {
   planFolderRename,
   pruneEmptyFolders,
   folderPathsOf,
+  planChangeCount,
+  planIsEmpty,
   type FilePlan,
   type PlanFile,
 } from "../apps/web/src/lib/file-plan.js";
@@ -179,6 +181,27 @@ describe("renaming a folder", () => {
     const withVirtual: FilePlan = { moves: {}, folders: ["wip/archiv"] };
     assert.equal(planFolderRename(withVirtual, "wip/navrhy", "archiv", files, occ).ok, false);
     assert.equal(planFolderRename(EMPTY, "wip", "rozpracovane", files, occ).ok, false);
+  });
+});
+
+describe("planChangeCount / planIsEmpty (#452)", () => {
+  it("is empty with no moves and no folders", () => {
+    assert.equal(planChangeCount(EMPTY), 0);
+    assert.equal(planIsEmpty(EMPTY), true);
+  });
+
+  it("counts a virtual folder with no move in it as one change", () => {
+    const plan: FilePlan = { moves: {}, folders: ["wip/archiv"] };
+    assert.equal(planChangeCount(plan), 1);
+    assert.equal(planIsEmpty(plan), false);
+  });
+
+  it("counts moves and folders together", () => {
+    const plan: FilePlan = {
+      moves: { "wip/hero.png": { section: "wip", subpath: "archiv" } },
+      folders: ["wip/archiv", "wip/jine"],
+    };
+    assert.equal(planChangeCount(plan), 3);
   });
 });
 

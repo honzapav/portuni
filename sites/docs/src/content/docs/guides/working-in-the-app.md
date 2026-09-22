@@ -88,7 +88,10 @@ puštění, s důvodem v titulku.
 
 Naplánovaný soubor má u levého okraje řádku accentový proužek, přeškrtnutou
 původní složku a štítek „PŘESUN"; nad stromem se objeví lišta „N změn čeká
-na použití" s tlačítky „Zahodit" a „Použít". „Zahodit" plán zahodí a nikde
+na použití" s tlačítky „Zahodit" a „Použít". Lišta se objeví, kdykoli plán
+něco drží — i jen novou virtuální složku bez jediného souboru v ní — takže i
+takový plán jde „Zahodit"; „Použít" je zakázané, dokud v plánu není žádný
+přesun (prázdný běh by nic neudělal). „Zahodit" plán zahodí a nikde
 se nic nestane. „Použít" projde naplánované soubory po jednom: soubor, který
 už je na remote, se na Disku jen přejmenuje (obsah se znovu nenahrává),
 soubor, který se ještě nikdy nepushoval, změní jen svůj záznam a kopii v
