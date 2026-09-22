@@ -287,12 +287,15 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal(body.session.instance_id, null);
     assert.equal(body.run, null);
 
-    // A draft never shows up in the node's own sessions list -- "visible
-    // only as the open thread it is" (spec, "The session row exists from
-    // the moment the thread opens").
+    // The draft is a thread of the node for its owner (#463), so the
+    // owner's list carries it -- another user's list never does.
     const listRes = await call(makeIdentity("U1"), "GET", `/nodes/${dbFixture.nodeId}/sessions`);
     const listBody = JSON.parse(listRes.body) as { sessions: SessionSummary[] };
-    assert.ok(!listBody.sessions.some((s) => s.id === body.session.id));
+    assert.ok(listBody.sessions.some((s) => s.id === body.session.id));
+
+    const otherRes = await call(makeIdentity("U2"), "GET", `/nodes/${dbFixture.nodeId}/sessions`);
+    const otherBody = JSON.parse(otherRes.body) as { sessions: SessionSummary[] };
+    assert.ok(!otherBody.sessions.some((s) => s.id === body.session.id));
   });
 
   // v2 context ring: the runtime folds each context_usage event's counters

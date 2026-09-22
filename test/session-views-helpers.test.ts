@@ -369,6 +369,25 @@ describe("draft promotion race (#412)", () => {
     assert.equal(rendered.n1.length, 1);
     assert.equal(rendered.n1[0].state, "running");
   });
+
+  // #463: the node list now carries the caller's own drafts, so the same
+  // draft can be in the fetched list AND still tracked locally. Both paths
+  // dedupe by id, so the sidebar, the Relace tab and Prace render one row.
+  it("a draft the server list already carries renders once and stops being tracked locally", () => {
+    const drafts = { d1: thread("d1", "draft") };
+    const fetched = [thread("d1", "draft")];
+
+    // Before the refetch resolved: the overlay must not double the row.
+    const overlapping = mergeDraftsIntoNodeMap({ n1: fetched }, drafts);
+    assert.deepEqual(overlapping.n1.map((s) => s.id), ["d1"]);
+
+    // After it resolved: the local copy is gone, the server row stays.
+    const remaining = dropPromotedDrafts(drafts, fetched);
+    assert.deepEqual(Object.keys(remaining), []);
+    const rendered = mergeDraftsIntoNodeMap({ n1: fetched }, remaining);
+    assert.deepEqual(rendered.n1.map((s) => s.id), ["d1"]);
+    assert.equal(rendered.n1[0].state, "draft");
+  });
 });
 
 describe("pruneNodeSessions", () => {

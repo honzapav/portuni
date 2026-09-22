@@ -220,12 +220,12 @@ export function nodeRowActive(nodeId: string, selectedNodeId: string | null, act
   return activeSessionId === null && selectedNodeId === nodeId;
 }
 
-// A locally-tracked draft (#374 -- the server lists none) is forgotten
-// only once the refetched server list actually carries it. Dropping it on
-// the promotion frame alone, before the refetch resolved, is what made the
-// row disappear the moment a draft became a real thread: the frame says
-// "it is running now", the list it should have moved into had not been
-// fetched since.
+// A locally-tracked draft (#374) is forgotten only once the refetched
+// server list actually carries it -- as a draft of its own (#463) or as
+// the thread it was promoted into. Dropping it on the promotion frame
+// alone, before the refetch resolved, is what made the row disappear the
+// moment a draft became a real thread: the frame says "it is running now",
+// the list it should have moved into had not been fetched since.
 export function dropPromotedDrafts<T extends { id: string }>(
   drafts: Record<string, T>,
   fetched: readonly { id: string }[],
@@ -245,7 +245,8 @@ export function dropPromotedDrafts<T extends { id: string }>(
 
 // Drafts overlaid on the server-fetched map. Deduped by id, so the window
 // in which a draft is both still tracked locally and already in the
-// server's list renders one row, not two.
+// server's list (#463: the list carries the caller's own drafts) renders
+// one row, not two.
 export function mergeDraftsIntoNodeMap<T extends NodeSession>(
   byNode: Readonly<Record<string, T[]>>,
   drafts: Readonly<Record<string, T>>,

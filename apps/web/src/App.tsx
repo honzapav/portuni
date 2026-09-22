@@ -563,7 +563,10 @@ export default function App() {
     fetchNodePersistentSessions(selectedWorkspaceNodeId, false)
       .then((res) => {
         if (cancelled) return;
-        setWorkspaceOpenSession(pickOpenChatSession([...res.sessions, ...localForNode], requestedChatSessionId));
+        // The list carries the caller's own drafts (#463), so a draft can
+        // be in both halves; dedupe by id before picking.
+        const onlyLocal = localForNode.filter((d) => !res.sessions.some((s) => s.id === d.id));
+        setWorkspaceOpenSession(pickOpenChatSession([...res.sessions, ...onlyLocal], requestedChatSessionId));
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -641,9 +644,10 @@ export default function App() {
       if (s.node_id && openNodeIdsRef.current.includes(s.node_id)) refreshNodeSessions(s.node_id);
     });
   }, [sessionsClient, refreshNodeSessions]);
-  // Local drafts merged in per node (#374) -- the server-fetched list above
-  // never contains one, and a promoted draft stays here until a refetch
-  // proves the server list has it, so the merge dedupes by id.
+  // Local drafts merged in per node (#374). The server list now carries
+  // the caller's own drafts (#463), so the two overlap: a draft stays
+  // tracked here until a refetch proves the list has it, and both the
+  // merge and dropPromotedDrafts key on the id, so a row never doubles.
   const openSessionsByNodeWithDrafts = useMemo(
     () => mergeDraftsIntoNodeMap(openSessionsByNode, localDrafts),
     [openSessionsByNode, localDrafts],

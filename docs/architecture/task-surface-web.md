@@ -200,13 +200,15 @@ name muted on the right (absent under a group heading), and a
   on every `session_state` frame whose `node_id` is open, because a thread
   started anywhere else (Relace tab, node detail, another window)
   announces itself only through that frame.
-- **`localDrafts`** are the drafts this window opened. The server excludes
-  drafts from every list, so the window that created one is the only place
-  it can be shown. A draft is dropped from here only once a refetch of its
-  node actually carries it as a real thread (`dropPromotedDrafts`); the
-  promotion frame alone is not proof the list has it. `mergeDraftsIntoNodeMap`
-  overlays drafts into the sidebar map, deduplicated by id, so the overlap
-  window renders one row.
+- **`localDrafts`** are the drafts this window opened, shown before the
+  node's list has been refetched. `GET /nodes/:id/sessions` carries the
+  caller's own drafts (#463), so another window of the same user picks a
+  draft up on its next refetch and the two halves overlap. A draft is
+  dropped from here only once a refetch of its node actually carries it
+  (`dropPromotedDrafts`) -- as a draft or as the thread it was promoted
+  into; the promotion frame alone is not proof the list has it.
+  `mergeDraftsIntoNodeMap` overlays what is left into the sidebar map,
+  deduplicated by id, so the overlap window renders one row.
 - **`registerSessionStarted`** is the single entry point for every
   `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's `DetailPane`,
   the sidebar `+`, the Relace tab's "Navázat"): it sets the shown thread,
