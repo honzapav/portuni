@@ -105,6 +105,11 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   after the command resolves. `TursoSetupGate`'s add-missing-token path
   (an existing workspace restarting its own sidecar) reloads its own
   window instead; no handoff is involved.
+- `open_window` builds every window with `.disable_drag_drop_handler()`
+  (#444). Tauri's own handler intercepts drops of Finder files and, on
+  macOS, blocks the HTML drag and drop API inside the webview; Portuni
+  handles no Finder drops, and the Files tab moves files with HTML drag
+  and drop, so the handler stays off on every window.
 - `tauri-plugin-window-state` persists each window's geometry by label on
   the Rust side; no webview capability is needed.
 

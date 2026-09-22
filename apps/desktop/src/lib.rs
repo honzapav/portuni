@@ -492,6 +492,12 @@ fn open_window(app: &AppHandle, label: &str) -> tauri::Result<()> {
         .maximized(true)
         .resizable(true)
         .fullscreen(false)
+        // Tauri's own drag drop handler intercepts drops of Finder files and,
+        // on macOS, blocks the HTML drag and drop API inside the webview
+        // (#444). Portuni handles no Finder drops, and the Files tab moves
+        // files with HTML drag and drop, so the handler stays off on every
+        // window we create.
+        .disable_drag_drop_handler()
         .build()?;
     if let Some(ws_id) = label.strip_prefix("ws:") {
         persist_open_windows(app);
