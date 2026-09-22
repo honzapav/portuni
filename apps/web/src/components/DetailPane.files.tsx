@@ -34,6 +34,14 @@ import type {
   WatcherErrorEntry,
 } from "../types";
 import { loadCollapsedFolders, saveCollapsedFolders } from "../lib/settings";
+import {
+  aggregateFolderSync,
+  buildFileTree,
+  isSectionRoot,
+  sortChildren,
+  type TreeFile,
+  type TreeNode,
+} from "../lib/file-tree";
 import { fetchNodeFileUrl } from "../api";
 import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
@@ -57,51 +65,12 @@ import { Input } from "@/components/ui/input";
 // File tree (Files tab)
 // ---------------------------------------------------------------------------
 
-// Unified leaf model: registered DetailFile or an untracked disk file.
-type TreeFile = {
-  relative_path: string;
-  filename: string;
-  mime_type: string | null;
-  fileId: string | null; // null = untracked (not in `files`)
-  local_path: string | null;
-};
-
-type TreeNode = {
-  name: string;
-  path: string;
-  children?: Map<string, TreeNode>;
-  file?: TreeFile;
-};
-
 // Text-ish files are clickable to edit. Mirrors the backend editable rule.
 export function isEditableFile(mime: string | null): boolean {
   if (mime === null) return true;
   if (mime.startsWith("text/")) return true;
   if (mime === "application/json") return true;
   return false;
-}
-
-function buildFileTree(files: TreeFile[]): TreeNode {
-  const root: TreeNode = { name: "", path: "", children: new Map() };
-  for (const f of files) {
-    const rel = f.relative_path;
-    const parts = rel.split("/").filter((p) => p.length > 0);
-    if (parts.length === 0) continue;
-    let cur = root;
-    for (let i = 0; i < parts.length - 1; i++) {
-      const seg = parts[i];
-      const childPath = parts.slice(0, i + 1).join("/");
-      let child = cur.children!.get(seg);
-      if (!child) {
-        child = { name: seg, path: childPath, children: new Map() };
-        cur.children!.set(seg, child);
-      }
-      cur = child;
-    }
-    const leafName = parts[parts.length - 1];
-    cur.children!.set(leafName, { name: leafName, path: rel, file: f });
-  }
-  return root;
 }
 
 // Merge registered + untracked into one row list. Registered wins if a path
@@ -147,84 +116,6 @@ function toTreeFiles(
     });
   }
   return Array.from(byPath.values());
-}
-
-// Walk a folder subtree and aggregate sync classes of all files inside.
-// Returns the worst color, mirroring the per-tab dot logic. Returns null
-// if no file inside is mapped yet (so the folder shows no dot during
-// initial load instead of misleading green).
-function aggregateFolderSync(
-  node: TreeNode,
-  map: Map<string, SyncStatusFile>,
-): { color: string; title: string } | null {
-  let hasConflict = false;
-  let hasPending = false;
-  let hasRemoteMissing = false;
-  let hasClean = false;
-  let any = false;
-  const stack: TreeNode[] = [node];
-  while (stack.length > 0) {
-    const cur = stack.pop()!;
-    if (cur.file) {
-      const sync = cur.file.fileId ? map.get(cur.file.fileId) : undefined;
-      if (!sync) continue;
-      any = true;
-      if (sync.sync_class === "conflict") hasConflict = true;
-      else if (
-        sync.sync_class === "push" ||
-        sync.sync_class === "pull" ||
-        sync.sync_class === "deleted_local"
-      ) {
-        hasPending = true;
-      } else if (sync.sync_class === "remote_missing") hasRemoteMissing = true;
-      else if (sync.sync_class === "clean") hasClean = true;
-    } else if (cur.children) {
-      for (const c of cur.children.values()) stack.push(c);
-    }
-  }
-  if (!any) return null;
-  if (hasConflict)
-    return { color: "var(--color-danger)", title: "Konflikt uvnitř" };
-  if (hasPending)
-    return {
-      color: "var(--color-node-process)",
-      title: "Soubory čekají na synchronizaci",
-    };
-  if (hasRemoteMissing)
-    return {
-      color: "var(--color-status-archived)",
-      title: "Některé soubory chybí na remote",
-    };
-  if (hasClean)
-    return {
-      color: "var(--color-status-active)",
-      title: "Vše synchronizováno",
-    };
-  return null;
-}
-
-// Order folder children: directories first (alphabetical), then files
-// (alphabetical). Top-level wrapper enforces section order wip / outputs
-// / resources / others to match how authors think about the workspace.
-const SECTION_ORDER = ["wip", "outputs", "resources"];
-function sortChildren(node: TreeNode, isRoot: boolean): TreeNode[] {
-  const arr = Array.from(node.children!.values());
-  if (isRoot) {
-    return arr.sort((a, b) => {
-      const ai = SECTION_ORDER.indexOf(a.name);
-      const bi = SECTION_ORDER.indexOf(b.name);
-      const aw = ai === -1 ? SECTION_ORDER.length : ai;
-      const bw = bi === -1 ? SECTION_ORDER.length : bi;
-      if (aw !== bw) return aw - bw;
-      return a.name.localeCompare(b.name);
-    });
-  }
-  return arr.sort((a, b) => {
-    const aDir = !!a.children;
-    const bDir = !!b.children;
-    if (aDir !== bDir) return aDir ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
 }
 
 // Inline replacement for window.prompt on file creation -- the prompt is a
@@ -529,41 +420,39 @@ function FileTreeNode({
   const isCollapsed = collapsed.has(node.path);
   const dot = aggregateFolderSync(node, syncStatus);
   const childCount = node.children ? node.children.size : 0;
+  const isSection = isSectionRoot(node, depth);
   return (
-    <div>
-      <div style={{ paddingLeft: indent }}>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => onToggle(node.path)}
-          className="w-full justify-start gap-1.5 font-normal"
-        >
-          {isCollapsed ? (
-            <ChevronRight className="shrink-0 text-[var(--color-text-dim)]" />
-          ) : (
-            <ChevronDown className="shrink-0 text-[var(--color-text-dim)]" />
-          )}
-          <Folder className="shrink-0 text-[var(--color-text-dim)]" />
-          <span className="min-w-0 truncate font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
-            {node.name}
-          </span>
-          <span className="text-[11px] text-[var(--color-text-dim)]">
-            {childCount}
-          </span>
-          {dot && (
+    <div className={isSection ? "mt-2.5 first:mt-0" : undefined}>
+      {isSection ? (
+        <SectionHeading
+          name={node.name}
+          count={childCount}
+          isCollapsed={isCollapsed}
+          dot={dot}
+          onToggle={() => onToggle(node.path)}
+        />
+      ) : (
+        <FolderRow
+          name={node.name}
+          count={childCount}
+          indent={indent}
+          isCollapsed={isCollapsed}
+          dot={dot}
+          onToggle={() => onToggle(node.path)}
+        />
+      )}
+      {!isCollapsed && node.children && (
+        <div className="relative">
+          {/* Depth is the indent plus a 1 px guide line down the left of a
+              folder's children (#446). Section roots are group headings, so
+              their files are not fenced by one. */}
+          {!isSection && (
             <span
-              title={dot.title}
-              className="ml-auto h-1.5 w-1.5 rounded-full"
-              style={{
-                background: dot.color,
-                boxShadow: `0 0 6px color-mix(in srgb, ${dot.color} 70%, transparent)`,
-              }}
+              aria-hidden
+              className="absolute top-0.5 bottom-0.5 w-px bg-[var(--color-border)]"
+              style={{ left: indent + 15 }}
             />
           )}
-        </Button>
-      </div>
-      {!isCollapsed && node.children && (
-        <div>
           {sortChildren(node, false).map((c) => (
             <FileTreeNode
               key={c.path}
@@ -585,6 +474,146 @@ function FileTreeNode({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+type FolderDot = { color: string; title: string } | null;
+
+function SyncDot({ dot }: { dot: NonNullable<FolderDot> }) {
+  return (
+    <span
+      title={dot.title}
+      className="h-1.5 w-1.5 shrink-0 rounded-full"
+      style={{
+        background: dot.color,
+        boxShadow: `0 0 6px color-mix(in srgb, ${dot.color} 70%, transparent)`,
+      }}
+    />
+  );
+}
+
+// The one-word description each section heading carries after its count.
+const SECTION_DESC: Record<string, string> = {
+  wip: "rozpracované",
+  outputs: "výstupy",
+  resources: "podklady",
+};
+
+// A section root (wip / outputs / resources) is a group heading, not a
+// folder row (#446): body face, weight 500, count then the description, a
+// hairline under it, the chevron only for collapsing, the sync dot at the
+// right. It cannot be renamed or dragged, so it has no hover actions.
+function SectionHeading({
+  name,
+  count,
+  isCollapsed,
+  dot,
+  onToggle,
+}: {
+  name: string;
+  count: number;
+  isCollapsed: boolean;
+  dot: FolderDot;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="relative flex items-center rounded px-2 py-1 hover:bg-[var(--color-surface)]">
+      <button
+        type="button"
+        onClick={onToggle}
+        title={isCollapsed ? "Rozbalit" : "Sbalit"}
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+      >
+        {isCollapsed ? (
+          <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+        ) : (
+          <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+        )}
+        <span className="min-w-0 truncate font-medium text-[var(--color-text-muted)]">
+          {name}
+        </span>
+        <span className="shrink-0 text-[11px] tabular-nums text-[var(--color-text-dim)]">
+          {count}
+        </span>
+        {SECTION_DESC[name] && (
+          <span className="shrink-0 text-[11px] text-[var(--color-text-dim)]">
+            {SECTION_DESC[name]}
+          </span>
+        )}
+        <span className="flex-1" />
+        {dot && <SyncDot dot={dot} />}
+      </button>
+      <span
+        aria-hidden
+        className="absolute inset-x-2 -bottom-px h-px bg-[var(--color-border)]"
+      />
+    </div>
+  );
+}
+
+// A folder row: the same face and size as a file row (no uppercase, no
+// monospace, no tracking), chevron, folder icon, name, count, sync dot,
+// then the hover-gated action strip. "Přejmenovat" and "Nová podsložka"
+// are placeholders until #448 lands them.
+function FolderRow({
+  name,
+  count,
+  indent,
+  isCollapsed,
+  dot,
+  onToggle,
+}: {
+  name: string;
+  count: number;
+  indent: number;
+  isCollapsed: boolean;
+  dot: FolderDot;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      className="group flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)]"
+      style={{ paddingLeft: indent + 8 }}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        title={isCollapsed ? "Rozbalit" : "Sbalit"}
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+      >
+        {isCollapsed ? (
+          <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+        ) : (
+          <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+        )}
+        {isCollapsed ? (
+          <Folder size={14} className="shrink-0 text-[var(--color-text-dim)]" />
+        ) : (
+          <FolderOpen size={14} className="shrink-0 text-[var(--color-text-dim)]" />
+        )}
+        <span className="min-w-0 truncate text-[var(--color-text)]">{name}</span>
+        <span className="shrink-0 text-[11px] tabular-nums text-[var(--color-text-dim)]">
+          {count}
+        </span>
+        {dot && <SyncDot dot={dot} />}
+        <span className="flex-1" />
+      </button>
+      <span className="hidden shrink-0 gap-1 group-hover:flex">
+        {["Přejmenovat", "Nová podsložka"].map((label) => (
+          <span key={label} title="Připravuje se">
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled
+              title="Připravuje se"
+              className="text-muted-foreground"
+            >
+              {label}
+            </Button>
+          </span>
+        ))}
+      </span>
     </div>
   );
 }
