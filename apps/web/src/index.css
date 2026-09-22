@@ -185,7 +185,9 @@ input:focus,
 button:focus {
   outline: none;
 }
-input:focus-visible,
+/* The command palette input is the dialog's only focusable field; the
+   dialog frame and the highlighted row carry the focus indication. */
+input:not([data-slot="command-input"]):focus-visible,
 button:focus-visible {
   outline: 1px solid var(--color-accent);
   outline-offset: 1px;
