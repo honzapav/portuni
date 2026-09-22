@@ -13,6 +13,8 @@ import {
   selectShownThread,
   selectMountedThreads,
   selectRunningCount,
+  selectThreadsByNode,
+  selectLiveStates,
 } from "../apps/web/src/lib/session-selectors.js";
 import type { SessionSummary } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -253,6 +255,11 @@ describe("session store selector reference stability", () => {
       mounted: () => selectMountedThreads(store, ["node-a", "node-b"], "s1"),
       noneMounted: () => selectMountedThreads(store, [], null),
       running: () => selectRunningCount(store),
+      // #465's two additions: the sidebar's per-node map and the live-state
+      // map the surfaces that fetch their own lists still take.
+      byNode: () => selectThreadsByNode(store, ["node-a", "node-b"]),
+      noNodes: () => selectThreadsByNode(store, []),
+      liveStates: () => selectLiveStates(store),
     };
   }
 
@@ -273,8 +280,13 @@ describe("session store selector reference stability", () => {
     // Another node's thread, suspended, so even the running count is untouched.
     store.put(row({ id: "elsewhere", node_id: "node-x", state: "suspended" }));
     for (const [name, select] of Object.entries(selectorsOf(store))) {
+      // liveStates is window-wide on purpose -- it is what tells the
+      // surfaces that fetch their own lists (Přehled, the Relace tab) that
+      // something, anywhere, changed -- so a new record is news for it.
+      if (name === "liveStates") continue;
       assert.equal(select(), before[name], `${name} changed on an unrelated put`);
     }
+    assert.notEqual(selectLiveStates(store), before.liveStates);
   });
 
   it("a relevant put changes the reference of the selectors that see it", () => {
@@ -289,9 +301,22 @@ describe("session store selector reference stability", () => {
     assert.notEqual(after.threads(), before.threads);
     assert.notEqual(after.shown(), before.shown);
     assert.notEqual(after.mounted(), before.mounted);
+    assert.notEqual(after.byNode(), before.byNode);
+    assert.notEqual(after.liveStates(), before.liveStates);
     // The node with no threads and the empty mount keep their references.
     assert.equal(after.noThreads(), before.noThreads);
     assert.equal(after.noneMounted(), before.noneMounted);
+    assert.equal(after.noNodes(), before.noNodes);
+  });
+
+  it("a put that changes only last_active_at leaves the live-state map alone", () => {
+    // The Relace tab and Přehled refetch on a change of this map; a list
+    // refetch that touched nothing they read would re-trigger itself.
+    const store = createSessionStore();
+    store.put(row({ id: "s1" }));
+    const before = selectLiveStates(store);
+    store.put(row({ id: "s1", last_active_at: "2026-09-22 12:00:00" }));
+    assert.equal(selectLiveStates(store), before);
   });
 
   it("a frame for another thread of the same node does not disturb the threads it does not touch", () => {

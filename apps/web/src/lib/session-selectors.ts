@@ -14,6 +14,7 @@
 // in test/session-store.test.ts.
 
 import type { SessionStore, StoredSession } from "./session-store";
+import type { SessionStateMessage } from "./sessions-client";
 import { isChatSessionState, isThreadSession, pickOpenChatSession } from "./session-views";
 
 type CacheEntry = { snapshot: object; value: unknown };
@@ -140,4 +141,79 @@ export function selectRunningCount(store: SessionStore): number {
   let count = 0;
   for (const s of store.snapshot().values()) if (s.state === "running") count++;
   return count;
+}
+
+// The Práce sidebar's per-node map (#465): the same rows selectNodeThreads
+// gives, keyed by node, for every open node. Memoized like everything here,
+// because `useSyncExternalStore` force-re-renders whenever `getSnapshot`
+// returns a value that differs by `Object.is` -- an inline map built in a
+// component body would loop until React throws.
+export function selectThreadsByNode(
+  store: SessionStore,
+  openNodeIds: readonly string[],
+): Record<string, StoredSession[]> {
+  return cached(
+    store,
+    `threadsByNode:${openNodeIds.join(",")}`,
+    () => {
+      const byNode: Record<string, StoredSession[]> = {};
+      for (const nodeId of openNodeIds) byNode[nodeId] = selectNodeThreads(store, nodeId);
+      return byNode;
+    },
+    // Per-node arrays are themselves reference-stable, so the map is
+    // unchanged exactly when every node's array is the same object.
+    (a, b) => {
+      const aKeys = Object.keys(a);
+      if (aKeys.length !== Object.keys(b).length) return false;
+      for (const key of aKeys) if (a[key] !== b[key]) return false;
+      return true;
+    },
+  );
+}
+
+// The live-state map the surfaces that fetch their own lists still take
+// (Přehled's Relace card, the node detail's Relace tab): the store projected
+// down to what a `session_state` frame carries, so those lists overlay the
+// records this window already has instead of a second live map. Only the
+// projected fields count for identity -- a refetch that changes nothing but
+// `last_active_at` must not restamp a list's refetch effect.
+function liveChannelState(state: StoredSession["state"]): SessionStateMessage["state"] | null {
+  return state === "running" || state === "suspended" || state === "closed" || state === "archived" ? state : null;
+}
+
+export function selectLiveStates(store: SessionStore): Readonly<Record<string, SessionStateMessage>> {
+  return cached(
+    store,
+    "liveStates",
+    () => {
+      const states: Record<string, SessionStateMessage> = {};
+      for (const s of store.snapshot().values()) {
+        const state = liveChannelState(s.state);
+        // A draft has no live state -- the channel never reports one -- so
+        // it is absent from the map, exactly as it was when the map came
+        // from frames alone. A list that shows drafts shows its own rows.
+        if (state === null) continue;
+        states[s.id] = {
+          session_id: s.id,
+          state,
+          waiting_since: s.waiting_since,
+          node_id: s.node_id,
+          name: s.name,
+        };
+      }
+      return states;
+    },
+    (a, b) => {
+      const aKeys = Object.keys(a);
+      if (aKeys.length !== Object.keys(b).length) return false;
+      for (const key of aKeys) {
+        const x = a[key];
+        const y = b[key];
+        if (!y) return false;
+        if (x.state !== y.state || x.waiting_since !== y.waiting_since) return false;
+        if (x.node_id !== y.node_id || x.name !== y.name) return false;
+      }
+      return true;
+    },
+  );
 }
