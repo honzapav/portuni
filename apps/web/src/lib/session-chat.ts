@@ -459,11 +459,12 @@ export function runIsLiveFor(liveRunId: string | null, state: SessionState): boo
 }
 
 // Whether the live run is in the middle of a turn: the working row, the
-// stop button and Escape apply only then. Walks back from the newest
-// event: the run's own turn_ended means idle, the message or run start
-// that opened the current turn means in flight; bookkeeping events in
-// between decide nothing. A run with no turn_ended yet is in flight (the
-// first turn starts with the brief).
+// stop button and Escape apply only then. A turn opens with a
+// user_message and closes with the run's turn_ended; the run start alone
+// opens none -- a promotion writes the brief as a user_message right
+// after it, while Navázat and a resume start the process with no prompt
+// and wait for the first message. Walks back from the newest event;
+// bookkeeping events in between decide nothing.
 export function turnInFlight(events: readonly ChatEvent[], liveRunId: string | null): boolean {
   if (liveRunId === null) return false;
   for (let i = events.length - 1; i >= 0; i--) {
@@ -473,9 +474,9 @@ export function turnInFlight(events: readonly ChatEvent[], liveRunId: string | n
       continue;
     }
     if (e.kind === "user_message") return true;
-    if (e.kind === "run_started" && e.payload.run_id === liveRunId) return true;
+    if (e.kind === "run_started" && e.payload.run_id === liveRunId) return false;
   }
-  return true;
+  return false;
 }
 
 // --- The working row -----------------------------------------------------------

@@ -289,12 +289,15 @@ describe("workingPhase", () => {
     assert.equal(workingPhase([], null, null), null);
   });
   it("starting between send and run_started, thinking after it, continuing after a tool completes", () => {
+    // The brief lands as a user_message right after run_started; that is
+    // what opens the turn.
+    const brief = ev(2, "user_message", { text: "go", source: "chat" });
     assert.equal(workingPhase([], null, Date.now()), "starting");
-    assert.equal(workingPhase([runStarted(1)], "R1", null), "thinking");
-    assert.equal(workingPhase([runStarted(1), toolEv(2, "t1", "Read", "completed")], "R1", null), "continuing");
-    assert.equal(workingPhase([runStarted(1), ev(2, "assistant_message", { text: "a" })], "R1", null), "continuing");
+    assert.equal(workingPhase([runStarted(1), brief], "R1", null), "thinking");
+    assert.equal(workingPhase([runStarted(1), brief, toolEv(3, "t1", "Read", "completed")], "R1", null), "continuing");
+    assert.equal(workingPhase([runStarted(1), brief, ev(3, "assistant_message", { text: "a" })], "R1", null), "continuing");
     // A running tool has its own live row; the working row steps aside.
-    assert.equal(workingPhase([runStarted(1), toolEv(2, "t1", "Read", "started")], "R1", null), null);
+    assert.equal(workingPhase([runStarted(1), brief, toolEv(3, "t1", "Read", "started")], "R1", null), null);
   });
 });
 
@@ -351,26 +354,34 @@ describe("turnInFlight", () => {
   const ended = ev(3, { kind: "turn_ended", payload: { run_id: "r1" } });
   const asked = ev(4, { kind: "user_message", payload: { text: "more", source: "chat" } });
 
-  it("a live run with no turn_ended yet is in flight", () => {
-    assert.equal(turnInFlight([], "r1"), true);
-    assert.equal(turnInFlight([started, said], "r1"), true);
+  it("a turn opens with a message, not with the run start", () => {
+    // Navázat / a resume start the process with no prompt: the run waits
+    // for the first message and nothing is in flight until it lands.
+    assert.equal(turnInFlight([], "r1"), false);
+    assert.equal(turnInFlight([started], "r1"), false);
+    assert.equal(turnInFlight([started, asked], "r1"), true);
+    assert.equal(turnInFlight([started, asked, said], "r1"), true);
+  });
+  it("workingPhase shows nothing for a run waiting for its first message", () => {
+    assert.equal(workingPhase([started], "r1", null), null);
+    assert.equal(workingPhase([started, asked], "r1", null), "thinking");
   });
   it("turn_ended for the live run ends the turn", () => {
-    assert.equal(turnInFlight([started, said, ended], "r1"), false);
+    assert.equal(turnInFlight([started, asked, said, ended], "r1"), false);
   });
   it("the next message starts a turn again", () => {
     assert.equal(turnInFlight([started, said, ended, asked], "r1"), true);
   });
   it("a turn_ended of another run does not count", () => {
     const other = ev(3, { kind: "turn_ended", payload: { run_id: "r0" } });
-    assert.equal(turnInFlight([started, said, other], "r1"), true);
+    assert.equal(turnInFlight([started, asked, said, other], "r1"), true);
   });
   it("bookkeeping after turn_ended keeps the turn idle", () => {
     const usage = ev(5, { kind: "context_usage", payload: { run_id: "r1", model: null, used_tokens: 1, max_tokens: null, input_tokens: 1, cached_tokens: 0, output_tokens: 0 } });
     assert.equal(turnInFlight([started, said, ended, usage], "r1"), false);
   });
   it("no live run is never in flight", () => {
-    assert.equal(turnInFlight([started, said], null), false);
+    assert.equal(turnInFlight([started, asked, said], null), false);
   });
   it("workingPhase shows nothing once the turn ended", () => {
     assert.equal(workingPhase([started, said, ended], "r1", null), null);

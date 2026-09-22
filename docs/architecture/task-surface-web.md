@@ -285,8 +285,10 @@ deduplicates a replay against a frame that raced it.
   live run's trailing group (`live: true`) stays open on the tool that is
   running.
 - **The working row** (`WorkingRow`, `workingPhase`): while a turn is in
-  flight (`turnInFlight`: the live run has no `turn_ended` since its last
-  `user_message` / `run_started`) or a send is in flight (`sentAt`), and
+  flight (`turnInFlight`: a `user_message` on the live run with no
+  `turn_ended` after it; the run start alone opens no turn, so a thread
+  started by Navázat or a resume waits idle for its first message) or a
+  send is in flight (`sentAt`), and
   neither streaming text nor a running tool is on screen, a `Loader` with
   "Spouštím…" (until `run_started`), "Přemýšlím…" (until the first delta
   or tool) or "Pokračuji…" (after a tool finished) and a seconds counter.
