@@ -40,7 +40,12 @@ collapsible right aside.
   its plan is empty. The plan belongs to the node on this device and is
   never sent anywhere; `loadFilePlan`/`saveFilePlan` in `lib/settings.ts`
   are its only readers, wrapped by `useFilePlan(nodeId)`
-  (`lib/use-file-plan.ts`). The plan is state of the Files tab, not of
+  (`lib/use-file-plan.ts`). `useFilePlan` pairs the plan with the node id it
+  was loaded for and re-resolves that pairing during render, not in an
+  effect (#451): `DetailPaneBody` is never remounted on a node switch, and
+  an effect-based reset would still let `FileTree`'s own cleaning effect
+  see the new node's files laid over the previous node's plan and write it
+  back under the new node's id. The plan is state of the Files tab, not of
   `FileTree`: "Nová složka" sits in the toolbar and writes to the same plan
   the tree renders, and a plan holding only a virtual folder is a tree on a
   node with no files at all (#448).
