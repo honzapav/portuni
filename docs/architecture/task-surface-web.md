@@ -34,7 +34,12 @@ collapsible right aside.
   workspace-scoped localStorage key (`scopedKey` from
   `lib/workspace-storage.ts`). Every per-window UI preference goes through
   `scopedKey`; all windows share one origin, so an unscoped key leaks
-  between workspaces.
+  between workspaces. The other scoped keys are `openNodes`,
+  `fileTreeCollapsed` and `fileTreePlan` -- the Files tab's move plan
+  (#447), `{ [nodeId]: { moves, folders } }`, a node's entry removed once
+  its plan is empty. The plan belongs to the node on this device and is
+  never sent anywhere; `loadFilePlan`/`saveFilePlan` in `lib/settings.ts`
+  are its only readers.
 - `SessionChat` is lazy-loaded (`lazy(() => import("./SessionChat"))` +
   `Suspense`).
 - **Every open thread keeps a mounted chat** (#429). `WorkspaceView` takes

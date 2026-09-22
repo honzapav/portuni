@@ -16,6 +16,9 @@ export type TreeFile = {
   mime_type: string | null;
   fileId: string | null; // null = untracked (not in `files`)
   local_path: string | null;
+  // The folder the file still sits in today when a plan moves it elsewhere
+  // (applyPlan's output, #447); absent or null when nothing is planned.
+  planned_from?: string | null;
 };
 
 export type TreeNode = {
@@ -25,8 +28,25 @@ export type TreeNode = {
   file?: TreeFile;
 };
 
-export function buildFileTree(files: TreeFile[]): TreeNode {
+// `folders` are the plan's virtual folders (#447, rule 4): node-relative
+// paths that hold no real file yet but are rows in the tree all the same.
+// They are created first, so a real file arriving in one only fills it in.
+export function buildFileTree(files: TreeFile[], folders: readonly string[] = []): TreeNode {
   const root: TreeNode = { name: "", path: "", children: new Map() };
+  for (const path of folders) {
+    const parts = path.split("/").filter((p) => p.length > 0);
+    let cur = root;
+    for (let i = 0; i < parts.length; i++) {
+      const seg = parts[i];
+      const childPath = parts.slice(0, i + 1).join("/");
+      let child = cur.children!.get(seg);
+      if (!child?.children) {
+        child = { name: seg, path: childPath, children: new Map() };
+        cur.children!.set(seg, child);
+      }
+      cur = child;
+    }
+  }
   for (const f of files) {
     const rel = f.relative_path;
     const parts = rel.split("/").filter((p) => p.length > 0);

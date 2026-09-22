@@ -4,7 +4,7 @@
 // class, summarise pending sync state in a banner, and expose the
 // "open in agent" / archive node action buttons.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadShowtimeEnabled } from "../lib/settings";
 import { isShowtimePath, showtimeInstalled } from "../lib/showtime";
 import { newFileMenu } from "../lib/new-file-menu";
@@ -22,6 +22,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
+import type { DragEvent as ReactDragEvent } from "react";
 import type {
   DetailFile,
   NodeDetail,
@@ -33,7 +34,30 @@ import type {
   UntrackedFile,
   WatcherErrorEntry,
 } from "../types";
-import { loadCollapsedFolders, saveCollapsedFolders } from "../lib/settings";
+import {
+  loadCollapsedFolders,
+  loadFilePlan,
+  saveCollapsedFolders,
+  saveFilePlan,
+} from "../lib/settings";
+import {
+  applyPlan,
+  planFolderMove,
+  planMove,
+  orderMoves,
+  EMPTY_PLAN,
+  type FilePlan,
+  type MoveTarget,
+  type PlanResult,
+} from "../lib/file-plan";
+import {
+  applyMoves,
+  createHoverExpand,
+  dropTargetFolder,
+  fileDragCheck,
+  folderDragCheck,
+} from "../lib/file-drag";
+import { pluralChanges } from "../lib/plural";
 import {
   aggregateFolderSync,
   buildFileTree,
@@ -286,6 +310,179 @@ export function NewFileSplitButton({
   );
 }
 
+// --- The move plan's UI (#447) ---------------------------------------------
+//
+// Dragging, the plan bar and "Použít" all live in the tree: the plan is the
+// node's own state on this device (rule 8), laid over freshly polled detail
+// on every render through applyPlan (rule 3). What a drop is allowed to do
+// is decided by the pure helpers in lib/file-plan.ts and lib/file-drag.ts.
+
+// What the drag source is while a row is being dragged. Held in state, not
+// in dataTransfer: getData() is unreadable during dragover, which is exactly
+// where the target has to decide whether it accepts the drop.
+type DragSource =
+  | { kind: "file"; fileId: string }
+  | { kind: "folder"; path: string };
+
+// Everything a row needs to take part in a drag, built per row by FileTree.
+type RowDrag = {
+  draggable: boolean;
+  // Why the row cannot be dragged (rules 5 and 9), shown as its title.
+  dragTitle: string | null;
+  dragging: boolean;
+  // This row is the target under the cursor and the drop is allowed.
+  highlighted: boolean;
+  // The refusal to show as this row's title while it is under the cursor.
+  refusal: string | null;
+  onDragStart?: (e: ReactDragEvent) => void;
+  onDragEnd?: () => void;
+  onDragOver: (e: ReactDragEvent) => void;
+  onDragLeave: () => void;
+  onDrop: (e: ReactDragEvent) => void;
+};
+
+const NO_DRAG: RowDrag = {
+  draggable: false,
+  dragTitle: null,
+  dragging: false,
+  highlighted: false,
+  refusal: null,
+  onDragOver: () => undefined,
+  onDragLeave: () => undefined,
+  onDrop: () => undefined,
+};
+
+// The plan's per-row facts, passed down the tree as one prop.
+type PlanUi = {
+  rowDrag: (node: TreeNode, kind: "file" | "folder" | "section") => RowDrag;
+  isVirtual: (path: string) => boolean;
+  moveState: (fileId: string | null) => "moving" | "error" | null;
+  moveError: (fileId: string | null) => string | null;
+};
+
+const NO_PLAN_UI: PlanUi = {
+  rowDrag: () => NO_DRAG,
+  isVirtual: () => false,
+  moveState: () => null,
+  moveError: () => null,
+};
+
+// The accent-soft fill plus the 1 px accent inset ring a valid drop target
+// wears while the cursor is over it (spec, Dragging).
+const DROP_TARGET_CLASS =
+  "bg-[var(--color-accent-soft)] shadow-[inset_0_0_0_1px_var(--color-accent)]";
+
+const DRAG_IMAGE_ICON = {
+  file: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg>',
+  folder:
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
+};
+
+// A small label with the icon and the name instead of the browser's own
+// screenshot of the row, which in a tree of full-width rows is a smear.
+function setDragImage(e: ReactDragEvent, kind: "file" | "folder", name: string): void {
+  if (typeof document === "undefined") return;
+  const el = document.createElement("div");
+  el.style.cssText = [
+    "position:fixed",
+    "top:-1000px",
+    "left:-1000px",
+    "display:inline-flex",
+    "align-items:center",
+    "gap:6px",
+    "padding:4px 8px",
+    "border-radius:6px",
+    "font-size:12px",
+    "background:var(--color-surface)",
+    "color:var(--color-text)",
+    "border:1px solid var(--color-accent)",
+  ].join(";");
+  el.innerHTML = DRAG_IMAGE_ICON[kind];
+  el.appendChild(document.createTextNode(name));
+  document.body.appendChild(el);
+  e.dataTransfer.setDragImage(el, 8, 12);
+  // The browser snapshots the element synchronously; a task later it is only
+  // in the way.
+  setTimeout(() => el.remove(), 0);
+}
+
+type ApplyState =
+  | { phase: "idle" }
+  | { phase: "applying"; index: number; total: number; fileId: string | null }
+  | { phase: "failed"; fileId: string; filename: string; message: string };
+
+const IDLE_APPLY: ApplyState = { phase: "idle" };
+
+// The bar between the toolbar and the tree, only while the plan is not empty:
+// the count and "Zahodit" / "Použít", the progress while applying, and the
+// danger colours with "Použít znovu" after a failure (mockup, frames 4 and 6).
+function PlanBar({
+  count,
+  state,
+  onDiscard,
+  onApply,
+}: {
+  count: number;
+  state: ApplyState;
+  onDiscard: () => void;
+  onApply: () => void;
+}) {
+  const applying = state.phase === "applying";
+  const failed = state.phase === "failed";
+  const noun = pluralChanges(count);
+  const waits = count >= 2 && count <= 4 ? "čekají" : "čeká";
+  const stays = count >= 2 && count <= 4 ? "zůstávají" : "zůstává";
+  return (
+    <div
+      className="mb-3 flex items-center gap-2.5 rounded-lg border px-3 py-2 text-[13px]"
+      style={
+        failed
+          ? {
+              background: "var(--color-danger-bg)",
+              borderColor: "var(--color-danger-border)",
+            }
+          : {
+              background: "var(--color-accent-soft)",
+              borderColor: "color-mix(in srgb, var(--color-accent) 30%, transparent)",
+            }
+      }
+    >
+      <span className="min-w-0 flex-1 text-[var(--color-text)]">
+        {applying ? (
+          <>
+            Přesouvám{" "}
+            <b className="font-medium">
+              {state.index + 1} / {state.total}
+            </b>
+          </>
+        ) : failed ? (
+          <>
+            Použití se zastavilo u <b className="font-medium">{state.filename}</b>.{" "}
+            <b className="font-medium">
+              {count} {noun}
+            </b>{" "}
+            {stays} v plánu.
+          </>
+        ) : (
+          <>
+            <b className="font-medium">
+              {count} {noun}
+            </b>{" "}
+            {waits} na použití
+          </>
+        )}
+      </span>
+      <Button variant="ghost" size="sm" disabled={applying} onClick={onDiscard}>
+        Zahodit
+      </Button>
+      <Button size="sm" disabled={applying} onClick={onApply}>
+        {applying && <Loader2 className="animate-spin" />}
+        {applying ? "Používám" : failed ? "Použít znovu" : "Použít"}
+      </Button>
+    </div>
+  );
+}
+
 export function FileTree({
   files,
   untracked,
@@ -293,10 +490,13 @@ export function FileTree({
   syncStatus,
   syncLoaded,
   mirrorPath,
+  hasMirror,
   onOpenFile,
   onRename,
   onDelete,
   onResolve,
+  onMove,
+  onApplied,
   readOnly,
   runErrors,
   isCentralMode,
@@ -309,10 +509,17 @@ export function FileTree({
   // The node's device mirror root, used to recover file relative paths in a
   // team workspace (node-detail omits them there). Null when unknown.
   mirrorPath: string | null;
+  // Rule 9: without a mirror on this device nothing can be relocated, so no
+  // row is draggable and every one says why in its title.
+  hasMirror?: boolean;
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
   onDelete: (fileId: string) => Promise<void>;
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
+  // One planned file, one call to the move route (rule 2).
+  onMove?: (fileId: string, target: MoveTarget) => Promise<unknown>;
+  // Detail + sync status refetch after "Použít", as rename does.
+  onApplied?: () => Promise<void>;
   // When true, hide rename/delete actions (e.g. a team workspace).
   readOnly?: boolean;
   // Per-file outcome of the last sync run (#267): a failed push/pull or a
@@ -328,11 +535,23 @@ export function FileTree({
     () => toTreeFiles(files, untracked, syncStatus, mirrorPath),
     [files, untracked, syncStatus, mirrorPath],
   );
-  const root = useMemo(() => buildFileTree(treeFiles), [treeFiles]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedFolders(nodeId));
+  const [plan, setPlan] = useState<FilePlan>(() => loadFilePlan(nodeId));
+  const [applyState, setApplyState] = useState<ApplyState>(IDLE_APPLY);
+  const [source, setSource] = useState<DragSource | null>(null);
+  // The row under the cursor, the folder its drop would land in, and the
+  // refusal when there is one.
+  const [hover, setHover] = useState<
+    { rowPath: string; targetFolder: string; ok: boolean; reason: string | null } | null
+  >(null);
   useEffect(() => {
     setCollapsed(loadCollapsedFolders(nodeId));
+    setPlan(loadFilePlan(nodeId));
+    setApplyState(IDLE_APPLY);
+    setSource(null);
+    setHover(null);
   }, [nodeId]);
+
   const toggle = (path: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -342,28 +561,236 @@ export function FileTree({
       return next;
     });
 
+  // Rule 3: the tree is rebuilt from fresh detail on every poll and the plan
+  // is laid over it; what applyPlan leaves of the plan is what is saved.
+  const planned = useMemo(() => applyPlan(treeFiles, plan), [treeFiles, plan]);
+  useEffect(() => {
+    if (JSON.stringify(planned.plan) === JSON.stringify(plan)) return;
+    setPlan(planned.plan);
+    saveFilePlan(nodeId, planned.plan);
+  }, [planned, plan, nodeId]);
+
+  const updatePlan = (next: FilePlan) => {
+    setPlan(next);
+    saveFilePlan(nodeId, next);
+  };
+
+  const root = useMemo(
+    () => buildFileTree(planned.files, planned.folders),
+    [planned],
+  );
+  // Effective paths of every row, so a target a real or an already planned
+  // file occupies is refused at the drop (rule 6).
+  const occupied = useMemo(
+    () => new Set(planned.files.map((f) => f.relative_path)),
+    [planned],
+  );
+  const virtualFolders = useMemo(() => new Set(planned.folders), [planned]);
+  // The plan is keyed by file id and planMove reads the path the file really
+  // has today, so the drag works from the original rows, never the planned
+  // ones (applying the plan twice would move a file home again).
+  const originals = useMemo(() => {
+    const map = new Map<string, TreeFile>();
+    for (const f of treeFiles) if (f.fileId) map.set(f.fileId, f);
+    return map;
+  }, [treeFiles]);
+
+  // A collapsed folder expands after the cursor rests on it (spec, Dragging).
+  // The callback goes through a ref so the timer is created once.
+  const expandLatest = useRef<(path: string) => void>(() => undefined);
+  useEffect(() => {
+    expandLatest.current = (path: string) =>
+      setCollapsed((prev) => {
+        if (!prev.has(path)) return prev;
+        const next = new Set(prev);
+        next.delete(path);
+        saveCollapsedFolders(nodeId, next);
+        return next;
+      });
+  });
+  const hoverExpand = useMemo(() => createHoverExpand((p) => expandLatest.current(p)), []);
+  useEffect(() => () => hoverExpand.cancel(), [hoverExpand]);
+
+  const applying = applyState.phase === "applying";
+
+  const evaluate = useCallback(
+    (src: DragSource, targetFolder: string): PlanResult => {
+      if (src.kind === "file") {
+        const file = originals.get(src.fileId);
+        if (!file) return { ok: false, reason: "Soubor už neexistuje" };
+        return planMove(plan, file, targetFolder, occupied);
+      }
+      return planFolderMove(plan, src.path, targetFolder, treeFiles, occupied);
+    },
+    [originals, plan, occupied, treeFiles],
+  );
+
+  const endDrag = () => {
+    hoverExpand.cancel();
+    setSource(null);
+    setHover(null);
+  };
+
+  const rowDrag = (node: TreeNode, kind: "file" | "folder" | "section"): RowDrag => {
+    const isFile = kind === "file";
+    const file = node.file;
+    const original = file?.fileId ? originals.get(file.fileId) : undefined;
+    const check =
+      kind === "section"
+        ? { draggable: false, reason: null }
+        : isFile
+          ? fileDragCheck(original ?? file!, hasMirror !== false)
+          : folderDragCheck(node.path, planned.files, hasMirror !== false);
+    const targetFolder = dropTargetFolder({ path: node.path, isFile });
+    const dragging =
+      source !== null &&
+      (isFile
+        ? source.kind === "file" && source.fileId === file?.fileId
+        : source.kind === "folder" && source.path === node.path);
+    const highlighted =
+      !isFile && hover !== null && hover.ok && hover.targetFolder === node.path;
+    const refusal = hover !== null && !hover.ok && hover.rowPath === node.path ? hover.reason : null;
+
+    const start = (kind: "file" | "folder", name: string, src: DragSource) => (e: ReactDragEvent) => {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", node.path);
+      setDragImage(e, kind, name);
+      setSource(src);
+    };
+
+    return {
+      draggable: check.draggable && !applying,
+      dragTitle: check.reason,
+      dragging,
+      highlighted,
+      refusal,
+      onDragStart:
+        kind === "section" || !check.draggable
+          ? undefined
+          : isFile
+            ? start("file", file!.filename, { kind: "file", fileId: file!.fileId! })
+            : start("folder", node.name, { kind: "folder", path: node.path }),
+      onDragEnd: endDrag,
+      onDragOver: (e: ReactDragEvent) => {
+        if (!source || applying) return;
+        const result = evaluate(source, targetFolder);
+        if (result.ok) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+        }
+        e.stopPropagation();
+        setHover((prev) =>
+          prev && prev.rowPath === node.path && prev.ok === result.ok
+            ? prev
+            : {
+                rowPath: node.path,
+                targetFolder,
+                ok: result.ok,
+                reason: result.ok ? null : result.reason,
+              },
+        );
+        if (result.ok && !isFile && collapsed.has(node.path)) hoverExpand.over(node.path);
+        else hoverExpand.cancel();
+      },
+      onDragLeave: () => {
+        hoverExpand.cancel();
+        setHover((prev) => (prev && prev.rowPath === node.path ? null : prev));
+      },
+      onDrop: (e: ReactDragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const src = source;
+        endDrag();
+        if (!src || applying) return;
+        const result = evaluate(src, targetFolder);
+        if (result.ok) updatePlan(result.plan);
+      },
+    };
+  };
+
+  const planCount = Object.keys(plan.moves).length;
+
+  const runApply = async () => {
+    if (!onMove || applying || planCount === 0) return;
+    const total = orderMoves(plan).length;
+    setApplyState({ phase: "applying", index: 0, total, fileId: null });
+    const outcome = await applyMoves(plan, onMove, (progress) =>
+      setApplyState({
+        phase: "applying",
+        index: progress.index,
+        total: progress.total,
+        fileId: progress.fileId,
+      }),
+    );
+    updatePlan(outcome.plan);
+    if (outcome.failure) {
+      const failed = originals.get(outcome.failure.fileId);
+      setApplyState({
+        phase: "failed",
+        fileId: outcome.failure.fileId,
+        filename: failed?.filename ?? outcome.failure.fileId,
+        message: outcome.failure.message,
+      });
+    } else {
+      setApplyState(IDLE_APPLY);
+    }
+    // Both endings moved files, so the detail and the sync status are stale.
+    if (onApplied) await onApplied();
+  };
+
+  const planUi: PlanUi = onMove
+    ? {
+        rowDrag,
+        isVirtual: (path) => virtualFolders.has(path),
+        moveState: (fileId) => {
+          if (!fileId) return null;
+          if (applyState.phase === "applying" && applyState.fileId === fileId) return "moving";
+          if (applyState.phase === "failed" && applyState.fileId === fileId) return "error";
+          return null;
+        },
+        moveError: (fileId) =>
+          fileId && applyState.phase === "failed" && applyState.fileId === fileId
+            ? applyState.message
+            : null,
+      }
+    : NO_PLAN_UI;
+
   const topChildren = sortChildren(root, true);
   return (
-    <div className="space-y-0.5">
-      {topChildren.map((c) => (
-        <FileTreeNode
-          key={c.path}
-          node={c}
-          depth={0}
-          collapsed={collapsed}
-          onToggle={toggle}
-          nodeId={nodeId}
-          syncStatus={syncStatus}
-          syncLoaded={syncLoaded}
-          onOpenFile={onOpenFile}
-          onRename={onRename}
-          onDelete={onDelete}
-          onResolve={onResolve}
-          readOnly={readOnly}
-          runErrors={runErrors}
-          isCentralMode={isCentralMode}
+    <div>
+      {planCount > 0 && onMove && (
+        <PlanBar
+          count={planCount}
+          state={applyState}
+          onDiscard={() => {
+            updatePlan(EMPTY_PLAN);
+            setApplyState(IDLE_APPLY);
+          }}
+          onApply={() => void runApply()}
         />
-      ))}
+      )}
+      <div className="space-y-0.5">
+        {topChildren.map((c) => (
+          <FileTreeNode
+            key={c.path}
+            node={c}
+            depth={0}
+            collapsed={collapsed}
+            onToggle={toggle}
+            nodeId={nodeId}
+            syncStatus={syncStatus}
+            syncLoaded={syncLoaded}
+            onOpenFile={onOpenFile}
+            onRename={onRename}
+            onDelete={onDelete}
+            onResolve={onResolve}
+            readOnly={readOnly}
+            runErrors={runErrors}
+            isCentralMode={isCentralMode}
+            planUi={planUi}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -383,6 +810,7 @@ function FileTreeNode({
   readOnly,
   runErrors,
   isCentralMode,
+  planUi,
 }: {
   node: TreeNode;
   depth: number;
@@ -398,6 +826,7 @@ function FileTreeNode({
   readOnly?: boolean;
   runErrors?: Map<string, string>;
   isCentralMode?: boolean;
+  planUi: PlanUi;
 }) {
   const indent = depth * 14;
   if (node.file) {
@@ -414,6 +843,9 @@ function FileTreeNode({
         readOnly={readOnly}
         runError={node.file.fileId ? (runErrors?.get(node.file.fileId) ?? null) : null}
         isCentralMode={isCentralMode}
+        drag={planUi.rowDrag(node, "file")}
+        moveState={planUi.moveState(node.file.fileId)}
+        moveError={planUi.moveError(node.file.fileId)}
       />
     );
   }
@@ -430,6 +862,7 @@ function FileTreeNode({
           isCollapsed={isCollapsed}
           dot={dot}
           onToggle={() => onToggle(node.path)}
+          drag={planUi.rowDrag(node, "section")}
         />
       ) : (
         <FolderRow
@@ -439,6 +872,8 @@ function FileTreeNode({
           isCollapsed={isCollapsed}
           dot={dot}
           onToggle={() => onToggle(node.path)}
+          drag={planUi.rowDrag(node, "folder")}
+          virtual={planUi.isVirtual(node.path)}
         />
       )}
       {!isCollapsed && node.children && (
@@ -470,6 +905,7 @@ function FileTreeNode({
               readOnly={readOnly}
               runErrors={runErrors}
               isCentralMode={isCentralMode}
+              planUi={planUi}
             />
           ))}
         </div>
@@ -510,15 +946,28 @@ function SectionHeading({
   isCollapsed,
   dot,
   onToggle,
+  drag,
 }: {
   name: string;
   count: number;
   isCollapsed: boolean;
   dot: FolderDot;
   onToggle: () => void;
+  // A section root takes drops (it is a folder in the plan's sense) but is
+  // never dragged itself.
+  drag: RowDrag;
 }) {
   return (
-    <div className="relative flex items-center rounded px-2 py-1 hover:bg-[var(--color-surface)]">
+    <div
+      title={drag.refusal ?? undefined}
+      onDragOver={drag.onDragOver}
+      onDragLeave={drag.onDragLeave}
+      onDrop={drag.onDrop}
+      className={
+        "relative flex items-center rounded px-2 py-1 hover:bg-[var(--color-surface)] " +
+        (drag.highlighted ? DROP_TARGET_CLASS : "")
+      }
+    >
       <button
         type="button"
         onClick={onToggle}
@@ -563,6 +1012,8 @@ function FolderRow({
   isCollapsed,
   dot,
   onToggle,
+  drag,
+  virtual,
 }: {
   name: string;
   count: number;
@@ -570,11 +1021,25 @@ function FolderRow({
   isCollapsed: boolean;
   dot: FolderDot;
   onToggle: () => void;
+  drag: RowDrag;
+  // A folder that exists only in the plan (rule 4): dashed icon, dim name,
+  // the tag "nová" after the count. It becomes real with its first file.
+  virtual: boolean;
 }) {
   return (
     <div
-      className="group flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)]"
-      style={{ paddingLeft: indent + 8 }}
+      draggable={drag.draggable}
+      title={drag.refusal ?? drag.dragTitle ?? undefined}
+      onDragStart={drag.onDragStart}
+      onDragEnd={drag.onDragEnd}
+      onDragOver={drag.onDragOver}
+      onDragLeave={drag.onDragLeave}
+      onDrop={drag.onDrop}
+      className={
+        "group flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)] " +
+        (drag.highlighted ? DROP_TARGET_CLASS : "")
+      }
+      style={{ paddingLeft: indent + 8, opacity: drag.dragging ? 0.45 : undefined }}
     >
       <button
         type="button"
@@ -587,15 +1052,37 @@ function FolderRow({
         ) : (
           <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
         )}
-        {isCollapsed ? (
+        {virtual ? (
+          <Folder
+            size={14}
+            style={{ strokeDasharray: "3 2" }}
+            className="shrink-0 text-[var(--color-accent-dim)]"
+          />
+        ) : isCollapsed ? (
           <Folder size={14} className="shrink-0 text-[var(--color-text-dim)]" />
         ) : (
           <FolderOpen size={14} className="shrink-0 text-[var(--color-text-dim)]" />
         )}
-        <span className="min-w-0 truncate text-[var(--color-text)]">{name}</span>
+        <span
+          className={
+            "min-w-0 truncate " +
+            (virtual ? "text-[var(--color-text-dim)]" : "text-[var(--color-text)]")
+          }
+        >
+          {name}
+        </span>
         <span className="shrink-0 text-[11px] tabular-nums text-[var(--color-text-dim)]">
           {count}
         </span>
+        {virtual && (
+          <span
+            title="Složka zatím existuje jen v plánu. Vznikne, až v ní po použití bude soubor."
+            className="shrink-0 rounded px-1.5 text-[11px] text-[var(--color-accent)]"
+            style={{ background: "var(--color-accent-soft)" }}
+          >
+            nová
+          </span>
+        )}
         {dot && <SyncDot dot={dot} />}
         <span className="flex-1" />
       </button>
@@ -681,11 +1168,12 @@ function CopyDriveLinkButton({ nodeId, fileId }: { nodeId: string; fileId: strin
 // action strip itself is hover-gated, so moving the mouse away hid even
 // that. Rename/delete/resolve all wait on a server round trip plus the
 // detail + sync-status refetch that follows it.
-type RowBusy = "rename" | "delete" | ResolveAction;
+type RowBusy = "rename" | "delete" | "move" | ResolveAction;
 
 const ROW_BUSY_LABEL: Record<RowBusy, string> = {
   rename: "přejmenovávám",
   delete: "mažu",
+  move: "přesouvám",
   restore: "obnovuji",
   keep_local: "nahrávám",
   take_remote: "stahuji",
@@ -709,6 +1197,27 @@ function RowBusyBadge({ action }: { action: RowBusy }) {
   );
 }
 
+// The sync badge's slot while a file is part of the plan: "přesun" before
+// "Použít", "chyba" on the file a failed apply stopped at (mockup, frames 4
+// and 6).
+function PlanBadge({ kind }: { kind: "move" | "error" }) {
+  const color = kind === "move" ? "var(--color-accent)" : "var(--color-danger)";
+  return (
+    <Badge
+      variant="outline"
+      title={kind === "move" ? "Přesun čeká na použití" : "Přesun se nepovedl"}
+      className="shrink-0 font-mono text-[8.5px] uppercase tracking-wider"
+      style={{
+        color,
+        background: `color-mix(in srgb, ${color} 12%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${color} 25%, transparent)`,
+      }}
+    >
+      {kind === "move" ? "přesun" : "chyba"}
+    </Badge>
+  );
+}
+
 // One file row. Rename is an inline input (Enter saves, Escape cancels);
 // delete is a two-step confirm that auto-resets after a few seconds. Both
 // replace window.prompt/confirm, which are no-ops in the Tauri webview.
@@ -724,6 +1233,9 @@ function FileRow({
   readOnly,
   runError,
   isCentralMode,
+  drag,
+  moveState,
+  moveError,
 }: {
   file: TreeFile;
   indent: number;
@@ -739,6 +1251,13 @@ function FileRow({
   // A local workspace has no remote (#310/#312) -- hides "Obnovit" (restore,
   // i.e. pull), which would otherwise only ever fail with LOCAL_MODE_NO_REMOTE.
   isCentralMode?: boolean;
+  // Dragging (#447): a registered file inside one of the three sections is
+  // draggable, every other row says why it is not. A drop on this row lands
+  // in the folder it sits in.
+  drag: RowDrag;
+  // "přesouvám" while apply is on this file, "chyba" when it stopped here.
+  moveState: "moving" | "error" | null;
+  moveError: string | null;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(f.filename);
@@ -812,12 +1331,27 @@ function FileRow({
       .finally(() => setBusyAction(null));
   };
 
+  const planned = f.planned_from ?? null;
   return (
     <div
       aria-busy={busy}
-      className="group flex items-start gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)]"
-      style={{ paddingLeft: indent + 8 }}
+      draggable={drag.draggable && !renaming}
+      title={drag.refusal ?? drag.dragTitle ?? undefined}
+      onDragStart={drag.onDragStart}
+      onDragEnd={drag.onDragEnd}
+      onDragOver={drag.onDragOver}
+      onDragLeave={drag.onDragLeave}
+      onDrop={drag.onDrop}
+      className="group relative flex items-start gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)]"
+      style={{ paddingLeft: indent + 8, opacity: drag.dragging ? 0.45 : undefined }}
     >
+      {/* A planned file wears a 2 px accent bar at the row's left edge. */}
+      {planned !== null && (
+        <span
+          aria-hidden
+          className="absolute top-1.5 bottom-1.5 left-0 w-0.5 rounded-full bg-[var(--color-accent)]"
+        />
+      )}
       <FileText size={12} className="mt-0.5 shrink-0 text-[var(--color-text-dim)]" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
@@ -882,8 +1416,19 @@ function FileRow({
               <CopyDriveLinkButton nodeId={nodeId} fileId={f.fileId} />
             </span>
           )}
+          {planned !== null && (
+            <span className="shrink-0 text-[11px] whitespace-nowrap text-[var(--color-text-dim)]">
+              <s className="decoration-[var(--color-border-strong)]">{planned}</s>
+            </span>
+          )}
           {busyAction ? (
             <RowBusyBadge action={busyAction} />
+          ) : moveState === "moving" ? (
+            <RowBusyBadge action="move" />
+          ) : moveState === "error" ? (
+            <PlanBadge kind="error" />
+          ) : planned !== null ? (
+            <PlanBadge kind="move" />
           ) : (
             sync && <SyncStatusBadge sync={sync} />
           )}
@@ -976,13 +1521,13 @@ function FileRow({
             </span>
           )}
         </div>
-        {(rowError ?? runError) && (
+        {(rowError ?? moveError ?? runError) && (
           <div
             className="mt-0.5 truncate text-[11px]"
-            title={rowError ?? runError ?? undefined}
+            title={rowError ?? moveError ?? runError ?? undefined}
             style={{ color: "var(--color-danger)" }}
           >
-            {rowError ?? runError}
+            {rowError ?? moveError ?? runError}
           </div>
         )}
       </div>

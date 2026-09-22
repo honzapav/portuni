@@ -43,6 +43,21 @@ function child(node: TreeNode, name: string): TreeNode {
 }
 
 describe("file tree", () => {
+  it("adds the plan's virtual folders as empty rows and fills one that gets a file (#447)", () => {
+    const root = buildFileTree([file("wip/navrhy/hero-a.png")], [
+      "wip/nove/leden",
+      "wip/navrhy",
+    ]);
+    const wip = child(root, "wip");
+    const leden = child(child(wip, "nove"), "leden");
+    assert.equal(leden.path, "wip/nove/leden");
+    assert.equal(leden.children?.size, 0);
+    // A virtual folder that a real file already sits in keeps that file;
+    // applyPlan is what drops it from the plan (rule 4).
+    const navrhy = child(wip, "navrhy");
+    assert.equal(navrhy.children?.size, 1);
+  });
+
   it("builds nested folders from relative paths", () => {
     const root = buildFileTree([
       file("wip/navrhy/hero-a.png"),

@@ -74,6 +74,29 @@ The detail pane on the right is editable in both Graph and Workspace views:
 - **Events** — recent timeline; resolve / supersede inline.
 - **Relace (Sessions)** — persistent sessions anchored to this node (`GET /nodes/:id/sessions`), newest-active first: state (running/suspended/closed/archived, archived hidden behind a "Zobrazit archivované" filter), last activity, CLI + instance (CLI is read from the MCP handshake itself, not a header — populated for Claude Code, Codex and Mistral Vibe alike), the host that ran it (the machine whose sidecar started the latest run — its label on the machine you are asking from, its id when the task ran on a teammate's device; omitted when no run claimed one), the task `brief` and `runner` when the session was started as a task, `waiting_since` when its run is blocked on a question, and write count (size of the session's write scope, which always includes the session's own home node — a session that only ever wrote there still reports 1, not 0). Name defaults to `<node> · <date> <time>` (the time component keeps two same-day sessions on the same node distinguishable) and is enriched from the handoff's title at suspend, but is always renamable inline. A `sessions` row is only ever created once a connection completes its MCP handshake — a client's protocol probe, an aborted connection, or any other non-`initialize` first request never leaves a row behind. A `running` row is never simply dropped: a run that ends for any reason other than Uzavřít — a dropped MCP connection, `PORTUNI_RUN_IDLE_MS` (default 30 min) of inactivity, a provider limit (the runner's own spend/rate limit, whose message lands in the transcript as a provider error), an error, or a startup sweep finding a row from a process that no longer exists (crash, restart) — *suspends* it instead, with a mechanical summary the server writes itself from the session's own event log (last messages, files changed, any open question, the write set) — `closed` is reached only by explicitly clicking Uzavřít or by the auto-archive sweep of old closed sessions. Such a row shows "pozastaveno serverem" with the reason (odpojení, nečinnost, restart serveru, proces osiřel po restartu) so it reads differently from a handoff a hand-opened CLI's own agent wrote on purpose via `portuni_session_suspend`. A suspended row shows whether the underlying CLI conversation is still resumable or will fall back to the summary, and links to the handoff file when one exists (or, when this device has no local mirror for the node, the handoff text is still resumable from — it was simply never written to a file here) — this is informational only now: there is no separate resume action, sending the next message into the thread is what resumes it, `--resume` on the last run when still valid, from the summary otherwise. Each row's status dot doubles as a chip (Běží / Čeká na mě / Pozastaveno / Hotovo / Archiv, "Čeká na mě" overriding "Běží" while a question is open), shows the task `brief`'s first line when set, and — for a row you don't own — the owner's name (when resolvable; below `manage` scope it's silently omitted rather than showing a raw id). "Otevřít chat" jumps to [the task chat](#task-chat-práce); a closed row you can resume shows a single "Navázat" button — `POST /sessions/:id/continue`, which starts a fresh, running session on the same node seeded with this one's summary and switches Práce to it. Which of these appear at all follows #321's access table: only the owner ever sees Navázat; Uzavřít (asks first) needs the owner or `manage` scope; Otevřít chat and Zobrazit handoff need only to see the node (the client hides what would 403; the server is the actual gate).
 
+**Uspořádání souborů v panelu Files.** Soubory se mezi složkami a sekcemi
+uzlu přetahují myší, ale žádný tah se neprovede hned: skládá se **plán**,
+který se použije až tlačítkem „Použít". Táhnout jde zaregistrovaný soubor
+uvnitř sekcí `wip`, `outputs` a `resources` a celá složka (přetáhne se s ní
+každý soubor uvnitř). Řádek, který táhnout nejde, říká v titulku proč —
+soubor ještě není zaregistrovaný (zaregistruje ho hlídač během chvíle),
+leží mimo tři sekce, nebo uzel nemá na tomhle počítači mirror. Cílem je
+složka, sekce, nebo řádek souboru (pak se míří do složky, ve které soubor
+leží); sbalená složka se po chvíli držení kurzoru sama rozbalí. Cíl, kde už
+soubor téhož jména je, a složka přetažená sama do sebe se odmítnou hned při
+puštění, s důvodem v titulku.
+
+Naplánovaný soubor má u levého okraje řádku accentový proužek, přeškrtnutou
+původní složku a štítek „PŘESUN"; nad stromem se objeví lišta „N změn čeká
+na použití" s tlačítky „Zahodit" a „Použít". „Zahodit" plán zahodí a nikde
+se nic nestane. „Použít" projde naplánované soubory po jednom: soubor, který
+už je na remote, se na Disku jen přejmenuje (obsah se znovu nenahrává),
+soubor, který se ještě nikdy nepushoval, změní jen svůj záznam a kopii v
+mirroru a zůstává ve stavu `push` na nové cestě. Když některý přesun
+selže, dávka se zastaví — hotové zůstává hotové, chybný řádek ukáže důvod a
+zbytek změn zůstane v plánu pro „Použít znovu". Plán patří uzlu na tomhle
+počítači, přežije odchod z uzlu i restart aplikace a nikam se neodesílá.
+
 The action bar below the pane (non-organization nodes) is "Nový úkol" — see [Task chat (Práce)](#task-chat-práce).
 
 Every mutating action calls back through `onMutate` which refetches the graph and the node detail, so the rest of the UI stays consistent.

@@ -106,10 +106,12 @@ import {
   createFile,
   renameFile,
   deleteFile,
+  moveFile,
   resolveFileSync,
   SyncAgentDownError,
 } from "../api";
 import type { ResolveAction } from "../api";
+import type { MoveTarget } from "../lib/file-plan";
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
@@ -702,6 +704,20 @@ function DetailPaneBody({
     }
   };
 
+  // One planned move of the Files tab's plan (#447): the existing move route,
+  // once per file. moveFile turns anything but status: "ok" (a repair_needed
+  // answer included) into a throw, which stops the apply loop and shows the
+  // message on the file's row.
+  const handleMoveFile = async (fileId: string, target: MoveTarget) => {
+    await moveFile(node.id, fileId, target);
+  };
+
+  // After "Použít" the detail and the sync status are stale, exactly as they
+  // are after a rename.
+  const handlePlanApplied = async () => {
+    await Promise.all([onMutate(), loadSyncStatus()]);
+  };
+
   // Human decision on a conflict or deleted_local file (see resolveFileSync).
   // The 409 case carries a human-readable message from the server -- let it
   // propagate as-is rather than wrapping it in a generic failure line.
@@ -1149,10 +1165,13 @@ function DetailPaneBody({
                     syncStatus={syncStatus}
                     syncLoaded={syncLoaded}
                     mirrorPath={node.local_mirror?.local_path ?? null}
+                    hasMirror={!!node.local_mirror}
                     onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
                     onRename={handleRenameFile}
                     onDelete={handleDeleteFile}
                     onResolve={handleResolveFile}
+                    onMove={handleMoveFile}
+                    onApplied={handlePlanApplied}
                     runErrors={syncRunErrorsByFile(syncRunResult)}
                     isCentralMode={isCentralMode}
                   />
