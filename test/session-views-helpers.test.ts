@@ -21,6 +21,7 @@ import {
   isThreadSession,
   nodeRowActive,
   shownChatSessionId,
+  applySessionUpdateToDrafts,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -474,5 +475,22 @@ describe("mountedChatSessions (#429)", () => {
     const byNode = { n1: [thread("a", "n1")], n2: [thread("c", "n2")] };
     assert.deepEqual(mountedChatSessions(byNode, ["n1"], null).map((s) => s.id), ["a"]);
     assert.deepEqual(mountedChatSessions({ n1: [] }, ["n1"], null), []);
+  });
+});
+
+describe("applySessionUpdateToDrafts", () => {
+  it("replaces the tracked draft with the updated session", () => {
+    const drafts = {
+      d1: { id: "d1", runner: "claude", instance_id: "osobni" },
+      d2: { id: "d2", runner: "claude", instance_id: null },
+    };
+    const next = applySessionUpdateToDrafts(drafts, { id: "d1", runner: "claude", instance_id: "tempo" });
+    assert.equal(next.d1.instance_id, "tempo");
+    assert.equal(next.d2, drafts.d2);
+  });
+
+  it("returns the same map when the session is not a tracked draft", () => {
+    const drafts = { d1: { id: "d1", runner: "claude", instance_id: null } };
+    assert.equal(applySessionUpdateToDrafts(drafts, { id: "s9", runner: "claude", instance_id: null }), drafts);
   });
 });

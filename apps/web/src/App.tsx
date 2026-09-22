@@ -25,6 +25,7 @@ import {
   countRunningSessions,
   dropPromotedDrafts,
   mergeDraftsIntoNodeMap,
+  applySessionUpdateToDrafts,
   mergeLiveSessionStates,
   mergeSessionIntoNodeMap,
   mountedChatSessions,
@@ -583,6 +584,7 @@ export default function App() {
   // shown one.
   const updateWorkspaceOpenSession = useCallback((updated: SessionSummary) => {
     setWorkspaceOpenSession((prev) => (prev && prev.id === updated.id ? updated : prev));
+    setLocalDrafts((prev) => applySessionUpdateToDrafts(prev, updated));
   }, []);
 
 

@@ -424,6 +424,45 @@ describe("Claude adapter: message translation", () => {
     assert.deepEqual((compactions[0] as Extract<CanonicalEvent, { kind: "compaction" }>).payload, { trigger: "manual" });
   });
 
+  // A successful result is the turn-complete signal: the CLI stays alive
+  // for the next prompt, so without this event the run reads as "still
+  // working" forever. A failed result ends the run instead (below).
+  it("a successful result emits turn_ended for the run, a failed one does not", async () => {
+    const success: SDKMessage[] = [
+      {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        result: "done",
+        usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        modelUsage: {},
+        permission_denials: [],
+        duration_ms: 1,
+        duration_api_ms: 1,
+        uuid: "u1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+    ];
+    {
+      const { query } = makeFakeQuery(success);
+      const events: (CanonicalEvent | DeltaFrame)[] = [];
+      const handle = await createClaudeAdapter({ query }).start(makeRunStart(), (e) => events.push(e));
+      await handle.close();
+      const ends = events.filter((e) => "kind" in e && e.kind === "turn_ended");
+      assert.equal(ends.length, 1);
+      assert.deepEqual((ends[0] as Extract<CanonicalEvent, { kind: "turn_ended" }>).payload, { run_id: "R1" });
+    }
+    {
+      const failed = [{ ...(success[0] as object), is_error: true, result: "Not logged in" }] as unknown as SDKMessage[];
+      const { query } = makeFakeQuery(failed);
+      const events: (CanonicalEvent | DeltaFrame)[] = [];
+      const handle = await createClaudeAdapter({ query }).start(makeRunStart(), (e) => events.push(e));
+      await handle.close();
+      assert.equal(events.some((e) => "kind" in e && e.kind === "turn_ended"), false);
+    }
+  });
+
   // v2 context ring: one context_usage per assistant message and per
   // result; the window is unknown until the first result names it.
   it("emits context_usage after every assistant message and every result; max_tokens is null before the first result", async () => {
@@ -863,6 +902,22 @@ describe("Claude adapter: buildEnv", () => {
     if (saved.LOGNAME === undefined) delete process.env.LOGNAME;
     else process.env.LOGNAME = saved.LOGNAME;
   };
+
+  it("drops CLAUDE_CONFIG_DIR when it names the CLI's own default dir", () => {
+    const savedHome = process.env.HOME;
+    process.env.HOME = "/Users/someone";
+    try {
+      assert.equal("CLAUDE_CONFIG_DIR" in buildEnv({ CLAUDE_CONFIG_DIR: "/Users/someone/.claude" }), false);
+      assert.equal("CLAUDE_CONFIG_DIR" in buildEnv({ CLAUDE_CONFIG_DIR: "/Users/someone/.claude/" }), false);
+      assert.equal(
+        buildEnv({ CLAUDE_CONFIG_DIR: "/Users/someone/.claude-tempo" }).CLAUDE_CONFIG_DIR,
+        "/Users/someone/.claude-tempo",
+      );
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
+  });
 
   it("forwards USER/LOGNAME when set on process.env", () => {
     process.env.USER = "honzapav";

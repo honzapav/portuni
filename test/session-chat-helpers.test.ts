@@ -11,6 +11,7 @@ import {
   deriveTranscriptRows,
   activitySummary,
   workingPhase,
+  turnInFlight,
   runIsLiveFor,
   createDeltaCoalescer,
   type ActivityItem,
@@ -340,5 +341,39 @@ describe("createDeltaCoalescer", () => {
     c.clear();
     c.flush();
     assert.equal(delivered.length, 1);
+  });
+});
+
+describe("turnInFlight", () => {
+  const ev = (seq: number, event: unknown) => ({ seq, event }) as ChatEvent;
+  const started = ev(1, { kind: "run_started", payload: { run_id: "r1", runner: "claude", instance_id: null, resume: null } });
+  const said = ev(2, { kind: "assistant_message", payload: { text: "hi" } });
+  const ended = ev(3, { kind: "turn_ended", payload: { run_id: "r1" } });
+  const asked = ev(4, { kind: "user_message", payload: { text: "more", source: "chat" } });
+
+  it("a live run with no turn_ended yet is in flight", () => {
+    assert.equal(turnInFlight([], "r1"), true);
+    assert.equal(turnInFlight([started, said], "r1"), true);
+  });
+  it("turn_ended for the live run ends the turn", () => {
+    assert.equal(turnInFlight([started, said, ended], "r1"), false);
+  });
+  it("the next message starts a turn again", () => {
+    assert.equal(turnInFlight([started, said, ended, asked], "r1"), true);
+  });
+  it("a turn_ended of another run does not count", () => {
+    const other = ev(3, { kind: "turn_ended", payload: { run_id: "r0" } });
+    assert.equal(turnInFlight([started, said, other], "r1"), true);
+  });
+  it("bookkeeping after turn_ended keeps the turn idle", () => {
+    const usage = ev(5, { kind: "context_usage", payload: { run_id: "r1", model: null, used_tokens: 1, max_tokens: null, input_tokens: 1, cached_tokens: 0, output_tokens: 0 } });
+    assert.equal(turnInFlight([started, said, ended, usage], "r1"), false);
+  });
+  it("no live run is never in flight", () => {
+    assert.equal(turnInFlight([started, said], null), false);
+  });
+  it("workingPhase shows nothing once the turn ended", () => {
+    assert.equal(workingPhase([started, said, ended], "r1", null), null);
+    assert.equal(workingPhase([started, said, ended, asked], "r1", null), "thinking");
   });
 });
