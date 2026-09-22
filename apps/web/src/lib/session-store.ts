@@ -1,9 +1,9 @@
 // The session store (docs/superpowers/specs/2026-09-22-web-session-state-design.md,
 // "The store"): one record per session id, subscribed through
-// useSessionStore (use-session-store.ts). Nothing in the app writes to it
-// yet -- #465 binds it to the SessionsClient and api.ts, #466 makes
-// SessionChat read its thread from it. Principle 1: every fact about a
-// thread lives here once; a component or map that copies it is a bug.
+// useSessionStore (use-session-store.ts). Bound to the SessionsClient and
+// api.ts in App.tsx (#465); SessionChat (#466) reads its thread from it by
+// id and never holds its own copy. Principle 1: every fact about a thread
+// lives here once; a component or map that copies it is a bug.
 
 import type { SessionSummary } from "../types";
 import type { SessionStateMessage } from "./sessions-client";
@@ -143,4 +143,27 @@ export function createSessionStore(): SessionStore {
     subscribe,
     snapshot,
   };
+}
+
+// The optimistic-write pattern principle 2 describes ("an optimistic write
+// is allowed but is always replaced by the answer; a refusal restores the
+// previous record"): apply the patch before `request` settles, then let
+// `request`'s own write-through (api.ts's functions already call
+// store.put on their answer) replace it, or put the prior record back on a
+// refusal. `request`'s rejection is rethrown unchanged so a caller can
+// still say why it failed.
+export async function withOptimisticPatch<T>(
+  store: SessionStore,
+  id: string,
+  patch: Partial<SessionSummary>,
+  request: () => Promise<T>,
+): Promise<T> {
+  const before = store.get(id);
+  if (before) store.put({ ...before, ...patch });
+  try {
+    return await request();
+  } catch (e) {
+    if (before) store.put(before);
+    throw e;
+  }
 }

@@ -484,6 +484,16 @@ export function turnInFlight(events: readonly ChatEvent[], liveRunId: string | n
 // neither streaming text nor a running tool is, this row is, labelled by
 // the last thing that happened. Between turns (turn_ended) nothing is.
 
+// sentAt (#466 item 4): set right before a send() that starts a run is
+// awaited, cleared by run_started, run_ended or the send itself failing --
+// whichever comes first. Only the two event kinds are a pure predicate
+// here; the send-failure clear is the caller's catch block, since it isn't
+// an event at all. Pulled out of SessionChat so scenario 7 (run_started
+// racing the send()'s own promise) can drive it headlessly.
+export function clearsSentAt(kind: CanonicalEventKind): boolean {
+  return kind === "run_started" || kind === "run_ended";
+}
+
 export type WorkingPhase = "starting" | "thinking" | "continuing";
 export const WORKING_LABEL: Record<WorkingPhase, string> = {
   starting: "Spouštím…",

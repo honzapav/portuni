@@ -56,7 +56,7 @@ collapsible right aside.
   and only flips which pane is visible. Switching threads therefore keeps
   each thread's transcript, its scroll position, its streaming delta
   buffers and its composer, and re-subscribes nothing: `SessionChat`'s
-  subscribe effect is keyed on `session.id`, and a keyed child React keeps
+  subscribe effect is keyed on `sessionId`, and a keyed child React keeps
   mounted never re-runs it.
 - A hidden pane is hidden with `visibility: hidden` plus `inert`, not
   `display: none` (which the design spec wrote before the scroll
@@ -70,18 +70,42 @@ collapsible right aside.
   open-node order, plus the shown thread when the store has not caught up
   with it yet (a fresh draft). Closing a node or a thread drops it from the
   set, which is what unmounts its chat and unsubscribes it.
-- With several chats mounted, `onSessionUpdated` is `store.put` -- a `put`
-  writes one record by id, so a hidden thread reporting its own state can
-  never replace the shown one.
+- With several chats mounted, each pane reads its own record by id
+  (`useSessionStore(sessionStore, (s) => selectSession(s, sessionId))`) --
+  a hidden thread reporting its own state can never touch the shown one's
+  record, since each pane's subscription is keyed on its own id.
 
 ### SessionChat (`SessionChat.tsx`)
 
-The chat for one thread. Header: status dot, name, status chip
-(`sessionStatusChip`; a draft reads "Nový"), then on the right the context
-ring and "Pokračovat v nové session" / "Uzavřít" as the only header
-actions. Runner, instance, host, model and effort are the composer's, not
-the header's. Below the header: the suspended-thread notice bar, the
-transcript, the open question's confirmation block, the composer.
+The chat for one thread. Props are `sessionId`, `sessionsClient`,
+`sessionStore` and `onOpenFile` -- no `session` object, no
+`onSessionUpdated`. The thread itself (name, state, waiting, runner,
+instance, model, effort, node, host) is read from the store by id and
+never written back to a parent; every action that changes one of those
+fields calls `api.ts`, which writes the answer into the store itself
+(`docs/superpowers/specs/2026-09-22-web-session-state-design.md`,
+"Writing"). What the component *does* own locally: the transcript
+(`events`), the streamed-delta buffers, `sentAt` (the working row's own
+clock), `sending`, `loading`, `error`, the rename UI, the close-confirm
+dialog, `noticeDismissed`, and the `runners`/`instances`/`models` lists
+fetched for the composer's pickers.
+
+The runner/instance and model/effort pickers call `withOptimisticPatch`
+(`lib/session-store.ts`): it puts the patch into the record before the
+request settles, so the picker reflects the pick at once, then either the
+request's own write-through replaces it or, on a refusal, the previous
+record goes back in and (for runner/instance) the composer shows why.
+"Pokračovat v nové session" is the one call site that still writes the
+store itself (`sessionStore.put(newSession)`): it goes over the live
+channel (`sessionsClient.continueSession`), which has no REST
+write-through of its own.
+
+Header: status dot, name, status chip (`sessionStatusChip`; a draft reads
+"Nový"), then on the right the context ring and "Pokračovat v nové
+session" / "Uzavřít" as the only header actions. Runner, instance, host,
+model and effort are the composer's, not the header's. Below the header:
+the suspended-thread notice bar, the transcript, the open question's
+confirmation block, the composer.
 
 **The thread column.** Transcript content, notice bar, question panel and
 composer share one centred column, `THREAD_COLUMN = "mx-auto

@@ -25,6 +25,7 @@ import { ChevronLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
+import type { SessionStore } from "../lib/session-store";
 import { shownChatSessionId } from "../lib/session-views";
 import type { FileEditor } from "../lib/use-file-editor";
 import { scopedKey } from "../lib/workspace-storage";
@@ -81,7 +82,7 @@ type Props = {
   // lib/session-views.ts's mountedChatSessions.
   mountedSessions: readonly SessionSummary[];
   sessionsClient: SessionsClient;
-  onSessionUpdated: (session: SessionSummary) => void;
+  sessionStore: SessionStore;
   onSessionStarted: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
   // Relace tab's "Otevřít chat" (#343), threaded through to DetailPane.
   onOpenChat: (nodeId: string, sessionId: string) => void;
@@ -109,7 +110,7 @@ export default function WorkspaceView({
   openSession,
   mountedSessions,
   sessionsClient,
-  onSessionUpdated,
+  sessionStore,
   onSessionStarted,
   onOpenChat,
   liveSessionStates,
@@ -196,9 +197,9 @@ export default function WorkspaceView({
               inert={visible ? undefined : true}
             >
               <SessionChat
-                session={session}
-                onSessionUpdated={onSessionUpdated}
+                sessionId={session.id}
                 sessionsClient={sessionsClient}
+                sessionStore={sessionStore}
                 onOpenFile={session.node_id ? (relPath) => onOpenFile(session.node_id!, relPath) : undefined}
               />
             </div>

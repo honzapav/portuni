@@ -7,8 +7,9 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { createSessionStore } from "../apps/web/src/lib/session-store.js";
+import { createSessionStore, withOptimisticPatch } from "../apps/web/src/lib/session-store.js";
 import { selectNodeThreads } from "../apps/web/src/lib/session-selectors.js";
+import { clearsSentAt, runIsLiveFor, workingPhase, type ChatEvent } from "../apps/web/src/lib/session-chat.js";
 import {
   bindSessionStore,
   deletePersistentSession,
@@ -109,6 +110,27 @@ describe("session store scenarios (#465)", () => {
     assert.equal(backOnN1?.instance_id, "work");
   });
 
+  it("scenario 2 (#466): pick instance -> server refuses 409 -> record restored, error set", async () => {
+    const store = createSessionStore();
+    bindSessionStore(store);
+    store.put(row({ id: "s1", node_id: "n1", state: "draft", runner: "claude", instance_id: null }));
+
+    // SessionChat's handleRunnerChange: withOptimisticPatch puts the pick
+    // right away, patchSessionRunnerInstance is the request it awaits.
+    queueResponse({ error: "SESSION_NOT_DRAFT" }, 409);
+    let composerError: string | null = null;
+    await withOptimisticPatch(store, "s1", { instance_id: "work" }, () =>
+      patchSessionRunnerInstance("s1", { runner: "claude", instance_id: "work" }),
+    ).catch((e) => {
+      composerError = `Runner a instanci se nepodařilo uložit: ${String(e)}`;
+    });
+
+    // The optimistic put is visible mid-flight (the picker shows the pick
+    // at once); the refusal puts the prior record back.
+    assert.equal(store.get("s1")?.instance_id, null);
+    assert.match(composerError ?? "", /nepodařilo uložit/);
+  });
+
   it("scenario 3: a draft becomes running through the live frame alone -- one record, server name throughout", async () => {
     const store = createSessionStore();
     bindSessionStore(store);
@@ -182,5 +204,37 @@ describe("session store scenarios (#465)", () => {
 
     assert.equal(store.get("d1"), undefined);
     assert.deepEqual(selectNodeThreads(store, "n1"), []);
+  });
+
+  it("scenario 7 (#466): send sets sentAt; a run_started racing the reply clears it; run_ended with error leaves no working row", () => {
+    // Mirrors SessionChat's own sequence: handlePromptSubmit sets sentAt
+    // before awaiting sessionsClient.message, then the live channel's
+    // run_started can arrive before that send() promise ever resolves.
+    let sentAt: number | null = null;
+    let liveRunId: string | null = null;
+    const events: ChatEvent[] = [];
+
+    const startsRun = liveRunId === null;
+    if (startsRun) sentAt = 1_000;
+    assert.equal(sentAt, 1_000);
+
+    // run_started arrives first -- clearsSentAt is the same predicate the
+    // component's onEvent handler calls.
+    events.push({ seq: 1, event: { kind: "run_started", payload: { run_id: "r1", runner: "claude", instance_id: null, resume: null } } });
+    liveRunId = "r1";
+    if (clearsSentAt("run_started")) sentAt = null;
+    assert.equal(sentAt, null);
+
+    // The send()'s own promise finally resolves here in the real
+    // component -- nothing left for it to clear, sentAt is already null.
+
+    // The run ends in error.
+    events.push({ seq: 2, event: { kind: "run_ended", payload: { run_id: "r1", reason: "error", usage: null } } });
+    if (clearsSentAt("run_ended")) sentAt = null;
+    liveRunId = null;
+
+    const runIsLive = runIsLiveFor(liveRunId, "suspended");
+    const phase = runIsLive || sentAt !== null ? workingPhase(events, liveRunId, sentAt) : null;
+    assert.equal(phase, null);
   });
 });

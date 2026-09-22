@@ -1008,8 +1008,8 @@ export default function App() {
               openSession={shownThread}
               mountedSessions={workspaceMountedSessions}
               sessionsClient={sessionsClient}
+              sessionStore={sessionStore}
               liveSessionStates={liveSessionStates}
-              onSessionUpdated={sessionStore.put}
               onSessionStarted={registerSessionStarted}
               onOpenChat={openSessionChat}
             />
