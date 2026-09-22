@@ -417,10 +417,10 @@ export async function closeSessionIfRunning(
 // there is no live transport that could possibly own any of these
 // connections anymore, so every 'running' row left over from a previous
 // life is stale by definition. Suspends (#329; previously closed) each one
-// with a server-generated handoff instead, so a session interrupted only by
-// a restart stays resumable. Not scoped to a single user: this is a
+// with a server-generated handoff, so a session interrupted only by a
+// restart stays resumable. Not scoped to a single user: this is a
 // process-wide maintenance sweep, same as autoArchiveClosedSessions above.
-export async function closeStaleRunningSessionsOnBoot(db: DbClient): Promise<number> {
+export async function suspendStaleRunningSessionsOnBoot(db: DbClient): Promise<number> {
   const res = await db.execute({ sql: "SELECT id, user_id FROM sessions WHERE state = 'running'" });
   for (const row of res.rows) {
     await suspendSessionServerSide(db, String(row.id), "boot_sweep");

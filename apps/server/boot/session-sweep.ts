@@ -7,16 +7,16 @@
 import { getDb } from "../infra/db.js";
 import {
   autoArchiveClosedSessions,
-  closeStaleRunningSessionsOnBoot,
+  suspendStaleRunningSessionsOnBoot,
   pruneStaleDraftSessions,
 } from "../domain/sessions.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 
 export async function sweepStaleRunningSessionsOnBoot(): Promise<void> {
   try {
-    const closed = await closeStaleRunningSessionsOnBoot(getDb());
-    if (closed > 0) {
-      console.log(`[boot] session sweep closed ${closed} stale 'running' session(s)`);
+    const suspended = await suspendStaleRunningSessionsOnBoot(getDb());
+    if (suspended > 0) {
+      console.log(`[boot] session sweep suspended ${suspended} stale 'running' session(s)`);
     }
   } catch (e) {
     console.error("[boot] session sweep failed:", e);

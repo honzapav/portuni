@@ -239,9 +239,9 @@ live action, `sessions-ws.ts` in the same change.
   connection or the transport's idle GC (`mcp/transport.ts` decides
   `disconnect` vs `idle` in the same `onclose`) and by
   `boot/session-sweep.ts` finding a `running` row from a dead process.
-  `closeSessionIfRunning`/`closeStaleRunningSessionsOnBoot` keep their names
-  but delegate to `suspendSessionServerSide`. `portuni_session_suspend` is
-  the only channel such a CLI has to write its own handoff.
+  Both delegate to `suspendSessionServerSide`; `closeSessionIfRunning` still
+  carries its pre-#329 name. `portuni_session_suspend` is the only channel
+  such a CLI has to write its own handoff.
 
 ## The Claude adapter
 
