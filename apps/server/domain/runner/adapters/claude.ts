@@ -16,6 +16,8 @@ import { constants as fsConstants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
+  ElicitationRequest,
+  ElicitationResult,
   HookInput,
   HookJSONOutput,
   Options,
@@ -327,6 +329,28 @@ interface PendingPermission {
   input: Record<string, unknown>;
 }
 
+// A connector dialog (MCP elicitation) waiting on the chat's answer.
+type PendingElicitation = (result: ElicitationResult) => void;
+
+// The chat renders a dialog as a yes/no question, so it can answer a form
+// only when every field is a boolean (Portuni's scope and write
+// confirmations are one `confirm: boolean`); "yes" sets them all true.
+// null means the form needs input the chat cannot collect.
+export function booleanFormFields(request: ElicitationRequest): string[] | null {
+  if (request.mode === "url") return null;
+  const properties = (request.requestedSchema?.properties ?? {}) as Record<string, { type?: unknown }>;
+  const names = Object.keys(properties);
+  return names.every((name) => properties[name]?.type === "boolean") ? names : null;
+}
+
+// A run inherits the claude.ai connectors of its profile's account. A
+// Portuni among them is a second Portuni: a connector session whose
+// confirmation dialogs go to claude.ai, where nobody sees them. The run has
+// its own Portuni connection, so those are switched off.
+export function isClaudeAiPortuniServer(name: string): boolean {
+  return /^claude\.ai portuni\b/i.test(name);
+}
+
 interface RunTranslationState {
   agentSessionId: string | null;
   latestUsage: unknown;
@@ -339,6 +363,7 @@ interface RunTranslationState {
   reasoningStartedAt: number | null;
   pendingToolCalls: Map<string, PendingToolCall>;
   pendingPermissions: Map<string, PendingPermission>;
+  pendingElicitations: Map<string, PendingElicitation>;
   ended: boolean;
   endedResolve: () => void;
   endedPromise: Promise<void>;
@@ -366,6 +391,7 @@ function createState(): RunTranslationState {
     reasoningStartedAt: null,
     pendingToolCalls: new Map(),
     pendingPermissions: new Map(),
+    pendingElicitations: new Map(),
     ended: false,
     endedResolve,
     endedPromise,
@@ -670,6 +696,45 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       });
     }
 
+    // An MCP server's confirmation dialog (Portuni's scope expansion and
+    // write access) is asked in the chat like any other question; the
+    // answer comes back through handle.answer().
+    async function onElicitation(
+      request: ElicitationRequest,
+      options: { signal: AbortSignal; requestId: string },
+    ): Promise<ElicitationResult> {
+      const fields = booleanFormFields(request);
+      if (fields === null) return { action: "decline" };
+      if (state.ended) return { action: "cancel" };
+      const requestId = options.requestId;
+      sink({
+        kind: "question",
+        payload: {
+          request_id: requestId,
+          type: "approval",
+          tool: `mcp__${request.serverName}`,
+          title: request.title ?? `Potvrzení: ${request.displayName ?? request.serverName}`,
+          detail: request.message,
+          options: null,
+          decision: null,
+        },
+      });
+      return new Promise<ElicitationResult>((resolve) => {
+        const settle = (result: ElicitationResult) => {
+          state.pendingElicitations.delete(requestId);
+          resolve(result);
+        };
+        state.pendingElicitations.set(requestId, (result) =>
+          settle(
+            result.action === "accept"
+              ? { action: "accept", content: Object.fromEntries(fields.map((f) => [f, true])) }
+              : result,
+          ),
+        );
+        options.signal.addEventListener("abort", () => settle({ action: "cancel" }), { once: true });
+      });
+    }
+
     async function preCompactHook(input: HookInput): Promise<HookJSONOutput> {
       if (input.hook_event_name === "PreCompact") {
         sink({ kind: "compaction", payload: { trigger: input.trigger === "manual" ? "manual" : "auto" } });
@@ -709,6 +774,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       includePartialMessages: true,
       permissionMode: "default",
       canUseTool,
+      onElicitation,
       env: buildEnv(run.instance.env),
       hooks: { PreCompact: [{ hooks: [preCompactHook] }] },
       spawnClaudeCodeProcess,
@@ -749,6 +815,13 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     async function translateMessage(msg: SDKMessage): Promise<void> {
       if (msg.type === "system" && msg.subtype === "init") {
         state.agentSessionId = msg.session_id;
+        for (const server of msg.mcp_servers ?? []) {
+          if (isClaudeAiPortuniServer(server.name)) {
+            void Promise.resolve()
+              .then(() => q.toggleMcpServer(server.name, false))
+              .catch(() => undefined);
+          }
+        }
         return;
       }
       if (msg.type === "system" && msg.subtype === "compact_boundary") {
@@ -810,6 +883,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         state.pendingPermissions.delete(requestId);
         pending.resolve({ behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." });
       }
+      for (const settle of [...state.pendingElicitations.values()]) settle({ action: "cancel" });
       state.endedResolve();
     }
 
@@ -904,6 +978,11 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         promptQueue.push(userMessage(text));
       },
       async answer(requestId: string, decision: QuestionDecision): Promise<void> {
+        const elicitation = state.pendingElicitations.get(requestId);
+        if (elicitation) {
+          elicitation(decision.value === true ? { action: "accept" } : { action: "decline" });
+          return;
+        }
         const pending = state.pendingPermissions.get(requestId);
         if (!pending) return;
         state.pendingPermissions.delete(requestId);

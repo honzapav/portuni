@@ -262,6 +262,17 @@ human verification.
   `{behavior: "allow", updatedInput: {...originalInput, answer}}`. A
   question still open when the run ends is denied; one raised after the
   end is denied outright.
+- **MCP elicitation** (`onElicitation`): a dialog whose form is booleans
+  only (Portuni's scope and write confirmations) emits an `approval`
+  question and waits on `RunHandle.answer()`: `true` accepts with every
+  field `true`, anything else declines; an open dialog is cancelled when the
+  run ends or the SDK aborts it. Any other form or a `url` dialog is
+  declined without a question. The web sends `true`/`false` for the
+  default Ano/Ne buttons (`approvalChoices`), never the label.
+- **Inherited claude.ai Portuni connectors** (`claude.ai Portuni…` in the
+  init message's `mcp_servers`) are switched off with `toggleMcpServer`:
+  the run has its own `portuni` server, and a connector Portuni sends its
+  dialogs to claude.ai.
 - A write tool's `file_change` (`op: "create" | "edit"`) is decided from an
   `fs.stat` taken at `tool_call started` time and carried on the
   pending-tool-call snapshot; the tool result never carries the arguments.

@@ -5,6 +5,7 @@ import {
   sessionStatusChip,
   insertBySeq,
   latestQuestionEvent,
+  approvalChoices,
   appendDelta,
   clearDeltaBuffer,
   collapseToolCalls,
@@ -62,6 +63,22 @@ describe("latestQuestionEvent", () => {
     const q = latestQuestionEvent(events);
     assert.equal(q?.payload.request_id, "q2");
     assert.equal(q?.payload.title, "new");
+  });
+});
+
+describe("approvalChoices", () => {
+  it("the default Ano/Ne pair answers with booleans, so Ne is a refusal, not a text answer", () => {
+    assert.deepEqual(approvalChoices(null), [
+      { label: "Ano", value: true },
+      { label: "Ne", value: false },
+    ]);
+  });
+
+  it("explicit options answer with their own label", () => {
+    assert.deepEqual(approvalChoices(["Jednou", "Vždy"]), [
+      { label: "Jednou", value: "Jednou" },
+      { label: "Vždy", value: "Vždy" },
+    ]);
   });
 });
 

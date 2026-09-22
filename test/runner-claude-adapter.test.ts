@@ -55,6 +55,7 @@ function makeFakeQuery(
   let capturedOptions: Options | undefined;
   const interruptCalls: number[] = [];
   const setModelCalls: (string | undefined)[] = [];
+  const toggleCalls: [string, boolean][] = [];
   let release: () => void = () => undefined;
   const held = new Promise<void>((resolve) => {
     release = resolve;
@@ -78,6 +79,12 @@ function makeFakeQuery(
     };
     (iterator as unknown as { supportedModels: Query["supportedModels"] }).supportedModels =
       opts.supportedModels ?? (async () => []);
+    (iterator as unknown as { toggleMcpServer: Query["toggleMcpServer"] }).toggleMcpServer = async (
+      name: string,
+      enabled: boolean,
+    ) => {
+      toggleCalls.push([name, enabled]);
+    };
     return iterator;
   }) as CreateClaudeAdapterDeps["query"];
   return {
@@ -85,6 +92,7 @@ function makeFakeQuery(
     options: () => capturedOptions,
     interruptCalls,
     setModelCalls,
+    toggleCalls,
     release: () => release(),
   };
 }
@@ -784,6 +792,126 @@ describe("Claude adapter: canUseTool", () => {
     assert.equal((result as { message: string }).message, "Zamítnuto uživatelem.");
     release();
     await handle.close();
+  });
+});
+
+describe("Claude adapter: MCP elicitation", () => {
+  const PORTUNI_CONFIRM = {
+    serverName: "portuni",
+    message: "Allow writing to project Naturamed Asana Adopce?",
+    mode: "form" as const,
+    requestedSchema: {
+      type: "object",
+      properties: { confirm: { type: "boolean", title: "Confirm", description: "Yes, allow it" } },
+      required: ["confirm"],
+    },
+  };
+
+  it("a confirmation dialog becomes an approval question, and Ano accepts it", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const onElicitation = options()!.onElicitation!;
+    assert.ok(onElicitation, "the adapter must install onElicitation");
+    const pending = onElicitation(PORTUNI_CONFIRM, { signal: new AbortController().signal, requestId: "el-1" });
+    await Promise.resolve();
+    const question = events.find((e) => "kind" in e && e.kind === "question") as
+      | Extract<CanonicalEvent, { kind: "question" }>
+      | undefined;
+    assert.ok(question, "a dialog must emit a question event");
+    assert.equal(question.payload.request_id, "el-1");
+    assert.equal(question.payload.type, "approval");
+    assert.equal(question.payload.detail, PORTUNI_CONFIRM.message);
+
+    await handle.answer("el-1", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.deepEqual(await pending, { action: "accept", content: { confirm: true } });
+    release();
+    await handle.close();
+  });
+
+  it("Ne declines the dialog", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const pending = options()!.onElicitation!(PORTUNI_CONFIRM, {
+      signal: new AbortController().signal,
+      requestId: "el-2",
+    });
+    await handle.answer("el-2", { by: "U1", value: false, at: new Date().toISOString() });
+    assert.deepEqual(await pending, { action: "decline" });
+    release();
+    await handle.close();
+  });
+
+  it("a form the chat cannot render is declined without a question", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const result = await options()!.onElicitation!(
+      {
+        serverName: "other",
+        message: "Your name?",
+        mode: "form",
+        requestedSchema: { type: "object", properties: { name: { type: "string" } } },
+      },
+      { signal: new AbortController().signal, requestId: "el-3" },
+    );
+    assert.deepEqual(result, { action: "decline" });
+    assert.equal(events.filter((e) => "kind" in e && e.kind === "question").length, 0);
+    release();
+    await handle.close();
+  });
+
+  it("a dialog still open when the run ends is cancelled, so the server stops waiting", async () => {
+    const { query, options } = makeFakeQuery([]);
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const pending = options()!.onElicitation!(PORTUNI_CONFIRM, {
+      signal: new AbortController().signal,
+      requestId: "el-late",
+    });
+    await handle.close();
+    assert.deepEqual(await pending, { action: "cancel" });
+  });
+});
+
+describe("Claude adapter: inherited claude.ai Portuni connectors", () => {
+  it("switches off every claude.ai Portuni connector at init, and only those", async () => {
+    const script: SDKMessage[] = [
+      {
+        type: "system",
+        subtype: "init",
+        apiKeySource: "none",
+        claude_code_version: "1.0.0",
+        cwd: "/tmp",
+        tools: [],
+        mcp_servers: [
+          { name: "portuni", status: "connected" },
+          { name: "claude.ai Portuni Tempo", status: "connected" },
+          { name: "claude.ai Portuni", status: "connected" },
+          { name: "claude.ai Asana", status: "connected" },
+        ],
+        model: "claude",
+        permissionMode: "default",
+        slash_commands: [],
+        output_style: "default",
+        skills: [],
+        plugins: [],
+        uuid: "u1",
+        session_id: "agent-sess-1",
+      } as unknown as SDKMessage,
+    ];
+    const { query, toggleCalls } = makeFakeQuery(script);
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    await handle.close();
+    await flushMicrotasks();
+    assert.deepEqual(toggleCalls, [
+      ["claude.ai Portuni Tempo", false],
+      ["claude.ai Portuni", false],
+    ]);
   });
 });
 

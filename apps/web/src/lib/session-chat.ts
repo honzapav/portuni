@@ -198,6 +198,21 @@ export function latestQuestionEvent(events: readonly ChatEvent[]): QuestionEvent
   return null;
 }
 
+// The buttons of an approval question. Without explicit options it is a
+// yes/no decision: the runner reads true as allow and false as a refusal,
+// while any string is an answer and therefore allows.
+export function approvalChoices(
+  options: readonly string[] | null,
+): { label: string; value: string | boolean }[] {
+  if (options === null) {
+    return [
+      { label: "Ano", value: true },
+      { label: "Ne", value: false },
+    ];
+  }
+  return options.map((label) => ({ label, value: label }));
+}
+
 // --- Streamed delta buffering ------------------------------------------------
 
 export type DeltaBuffers = Readonly<Record<string, string>>;
