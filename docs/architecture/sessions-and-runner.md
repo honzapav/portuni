@@ -362,8 +362,11 @@ human verification.
 - Promotion appends `state_changed {from: "draft", to: "running"}` so the
   live channel's `session_state` broadcast fires (`sessions-ws.ts` reacts
   only to `state_changed`, `question`, `run_ended`).
-- **Every list excludes drafts** (`GET /nodes/:id/sessions`, `GET /overview`,
-  the WS snapshot). A draft is visible only in the window that created it.
+- **A draft is visible only to the user composing it** (#463). `GET
+  /nodes/:id/sessions` and `GET /sessions?state=draft` include the caller's
+  own drafts and exclude everyone else's, on the same node or anywhere else;
+  a second window of the same user sees the draft too. `GET /overview` and
+  the WS snapshot never query the `draft` state at all, so they carry none.
 - **Prune.** `sweepStaleDraftSessionsOnBoot` deletes drafts older than 24 h
   at boot of the process that owns the graph db (`index.ts`, `desktop.ts`
   local branch; on the central server for team-workspace rows). A thread's `×` deletes

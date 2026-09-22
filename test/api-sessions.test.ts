@@ -229,6 +229,41 @@ describe("session REST endpoints", () => {
     assert.equal(res.statusCode, 404);
   });
 
+  // #463: a draft is a thread the caller composed, so its own list of a
+  // visible node shows it; another user's draft on the same node stays
+  // invisible (the fixture's project node has no ACL, so U2 sees the node
+  // itself, just not SOLO's draft on it).
+  test("GET /nodes/:id/sessions includes the caller's own draft, excludes another user's draft", async () => {
+    const own = await createDraftSession(db, SOLO, nodeId);
+    const other = await createDraftSession(db, "U2", nodeId);
+
+    const mine = await call(makeIdentity(SOLO), "GET", `/nodes/${nodeId}/sessions`);
+    const mineBody = JSON.parse(mine.body) as { sessions: SessionSummary[] };
+    const mineIds = mineBody.sessions.map((s) => s.id);
+    assert.ok(mineIds.includes(own.id));
+    assert.ok(!mineIds.includes(other.id));
+
+    const theirs = await call(makeIdentity("U2"), "GET", `/nodes/${nodeId}/sessions`);
+    const theirsBody = JSON.parse(theirs.body) as { sessions: SessionSummary[] };
+    const theirsIds = theirsBody.sessions.map((s) => s.id);
+    assert.ok(theirsIds.includes(other.id));
+    assert.ok(!theirsIds.includes(own.id));
+  });
+
+  // #463: GET /sessions?state=draft returns only the caller's drafts, even
+  // when both drafts anchor to the same visible node.
+  test("GET /sessions?state=draft returns only the caller's drafts", async () => {
+    const own = await createDraftSession(db, SOLO, nodeId);
+    const other = await createDraftSession(db, "U2", nodeId);
+
+    const res = await call(makeIdentity(SOLO), "GET", "/sessions?state=draft");
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as { sessions: SessionSummary[] };
+    const ids = body.sessions.map((s) => s.id);
+    assert.ok(ids.includes(own.id));
+    assert.ok(!ids.includes(other.id));
+  });
+
   // v2 rule 5: runner and instance are the thread's, chosen while it is a
   // draft. A bare change on any other state is refused; the promotion
   // patch (state together with them) is the one exception.

@@ -165,6 +165,10 @@ export async function handleListSessions(
         sessions.push(row);
         continue;
       }
+      // A draft is visible only to its owner, regardless of node
+      // visibility (#463): it is not a thread yet, just another window's
+      // in-progress compose.
+      if (row.state === "draft") continue;
       if (row.node_id === null) continue;
       let verdict = nodeVerdicts.get(row.node_id);
       if (!verdict) {
@@ -199,12 +203,10 @@ export async function handleListNodeSessions(
     if (!includeArchived) {
       rows = rows.filter((r) => r.state !== "archived");
     }
-    // A draft (#374) is visible only as the open thread it is -- the window
-    // that created it already has the row from its own POST /sessions
-    // response and tracks it client-side; every list, this one included,
-    // excludes it so it never leaks into another window's sidebar or a
-    // reload of this same one.
-    rows = rows.filter((r) => r.state !== "draft");
+    // A draft (#374) is visible only to the caller who is composing it
+    // (#463): another window of the same user sees it too, but it never
+    // leaks into another user's sidebar.
+    rows = rows.filter((r) => r.state !== "draft" || r.user_id === identity.userId);
     const sessions = await Promise.all(rows.map(toSummary));
     respondJson(res, 200, { sessions });
   } catch (err) {
