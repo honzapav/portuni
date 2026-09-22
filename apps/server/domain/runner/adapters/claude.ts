@@ -82,6 +82,9 @@ export interface CreateClaudeAdapterDeps {
   closeTermMs?: number;
   // Clock for the reasoning duration; tests inject a fake.
   now?: () => number;
+  // Origins of this Portuni, for switching off inherited claude.ai
+  // connectors to it; defaults to PORTUNI_CENTRAL_URL / PORTUNI_PUBLIC_URL.
+  portuniOrigins?: () => string[];
 }
 
 // `signal` lets a caller cancel a still-pending sleep the instant it no
@@ -343,12 +346,41 @@ export function booleanFormFields(request: ElicitationRequest): string[] | null 
   return names.every((name) => properties[name]?.type === "boolean") ? names : null;
 }
 
-// A run inherits the claude.ai connectors of its profile's account. A
-// Portuni among them is a second Portuni: a connector session whose
+// A run inherits the claude.ai connectors of its profile's account. One
+// pointing at this Portuni is a second Portuni: a connector session whose
 // confirmation dialogs go to claude.ai, where nobody sees them. The run has
-// its own Portuni connection, so those are switched off.
-export function isClaudeAiPortuniServer(name: string): boolean {
-  return /^claude\.ai portuni\b/i.test(name);
+// its own Portuni connection, so those are switched off. Recognised by the
+// upstream URL the SDK reports, never by the name the user gave it.
+export function inheritedPortuniConnectors(
+  statuses: readonly { name: string; scope?: string; config?: { type?: string; url?: string } }[],
+  portuniOrigins: readonly string[],
+): string[] {
+  const origins = new Set(portuniOrigins);
+  return statuses
+    .filter((s) => s.scope === "claudeai" || s.config?.type === "claudeai-proxy")
+    .filter((s) => {
+      try {
+        return s.config?.url !== undefined && origins.has(new URL(s.config.url).origin);
+      } catch {
+        return false;
+      }
+    })
+    .map((s) => s.name);
+}
+
+// The origins this Portuni is reachable at from outside: the central
+// server a team workspace's sync agent talks to, and the public URL the
+// central server itself serves connectors on.
+function defaultPortuniOrigins(): string[] {
+  const origins: string[] = [];
+  for (const raw of [process.env.PORTUNI_CENTRAL_URL, process.env.PORTUNI_PUBLIC_URL]) {
+    try {
+      if (raw?.trim()) origins.push(new URL(raw.trim()).origin);
+    } catch {
+      // Not a URL: nothing to match against.
+    }
+  }
+  return origins;
 }
 
 interface RunTranslationState {
@@ -619,6 +651,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
   const closeTermMs = deps.closeTermMs ?? DEFAULT_CLOSE_TERM_MS;
   const now = deps.now ?? Date.now;
+  const portuniOrigins = deps.portuniOrigins ?? defaultPortuniOrigins;
   // #376: filled from the first live run's own Query.supportedModels() --
   // null until then (and re-attempted on the next run if that call itself
   // failed), never re-fetched once it holds a real list.
@@ -815,12 +848,18 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     async function translateMessage(msg: SDKMessage): Promise<void> {
       if (msg.type === "system" && msg.subtype === "init") {
         state.agentSessionId = msg.session_id;
-        for (const server of msg.mcp_servers ?? []) {
-          if (isClaudeAiPortuniServer(server.name)) {
-            void Promise.resolve()
-              .then(() => q.toggleMcpServer(server.name, false))
-              .catch(() => undefined);
-          }
+        const origins = portuniOrigins();
+        if (origins.length > 0) {
+          void Promise.resolve()
+            .then(() => q.mcpServerStatus())
+            .then((statuses) =>
+              Promise.all(
+                inheritedPortuniConnectors(statuses, origins).map((name) =>
+                  q.toggleMcpServer(name, false),
+                ),
+              ),
+            )
+            .catch(() => undefined);
         }
         return;
       }
