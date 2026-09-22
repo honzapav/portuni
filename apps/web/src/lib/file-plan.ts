@@ -101,8 +101,9 @@ function effectivePathOf(file: PlanFile, plan: FilePlan): string {
 }
 
 // Every folder path a file really sits in today (its own ancestors), used to
-// tell a virtual folder from a real one.
-function realFolderPaths(files: readonly PlanFile[]): Set<string> {
+// tell a virtual folder from a real one and to refuse a new folder whose
+// path already exists ("Nová složka", #448).
+export function folderPathsOf(files: readonly PlanFile[]): Set<string> {
   const out = new Set<string>();
   for (const f of files) {
     const parts = f.relative_path.split("/");
@@ -149,7 +150,7 @@ export function applyPlan<F extends PlanFile>(
     moves[fileId] = target;
   }
 
-  const real = realFolderPaths(files);
+  const real = folderPathsOf(files);
   const folders: string[] = [];
   for (const path of plan.folders) {
     if (folders.includes(path)) continue;
@@ -332,6 +333,37 @@ export function planFolder(
     return { ok: false, reason: `Složka ${trimmed} už existuje` };
   }
   return { ok: true, plan: { moves: { ...plan.moves }, folders: [...plan.folders, trimmed] } };
+}
+
+// --- pruneEmptyFolders ----------------------------------------------------
+
+// Every folder path that holds something under `plan`: the ancestors of every
+// file's effective path.
+function occupiedFolders(files: readonly PlanFile[], plan: FilePlan): Set<string> {
+  const out = new Set<string>();
+  for (const f of files) {
+    const parts = effectivePathOf(f, plan).split("/");
+    for (let i = 1; i < parts.length; i++) out.add(parts.slice(0, i).join("/"));
+  }
+  return out;
+}
+
+// Rule 4, the other half of applyPlan's cleaning: a virtual folder that the
+// edit just emptied -- its last file was dragged out or its plan entry was
+// undone -- leaves the plan. A folder that held nothing before the edit
+// either (the one "Nová složka" has just created, or an untouched one) stays:
+// an empty row is exactly what a freshly created folder is until a file
+// lands in it.
+export function pruneEmptyFolders(
+  prev: FilePlan,
+  next: FilePlan,
+  files: readonly PlanFile[],
+): FilePlan {
+  const before = occupiedFolders(files, prev);
+  const after = occupiedFolders(files, next);
+  const folders = next.folders.filter((path) => after.has(path) || !before.has(path));
+  if (folders.length === next.folders.length) return next;
+  return { moves: next.moves, folders };
 }
 
 // --- orderMoves -----------------------------------------------------------

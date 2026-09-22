@@ -39,7 +39,11 @@ collapsible right aside.
   (#447), `{ [nodeId]: { moves, folders } }`, a node's entry removed once
   its plan is empty. The plan belongs to the node on this device and is
   never sent anywhere; `loadFilePlan`/`saveFilePlan` in `lib/settings.ts`
-  are its only readers.
+  are its only readers, wrapped by `useFilePlan(nodeId)`
+  (`lib/use-file-plan.ts`). The plan is state of the Files tab, not of
+  `FileTree`: "Nová složka" sits in the toolbar and writes to the same plan
+  the tree renders, and a plan holding only a virtual folder is a tree on a
+  node with no files at all (#448).
 - `SessionChat` is lazy-loaded (`lazy(() => import("./SessionChat"))` +
   `Suspense`).
 - **Every open thread keeps a mounted chat** (#429). `WorkspaceView` takes

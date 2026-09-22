@@ -69,6 +69,49 @@ export function dropTargetFolder(row: { path: string; isFile: boolean }): string
   return row.isFile ? folderPathOf(row.path) : row.path;
 }
 
+// --- folder actions (#448) ------------------------------------------------
+
+export type ActionCheck = { enabled: boolean; reason: string | null };
+
+// What the hover strip on a folder row offers: "Přejmenovat" and "Nová
+// podsložka". A section root is a group heading, not a folder -- it has no
+// strip at all (spec, Tree). Both actions need a mirror on this device
+// (rule 9: without one nothing can be relocated and a folder can never
+// become real), and a rename is its files' moves (rule 10), so a single
+// untracked file inside refuses it the way a folder drag is refused.
+export type FolderActions = {
+  visible: boolean;
+  rename: ActionCheck;
+  subfolder: ActionCheck;
+};
+
+export function folderActionCheck(
+  folderPath: string,
+  files: readonly PlanFile[],
+  hasMirror: boolean,
+): FolderActions {
+  const hidden: ActionCheck = { enabled: false, reason: null };
+  if (folderPath.split("/").length < 2 || !folderPathToTarget(folderPath)) {
+    return { visible: false, rename: hidden, subfolder: hidden };
+  }
+  if (!hasMirror) {
+    const blocked: ActionCheck = { enabled: false, reason: NO_MIRROR_REASON };
+    return { visible: true, rename: blocked, subfolder: blocked };
+  }
+  const drag = folderDragCheck(folderPath, files, true);
+  return {
+    visible: true,
+    rename: { enabled: drag.draggable, reason: drag.reason },
+    subfolder: { enabled: true, reason: null },
+  };
+}
+
+// "Nová podsložka" opens the same form as "Nová složka", prefilled with this
+// folder's path and a trailing slash (spec, „Nová složka").
+export function newFolderPrefill(folderPath: string): string {
+  return `${folderPath}/`;
+}
+
 // --- apply ----------------------------------------------------------------
 
 export type ApplyProgress = { index: number; total: number; fileId: string };

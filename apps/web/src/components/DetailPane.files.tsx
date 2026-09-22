@@ -16,6 +16,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  FolderPlus,
   Link2,
   Loader2,
   Plus,
@@ -34,17 +35,14 @@ import type {
   UntrackedFile,
   WatcherErrorEntry,
 } from "../types";
-import {
-  loadCollapsedFolders,
-  loadFilePlan,
-  saveCollapsedFolders,
-  saveFilePlan,
-} from "../lib/settings";
+import { loadCollapsedFolders, saveCollapsedFolders } from "../lib/settings";
 import {
   applyPlan,
   planFolderMove,
+  planFolderRename,
   planMove,
   orderMoves,
+  pruneEmptyFolders,
   EMPTY_PLAN,
   type FilePlan,
   type MoveTarget,
@@ -55,7 +53,10 @@ import {
   createHoverExpand,
   dropTargetFolder,
   fileDragCheck,
+  folderActionCheck,
+  NO_MIRROR_REASON,
   folderDragCheck,
+  type FolderActions,
 } from "../lib/file-drag";
 import { pluralChanges } from "../lib/plural";
 import {
@@ -107,7 +108,7 @@ export function isEditableFile(mime: string | null): boolean {
 // absolute local_path minus the mirror-root prefix -- the same strip
 // node-detail does server-side in a personal workspace. Without this,
 // registered files fall back to a bare filename and open at the wrong path.
-function toTreeFiles(
+export function toTreeFiles(
   files: DetailFile[],
   untracked: UntrackedFile[],
   syncStatus: Map<string, SyncStatusFile>,
@@ -202,6 +203,85 @@ export function NewFileForm({
         </div>
       )}
     </div>
+  );
+}
+
+// "Nová složka" / "Nová podsložka" (#448): the same inline form as
+// NewFileForm, with a path instead of a filename. It creates nothing
+// anywhere -- a valid path is a virtual folder in the plan, a row in the
+// tree and nothing else until an applied move puts a file in it (rule 4).
+// Validation is planFolder's: onSubmit returns its refusal, or null when the
+// path was taken into the plan.
+export function NewFolderForm({
+  initialPath,
+  onSubmit,
+  onCancel,
+}: {
+  // "wip/" from the toolbar, "<folder>/" from a folder row's "Nová
+  // podsložka".
+  initialPath: string;
+  onSubmit: (path: string) => string | null;
+  onCancel: () => void;
+}) {
+  const [path, setPath] = useState(initialPath);
+  const [error, setError] = useState<string | null>(null);
+  const submit = () => {
+    const refusal = onSubmit(path.trim());
+    setError(refusal);
+  };
+  return (
+    <div className="mb-3">
+      <div className="flex items-center gap-2">
+        <Input
+          autoFocus
+          value={path}
+          onChange={(e) => {
+            setPath(e.target.value);
+            setError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+            if (e.key === "Escape") onCancel();
+          }}
+          placeholder="Cesta nové složky (např. wip/archiv)"
+          className="min-w-0 flex-1"
+        />
+        <Button size="sm" disabled={!path.trim()} onClick={submit} className="shrink-0">
+          Vytvořit
+        </Button>
+        <Button variant="outline" size="sm" onClick={onCancel} className="shrink-0">
+          Zrušit
+        </Button>
+      </div>
+      {error && (
+        <div className="mt-1 text-[11px]" style={{ color: "var(--color-danger)" }}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The toolbar button beside "Nový soubor" that opens the form above
+// (mockup, frame 5). Disabled without a mirror on this device (rule 9):
+// there is nowhere for the folder to ever become real.
+export function NewFolderButton({
+  hasMirror,
+  onClick,
+}: {
+  hasMirror: boolean;
+  onClick: () => void;
+}) {
+  const reason = hasMirror ? undefined : NO_MIRROR_REASON;
+  return (
+    // The title lives on the wrapper: a disabled button gets no pointer
+    // events, so its own title never shows.
+    <span title={reason} className="shrink-0">
+      <Button variant="outline" size="sm" disabled={!hasMirror} onClick={onClick} title={reason}>
+        <FolderPlus />
+        Nová složka
+      </Button>
+    </span>
   );
 }
 
@@ -358,6 +438,18 @@ type PlanUi = {
   isVirtual: (path: string) => boolean;
   moveState: (fileId: string | null) => "moving" | "error" | null;
   moveError: (fileId: string | null) => string | null;
+  // The hover strip on a folder row (#448): what it offers and what each
+  // action does. `onRename` plans the rename and answers with the refusal to
+  // show under the row, or null when it was taken into the plan.
+  folderActions: (path: string) => FolderActions;
+  onFolderRename: (path: string, newName: string) => string | null;
+  onNewSubfolder: (path: string) => void;
+};
+
+const NO_FOLDER_ACTIONS: FolderActions = {
+  visible: false,
+  rename: { enabled: false, reason: null },
+  subfolder: { enabled: false, reason: null },
 };
 
 const NO_PLAN_UI: PlanUi = {
@@ -365,6 +457,9 @@ const NO_PLAN_UI: PlanUi = {
   isVirtual: () => false,
   moveState: () => null,
   moveError: () => null,
+  folderActions: () => NO_FOLDER_ACTIONS,
+  onFolderRename: () => null,
+  onNewSubfolder: () => undefined,
 };
 
 // The accent-soft fill plus the 1 px accent inset ring a valid drop target
@@ -497,6 +592,9 @@ export function FileTree({
   onResolve,
   onMove,
   onApplied,
+  plan,
+  onPlanChange,
+  onNewSubfolder,
   readOnly,
   runErrors,
   isCentralMode,
@@ -520,6 +618,13 @@ export function FileTree({
   onMove?: (fileId: string, target: MoveTarget) => Promise<unknown>;
   // Detail + sync status refetch after "Použít", as rename does.
   onApplied?: () => Promise<void>;
+  // The move plan (#448): owned by the Files tab, because "Nová složka" in
+  // the toolbar writes to the same plan this tree renders.
+  plan: FilePlan;
+  onPlanChange: (next: FilePlan) => void;
+  // A folder row's "Nová podsložka" opens the toolbar's form prefilled with
+  // that folder's path.
+  onNewSubfolder?: (folderPath: string) => void;
   // When true, hide rename/delete actions (e.g. a team workspace).
   readOnly?: boolean;
   // Per-file outcome of the last sync run (#267): a failed push/pull or a
@@ -536,7 +641,6 @@ export function FileTree({
     [files, untracked, syncStatus, mirrorPath],
   );
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedFolders(nodeId));
-  const [plan, setPlan] = useState<FilePlan>(() => loadFilePlan(nodeId));
   const [applyState, setApplyState] = useState<ApplyState>(IDLE_APPLY);
   const [source, setSource] = useState<DragSource | null>(null);
   // The row under the cursor, the folder its drop would land in, and the
@@ -546,7 +650,6 @@ export function FileTree({
   >(null);
   useEffect(() => {
     setCollapsed(loadCollapsedFolders(nodeId));
-    setPlan(loadFilePlan(nodeId));
     setApplyState(IDLE_APPLY);
     setSource(null);
     setHover(null);
@@ -566,14 +669,14 @@ export function FileTree({
   const planned = useMemo(() => applyPlan(treeFiles, plan), [treeFiles, plan]);
   useEffect(() => {
     if (JSON.stringify(planned.plan) === JSON.stringify(plan)) return;
-    setPlan(planned.plan);
-    saveFilePlan(nodeId, planned.plan);
-  }, [planned, plan, nodeId]);
+    onPlanChange(planned.plan);
+  }, [planned, plan, onPlanChange]);
 
-  const updatePlan = (next: FilePlan) => {
-    setPlan(next);
-    saveFilePlan(nodeId, next);
-  };
+  const updatePlan = (next: FilePlan) => onPlanChange(next);
+  // A plan edit that moves files also empties the folders they left: a
+  // virtual one the edit emptied leaves the plan (rule 4).
+  const updateMoves = (next: FilePlan) =>
+    onPlanChange(pruneEmptyFolders(plan, next, treeFiles));
 
   const root = useMemo(
     () => buildFileTree(planned.files, planned.folders),
@@ -703,7 +806,7 @@ export function FileTree({
         endDrag();
         if (!src || applying) return;
         const result = evaluate(src, targetFolder);
-        if (result.ok) updatePlan(result.plan);
+        if (result.ok) updateMoves(result.plan);
       },
     };
   };
@@ -741,6 +844,26 @@ export function FileTree({
   const planUi: PlanUi = onMove
     ? {
         rowDrag,
+        folderActions: (path) => {
+          const actions = folderActionCheck(path, planned.files, hasMirror !== false);
+          // Nothing edits the plan while it is being applied.
+          if (!applying) return actions;
+          return {
+            visible: actions.visible,
+            rename: { enabled: false, reason: null },
+            subfolder: { enabled: false, reason: null },
+          };
+        },
+        // A real folder's rename is one planned move per file under it
+        // (rule 10); a virtual one is renamed in the plan's folders.
+        onFolderRename: (path, newName) => {
+          if (applying) return null;
+          const result = planFolderRename(plan, path, newName, treeFiles, occupied);
+          if (!result.ok) return result.reason;
+          updateMoves(result.plan);
+          return null;
+        },
+        onNewSubfolder: (path) => onNewSubfolder?.(path),
         isVirtual: (path) => virtualFolders.has(path),
         moveState: (fileId) => {
           if (!fileId) return null;
@@ -874,6 +997,9 @@ function FileTreeNode({
           onToggle={() => onToggle(node.path)}
           drag={planUi.rowDrag(node, "folder")}
           virtual={planUi.isVirtual(node.path)}
+          actions={planUi.folderActions(node.path)}
+          onRename={(newName) => planUi.onFolderRename(node.path, newName)}
+          onNewSubfolder={() => planUi.onNewSubfolder(node.path)}
         />
       )}
       {!isCollapsed && node.children && (
@@ -1003,8 +1129,8 @@ function SectionHeading({
 
 // A folder row: the same face and size as a file row (no uppercase, no
 // monospace, no tracking), chevron, folder icon, name, count, sync dot,
-// then the hover-gated action strip. "Přejmenovat" and "Nová podsložka"
-// are placeholders until #448 lands them.
+// then the hover-gated action strip with "Přejmenovat" and "Nová podsložka"
+// (#448). Both edit the plan only; a refusal shows under the row.
 function FolderRow({
   name,
   count,
@@ -1014,6 +1140,9 @@ function FolderRow({
   onToggle,
   drag,
   virtual,
+  actions,
+  onRename,
+  onNewSubfolder,
 }: {
   name: string;
   count: number;
@@ -1025,82 +1154,159 @@ function FolderRow({
   // A folder that exists only in the plan (rule 4): dashed icon, dim name,
   // the tag "nová" after the count. It becomes real with its first file.
   virtual: boolean;
+  // What the strip offers; a section root has none (it is a group heading).
+  actions: FolderActions;
+  // Plans the rename; answers with the refusal to show under the row, or
+  // null when it was taken into the plan.
+  onRename: (newName: string) => string | null;
+  onNewSubfolder: () => void;
 }) {
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const [error, setError] = useState<string | null>(null);
+
+  const startRename = () => {
+    setDraft(name);
+    setError(null);
+    setRenaming(true);
+  };
+  const cancelRename = () => {
+    setRenaming(false);
+    setDraft(name);
+    setError(null);
+  };
+  const submitRename = () => {
+    const next = draft.trim();
+    if (!next || next === name) {
+      cancelRename();
+      return;
+    }
+    const refusal = onRename(next);
+    if (refusal) {
+      setError(refusal); // keep editing so the user can pick another name
+      return;
+    }
+    setRenaming(false);
+    setError(null);
+  };
+
   return (
-    <div
-      draggable={drag.draggable}
-      title={drag.refusal ?? drag.dragTitle ?? undefined}
-      onDragStart={drag.onDragStart}
-      onDragEnd={drag.onDragEnd}
-      onDragOver={drag.onDragOver}
-      onDragLeave={drag.onDragLeave}
-      onDrop={drag.onDrop}
-      className={
-        "group flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)] " +
-        (drag.highlighted ? DROP_TARGET_CLASS : "")
-      }
-      style={{ paddingLeft: indent + 8, opacity: drag.dragging ? 0.45 : undefined }}
-    >
-      <button
-        type="button"
-        onClick={onToggle}
-        title={isCollapsed ? "Rozbalit" : "Sbalit"}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+    <div>
+      <div
+        draggable={drag.draggable && !renaming}
+        title={drag.refusal ?? drag.dragTitle ?? undefined}
+        onDragStart={drag.onDragStart}
+        onDragEnd={drag.onDragEnd}
+        onDragOver={drag.onDragOver}
+        onDragLeave={drag.onDragLeave}
+        onDrop={drag.onDrop}
+        className={
+          "group flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)] " +
+          (drag.highlighted ? DROP_TARGET_CLASS : "")
+        }
+        style={{ paddingLeft: indent + 8, opacity: drag.dragging ? 0.45 : undefined }}
       >
-        {isCollapsed ? (
-          <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-        ) : (
-          <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-        )}
-        {virtual ? (
-          <Folder
-            size={14}
-            style={{ strokeDasharray: "3 2" }}
-            className="shrink-0 text-[var(--color-accent-dim)]"
-          />
-        ) : isCollapsed ? (
-          <Folder size={14} className="shrink-0 text-[var(--color-text-dim)]" />
-        ) : (
-          <FolderOpen size={14} className="shrink-0 text-[var(--color-text-dim)]" />
-        )}
-        <span
-          className={
-            "min-w-0 truncate " +
-            (virtual ? "text-[var(--color-text-dim)]" : "text-[var(--color-text)]")
-          }
+        <button
+          type="button"
+          onClick={onToggle}
+          title={isCollapsed ? "Rozbalit" : "Sbalit"}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
-          {name}
-        </span>
-        <span className="shrink-0 text-[11px] tabular-nums text-[var(--color-text-dim)]">
-          {count}
-        </span>
-        {virtual && (
-          <span
-            title="Složka zatím existuje jen v plánu. Vznikne, až v ní po použití bude soubor."
-            className="shrink-0 rounded px-1.5 text-[11px] text-[var(--color-accent)]"
-            style={{ background: "var(--color-accent-soft)" }}
-          >
-            nová
+          {isCollapsed ? (
+            <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+          ) : (
+            <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+          )}
+          {virtual ? (
+            <Folder
+              size={14}
+              style={{ strokeDasharray: "3 2" }}
+              className="shrink-0 text-[var(--color-accent-dim)]"
+            />
+          ) : isCollapsed ? (
+            <Folder size={14} className="shrink-0 text-[var(--color-text-dim)]" />
+          ) : (
+            <FolderOpen size={14} className="shrink-0 text-[var(--color-text-dim)]" />
+          )}
+          {!renaming && (
+            <>
+              <span
+                className={
+                  "min-w-0 truncate " +
+                  (virtual ? "text-[var(--color-text-dim)]" : "text-[var(--color-text)]")
+                }
+              >
+                {name}
+              </span>
+              <span className="shrink-0 text-[11px] tabular-nums text-[var(--color-text-dim)]">
+                {count}
+              </span>
+              {virtual && (
+                <span
+                  title="Složka zatím existuje jen v plánu. Vznikne, až v ní po použití bude soubor."
+                  className="shrink-0 rounded px-1.5 text-[11px] text-[var(--color-accent)]"
+                  style={{ background: "var(--color-accent-soft)" }}
+                >
+                  nová
+                </span>
+              )}
+              {dot && <SyncDot dot={dot} />}
+            </>
+          )}
+          <span className="flex-1" />
+        </button>
+        {renaming && (
+          <Input
+            autoFocus
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submitRename();
+              if (e.key === "Escape") cancelRename();
+            }}
+            className="min-w-0 flex-1"
+          />
+        )}
+        {actions.visible && !renaming && (
+          <span className="hidden shrink-0 gap-1 group-hover:flex">
+            {/* The title lives on the wrapper: a disabled button gets no
+                pointer events, so its own title never shows. */}
+            <span title={actions.rename.reason ?? undefined}>
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={!actions.rename.enabled}
+                title={actions.rename.reason ?? undefined}
+                onClick={startRename}
+              >
+                Přejmenovat
+              </Button>
+            </span>
+            <span title={actions.subfolder.reason ?? undefined}>
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={!actions.subfolder.enabled}
+                title={actions.subfolder.reason ?? undefined}
+                onClick={onNewSubfolder}
+              >
+                Nová podsložka
+              </Button>
+            </span>
           </span>
         )}
-        {dot && <SyncDot dot={dot} />}
-        <span className="flex-1" />
-      </button>
-      <span className="hidden shrink-0 gap-1 group-hover:flex">
-        {["Přejmenovat", "Nová podsložka"].map((label) => (
-          <span key={label} title="Připravuje se">
-            <Button
-              variant="ghost"
-              size="xs"
-              disabled
-              title="Připravuje se"
-              className="text-muted-foreground"
-            >
-              {label}
-            </Button>
-          </span>
-        ))}
-      </span>
+      </div>
+      {error && (
+        <div
+          className="pb-1 text-[11px]"
+          style={{ color: "var(--color-danger)", paddingLeft: indent + 30 }}
+        >
+          {error}
+        </div>
+      )}
     </div>
   );
 }

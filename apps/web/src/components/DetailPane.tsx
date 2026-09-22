@@ -111,7 +111,9 @@ import {
   SyncAgentDownError,
 } from "../api";
 import type { ResolveAction } from "../api";
-import type { MoveTarget } from "../lib/file-plan";
+import { folderPathsOf, planFolder, type MoveTarget } from "../lib/file-plan";
+import { newFolderPrefill } from "../lib/file-drag";
+import { useFilePlan } from "../lib/use-file-plan";
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
@@ -120,6 +122,9 @@ import {
   FileTree,
   NewFileForm,
   NewFileSplitButton,
+  NewFolderButton,
+  NewFolderForm,
+  toTreeFiles,
   SyncBar,
   NoMirrorBanner,
   NewTaskButton,
@@ -365,6 +370,28 @@ function DetailPaneBody({
   // create form itself, or the affected file's own row), via the handlers
   // below rethrowing instead of setting shared pane state.
   const [creatingFile, setCreatingFile] = useState(false);
+  // The Files tab's move plan (#447/#448), owned here because "Nová složka"
+  // in the toolbar and the tree's dragging write to the same plan. The form
+  // it opens carries the path it is prefilled with (the section from the
+  // toolbar, a folder's path from its "Nová podsložka").
+  const { plan: filePlan, setPlan: setFilePlan } = useFilePlan(node.id);
+  const [folderForm, setFolderForm] = useState<{ prefill: string } | null>(null);
+  useEffect(() => setFolderForm(null), [node.id]);
+  // Every folder path that really exists on disk today, so "Nová složka"
+  // refuses a path a real folder already holds (planFolder checks the plan's
+  // virtual ones itself).
+  const existingFolders = useMemo(
+    () =>
+      folderPathsOf(
+        toTreeFiles(
+          node.files,
+          untracked,
+          syncStatus,
+          node.local_mirror?.local_path ?? null,
+        ),
+      ),
+    [node.files, untracked, syncStatus, node.local_mirror?.local_path],
+  );
   // „Nová prezentace" failed: shown under the toolbar, where NewFileForm's
   // own error would be (#267). Cleared by the next attempt or a new file.
   const [presentationError, setPresentationError] = useState<string | null>(null);
@@ -1133,18 +1160,26 @@ function DetailPaneBody({
               ) : (
                 <span />
               )}
-              <NewFileSplitButton
-                hasMirror={!!node.local_mirror}
-                onNewFile={() => {
-                  setPresentationError(null);
-                  setCreatingFile((v) => !v);
-                }}
-                onOpenNewFile={() => {
-                  setPresentationError(null);
-                  setCreatingFile(true);
-                }}
-                onNewPresentation={handleNewPresentation}
-              />
+              <div className="flex shrink-0 items-center gap-2">
+                <NewFolderButton
+                  hasMirror={!!node.local_mirror}
+                  onClick={() =>
+                    setFolderForm((open) => (open ? null : { prefill: "wip/" }))
+                  }
+                />
+                <NewFileSplitButton
+                  hasMirror={!!node.local_mirror}
+                  onNewFile={() => {
+                    setPresentationError(null);
+                    setCreatingFile((v) => !v);
+                  }}
+                  onOpenNewFile={() => {
+                    setPresentationError(null);
+                    setCreatingFile(true);
+                  }}
+                  onNewPresentation={handleNewPresentation}
+                />
+              </div>
             </div>
                 {presentationError && (
                   <div className="mb-3 text-[11px]" style={{ color: "var(--color-danger)" }}>
@@ -1157,7 +1192,27 @@ function DetailPaneBody({
                     onCancel={() => setCreatingFile(false)}
                   />
                 )}
-                {node.files.length > 0 || untracked.length > 0 ? (
+                {/* "Nová složka" / "Nová podsložka": the same form, keyed by
+                    its prefill so a folder row's action refills an open one. */}
+                {folderForm && (
+                  <NewFolderForm
+                    key={folderForm.prefill}
+                    initialPath={folderForm.prefill}
+                    onSubmit={(path) => {
+                      const result = planFolder(filePlan, path, existingFolders);
+                      if (!result.ok) return result.reason;
+                      setFilePlan(result.plan);
+                      setFolderForm(null);
+                      return null;
+                    }}
+                    onCancel={() => setFolderForm(null)}
+                  />
+                )}
+                {/* A plan holding only a virtual folder is a tree too: the
+                    node may have no file yet (rule 4). */}
+                {node.files.length > 0 ||
+                untracked.length > 0 ||
+                filePlan.folders.length > 0 ? (
                   <FileTree
                     files={node.files}
                     untracked={untracked}
@@ -1172,6 +1227,11 @@ function DetailPaneBody({
                     onResolve={handleResolveFile}
                     onMove={handleMoveFile}
                     onApplied={handlePlanApplied}
+                    plan={filePlan}
+                    onPlanChange={setFilePlan}
+                    onNewSubfolder={(folderPath) =>
+                      setFolderForm({ prefill: newFolderPrefill(folderPath) })
+                    }
                     runErrors={syncRunErrorsByFile(syncRunResult)}
                     isCentralMode={isCentralMode}
                   />
