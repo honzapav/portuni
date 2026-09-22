@@ -5,8 +5,8 @@
 // they hold is not "the helper folds correctly" but "a fact about a thread
 // has one place, and every surface reads the same value at the same moment".
 //
-// The scenarios of #466 (a refusal restoring the record, the sentAt rule)
-// live with that issue; 1, 3, 4, 5 and 6 are here.
+// Scenarios 1, 3, 4, 5 and 6 come from #465; 2 and 7 (a refusal restoring
+// the record, the send clock) from #466.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -30,6 +30,13 @@ import {
   deletePersistentSession,
   patchSessionRunnerInstance,
 } from "../apps/web/src/api.js";
+import {
+  nextSentAt,
+  runIsLiveFor,
+  workingPhase,
+  type CanonicalEvent,
+  type ChatEvent,
+} from "../apps/web/src/lib/session-chat.js";
 import type { SessionSummary } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
 
@@ -238,5 +245,132 @@ describe("scenario 6: a closed thread leaves every selector", () => {
     assert.deepEqual(selectMountedThreads(store, ["n1"], "d1"), []);
     assert.equal(selectShownThread(store, "n1", "d1"), null);
     assert.equal(Object.keys(selectLiveStates(store)).length, 0);
+  });
+});
+
+// #466: the two scenarios that belong to SessionChat reading its thread out
+// of the store. Both run against the same pieces the component runs on --
+// the store, api.ts and the pure helpers of lib/session-chat.ts -- so the
+// rules are held here and not by the order of setState calls in a file no
+// test runner mounts.
+describe("scenario 2: a refused runner/instance change puts the record back", () => {
+  it("restores the whole previous record and sets the composer error", async () => {
+    store.put(row({ id: "d1", state: "draft", runner: "claude", instance_id: "work", model: "opus" }));
+    answers.set("PATCH /sessions/d1", { status: 409, body: { error: "instance_busy" } });
+
+    // SessionChat's handleRunnerChange, step for step.
+    let composerError: string | null = null;
+    const before = selectSession(store, "d1")!;
+    store.put({ ...before, runner: "claude", instance_id: "tempo" });
+    assert.equal(selectSession(store, "d1")?.instance_id, "tempo");
+
+    await patchSessionRunnerInstance("d1", { runner: "claude", instance_id: "tempo" }).catch((e) => {
+      store.put(before);
+      composerError = `Runner a instanci se nepodařilo uložit: ${String(e)}`;
+    });
+
+    const after = selectSession(store, "d1");
+    assert.equal(after?.instance_id, "work");
+    assert.equal(after?.runner, "claude");
+    // The restore is the previous record, not a patch of the optimistic one:
+    // everything else it carried is still there.
+    assert.equal(after?.model, "opus");
+    assert.equal(after?.state, "draft");
+    assert.notEqual(composerError, null);
+    assert.match(String(composerError), /Runner a instanci se nepodařilo uložit/);
+    // One record, and the sidebar reads the restored one too.
+    assert.equal(store.snapshot().size, 1);
+    assert.equal(selectNodeThreads(store, "n1")[0].instance_id, "work");
+  });
+});
+
+describe("scenario 7: the send clock, a run that starts before the reply resolves and ends with an error", () => {
+  // SessionChat's own state, as the pure helpers see it: the send clock,
+  // the live run and the transcript. No component, no timers -- the clock
+  // is an injected `now`.
+  function chat() {
+    const state = { sentAt: null as number | null, liveRunId: null as string | null, events: [] as ChatEvent[] };
+    return {
+      state,
+      send(now: number) {
+        state.sentAt = nextSentAt(state.sentAt, { kind: "send", liveRunId: state.liveRunId, now });
+      },
+      sendFailed() {
+        state.sentAt = nextSentAt(state.sentAt, { kind: "send_failed" });
+      },
+      receive(event: CanonicalEvent) {
+        state.events = [...state.events, { seq: state.events.length + 1, event }];
+        state.sentAt = nextSentAt(state.sentAt, { kind: "event", event });
+        if (event.kind === "run_started") state.liveRunId = event.payload.run_id;
+        else if (event.kind === "run_ended") state.liveRunId = null;
+      },
+      // What the transcript shows at its end, exactly as the component
+      // computes it (`phase` + `showWorking`, nothing streaming here).
+      workingRow(sessionState: SessionSummary["state"]): string | null {
+        const runIsLive = runIsLiveFor(state.liveRunId, sessionState);
+        if (!runIsLive && state.sentAt === null) return null;
+        return workingPhase(state.events, state.liveRunId, state.sentAt);
+      },
+    };
+  }
+
+  const started = (runId: string): CanonicalEvent => ({
+    kind: "run_started",
+    payload: { run_id: runId, runner: "claude", instance_id: null, resume: null },
+  });
+  const ended = (runId: string, reason: "error" | "completed"): CanonicalEvent => ({
+    kind: "run_ended",
+    payload: { run_id: runId, reason, usage: null },
+  });
+  const said = (text: string): CanonicalEvent => ({ kind: "user_message", payload: { text, source: "chat" } });
+
+  it("shows Spouštím… from the send, then the run, then nothing once it ended", () => {
+    const c = chat();
+    assert.equal(c.workingRow("draft"), null);
+
+    // Sent, reply not back yet: the clock is set before the await, so the
+    // row is already on screen.
+    c.send(1_000);
+    assert.equal(c.workingRow("draft"), "starting");
+
+    // run_started (and the promotion's own user_message) land while the
+    // send is still in flight: the clock stops, the run takes over.
+    c.receive(started("r1"));
+    c.receive(said("Ahoj"));
+    assert.equal(c.state.sentAt, null);
+    assert.equal(c.workingRow("running"), "thinking");
+
+    // The reply resolves now. It must not restart the clock -- a live run
+    // announces itself, so a send into one sets nothing.
+    c.send(1_200);
+    assert.equal(c.state.sentAt, null);
+
+    // The run ends with an error: nothing live, nothing starting, so the
+    // working row is gone (and does not hang forever, which is the bug the
+    // rule exists for).
+    c.receive(ended("r1", "error"));
+    assert.equal(c.state.liveRunId, null);
+    assert.equal(c.state.sentAt, null);
+    assert.equal(c.workingRow("suspended"), null);
+    assert.equal(c.workingRow("running"), null);
+  });
+
+  it("clears the clock when the send itself fails", () => {
+    const c = chat();
+    c.send(1_000);
+    assert.equal(c.workingRow("draft"), "starting");
+    c.sendFailed();
+    assert.equal(c.state.sentAt, null);
+    assert.equal(c.workingRow("draft"), null);
+  });
+
+  it("clears the clock when a run ends without ever starting one of its own", () => {
+    // A resume that dies at start: run_ended arrives with no run_started
+    // this window saw. The clock stops on it all the same.
+    const c = chat();
+    c.send(1_000);
+    c.receive(ended("r9", "error"));
+    assert.equal(c.state.sentAt, null);
+    assert.equal(c.workingRow("suspended"), null);
   });
 });

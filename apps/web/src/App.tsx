@@ -566,15 +566,15 @@ export default function App() {
   // It fills records and decides nothing about what is shown: the rows land
   // in the store (fetchNodePersistentSessions puts them itself), and the
   // selectors above pick the threads and the shown one out of them.
-  const sessionRefetches = useRef(new Map<string, { trailing: boolean }>());
+  const nodeThreadRefetches = useRef(new Map<string, { trailing: boolean }>());
   const refreshNodeSessions = useCallback(function refresh(nodeId: string): void {
-    const inFlight = sessionRefetches.current.get(nodeId);
+    const inFlight = nodeThreadRefetches.current.get(nodeId);
     if (inFlight) {
       inFlight.trailing = true;
       return;
     }
     const entry = { trailing: false };
-    sessionRefetches.current.set(nodeId, entry);
+    nodeThreadRefetches.current.set(nodeId, entry);
     void fetchNodePersistentSessions(nodeId, false)
       .catch((e: unknown) => {
         // A failure on the node the user is looking at lands on the node
@@ -584,7 +584,7 @@ export default function App() {
         setWorkspaceDetailError(`Vlákna uzlu se nepodařilo načíst: ${String(e)}`);
       })
       .finally(() => {
-        sessionRefetches.current.delete(nodeId);
+        nodeThreadRefetches.current.delete(nodeId);
         if (entry.trailing && openNodeIdsRef.current.includes(nodeId)) refresh(nodeId);
       });
   }, []);
@@ -1052,7 +1052,7 @@ export default function App() {
               mountedSessions={workspaceMountedSessions}
               sessionsClient={sessionsClient}
               liveSessionStates={liveSessionStates}
-              onSessionUpdated={sessionStore.put}
+              sessionStore={sessionStore}
               onSessionStarted={registerSessionStarted}
               onOpenChat={openSessionChat}
             />

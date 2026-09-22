@@ -63,7 +63,7 @@ collapsible right aside.
   and only flips which pane is visible. Switching threads therefore keeps
   each thread's transcript, its scroll position, its streaming delta
   buffers and its composer, and re-subscribes nothing: `SessionChat`'s
-  subscribe effect is keyed on `session.id`, and a keyed child React keeps
+  subscribe effect is keyed on `sessionId`, and a keyed child React keeps
   mounted never re-runs it.
 - A hidden pane is hidden with `visibility: hidden` plus `inert`, not
   `display: none` (which the design spec wrote before the scroll
@@ -71,17 +71,49 @@ collapsible right aside.
   transcript's scroll offset, which is the thing keeping the pane mounted
   is for. `inert` keeps a hidden pane out of the tab order and out of
   reach of the pointer.
-- The mounted set is `mountedChatSessions(liveOpenSessionsByNode,
-  openNodeIds, workspaceOpenSession)` (`lib/session-views.ts`): every
-  chat-eligible thread of an open node, in open-node order, plus the shown
-  thread when the per-node map has not caught up with it yet (a fresh local
-  draft). Closing a node or a thread drops it from the set, which is what
-  unmounts its chat and unsubscribes it.
-- With several chats mounted, `onSessionUpdated` matches by id
-  (`updateWorkspaceOpenSession` in `App.tsx`): a hidden thread reporting
-  its own state must not replace the shown one.
+- The mounted set is `selectMountedThreads(store, openNodeIds, shownId)`
+  (`lib/session-selectors.ts`): every chat-eligible thread of an open node,
+  in open-node order, plus the shown thread when its node's list has not
+  come back yet. Closing a node or a thread drops it from the set, which is
+  what unmounts its chat and unsubscribes it.
+- With several chats mounted there is nothing to match by id: each pane
+  reads its own record out of the store (`sessionId` is all `SessionChat`
+  takes), so a hidden thread reporting its own state can never land on the
+  shown one.
 
 ### SessionChat (`SessionChat.tsx`)
+
+**What it owns, and what it only reads** (#466). Props are `sessionId`,
+`sessionStore`, `sessionsClient` and `onOpenFile` -- never a session row.
+The thread comes from `useSessionStore(store, selectSession(id))`, so the
+header's name and status chip, the composer's model, effort, runner and
+instance and the "closed" disabling all read the one record (principle 1);
+there is no `live` copy of state and waiting, and the component subscribes
+to no `session_state` frames of its own -- `App.tsx` binds the live channel
+to the store once. What it does own is its transcript: `events`, the delta
+buffers, `liveRunId`, the send clock `sentAt`, `sending`, `loading`,
+`error`, the rename UI, the dialogs, `noticeDismissed` and the
+runner/instance/model lists.
+
+**It never writes the thread back to a parent.** A rename, a close and a
+"Pokračovat v nové session" go to the server and the answered row lands in
+the store (`api.ts` for the first two, `sessionStore.put` for the new
+session `continueSession` answers with). A runner/instance or model/effort
+change is the optimistic form of principle 2: `const before =
+session; store.put({...before, patch})`, the API call folds the server's
+answer in, and a refusal puts `before` back whole and writes the reason
+into the composer's error line ("Runner a instanci se nepodařilo uložit:
+…"). Scenario 2 in `test/session-store-scenarios.test.ts` holds that.
+
+**The send clock.** `sentAt` is what the working row shows as "Spouštím…"
+between the send and its `run_started`. Its rule is the pure `nextSentAt`
+(`lib/session-chat.ts`): the composer sets it **before** the send is
+awaited -- `run_started`, and a `run_ended` right behind it, can arrive
+while the reply is still in flight -- and three things clear it,
+`run_started`, `run_ended` (an error at start included) and a failed send.
+A send into a live run sets nothing: that run already announced itself.
+Scenario 7 holds that, including "the run ended with an error, so the
+working row is gone".
 
 The chat for one thread. Header: status dot, name, status chip
 (`sessionStatusChip`; a draft reads "Nový"), then on the right the context
@@ -449,9 +481,10 @@ Two rows under the textarea, inside the composer's border
 `Select` appears only when the selected model's `supportsEffort` is true
 and offers that model's own `effortLevels`; its title says it applies from
 the next run. Both are gated on `access.canResume` and both call
-`patchSessionModelEffort`, updating the header optimistically through
-`onSessionUpdated`. `SessionSummary` carries `model` and `effort`, so no
-second fetch is needed.
+`patchSessionModelEffort` over an optimistic `store.put`, which the
+server's answer replaces and a refusal undoes ("Model se nepodařilo
+uložit: …"). `SessionSummary` carries `model` and `effort`, so no second
+fetch is needed.
 
 **Row 2 -- where it runs, dimmer.** `runner · instance ▾ · host`. The
 `Select` (`lib/runner-picker.ts`: `runnerPickerGroups`,
@@ -459,8 +492,8 @@ second fetch is needed.
 logged-in runner from `GET /runners` as a group, its own default instance
 first and every `GET /runners/instances` entry of it after; the draft's
 initial value -- what the organisation's default resolved to at creation
--- is marked "(výchozí)". It is enabled only while `live.state ===
-"draft"`; a promoted thread renders the pair as a plain label, and a draft
+-- is marked "(výchozí)". It is enabled only while the record's `state`
+is `draft`; a promoted thread renders the pair as a plain label, and a draft
 whose row carries no runner reads "Žádný runner není přihlášený". A change
 calls `patchSessionRunnerInstance` (`PATCH /sessions/:id`, central in a
 team workspace; 409 `SESSION_NOT_DRAFT` once promoted). The host is
