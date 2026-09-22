@@ -327,6 +327,34 @@ describe("createDeltaCoalescer", () => {
     ]);
   });
 
+  it("drop discards one run+channel's pending frames, leaving the rest to deliver", () => {
+    // The finalized assistant_message/reasoning event carries the whole
+    // block: whatever of it is still buffered is a stale preview and must
+    // never land in a buffer the event just cleared.
+    let tick: (() => void) | null = null;
+    const delivered: unknown[] = [];
+    const c = createDeltaCoalescer(
+      (b) => delivered.push(b),
+      (cb) => {
+        tick = cb;
+        return () => {
+          tick = null;
+        };
+      },
+    );
+    c.push({ run_id: "R1", channel: "text", text: "?" });
+    c.push({ run_id: "R1", channel: "reasoning", text: "th" });
+    c.push({ run_id: "R2", channel: "text", text: "keep" });
+    c.drop("R1", "text");
+    (tick as unknown as () => void)();
+    assert.deepEqual(delivered, [
+      [
+        { run_id: "R1", channel: "reasoning", text: "th" },
+        { run_id: "R2", channel: "text", text: "keep" },
+      ],
+    ]);
+  });
+
   it("flush delivers immediately and cancels the tick; clear drops without delivering", () => {
     let cancelled = 0;
     const delivered: unknown[] = [];
