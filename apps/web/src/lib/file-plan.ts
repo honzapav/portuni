@@ -380,3 +380,25 @@ export function orderMoves(plan: FilePlan): PlannedMove[] {
       return a.fileId < b.fileId ? -1 : a.fileId > b.fileId ? 1 : 0;
     });
 }
+
+// --- the plan's node ------------------------------------------------------
+
+// The held plan together with the node it was loaded for. The pairing is part
+// of the value because the Files tab is never remounted on a node switch
+// (App.tsx keeps the previous node detail while the new one loads), so a
+// render can otherwise pair node B's files with node A's plan and the tree's
+// cleaning pass then writes the cleaned remains under B's id (#451).
+export type NodeFilePlan = { nodeId: string; plan: FilePlan };
+
+// Rule 8: the plan belongs to the node. The held plan is the answer only for
+// the node it was loaded for; for any other node the answer is a fresh load,
+// computed during render so no render ever sees the other node's plan and no
+// write can ever reach the wrong node's entry.
+export function planForNode(
+  held: NodeFilePlan,
+  nodeId: string,
+  load: (id: string) => FilePlan,
+): NodeFilePlan {
+  if (held.nodeId === nodeId) return held;
+  return { nodeId, plan: load(nodeId) };
+}

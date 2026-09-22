@@ -43,7 +43,13 @@ collapsible right aside.
   (`lib/use-file-plan.ts`). The plan is state of the Files tab, not of
   `FileTree`: "Nová složka" sits in the toolbar and writes to the same plan
   the tree renders, and a plan holding only a virtual folder is a tree on a
-  node with no files at all (#448).
+  node with no files at all (#448). The held plan carries the node it was
+  loaded for (`NodeFilePlan`) and `useFilePlan` resolves that pairing during
+  render through `planForNode` (#451): the detail pane is not remounted on a
+  node switch -- `App.tsx` keeps the previous node's detail while the new one
+  loads -- so an effect-time reset would let one render pair node B's files
+  with node A's plan, and the tree's cleaning pass (`applyPlan`, rule 3) would
+  write the cleaned remains under B's id and destroy B's own plan.
 - `SessionChat` is lazy-loaded (`lazy(() => import("./SessionChat"))` +
   `Suspense`).
 - **Every open thread keeps a mounted chat** (#429). `WorkspaceView` takes
