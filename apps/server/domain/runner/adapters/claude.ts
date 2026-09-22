@@ -334,6 +334,9 @@ interface RunTranslationState {
   // context window from the latest result's modelUsage (null until one).
   model: string | null;
   contextMaxTokens: number | null;
+  // What the latest assistant message's prompt held, so the result that
+  // ends the turn can report the window's content without its own usage.
+  promptTokens: { input: number; cached: number } | null;
   // When the first thinking delta of the current block arrived; the
   // batched thinking block reads it as duration_ms and clears it.
   reasoningStartedAt: number | null;
@@ -363,6 +366,7 @@ function createState(): RunTranslationState {
     latestUsage: null,
     model: null,
     contextMaxTokens: null,
+    promptTokens: null,
     reasoningStartedAt: null,
     pendingToolCalls: new Map(),
     pendingPermissions: new Map(),
@@ -419,7 +423,9 @@ function usageNumber(usage: Record<string, unknown> | undefined, key: string): n
 }
 
 // The context ring's event (v2 spec): what the model's context holds
-// after this message -- input plus both cache buckets of its usage.
+// after this message -- input plus both cache buckets of its usage. The
+// prompt's two numbers stay on the state for the turn's end, which has no
+// honest reading of its own.
 function contextUsageFrom(
   runId: string,
   state: RunTranslationState,
@@ -427,6 +433,7 @@ function contextUsageFrom(
 ): CanonicalEvent {
   const input = usageNumber(usage, "input_tokens");
   const cached = usageNumber(usage, "cache_creation_input_tokens") + usageNumber(usage, "cache_read_input_tokens");
+  state.promptTokens = { input, cached };
   return {
     kind: "context_usage",
     payload: {
@@ -436,6 +443,35 @@ function contextUsageFrom(
       max_tokens: state.contextMaxTokens,
       input_tokens: input,
       cached_tokens: cached,
+      output_tokens: usageNumber(usage, "output_tokens"),
+    },
+  };
+}
+
+// The same ring once the turn is over, where the window's size is the only
+// new fact (it comes with the result's modelUsage). A result's own usage is
+// the turn's SUM over every request it made, counting each request's cache
+// read again, so a turn with many tool calls adds up far past the window --
+// reported as the context's content it drove the ring to 103 %. The content
+// is still the last message's prompt; only the output count is read here,
+// where it covers the whole turn instead of one message. Null before the
+// turn's first assistant message: nothing was ever in the context.
+function contextUsageAtTurnEnd(
+  runId: string,
+  state: RunTranslationState,
+  usage: Record<string, unknown> | undefined,
+): CanonicalEvent | null {
+  const prompt = state.promptTokens;
+  if (prompt === null) return null;
+  return {
+    kind: "context_usage",
+    payload: {
+      run_id: runId,
+      model: state.model,
+      used_tokens: prompt.input + prompt.cached,
+      max_tokens: state.contextMaxTokens,
+      input_tokens: prompt.input,
+      cached_tokens: prompt.cached,
       output_tokens: usageNumber(usage, "output_tokens"),
     },
   };
@@ -774,7 +810,8 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         const modelUsage = (msg as { modelUsage?: Record<string, { contextWindow?: unknown }> }).modelUsage ?? {};
         const entry = state.model ? modelUsage[state.model] : Object.values(modelUsage)[0];
         if (entry && typeof entry.contextWindow === "number") state.contextMaxTokens = entry.contextWindow;
-        sink(contextUsageFrom(run.runId, state, msg.usage as unknown as Record<string, unknown> | undefined));
+        const atTurnEnd = contextUsageAtTurnEnd(run.runId, state, msg.usage as unknown as Record<string, unknown> | undefined);
+        if (atTurnEnd) sink(atTurnEnd);
         // #411: a provider limit/error ends the run. The provider's own text
         // goes into the transcript once, then the prompt stream is ended so
         // the CLI exits and the translate loop below reports the run_ended

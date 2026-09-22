@@ -49,7 +49,10 @@ export function contextRingState(
     return { used, max: null, fraction: null, warn: false, label: `${formatTokens(used)} tokenů` };
   }
   const fraction = used / max;
-  const percent = Math.round(fraction * 100);
+  // A share of the window, capped: a count above it is a runner that
+  // counted something other than the context, and "103 %" tells the
+  // reader nothing they can act on.
+  const percent = Math.min(100, Math.round(fraction * 100));
   return {
     used,
     max,

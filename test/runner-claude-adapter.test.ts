@@ -519,6 +519,59 @@ describe("Claude adapter: message translation", () => {
     assert.equal(usages[1].payload.output_tokens, 7);
   });
 
+  // The result's usage is the TURN's sum over every request it made, so a
+  // long turn's cache buckets add up past the window; only the window
+  // size and the turn's output are read from it.
+  it("the result's turn total never becomes the context's content", async () => {
+    const script: SDKMessage[] = [
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-sonnet-5",
+          content: [{ type: "text", text: "hotovo" }],
+          usage: { input_tokens: 2, cache_creation_input_tokens: 3_000, cache_read_input_tokens: 161_483, output_tokens: 2 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 12,
+        result: "done",
+        stop_reason: null,
+        total_cost_usd: 0.5,
+        usage: { input_tokens: 14, output_tokens: 7_873, cache_creation_input_tokens: 40_000, cache_read_input_tokens: 992_209 },
+        modelUsage: { "claude-sonnet-5": { contextWindow: 1_000_000, inputTokens: 14, outputTokens: 7_873 } },
+        permission_denials: [],
+        duration_ms: 1,
+        duration_api_ms: 1,
+        uuid: "u1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+    ];
+    const { query } = makeFakeQuery(script);
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await createClaudeAdapter({ query }).start(makeRunStart(), (e) => events.push(e));
+    await handle.close();
+    const usages = events.filter(
+      (e): e is Extract<CanonicalEvent, { kind: "context_usage" }> => "kind" in e && e.kind === "context_usage",
+    );
+    assert.equal(usages.length, 2);
+    assert.deepEqual(usages[1].payload, {
+      run_id: "R1",
+      model: "claude-sonnet-5",
+      used_tokens: 164_485,
+      max_tokens: 1_000_000,
+      input_tokens: 2,
+      cached_tokens: 164_483,
+      output_tokens: 7_873,
+    });
+  });
+
   it("a result message's usage/cost folds into the run_ended event", async () => {
     const script: SDKMessage[] = [
       {
