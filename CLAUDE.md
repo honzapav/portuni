@@ -324,6 +324,8 @@ One line each; the linked doc carries the mechanism and the reasoning.
 - Pure helpers live in `apps/web/src/lib/*.ts` and are tested from the
   server's `node:test` runner. Client-side access echoes are UX only; the
   server is the gate. UI strings are Czech with diacritics.
+- A fact about a thread lives in the session store (`lib/session-store.ts`);
+  a component or map that copies it is a bug.
 
 ## Security rules (from the auth refactor post-mortem)
 

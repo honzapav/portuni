@@ -16,23 +16,20 @@ import {
   startDraftThread,
   deletePersistentSession,
   renamePersistentSession,
+  bindSessionStore,
 } from "./api";
 import type { SessionSummary, SessionRunRow } from "./types";
-import { createSessionsClient, type SessionStateMessage } from "./lib/sessions-client";
+import { createSessionsClient } from "./lib/sessions-client";
+import { requestChatSession } from "./lib/session-views";
+import { createSessionStore } from "./lib/session-store";
+import { useSessionStore } from "./lib/use-session-store";
 import {
-  applyNodeSessionsRefetch,
-  applySessionStateFrame,
-  countRunningSessions,
-  dropPromotedDrafts,
-  mergeDraftsIntoNodeMap,
-  applySessionUpdateToDrafts,
-  mergeLiveSessionStates,
-  mergeSessionIntoNodeMap,
-  mountedChatSessions,
-  pickOpenChatSession,
-  pruneNodeSessions,
-  requestChatSession,
-} from "./lib/session-views";
+  selectLiveStates,
+  selectMountedThreads,
+  selectNodeThreads,
+  selectRunningCount,
+  selectShownThread,
+} from "./lib/session-selectors";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { deriveWorkspaceNodeRows } from "./lib/sessions";
@@ -404,10 +401,10 @@ export default function App() {
   // Also #343's "Otevřít chat" (Relace tab, Práce sidebar, Přehled): jumps
   // to Práce with the node selected and THAT session as the node's shown
   // chat. A node can have several running/suspended sessions, so the
-  // clicked row is the selector -- #342's workspaceOpenSession effect
-  // prefers this id when it is among the node's live sessions and only
-  // falls back to the newest live one otherwise (first open, or the
-  // requested session has since closed).
+  // clicked row is the selector -- selectShownThread prefers this id when
+  // it is among the node's live sessions and only falls back to the newest
+  // live one otherwise (first open, or the requested session has since
+  // closed).
   const [requestedChatSessionByNode, setRequestedChatSessionByNode] = useState<Record<string, string>>({});
   const openSessionChat = useCallback(
     (nodeId: string, sessionId?: string) => {
@@ -503,101 +500,47 @@ export default function App() {
     return () => sessionsClient.disconnect();
   }, [sessionsClient]);
 
-  // #343: the latest session_state frame per session -- sent for every
-  // session the caller can see the moment sessionsClient connects, and
-  // again on every state_changed/question/run_ended anywhere, no
-  // per-session subscribe needed. Drives StatusFooter's running-session
-  // count, the Práce sidebar's live status overlay (openSessionsByNode
-  // below) and the refresh of the selected node's shown chat. Entries in a
-  // terminal state are dropped once nothing live shares the node, so the
-  // map tracks what is running, not everything that ever ran while this
-  // window was open.
-  const [sessionStates, setSessionStates] = useState<Record<string, SessionStateMessage>>({});
+  // The session store (docs/superpowers/specs/2026-09-22-web-session-state-
+  // design.md): one record per thread. Bound to api.ts once so every REST
+  // call that returns or removes a session row writes through here, and to
+  // the live channel so a session_state frame folds into the same record
+  // instead of a second, separately-tracked copy.
+  const [sessionStore] = useState(() => createSessionStore());
   useEffect(() => {
-    return sessionsClient.onSessionState((s) => {
-      setSessionStates((prev) => applySessionStateFrame(prev, s));
-    });
-  }, [sessionsClient]);
-  const runningSessionCount = useMemo(() => countRunningSessions(sessionStates), [sessionStates]);
+    bindSessionStore(sessionStore);
+  }, [sessionStore]);
+  useEffect(() => sessionsClient.onSessionState(sessionStore.applyFrame), [sessionsClient, sessionStore]);
 
+  // StatusFooter's running-session count, live.
+  const runningSessionCount = useSessionStore(sessionStore, selectRunningCount);
 
-  // Draft threads (#374): a draft is visible only as the open thread it
-  // is -- every list the server serves (GET /nodes/:id/sessions included)
-  // excludes it, so the window that created one tracks it here, keyed by
-  // session id, until it is promoted (its first message starts the run) or
-  // closed. It is dropped from here only once a refetch of its node's
-  // threads actually carries it (dropPromotedDrafts, below): a promotion
-  // frame says "it is running now", not "the list you last fetched has
-  // it", and forgetting it on the frame alone made the row vanish the
-  // moment a draft became a real thread (#412).
-  const [localDrafts, setLocalDrafts] = useState<Record<string, SessionSummary>>({});
+  // The window's live session_state map, in the shape Přehled
+  // (OverviewView) and the Relace tab (DetailPane.sessions.tsx) still
+  // overlay onto their own REST-fetched rows -- those predate one-record-
+  // per-thread, so this is a read of the store instead of a second map
+  // this component folds itself.
+  const liveSessionStates = useSessionStore(sessionStore, selectLiveStates);
 
   // The selected node's own persistent session, when it has one that's
   // running/waiting/suspended/draft -- drives whether WorkspaceView's
-  // detail surface shows SessionChat instead of DetailPane. Refetched
-  // whenever the workspace selection changes, same pattern as
-  // workspaceNodeDetail above.
-  const [workspaceOpenSession, setWorkspaceOpenSession] = useState<SessionSummary | null>(null);
+  // detail surface shows SessionChat instead of DetailPane.
   const requestedChatSessionId = selectedWorkspaceNodeId
     ? (requestedChatSessionByNode[selectedWorkspaceNodeId] ?? null)
     : null;
-  // Re-run on every live state change of a session on the selected node
-  // too (a task just started from "Nový úkol", the shown one just closed)
-  // -- the REST fetch is what knows the full SessionSummary, the socket
-  // only says that something changed.
-  const selectedNodeLiveStamp = useMemo(() => {
-    if (!selectedWorkspaceNodeId) return "";
-    return Object.values(sessionStates)
-      .filter((s) => s.node_id === selectedWorkspaceNodeId)
-      .map((s) => `${s.session_id}:${s.state}`)
-      .sort()
-      .join(",");
-  }, [sessionStates, selectedWorkspaceNodeId]);
-  useEffect(() => {
-    if (!selectedWorkspaceNodeId) {
-      setWorkspaceOpenSession(null);
-      return;
-    }
-    let cancelled = false;
-    const localForNode = Object.values(localDrafts).filter((d) => d.node_id === selectedWorkspaceNodeId);
-    fetchNodePersistentSessions(selectedWorkspaceNodeId, false)
-      .then((res) => {
-        if (cancelled) return;
-        setWorkspaceOpenSession(pickOpenChatSession([...res.sessions, ...localForNode], requestedChatSessionId));
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
-        setWorkspaceOpenSession(pickOpenChatSession(localForNode, requestedChatSessionId));
-        // Lands on the node surface (the shown chat requires this node's
-        // own list to have been fetched), so the failure is on screen
-        // instead of reading as a click that did nothing.
-        setWorkspaceDetailError(`Vlákna uzlu se nepodařilo načíst: ${String(e)}`);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedWorkspaceNodeId, requestedChatSessionId, selectedNodeLiveStamp, localDrafts]);
+  const shownThread = useSessionStore(sessionStore, (s) =>
+    selectShownThread(s, selectedWorkspaceNodeId, requestedChatSessionId),
+  );
 
-  // A chat reporting its session back (a model/effort change, a live state
-  // frame). Every open thread has a mounted chat now (#429), so the update
-  // has to be matched by id: a hidden thread's frame must not replace the
-  // shown one.
-  const updateWorkspaceOpenSession = useCallback((updated: SessionSummary) => {
-    setWorkspaceOpenSession((prev) => (prev && prev.id === updated.id ? updated : prev));
-    setLocalDrafts((prev) => applySessionUpdateToDrafts(prev, updated));
-  }, []);
+  // #343's Práce sidebar: every OPEN node's own threads, for
+  // WorkspaceNodeList's sub-rows.
+  const workspaceThreadsByNode = useSessionStore(sessionStore, (s) => {
+    const map: Record<string, SessionSummary[]> = {};
+    for (const nodeId of openNodeIds) map[nodeId] = selectNodeThreads(s, nodeId);
+    return map;
+  });
 
-
-  // #343's Práce sidebar: every OPEN node's own running/suspended
-  // persistent sessions, for WorkspaceNodeList's sub-rows. Refetched
-  // whenever the open-node set changes (a node opening/closing); live
-  // state (above) is overlaid at render time via mergeLiveSessionStates
-  // rather than duplicating the subscribe-per-session machinery
-  // SessionChat needs for its own event log.
-  const [openSessionsByNode, setOpenSessionsByNode] = useState<Record<string, SessionSummary[]>>({});
   // What is open right now, readable from a fetch callback without making
-  // the callback itself depend on it (a response for a node closed in the
-  // meantime is dropped instead of re-adding its key).
+  // the callback itself depend on it.
   const openNodeIdsRef = useRef<string[]>(openNodeIds);
   useEffect(() => {
     openNodeIdsRef.current = openNodeIds;
@@ -606,6 +549,8 @@ export default function App() {
   // while one is in flight schedules exactly one follow-up instead of
   // racing a parallel fetch, so a burst of frames on the same node costs
   // at most two round trips and the last one always wins.
+  // fetchNodePersistentSessions itself writes the rows into the store
+  // (api.ts); this only decides when to ask.
   const sessionRefetches = useRef(new Map<string, { trailing: boolean }>());
   const refreshNodeSessions = useCallback(function refresh(nodeId: string): void {
     const inFlight = sessionRefetches.current.get(nodeId);
@@ -616,11 +561,6 @@ export default function App() {
     const entry = { trailing: false };
     sessionRefetches.current.set(nodeId, entry);
     void fetchNodePersistentSessions(nodeId, false)
-      .then((res) => {
-        if (!openNodeIdsRef.current.includes(nodeId)) return;
-        setOpenSessionsByNode((prev) => applyNodeSessionsRefetch(prev, nodeId, res.sessions));
-        setLocalDrafts((prev) => dropPromotedDrafts(prev, res.sessions));
-      })
       .catch(() => undefined)
       .finally(() => {
         sessionRefetches.current.delete(nodeId);
@@ -628,45 +568,26 @@ export default function App() {
       });
   }, []);
   useEffect(() => {
-    setOpenSessionsByNode((prev) => pruneNodeSessions(prev, openNodeIds));
     for (const id of openNodeIds) refreshNodeSessions(id);
   }, [openNodeIds, refreshNodeSessions]);
   // #412: a thread started anywhere else in the app (the Relace tab's
   // "Navázat", the node detail's "Nový úkol", another window) announces
   // itself only as a session_state frame, so that frame is what refetches
-  // the node it belongs to -- without it the sidebar's map only ever
-  // changed when the open-node set did.
+  // the node it belongs to -- without it a thread the frame only stubbed
+  // in as a partial record never gets its full row.
   useEffect(() => {
     return sessionsClient.onSessionState((s) => {
       if (s.node_id && openNodeIdsRef.current.includes(s.node_id)) refreshNodeSessions(s.node_id);
     });
   }, [sessionsClient, refreshNodeSessions]);
-  // Local drafts merged in per node (#374) -- the server-fetched list above
-  // never contains one, and a promoted draft stays here until a refetch
-  // proves the server list has it, so the merge dedupes by id.
-  const openSessionsByNodeWithDrafts = useMemo(
-    () => mergeDraftsIntoNodeMap(openSessionsByNode, localDrafts),
-    [openSessionsByNode, localDrafts],
-  );
-  const liveOpenSessionsByNode = useMemo(
-    () =>
-      Object.fromEntries(
-        Object.entries(openSessionsByNodeWithDrafts).map(([id, list]) => [
-          id,
-          mergeLiveSessionStates(list, sessionStates),
-        ]),
-      ),
-    [openSessionsByNodeWithDrafts, sessionStates],
-  );
 
   // #429: every thread open in this window keeps a mounted SessionChat, so
   // switching threads is a visibility flip instead of a remount (scroll
   // position, streaming buffers and the composer survive, and nothing
   // re-subscribes). Closing a node or a thread drops it from this list,
   // which is what unmounts its chat and unsubscribes it.
-  const workspaceMountedSessions = useMemo(
-    () => mountedChatSessions(liveOpenSessionsByNode, openNodeIds, workspaceOpenSession),
-    [liveOpenSessionsByNode, openNodeIds, workspaceOpenSession],
+  const workspaceMountedSessions = useSessionStore(sessionStore, (s) =>
+    selectMountedThreads(s, openNodeIds, shownThread?.id ?? null),
   );
 
   // --- Source editor state ---
@@ -881,44 +802,33 @@ export default function App() {
   // "+" on a Práce node row: open a fresh, empty thread there (#374, "one
   // click, thread is there, composer has focus") -- no dialog, nothing to
   // pick first. The node opens/selects at the same time so the thread
-  // lands where it's visible, and openSessionChat focuses the new draft
+  // lands where it's visible; startDraftThread's own answer already wrote
+  // the draft into the store (api.ts), openSessionChat focuses it
   // specifically (there may be other open threads on the same node).
   const workspaceNewTask = useCallback(
     (nodeId: string) => {
       openNode(nodeId);
       void startDraftThread(nodeId)
-        .then((session) => {
-          setLocalDrafts((prev) => ({ ...prev, [session.id]: session }));
-          openSessionChat(nodeId, session.id);
-        })
+        .then((session) => openSessionChat(nodeId, session.id))
         .catch(() => undefined);
     },
     [openNode, openSessionChat],
   );
 
   // Shared by every onSessionStarted call site (Práce's own NewTaskButton,
-  // Graf's, the workspace sidebar's "+"): shows the fresh thread and, when
-  // it's a draft (run: null), tracks it locally so it survives the next
-  // sidebar refetch too (#374).
+  // Graf's, the workspace sidebar's "+", the Relace tab's "Navázat"): the
+  // API call that produced `result` already put the row into the store
+  // (api.ts) -- the put here is a no-op then, and only matters for a
+  // caller that reaches this without going through api.ts. What always
+  // has to happen is making the fresh thread the node's requested one, or
+  // a node that already had a thread open would snap back to it the
+  // moment the new draft was tracked.
   const registerSessionStarted = useCallback(
     (result: { session: SessionSummary; run: SessionRunRow | null }) => {
-      setWorkspaceOpenSession(result.session);
-      // The node's shown chat is re-picked (pickOpenChatSession) on every
-      // refetch, so the fresh thread has to be the requested one -- else a
-      // node that already had a thread open snapped back to it the moment
-      // the new draft was tracked.
+      sessionStore.put(result.session);
       setRequestedChatSessionByNode((prev) => requestChatSession(prev, result.session));
-      if (result.session.state === "draft") {
-        setLocalDrafts((prev) => ({ ...prev, [result.session.id]: result.session }));
-        return;
-      }
-      // #412: an already-running thread (the Relace tab's "Navázat") has
-      // no draft phase to track, so it goes straight into the sidebar's
-      // per-node map -- the refetch its own state frame triggers is what
-      // confirms it, this is what makes the row appear at once.
-      setOpenSessionsByNode((prev) => mergeSessionIntoNodeMap(prev, result.session));
     },
-    [],
+    [sessionStore],
   );
 
   const workspaceCreateNode = useCallback(() => {
@@ -926,49 +836,30 @@ export default function App() {
     openCreateModal();
   }, [openCreateModal]);
 
-  // Inline rename on a thread's own sub-row (#374). A local draft is
-  // renamed only in place (there is no server row to rename yet -- naming
-  // a draft is moot anyway, since its first message renames it for real);
-  // otherwise PATCH /sessions/:id.
-  const workspaceRenameTask = useCallback((session: SessionSummary, name: string) => {
-    if (session.state === "draft") {
-      setLocalDrafts((prev) =>
-        prev[session.id] ? { ...prev, [session.id]: { ...prev[session.id], name, name_is_custom: true } } : prev,
-      );
-      return;
-    }
-    void renamePersistentSession(session.id, name)
-      .then((updated) => {
-        const nodeId = session.node_id;
-        if (nodeId) {
-          setOpenSessionsByNode((prev) => {
-            const list = prev[nodeId];
-            if (!list?.some((s) => s.id === updated.id)) return prev;
-            return { ...prev, [nodeId]: list.map((s) => (s.id === updated.id ? updated : s)) };
-          });
-        }
-        setWorkspaceOpenSession((prev) => (prev?.id === updated.id ? updated : prev));
-      })
-      .catch(() => undefined);
-  }, []);
+  // Inline rename on a thread's own sub-row (#374). A local draft has no
+  // server row to rename yet (naming a draft is moot anyway, since its
+  // first message renames it for real), so it's an optimistic-only store
+  // write; otherwise PATCH /sessions/:id, whose answer api.ts already puts.
+  const workspaceRenameTask = useCallback(
+    (session: SessionSummary, name: string) => {
+      if (session.state === "draft") {
+        const current = sessionStore.get(session.id);
+        if (current) sessionStore.put({ ...current, name, name_is_custom: true });
+        return;
+      }
+      void renamePersistentSession(session.id, name).catch(() => undefined);
+    },
+    [sessionStore],
+  );
 
   // The × on a thread's own sub-row (#374): a draft with no first message
-  // yet is deleted outright; anything else is Uzavřít, which asks first --
-  // via closeTaskConfirm below, a real dialog (window.confirm is a no-op
+  // yet is deleted outright (api.ts's deletePersistentSession removes it
+  // from the store on success); anything else is Uzavřít, which asks first
+  // -- via closeTaskConfirm below, a real dialog (window.confirm is a no-op
   // in the Tauri webview, same reasoning as editorGuard).
   const [closeTaskConfirm, setCloseTaskConfirm] = useState<SessionSummary | null>(null);
   const workspaceCloseTask = useCallback((session: SessionSummary) => {
-    const forgetLocally = () => {
-      setLocalDrafts((prev) => {
-        if (!(session.id in prev)) return prev;
-        const next = { ...prev };
-        delete next[session.id];
-        return next;
-      });
-      setWorkspaceOpenSession((prev) => (prev?.id === session.id ? null : prev));
-    };
     if (session.state === "draft") {
-      forgetLocally();
       void deletePersistentSession(session.id).catch(() => undefined);
       return;
     }
@@ -1021,8 +912,8 @@ export default function App() {
           onWorkspaceSelectNode={workspaceSelectNode}
           onWorkspaceCloseNode={closeNode}
           onWorkspaceNewTask={workspaceNewTask}
-          workspaceOpenSessionsByNode={liveOpenSessionsByNode}
-          workspaceActiveSessionId={workspaceOpenSession?.id ?? null}
+          workspaceThreadsByNode={workspaceThreadsByNode}
+          workspaceActiveSessionId={shownThread?.id ?? null}
           onWorkspaceOpenSessionChat={openSessionChat}
           onWorkspaceRenameTask={workspaceRenameTask}
           onWorkspaceCloseTask={workspaceCloseTask}
@@ -1060,7 +951,7 @@ export default function App() {
           <OverviewView
             onSelectNode={overviewSelectNode}
             onOpenSession={openSessionChat}
-            liveStates={sessionStates}
+            liveStates={liveSessionStates}
             unsyncedCount={syncPending.total}
             onOpenWorkspace={() => setView("workspace")}
             onOpenGraph={() => setView("graph")}
@@ -1114,11 +1005,11 @@ export default function App() {
               onOpenFile={openFileInEditor}
               onCloseEditor={closeEditor}
               onExpandEditor={() => setEditorFullscreen(true)}
-              openSession={workspaceOpenSession}
+              openSession={shownThread}
               mountedSessions={workspaceMountedSessions}
               sessionsClient={sessionsClient}
-              liveSessionStates={sessionStates}
-              onSessionUpdated={updateWorkspaceOpenSession}
+              liveSessionStates={liveSessionStates}
+              onSessionUpdated={sessionStore.put}
               onSessionStarted={registerSessionStarted}
               onOpenChat={openSessionChat}
             />
@@ -1166,7 +1057,7 @@ export default function App() {
               registerSessionStarted(result);
               if (result.session.node_id) openSessionChat(result.session.node_id, result.session.id);
             }}
-            liveSessionStates={sessionStates}
+            liveSessionStates={liveSessionStates}
           />
         ))}
 

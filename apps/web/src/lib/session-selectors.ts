@@ -8,6 +8,7 @@
 
 import type { SessionStore, SessionRecord } from "./session-store";
 import { isThreadSession, mountedChatSessions, pickOpenChatSession } from "./session-views";
+import type { SessionStateMessage } from "./sessions-client";
 
 export function selectSession(store: SessionStore, id: string): SessionRecord | undefined {
   return store.get(id);
@@ -88,4 +89,38 @@ export function selectRunningCount(store: SessionStore): number {
     if (s.state === "running") count++;
   }
   return count;
+}
+
+const liveStatesCache = new WeakMap<
+  SessionStore,
+  { snapshot: ReadonlyMap<string, SessionRecord>; value: Record<string, SessionStateMessage> }
+>();
+
+// A SessionStateMessage-shaped view of the store: what Přehled
+// (OverviewView) and the Relace tab (DetailPane.sessions.tsx) still
+// overlay onto their own REST-fetched rows (OverviewSessionRow, a node's
+// own session list) -- those predate one-record-per-thread and are out of
+// this batch's scope, so they keep their own overlay, just now reading it
+// off the store instead of a second map App.tsx folded itself. Recomputed
+// only when the store actually changed. A draft never produces a real
+// session_state frame (SessionStateMessage's own state excludes it, since
+// the runtime has no live run to report on), so a draft record is skipped
+// here too -- neither Overview nor the Relace tab ever lists one to overlay.
+export function selectLiveStates(store: SessionStore): Record<string, SessionStateMessage> {
+  const snapshot = store.snapshot();
+  const cached = liveStatesCache.get(store);
+  if (cached && cached.snapshot === snapshot) return cached.value;
+  const value: Record<string, SessionStateMessage> = {};
+  for (const record of snapshot.values()) {
+    if (record.state === "draft") continue;
+    value[record.id] = {
+      session_id: record.id,
+      node_id: record.node_id,
+      state: record.state,
+      waiting_since: record.waiting_since,
+      name: record.name,
+    };
+  }
+  liveStatesCache.set(store, { snapshot, value });
+  return value;
 }

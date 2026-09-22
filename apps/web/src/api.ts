@@ -28,6 +28,35 @@ import type {
 import { apiFetch } from "./lib/backend-url";
 import { isCentralMode } from "./lib/data-mode";
 import type { MoveTarget } from "./lib/file-plan";
+import type { SessionStore } from "./lib/session-store";
+
+// The session store (docs/superpowers/specs/2026-09-22-web-session-state-
+// design.md, "Writing": "the API functions do this themselves, so a caller
+// cannot forget"), bound once at app start. Every call below that returns
+// or removes a session row writes it through here; nothing else in the app
+// keeps its own copy of a thread.
+let sessionStore: SessionStore | null = null;
+export function bindSessionStore(store: SessionStore): void {
+  sessionStore = store;
+}
+
+// The record half of a device-local route (POST /sessions/:id/model,
+// PATCH /sessions/:id, GET /sessions/:id) answers with the raw session
+// row, missing the two fields the server derives per response
+// (write_count, host_label) -- toSummary is what adds them, and only a
+// route through the session runtime's read path calls it. The store's
+// put() always wants a full SessionSummary, so these two are carried over
+// from whatever this window's store already has for the id -- 0 / null
+// the first time it has ever seen the row.
+function putRawSessionRow(row: Omit<SessionSummary, "write_count" | "host_label">): void {
+  if (!sessionStore) return;
+  const current = sessionStore.get(row.id);
+  sessionStore.put({
+    ...row,
+    write_count: current?.write_count ?? 0,
+    host_label: current?.host_label ?? null,
+  });
+}
 
 // User shape returned by GET /users. Used by the Actors page to pick a
 // user_id when creating/editing a real (non-placeholder) person actor.
@@ -179,7 +208,10 @@ export function fetchNodePersistentSessions(
   return jsonRequest<{ sessions: SessionSummary[] }>(
     "GET",
     `/nodes/${encodeURIComponent(id)}/sessions${qs}`,
-  );
+  ).then((res) => {
+    sessionStore?.putMany(res.sessions);
+    return res;
+  });
 }
 
 // POST /sessions/:id/rename -- through the session runtime, which publishes
@@ -188,7 +220,10 @@ export function fetchNodePersistentSessions(
 // row and nothing else learns of it. Device-local, so it works in a team
 // workspace too.
 export function renamePersistentSession(id: string, name: string): Promise<SessionSummary> {
-  return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/rename`, { name });
+  return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/rename`, { name }).then((row) => {
+    sessionStore?.put(row);
+    return row;
+  });
 }
 
 // POST /sessions/:id/close -- the Relace tab's "Uzavřít". The runtime's
@@ -199,9 +234,10 @@ export function renamePersistentSession(id: string, name: string): Promise<Sessi
 // A plain REST wrapper (not sessionsClient) for the same reason as
 // continueSession below: the Relace tab has no live-channel client.
 export function closePersistentSession(id: string): Promise<SessionSummary> {
-  return jsonRequest<{ session: SessionSummary }>("POST", `/sessions/${encodeURIComponent(id)}/close`).then(
-    (r) => r.session,
-  );
+  return jsonRequest<{ session: SessionSummary }>("POST", `/sessions/${encodeURIComponent(id)}/close`).then((r) => {
+    sessionStore?.put(r.session);
+    return r.session;
+  });
 }
 
 // #375/#376/#426: sets the thread's own model/effort override. Its own
@@ -215,8 +251,15 @@ export function closePersistentSession(id: string): Promise<SessionSummary> {
 export function patchSessionModelEffort(
   id: string,
   patch: { model?: string | null; effort?: string | null },
-): Promise<{ model: string | null; effort: string | null }> {
-  return jsonRequest("POST", `/sessions/${encodeURIComponent(id)}/model`, patch);
+): Promise<Omit<SessionSummary, "write_count" | "host_label">> {
+  return jsonRequest<Omit<SessionSummary, "write_count" | "host_label">>(
+    "POST",
+    `/sessions/${encodeURIComponent(id)}/model`,
+    patch,
+  ).then((row) => {
+    putRawSessionRow(row);
+    return row;
+  });
 }
 
 // v2 rule 5: the draft's runner/instance choice, PATCH /sessions/:id --
@@ -225,8 +268,15 @@ export function patchSessionModelEffort(
 export function patchSessionRunnerInstance(
   id: string,
   patch: { runner: string; instance_id: string | null },
-): Promise<{ runner: string | null; instance_id: string | null }> {
-  return jsonRequest("PATCH", `/sessions/${encodeURIComponent(id)}`, patch);
+): Promise<Omit<SessionSummary, "write_count" | "host_label">> {
+  return jsonRequest<Omit<SessionSummary, "write_count" | "host_label">>(
+    "PATCH",
+    `/sessions/${encodeURIComponent(id)}`,
+    patch,
+  ).then((row) => {
+    putRawSessionRow(row);
+    return row;
+  });
 }
 
 // configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
@@ -251,7 +301,10 @@ export function fetchSession(id: string): Promise<Omit<SessionSummary, "write_co
   return jsonRequest<Omit<SessionSummary, "write_count" | "host_label">>(
     "GET",
     `/sessions/${encodeURIComponent(id)}`,
-  );
+  ).then((row) => {
+    putRawSessionRow(row);
+    return row;
+  });
 }
 
 // POST /sessions -- starts a task (session + first run) as a server-driven
@@ -265,7 +318,10 @@ export function startSession(input: {
   instance_id?: string | null;
   policy?: "default" | "auto";
 }): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
-  return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", input);
+  return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", input).then((r) => {
+    sessionStore?.put(r.session);
+    return r;
+  });
 }
 
 // Opens a new, empty thread on a node -- one click, no modal (#374). The
@@ -277,7 +333,9 @@ export function startDraftThread(nodeId: string): Promise<SessionSummary> {
 // DELETE /sessions/:id -- removes a draft (and only a draft, #374); a real
 // thread is closed via sessionsClient.close, never deleted.
 export function deletePersistentSession(id: string): Promise<void> {
-  return jsonRequest<{ deleted: boolean }>("DELETE", `/sessions/${encodeURIComponent(id)}`).then(() => undefined);
+  return jsonRequest<{ deleted: boolean }>("DELETE", `/sessions/${encodeURIComponent(id)}`).then(() => {
+    sessionStore?.remove(id);
+  });
 }
 
 // POST /sessions/:id/continue (#378) -- closes this session (its summary
@@ -291,7 +349,10 @@ export function continueSession(id: string): Promise<{ session: SessionSummary; 
   return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>(
     "POST",
     `/sessions/${encodeURIComponent(id)}/continue`,
-  );
+  ).then((r) => {
+    sessionStore?.put(r.session);
+    return r;
+  });
 }
 
 // GET /overview -- Přehled tab (#196). One aggregate, permission-filtered

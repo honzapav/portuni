@@ -7,21 +7,14 @@ import {
   mergeLiveSessionStates,
   sortInboxSessions,
   countRunningSessions,
-  applySessionStateFrame,
   pickOpenChatSession,
   hostDisplayName,
   requestChatSession,
-  mergeSessionIntoNodeMap,
-  applyNodeSessionsRefetch,
-  dropPromotedDrafts,
-  mergeDraftsIntoNodeMap,
-  pruneNodeSessions,
   isChatSessionState,
   mountedChatSessions,
   isThreadSession,
   nodeRowActive,
   shownChatSessionId,
-  applySessionUpdateToDrafts,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -185,28 +178,6 @@ describe("countRunningSessions", () => {
   });
 });
 
-describe("applySessionStateFrame", () => {
-  const frame = (session_id: string, state: "running" | "suspended" | "closed", node_id: string | null = "N1") =>
-    ({ session_id, state, waiting_since: null, node_id }) as SessionStateMessage;
-
-  it("keeps live sessions and drops a closed one once nothing live shares its node", () => {
-    let map = applySessionStateFrame({}, frame("A", "running"));
-    map = applySessionStateFrame(map, frame("B", "running"));
-    map = applySessionStateFrame(map, frame("A", "closed"));
-    // B is still live on N1, so A's closed frame is kept (the selected-node
-    // refresh needs to see it)...
-    assert.deepEqual(Object.keys(map).sort(), ["A", "B"]);
-    // ...until B closes too, when both go.
-    map = applySessionStateFrame(map, frame("B", "closed"));
-    assert.deepEqual(Object.keys(map), []);
-  });
-
-  it("drops a closed node-less session immediately", () => {
-    const map = applySessionStateFrame({}, frame("C", "closed", null));
-    assert.deepEqual(Object.keys(map), []);
-  });
-});
-
 describe("pickOpenChatSession", () => {
   const s = (id: string, state: "running" | "suspended" | "closed" | "draft") => ({ id, state });
   it("prefers the requested session while it is live, else the newest live one, else nothing", () => {
@@ -244,72 +215,6 @@ describe("requestChatSession", () => {
   });
 });
 
-// --------------------------------------------------------------- #412
-// The Práce sidebar's per-node thread map: a thread started from the node
-// detail has to land in it without waiting for the open-node set to
-// change, and a draft promoted by its first message must not fall out of
-// it in the window between the promotion frame and the refetch it
-// triggers.
-
-type Thread = {
-  id: string;
-  node_id: string | null;
-  state: "running" | "suspended" | "closed" | "draft";
-  session_type: string;
-  cli: string | null;
-};
-const thread = (id: string, state: Thread["state"], node_id: string | null = "n1"): Thread => ({
-  id,
-  node_id,
-  state,
-  session_type: "interactive_task",
-  cli: null,
-});
-
-describe("mergeSessionIntoNodeMap", () => {
-  it("adds a started thread under its node and dedupes by id", () => {
-    const started = thread("s1", "running");
-    const map = mergeSessionIntoNodeMap<Thread>({}, started);
-    assert.deepEqual(map.n1.map((s) => s.id), ["s1"]);
-
-    // Same id again (the refetch's own row) replaces in place, no duplicate.
-    const again = mergeSessionIntoNodeMap(map, { ...started, state: "suspended" });
-    assert.equal(again.n1.length, 1);
-    assert.equal(again.n1[0].state, "suspended");
-
-    // A second thread on the same node keeps the first.
-    const two = mergeSessionIntoNodeMap(again, thread("s2", "running"));
-    assert.deepEqual(two.n1.map((s) => s.id), ["s1", "s2"]);
-  });
-
-  it("ignores a node-less session", () => {
-    const map = mergeSessionIntoNodeMap<Thread>({}, thread("s1", "running", null));
-    assert.deepEqual(Object.keys(map), []);
-  });
-});
-
-describe("applyNodeSessionsRefetch", () => {
-  it("replaces one node's list with what is still open, leaving other nodes alone", () => {
-    const prev = { n1: [thread("old", "running")], n2: [thread("other", "running", "n2")] };
-    const next = applyNodeSessionsRefetch(prev, "n1", [
-      thread("a", "running"),
-      thread("b", "suspended"),
-      thread("c", "closed"),
-    ]);
-    assert.deepEqual(next.n1.map((s) => s.id), ["a", "b"]);
-    assert.deepEqual(next.n2.map((s) => s.id), ["other"]);
-  });
-
-  it("keeps threads only: a hand-opened CLI session has no sub-row (v2 rule 7)", () => {
-    const next = applyNodeSessionsRefetch({}, "n1", [
-      { ...thread("a", "running"), cli: "claude" },
-      { ...thread("b", "running"), session_type: "interactive_chat" },
-      thread("c", "running"),
-    ]);
-    assert.deepEqual(next.n1.map((s) => s.id), ["c"]);
-  });
-});
-
 describe("isThreadSession (v2 rule 7)", () => {
   it("an interactive_task with no cli is a thread", () => {
     assert.equal(isThreadSession({ session_type: "interactive_task", cli: null }), true);
@@ -326,56 +231,6 @@ describe("nodeRowActive (v2 rule 6)", () => {
     assert.equal(nodeRowActive("N1", "N1", "S1"), false);
     assert.equal(nodeRowActive("N2", "N1", null), false);
     assert.equal(nodeRowActive("N1", null, null), false);
-  });
-});
-
-describe("draft promotion race (#412)", () => {
-  // The defect: the promotion frame dropped the local draft on arrival,
-  // assuming the server-fetched list already had it -- it had not been
-  // refetched, so the row disappeared. Modelled as the ordered calls the
-  // listener makes: frame -> (refetch in flight) -> response.
-  it("keeps the row visible from the promotion frame until the refetch carries it", () => {
-    const draft = thread("d1", "draft");
-    let byNode: Record<string, Thread[]> = { n1: [] };
-    let drafts: Record<string, Thread> = { d1: draft };
-
-    // Frame arrives: nothing is dropped yet, so the row is still there.
-    let rendered = mergeDraftsIntoNodeMap(byNode, drafts);
-    assert.deepEqual(rendered.n1.map((s) => s.id), ["d1"]);
-
-    // The refetch resolves with the promoted row.
-    const fetched = [thread("d1", "running")];
-    byNode = applyNodeSessionsRefetch(byNode, "n1", fetched);
-    drafts = dropPromotedDrafts(drafts, fetched);
-    rendered = mergeDraftsIntoNodeMap(byNode, drafts);
-    assert.deepEqual(rendered.n1.map((s) => s.id), ["d1"]);
-    assert.equal(rendered.n1[0].state, "running");
-    assert.deepEqual(Object.keys(drafts), []);
-  });
-
-  it("keeps tracking a draft the refetch did not carry, and never renders it twice", () => {
-    const drafts = { d1: thread("d1", "draft") };
-    // A refetch that raced the promotion (central had not committed it yet)
-    // returns nothing for the node: the draft stays tracked locally.
-    const stillDrafts = dropPromotedDrafts(drafts, []);
-    assert.deepEqual(Object.keys(stillDrafts), ["d1"]);
-    // Unchanged means the same reference, so a refetch that drops nothing
-    // does not re-run every effect keyed on the draft map.
-    assert.equal(stillDrafts, drafts);
-
-    // And once the server list does carry it, the merge yields one row.
-    const byNode = { n1: [thread("d1", "running")] };
-    const rendered = mergeDraftsIntoNodeMap(byNode, stillDrafts);
-    assert.equal(rendered.n1.length, 1);
-    assert.equal(rendered.n1[0].state, "running");
-  });
-});
-
-describe("pruneNodeSessions", () => {
-  it("drops entries for nodes that are no longer open", () => {
-    const prev = { n1: [thread("a", "running")], n2: [thread("b", "running", "n2")] };
-    assert.deepEqual(Object.keys(pruneNodeSessions(prev, ["n1"])), ["n1"]);
-    assert.deepEqual(Object.keys(pruneNodeSessions(prev, [])), []);
   });
 });
 
@@ -475,22 +330,5 @@ describe("mountedChatSessions (#429)", () => {
     const byNode = { n1: [thread("a", "n1")], n2: [thread("c", "n2")] };
     assert.deepEqual(mountedChatSessions(byNode, ["n1"], null).map((s) => s.id), ["a"]);
     assert.deepEqual(mountedChatSessions({ n1: [] }, ["n1"], null), []);
-  });
-});
-
-describe("applySessionUpdateToDrafts", () => {
-  it("replaces the tracked draft with the updated session", () => {
-    const drafts = {
-      d1: { id: "d1", runner: "claude", instance_id: "osobni" },
-      d2: { id: "d2", runner: "claude", instance_id: null },
-    };
-    const next = applySessionUpdateToDrafts(drafts, { id: "d1", runner: "claude", instance_id: "tempo" });
-    assert.equal(next.d1.instance_id, "tempo");
-    assert.equal(next.d2, drafts.d2);
-  });
-
-  it("returns the same map when the session is not a tracked draft", () => {
-    const drafts = { d1: { id: "d1", runner: "claude", instance_id: null } };
-    assert.equal(applySessionUpdateToDrafts(drafts, { id: "s9", runner: "claude", instance_id: null }), drafts);
   });
 });

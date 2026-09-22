@@ -64,15 +64,15 @@ collapsible right aside.
   transcript's scroll offset, which is the thing keeping the pane mounted
   is for. `inert` keeps a hidden pane out of the tab order and out of
   reach of the pointer.
-- The mounted set is `mountedChatSessions(liveOpenSessionsByNode,
-  openNodeIds, workspaceOpenSession)` (`lib/session-views.ts`): every
-  chat-eligible thread of an open node, in open-node order, plus the shown
-  thread when the per-node map has not caught up with it yet (a fresh local
-  draft). Closing a node or a thread drops it from the set, which is what
-  unmounts its chat and unsubscribes it.
-- With several chats mounted, `onSessionUpdated` matches by id
-  (`updateWorkspaceOpenSession` in `App.tsx`): a hidden thread reporting
-  its own state must not replace the shown one.
+- The mounted set is `selectMountedThreads(store, openNodeIds, shownId)`
+  (`lib/session-selectors.ts`, over `mountedChatSessions` in
+  `lib/session-views.ts`): every chat-eligible thread of an open node, in
+  open-node order, plus the shown thread when the store has not caught up
+  with it yet (a fresh draft). Closing a node or a thread drops it from the
+  set, which is what unmounts its chat and unsubscribes it.
+- With several chats mounted, `onSessionUpdated` is `store.put` -- a `put`
+  writes one record by id, so a hidden thread reporting its own state can
+  never replace the shown one.
 
 ### SessionChat (`SessionChat.tsx`)
 
@@ -132,8 +132,10 @@ keeps only rows with `user_id === meId`; `splitThreadsAndCli` then keeps
 threads (`isThreadSession`) as rows and puts hand-opened CLI sessions into
 the footer line "K tomu N relací z CLI (N běží)". `GET /overview` itself
 returns every session on a node the caller can see; the restriction is
-the client's. Rows are overlaid with live state (`mergeLiveSessionStates`)
-and the card reloads whenever the live-state stamp changes. The unsynced
+the client's. Rows are overlaid with live state (`mergeLiveSessionStates`,
+fed a `liveStates` map `App.tsx` derives from the session store via
+`selectLiveStates` -- see "State ownership: the session store" above) and
+the card reloads whenever the live-state stamp changes. The unsynced
 counter is `useSyncPending().pending.total` passed down from `App.tsx`.
 
 ### Sidebar thread rows (`WorkspaceNodeList.tsx`)
@@ -145,8 +147,9 @@ suspended / draft "Nové" / done; the grouping lives in
 `lib/workspace-list.ts`). A thread is `session_type = 'interactive_task'`
 with `cli = null` (`isThreadSession`); a hand-opened CLI session has no
 sub-row, Relace keeps it. **One row is active** (`nodeRowActive`): the
-shown thread (`activeSessionId`, which is `workspaceOpenSession?.id`) when
-there is one, otherwise the selected node -- never both. A node row's
+shown thread (`activeSessionId`, which is the store's `selectShownThread`
+result's id) when there is one, otherwise the selected node -- never both.
+A node row's
 status dot (`summarizeNodeActivity`) appears only while a thread under it
 is running or waiting; suspended and draft threads show none. Metrics:
 node rows 36 px, sub-rows 32 px, 4 px between sub-rows, 8 px between
@@ -162,66 +165,97 @@ on its defaults: a bare 48 px search row with a divider, 40 px rows inset
 name muted on the right (absent under a group heading), and a
 `CommandFooter` of `Kbd` key hints. It finds and opens nodes only.
 
-## State ownership in `App.tsx`
+## State ownership: the session store
 
-`App.tsx` owns everything the surfaces share. Rules that hold it together:
+Spec `docs/superpowers/specs/2026-09-22-web-session-state-design.md`. Every
+fact about a thread -- name, state, waiting, runner, instance, model,
+effort, node, host -- lives in one record per session id
+(`apps/web/src/lib/session-store.ts`'s `SessionStore`), and every surface
+reads that record instead of holding its own copy. Seven principles:
 
-- **One `SessionsClient` for the app's lifetime.** `useState(() =>
-  createSessionsClient({ autoConnect: false }))`, connected from an effect
-  whose cleanup disconnects. Never create the client per render, and never
-  connect inside the initializer: StrictMode runs initializers twice and a
-  transport opened there has no cleanup, so the discarded client keeps a
-  live socket delivering every frame twice.
-- **`sessionStates`** is the latest `session_state` frame per session,
-  folded by `applySessionStateFrame` (terminal entries are dropped once
-  nothing live shares the node). It feeds `StatusFooter`'s running count
-  (`countRunningSessions`), the sidebar overlay and the selected node's
-  refetch. A session can be running without being open anywhere in this
-  window.
-- **`workspaceOpenSession`** is the thread Práce shows. It is refetched
-  from `fetchNodePersistentSessions(id, false)` whenever the selected node,
-  the requested session id, the node's live-state stamp or `localDrafts`
-  change, and picked by `pickOpenChatSession` (requested id first, else the
-  first running / suspended / draft row). `openSessionChat(nodeId,
-  sessionId?)` only records the requested id and opens the node; the
-  effect finds the session.
-- **`openSessionsByNode`** holds each open node's running and suspended
-  threads for the sidebar. `refreshNodeSessions(nodeId)` is coalesced per
-  node: a request while one is in flight sets a trailing flag instead of
-  racing a second fetch, and a response for a node closed in the meantime
-  is dropped (`openNodeIdsRef`). It runs whenever `openNodeIds` changes and
-  on every `session_state` frame whose `node_id` is open, because a thread
-  started anywhere else (Relace tab, node detail, another window)
-  announces itself only through that frame.
-- **`localDrafts`** are the drafts this window opened. The server's node and
-  `/sessions?state=draft` lists carry the caller's own drafts too (#463,
-  another window of the same user included), but only after that window's
-  own refetch runs, so this map is what makes a brand-new draft appear
-  before that refetch completes. A draft is dropped from here only once a
-  refetch of its node actually carries it as a real thread
-  (`dropPromotedDrafts`); the promotion frame alone is not proof the list
-  has it. `mergeDraftsIntoNodeMap` overlays drafts into the sidebar map,
-  deduplicated by id, so the overlap window renders one row.
-- **`registerSessionStarted`** is the single entry point for every
-  `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's `DetailPane`,
-  the sidebar `+`, the Relace tab's "Navázat"): it sets the shown thread,
-  requests it by id (`requestChatSession`), tracks a draft in `localDrafts`,
-  and puts an already-running thread straight into the node map
-  (`mergeSessionIntoNodeMap`) so its row appears before the confirming
-  refetch. Requesting it is what makes it stick: the pick re-runs the
-  moment the new thread is tracked, so without the requested id a node that
-  already had a thread open snapped straight back to it.
-- The folds above (`applySessionStateFrame`, `pickOpenChatSession`,
-  `requestChatSession`, `mergeSessionIntoNodeMap`, `applyNodeSessionsRefetch`,
-  `dropPromotedDrafts`, `mergeDraftsIntoNodeMap`, `pruneNodeSessions`)
-  return their input unchanged when nothing changed, because effects key on
-  those identities.
+1. **Every fact about a thread exists in the window once.** One record per
+   session id; the sidebar, the chat header and the composer read the same
+   value at the same moment.
+2. **The server is the truth, the window is a cache.** A change is: send →
+   the server answers with the row → replace the record. An optimistic
+   write is allowed but is always replaced by the answer; a refusal
+   restores the previous record.
+3. **The live channel updates records, never replaces them.** A
+   `session_state` frame folds state, waiting and (when carried) name into
+   the existing record -- runner, instance and model stay what they were.
+4. **Lists are derived, never stored.** "Threads of node X", "the shown
+   thread", "running count" are selectors over the store plus what is
+   selected (`apps/web/src/lib/session-selectors.ts`); a refetch fills
+   records, it decides nothing about what is shown.
+5. **A draft is a thread.** No local draft map, no promotion bookkeeping;
+   the record's `state` says `draft` until the first message, so
+   `selectNodeThreads` includes it like any other thread.
+6. **A component holds only what is its own.** `SessionChat` holds the
+   transcript, delta buffers and composer state; the thread itself it
+   reads from the store by id.
+7. **Rules are held by scenario tests**
+   (`test/session-store-scenarios.test.ts`), not by helper tests alone.
 
-Threading: `App.tsx` → `Sidebar.tsx` (`workspaceOpenSessionsByNode`,
+**One `SessionsClient` and one `SessionStore` for the app's lifetime.**
+`useState(() => createSessionsClient({ autoConnect: false }))` and
+`useState(() => createSessionStore())`, both created once. The client
+connects from an effect whose cleanup disconnects; the store is bound to
+`api.ts` (`bindSessionStore`, a module-level binding so no caller of a
+session-mutating function can forget to write its answer through) and to
+the client (`sessionsClient.onSessionState(store.applyFrame)`) from
+effects, never inside the initializer -- StrictMode runs initializers
+twice, and a transport or binding done there would either run twice or,
+for the socket, leak a live connection delivering every frame twice.
+
+**`api.ts` writes the store itself.** `fetchNodePersistentSessions` →
+`putMany`; `startDraftThread`/`startSession`, `renamePersistentSession`,
+`closePersistentSession`, `patchSessionModelEffort`,
+`patchSessionRunnerInstance`, `fetchSession`, `continueSession` → `put`;
+`deletePersistentSession` → `remove`. The two device-local PATCHes
+(model/effort, runner/instance) answer with the raw session row (missing
+`write_count`/`host_label`, which only `toSummary` adds) -- `put` still
+wants a full `SessionSummary`, so those two are carried over from whatever
+the store already has for the id.
+
+**What `App.tsx` reads off the store**, all through `useSessionStore` plus
+a selector: the running count (`selectRunningCount`), the selected node's
+shown thread (`selectShownThread`), each open node's own threads for the
+sidebar (`selectNodeThreads`, one call per open node id), and the mounted
+threads (`selectMountedThreads`). `registerSessionStarted` (every
+`onSessionStarted` call site: Práce's `NewTaskButton`, Graf's `DetailPane`,
+the sidebar `+`, the Relace tab's "Navázat") is `store.put(session)` plus
+`requestChatSession` -- the API call that produced `session` already put it,
+so the store write here only covers a caller that does not go through
+`api.ts`; the request is what makes the fresh thread stick, since the pick
+re-runs the moment it is tracked and without the requested id a node that
+already had a thread open would snap back to it.
+
+**What stays local to `App.tsx`:** `requestedChatSessionByNode` (a
+selection, not a fact about a thread), `openNodeIds`, the `SessionsClient`,
+and `refreshNodeSessions(nodeId)` -- coalesced per node (a request while one
+is in flight sets a trailing flag instead of racing a second fetch), run
+whenever `openNodeIds` changes and on every `session_state` frame whose
+`node_id` is open (a thread started elsewhere -- Relace tab, node detail,
+another window -- announces itself only through that frame, which the
+store folds in as a partial record until this refetch completes it). It
+decides nothing about what is shown; `fetchNodePersistentSessions` itself
+writes the rows into the store.
+
+**Two surfaces still overlay their own live-state map onto REST rows the
+store doesn't hold**, because they predate one-record-per-thread and are
+out of this batch's scope: Přehled (`OverviewView`'s `OverviewSessionRow`
+rows) and the Relace tab (`DetailPane.sessions.tsx`'s own node-session
+fetch). Both take a `liveStates`/`liveSessionStates` prop shaped like
+`Record<string, SessionStateMessage>`; `App.tsx` derives it from the store
+(`selectLiveStates`) instead of folding a second map itself, and
+`applyLiveSessionState`/`mergeLiveSessionStates` (`lib/session-views.ts`)
+still do the overlay.
+
+Threading: `App.tsx` → `Sidebar.tsx` (`workspaceThreadsByNode`,
 `workspaceActiveSessionId`, `onWorkspaceOpenSessionChat`,
 `onWorkspaceNewTask`, `onWorkspaceRenameTask`, `onWorkspaceCloseTask`) →
-`WorkspaceNodeList.tsx`; `App.tsx` → `WorkspaceView.tsx` / graph
-`DetailPane` (`onSessionStarted`, `onOpenChat`) → `DetailPaneBody` →
+`WorkspaceNodeList.tsx` (`threadsByNode`); `App.tsx` → `WorkspaceView.tsx` /
+graph `DetailPane` (`onSessionStarted`, `onOpenChat`) → `DetailPaneBody` →
 `NewTaskButton` / `SessionsSection`. The graph view has no chat surface of
 its own; its callbacks route through `openSessionChat`, which switches to
 Práce.
