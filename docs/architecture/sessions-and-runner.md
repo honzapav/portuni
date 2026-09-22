@@ -389,6 +389,15 @@ human verification.
   orientation (`resume: "handoff"` on `run_started`, `resumed_from_run_id`
   linking the runs). There is no `POST /sessions/:id/resume`,
   `/suspend`, no mode picker and no `SUSPEND_INSTRUCTION` handshake.
+- **A conversation is looked for where its profile keeps it.** The
+  transcript lives under the instance's `CLAUDE_CONFIG_DIR`, so
+  `resumeByWriting` and `GET /sessions/:id/resume-info` both resolve it
+  from `session.instance_id` (`getInstanceEnv`) before checking; the
+  default location answers only for a session with no instance.
+- **The conversation id is recorded while the run runs**, from the first
+  event the adapter reports (`captureAgentSessionId`, one write per run) --
+  a run the host loses never reaches its own `run_ended`, and reading the
+  id only there left every such run resumable from the summary alone.
 - **`POST /sessions/:id/continue`** (`continueSession`; `resume` access
   tier; also a `continue` WS frame) closes this session with its own
   log-derived summary and starts a fresh running one on the same node,

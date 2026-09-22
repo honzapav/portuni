@@ -439,11 +439,11 @@ export function claudeProjectSlug(cwd: string): string {
 // ignores profile_id"): when the session was spawned under a profile setting
 // that env var, Claude Code stores its transcripts directly under it instead
 // of under `<homeDir>/.claude` -- checking the default location always
-// reports false for such a session. The profiles registry itself lives in
-// the desktop app's config.json (Rust, apps/desktop/src/workspace.rs), not
-// reachable from this server process, so the caller (api/sessions.ts, via an
-// optional `config_dir` query param) is responsible for resolving the
-// session's instance_id to a config dir and passing it through -- null (the
+// reports false for such a session, which is a resume that quietly restarts
+// from the summary with an agent that never saw the start of the thread.
+// Resolving it is the caller's job, from the session's provider instance
+// (domain/runner/instances.ts): session-runtime.ts's resumeByWriting for the
+// resume itself, api/sessions.ts for the hint it answers with. Null (the
 // default) means "resolve the default location", not "no profile exists".
 export async function checkConversationResumable(
   cli: string | null,
