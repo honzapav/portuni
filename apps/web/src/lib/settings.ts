@@ -3,7 +3,7 @@
 // Files tab's move plan.
 
 import { scopedKey } from "./workspace-storage";
-import type { FilePlan } from "./file-plan";
+import { isPlanEmpty, type FilePlan } from "./file-plan";
 
 // Showtime integration (Settings -> Integrace). Off by default: with it on, a
 // `.showtime` deck opens in the rendered preview (the preview.html Showtime
@@ -145,8 +145,7 @@ export function saveFilePlan(nodeId: string, plan: FilePlan): void {
     const raw = window.localStorage.getItem(key);
     const parsed = raw ? JSON.parse(raw) : {};
     const all = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-    const empty = Object.keys(plan.moves).length === 0 && plan.folders.length === 0;
-    if (empty) {
+    if (isPlanEmpty(plan)) {
       delete all[nodeId];
     } else {
       all[nodeId] = plan;

@@ -12,11 +12,16 @@ import {
   applyPlan,
   planFolder,
   planFolderRename,
+  planApplyCount,
+  planChangeCount,
   pruneEmptyFolders,
   folderPathsOf,
+  isPlanEmpty,
+  EMPTY_PLAN,
   type FilePlan,
   type PlanFile,
 } from "../apps/web/src/lib/file-plan.js";
+import { loadFilePlan, saveFilePlan } from "../apps/web/src/lib/settings.js";
 import { folderActionCheck, newFolderPrefill } from "../apps/web/src/lib/file-drag.js";
 import { buildFileTree, type TreeFile } from "../apps/web/src/lib/file-tree.js";
 
@@ -222,5 +227,79 @@ describe("pruneEmptyFolders", () => {
       folders: ["wip/archiv"],
     };
     assert.deepEqual(pruneEmptyFolders(before, after, files).folders, ["wip/archiv"]);
+  });
+});
+
+// #452: „Nová složka" adds a virtual folder and nothing else, so a plan can
+// hold folders and no move at all. The bar is what carries „Zahodit" (rule 1,
+// the escape hatch that "drops the plan with no effect anywhere"), so gating
+// it on the moves alone left a mistyped folder path in the tree -- and in
+// localStorage -- for good.
+describe("what the plan bar is gated on (#452)", () => {
+  const onlyFolder: FilePlan = { moves: {}, folders: ["wip/archivv"] };
+  const onlyMove: FilePlan = {
+    moves: { "wip/hero.png": { section: "outputs", subpath: null } },
+    folders: [],
+  };
+  const both: FilePlan = {
+    moves: { "wip/hero.png": { section: "outputs", subpath: null } },
+    folders: ["wip/archivv", "wip/nove"],
+  };
+
+  it("a plan holding only a new folder is not empty, so the bar is up", () => {
+    assert.equal(isPlanEmpty(onlyFolder), false);
+    assert.equal(planChangeCount(onlyFolder), 1);
+  });
+
+  it("counts a move and a virtual folder alike", () => {
+    assert.equal(planChangeCount(EMPTY), 0);
+    assert.equal(isPlanEmpty(EMPTY), true);
+    assert.equal(planChangeCount(onlyMove), 1);
+    assert.equal(planChangeCount(both), 3);
+  });
+
+  it("„Použít“ runs the moves only, so a folder-only plan leaves it disabled", () => {
+    assert.equal(planApplyCount(onlyFolder), 0);
+    assert.equal(planApplyCount(onlyMove), 1);
+    assert.equal(planApplyCount(both), 1);
+  });
+
+  it("a mistyped folder survives every applyPlan pass, so only „Zahodit“ removes it", () => {
+    const files = [file("wip/hero.png")];
+    const created = planFolder(EMPTY, "wip/archivv", folderPathsOf(files));
+    assert.equal(created.ok, true);
+    assert.ok(created.ok);
+    // The bar is reachable at once -- this is what the defect hid.
+    assert.equal(isPlanEmpty(created.plan), false);
+    // Refreshing the tree keeps the folder: nothing real sits in it.
+    const first = applyPlan(files, created.plan);
+    assert.deepEqual(first.folders, ["wip/archivv"]);
+    const second = applyPlan(files, first.plan);
+    assert.deepEqual(second.folders, ["wip/archivv"]);
+    // „Zahodit" is the only way out, and it empties the plan entirely.
+    assert.equal(isPlanEmpty(EMPTY_PLAN), true);
+    assert.equal(planChangeCount(EMPTY_PLAN), 0);
+  });
+
+  it("„Zahodit“ on a folder-only plan leaves no entry under the node id", () => {
+    const map = new Map<string, string>();
+    const original = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = {
+      localStorage: {
+        getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+        setItem: (k: string, v: string) => void map.set(k, v),
+        removeItem: (k: string) => void map.delete(k),
+      },
+    };
+    try {
+      saveFilePlan("node-a", onlyFolder);
+      assert.deepEqual(loadFilePlan("node-a").folders, ["wip/archivv"]);
+      saveFilePlan("node-a", EMPTY_PLAN);
+      assert.deepEqual(loadFilePlan("node-a"), { moves: {}, folders: [] });
+      assert.equal(map.size, 0, "the whole key goes once no node holds a plan");
+    } finally {
+      if (original === undefined) delete (globalThis as { window?: unknown }).window;
+      else (globalThis as { window?: unknown }).window = original;
+    }
   });
 });

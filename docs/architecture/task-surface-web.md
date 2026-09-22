@@ -43,7 +43,13 @@ collapsible right aside.
   (`lib/use-file-plan.ts`). The plan is state of the Files tab, not of
   `FileTree`: "Nová složka" sits in the toolbar and writes to the same plan
   the tree renders, and a plan holding only a virtual folder is a tree on a
-  node with no files at all (#448). The held plan carries the node it was
+  node with no files at all (#448). "Empty" is `isPlanEmpty` in
+  `lib/file-plan.ts` -- no move **and** no virtual folder -- and it decides
+  both the removed localStorage entry and the plan bar: the bar is up while
+  the plan holds anything, because it carries "Zahodit", the only way to drop
+  a virtual folder again; `planChangeCount` is what the bar counts and
+  `planApplyCount` (the moves alone) is what "Použít" runs, so a plan of
+  folders only shows the bar with "Použít" disabled (#452). The held plan carries the node it was
   loaded for (`NodeFilePlan`) and `useFilePlan` resolves that pairing during
   render through `planForNode` (#451): the detail pane is not remounted on a
   node switch -- `App.tsx` keeps the previous node's detail while the new one

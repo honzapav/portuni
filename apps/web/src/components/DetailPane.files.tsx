@@ -42,6 +42,8 @@ import {
   planFolderRename,
   planMove,
   orderMoves,
+  planApplyCount,
+  planChangeCount,
   pruneEmptyFolders,
   EMPTY_PLAN,
   type FilePlan,
@@ -508,16 +510,20 @@ type ApplyState =
 
 const IDLE_APPLY: ApplyState = { phase: "idle" };
 
-// The bar between the toolbar and the tree, only while the plan is not empty:
-// the count and "Zahodit" / "Použít", the progress while applying, and the
-// danger colours with "Použít znovu" after a failure (mockup, frames 4 and 6).
+// The bar between the toolbar and the tree, up while the plan holds anything
+// -- a planned move or a virtual folder (rule 1, #452): the count and
+// "Zahodit" / "Použít", the progress while applying, and the danger colours
+// with "Použít znovu" after a failure (mockup, frames 4 and 6). "Použít" is
+// disabled while there is no move to run.
 function PlanBar({
   count,
+  canApply,
   state,
   onDiscard,
   onApply,
 }: {
   count: number;
+  canApply: boolean;
   state: ApplyState;
   onDiscard: () => void;
   onApply: () => void;
@@ -570,7 +576,12 @@ function PlanBar({
       <Button variant="ghost" size="sm" disabled={applying} onClick={onDiscard}>
         Zahodit
       </Button>
-      <Button size="sm" disabled={applying} onClick={onApply}>
+      <Button
+        size="sm"
+        disabled={applying || !canApply}
+        title={canApply ? undefined : "Nová složka vznikne s prvním souborem, který do ní přesuneš"}
+        onClick={onApply}
+      >
         {applying && <Loader2 className="animate-spin" />}
         {applying ? "Používám" : failed ? "Použít znovu" : "Použít"}
       </Button>
@@ -811,10 +822,14 @@ export function FileTree({
     };
   };
 
-  const planCount = Object.keys(plan.moves).length;
+  // The bar counts every entry waiting to be used (rule 1); „Použít" runs the
+  // moves only, so a plan of virtual folders alone keeps the bar -- and with it
+  // „Zahodit" -- reachable with „Použít" disabled (#452).
+  const planCount = planChangeCount(plan);
+  const applyCount = planApplyCount(plan);
 
   const runApply = async () => {
-    if (!onMove || applying || planCount === 0) return;
+    if (!onMove || applying || applyCount === 0) return;
     const total = orderMoves(plan).length;
     setApplyState({ phase: "applying", index: 0, total, fileId: null });
     const outcome = await applyMoves(plan, onMove, (progress) =>
@@ -884,6 +899,7 @@ export function FileTree({
       {planCount > 0 && onMove && (
         <PlanBar
           count={planCount}
+          canApply={applyCount > 0}
           state={applyState}
           onDiscard={() => {
             updatePlan(EMPTY_PLAN);

@@ -366,6 +366,30 @@ export function pruneEmptyFolders(
   return { moves: next.moves, folders };
 }
 
+// --- plan size ------------------------------------------------------------
+
+// Rule 1: the plan bar is up while the plan is not empty, and „Zahodit" is the
+// escape hatch that drops the plan with no effect anywhere. Both kinds of
+// entry are a change waiting to be used -- a planned move and a virtual folder
+// alike -- so both are counted and both keep the bar up; a plan holding only a
+// new folder is otherwise unreachable and the folder can never be removed
+// (#452).
+export function planChangeCount(plan: FilePlan): number {
+  return Object.keys(plan.moves).length + plan.folders.length;
+}
+
+export function isPlanEmpty(plan: FilePlan): boolean {
+  return planChangeCount(plan) === 0;
+}
+
+// What „Použít" has to do: only the moves. A virtual folder has nothing to
+// apply -- it becomes real when an applied move puts the first file in it --
+// so a plan of folders alone leaves „Použít" disabled instead of running an
+// empty loop.
+export function planApplyCount(plan: FilePlan): number {
+  return Object.keys(plan.moves).length;
+}
+
 // --- orderMoves -----------------------------------------------------------
 
 // Apply order: shallower targets first, then by path, so a folder's files land
