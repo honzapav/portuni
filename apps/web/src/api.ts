@@ -27,6 +27,7 @@ import type {
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
 import { isCentralMode } from "./lib/data-mode";
+import type { MoveTarget } from "./lib/file-plan";
 
 // User shape returned by GET /users. Used by the Actors page to pick a
 // user_id when creating/editing a real (non-placeholder) person actor.
@@ -749,6 +750,39 @@ export function renameFile(
     `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}/rename`,
     { new_filename: newFilename },
   );
+}
+
+// POST /nodes/:id/files/:fileId/move -- the one call "Použít" makes per
+// planned file in the Files tab (#445). `confirmed: true` skips the route's
+// preview answer; the move itself is the route's business (record only for a
+// never-pushed file, record plus a remote rename for a pushed one, mirror
+// relocation on the device).
+//
+// A half-done move comes back as a 200 whose body carries
+// `status: "repair_needed"` and a hint -- the same shape delete and resolve
+// return -- so anything but `status: "ok"` is thrown with the server's hint
+// or message and shown on the file's row.
+export async function moveFile(
+  nodeId: string,
+  fileId: string,
+  target: MoveTarget,
+): Promise<Record<string, unknown>> {
+  const r = await jsonRequest<Record<string, unknown> & {
+    status?: string;
+    repair_hint?: string;
+    error?: string;
+    detail?: { error?: string } | null;
+  }>(
+    "POST",
+    `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}/move`,
+    { new_section: target.section, new_subpath: target.subpath, confirmed: true },
+  );
+  if (r.status !== "ok") {
+    throw new Error(
+      r.repair_hint ?? r.error ?? r.detail?.error ?? `Přesun se nepovedl (${r.status ?? "bez stavu"})`,
+    );
+  }
+  return r;
 }
 
 export type ResolveAction = "keep_local" | "take_remote" | "restore";
