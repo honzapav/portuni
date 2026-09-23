@@ -29,6 +29,7 @@ import { apiFetch } from "./lib/backend-url";
 import { isCentralMode } from "./lib/data-mode";
 import type { MoveTarget } from "./lib/file-plan";
 import type { SessionStore } from "./lib/session-store";
+import { parseHandoffRefusal } from "./lib/handoff-refusal";
 
 // The window's session store (#465, spec
 // docs/superpowers/specs/2026-09-22-web-session-state-design.md, "Writing"):
@@ -251,14 +252,19 @@ export function closePersistentSession(id: string): Promise<SessionSummary> {
 // which is what makes the sidebar, the chat header and Relace agree.
 // A plain REST wrapper (not sessionsClient) for the same reason
 // continueSession is one: the Relace tab has no live-channel client.
-export function handoffSession(id: string): Promise<{ session: SessionSummary; handoff_path: string }> {
-  return jsonRequest<{ session: SessionSummary; handoff_path: string }>(
-    "POST",
-    `/sessions/${encodeURIComponent(id)}/handoff`,
-  ).then((r) => {
-    sessionStore?.put(r.session);
-    return r;
-  });
+// A refusal (409) rejects with HandoffRefusedError carrying the server's
+// Czech reason, which is what the caller shows (handoffErrorText).
+export async function handoffSession(id: string): Promise<{ session: SessionSummary; handoff_path: string }> {
+  const path = `/sessions/${encodeURIComponent(id)}/handoff`;
+  const res = await apiFetch(path, { method: "POST" });
+  if (res.status === 409) {
+    const refusal = parseHandoffRefusal(res.status, await res.clone().text().catch(() => ""));
+    if (refusal) throw refusal;
+  }
+  await throwForStatus(res, `POST ${path}`);
+  const r = (await res.json()) as { session: SessionSummary; handoff_path: string };
+  sessionStore?.put(r.session);
+  return r;
 }
 
 // #375/#376/#426: sets the thread's own model/effort override. Its own

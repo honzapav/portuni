@@ -56,7 +56,8 @@ import {
   StartSessionBody,
   sessionResumeInfoPayload,
 } from "./sessions.js";
-import { NoRunnerAvailableError, SessionHandoffError } from "../domain/runner/session-runtime.js";
+import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
+import { respondHandoffRefusal } from "./session-handoff-errors.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -475,10 +476,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           const updated = await sessionRuntime.getSession(session.id);
           respondJson(res, 201, { session: updated ?? session, run });
         } catch (err) {
-          if (err instanceof SessionHandoffError) {
-            respondJson(res, 409, { error: err.message, code: err.code });
-            return true;
-          }
+          if (respondHandoffRefusal(res, err)) return true;
           if (err instanceof NoRunnerAvailableError) {
             respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
             return true;
@@ -679,10 +677,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         const { session, handoff_path } = await sessionRuntime.handoff(sessionId);
         respondJson(res, 200, { session, handoff_path });
       } catch (err) {
-        if (err instanceof SessionHandoffError) {
-          respondJson(res, 409, { error: err.message, code: err.code });
-          return true;
-        }
+        if (respondHandoffRefusal(res, err)) return true;
         if (respondAgentSessionError(res, err)) return true;
         respondError(res, `POST /sessions/${sessionId}/handoff`, err);
       }

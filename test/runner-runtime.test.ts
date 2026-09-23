@@ -1005,21 +1005,112 @@ describe("session runtime: handoff (#459 Předat)", () => {
     );
   });
 
-  it("a node with no mirror on this device is refused: there is no file to hand over", async () => {
-    const { db, nodeId } = await sharedDb();
-    const store = new DbSessionStore(db);
-    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+  // No mirror here: an empty mirror registry in a temp workspace.
+  async function withoutMirror(script: FakeScriptStep[]) {
+    const shared = await sharedDb();
+    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-handoff-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    const store = new DbSessionStore(shared.db);
+    const adapter = new FakeRunnerAdapter({ script });
     const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    return { ...shared, store, runtime };
+  }
+
+  it("a node with no mirror on this device is refused before anything happens: the run stays live", async () => {
+    const { nodeId, store, runtime } = await withoutMirror([{ wait: "message" }]);
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const eventsBefore = (await content.listEvents(session.id)).length;
 
     await assert.rejects(
       () => runtime.handoff(session.id),
-      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NO_MIRROR",
+      (err: unknown) =>
+        err instanceof SessionHandoffError && err.code === "HANDOFF_NO_MIRROR" && /zrcadlo/.test(err.message),
     );
-    // The thread is still suspended with its summary -- the run ended, the
-    // content store holds it; only the FILE could not be written here.
-    assert.equal((await store.getSession(session.id))?.state, "suspended");
-    assert.ok((await content.getContent(session.id))?.handoff_inline);
+    // Refused before any side effect: not suspended, the run not ended, no
+    // summary written anywhere, nothing appended to the transcript.
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[0].ended_at, null);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+    assert.equal((await content.listEvents(session.id)).length, eventsBefore);
+    await runtime.closeSession(session.id);
+  });
+
+  it("a suspended thread with no file but its transcript here gets the file written from it", async () => {
+    const { nodeId, store, runtime } = await withoutMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    // Suspended while the node had no mirror here: the summary is inline.
+    await runtime.checkIdleRunsOnce(-1);
+    const suspended = await store.getSession(session.id);
+    assert.equal(suspended?.state, "suspended");
+    assert.equal(suspended?.handoff_path, null);
+    const inline = (await content.getContent(session.id))?.handoff_inline;
+    assert.ok(inline);
+
+    // The mirror arrives; Předat now writes the file instead of refusing.
+    const mirrorRoot = join(workspace!, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const result = await runtime.handoff(session.id);
+
+    assert.equal(result.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+    assert.equal(result.session.state, "suspended");
+    assert.equal((await store.getSession(session.id))?.handoff_path, result.handoff_path);
+    assert.equal(await readFile(join(mirrorRoot, result.handoff_path), "utf8"), inline);
+    // The file is the handoff now; the inline copy is gone.
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+  });
+
+  it("a suspended thread whose transcript is on another device is refused, naming the device", async () => {
+    const { db, nodeId, store, runtime } = await withoutMirror([]);
+    const mirrorRoot = join(workspace!, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: "druhy-mac",
+    });
+    await db.execute({ sql: "UPDATE sessions SET state = 'suspended' WHERE id = ?", args: [created.id] });
+
+    await assert.rejects(
+      () => runtime.handoff(created.id),
+      (err: unknown) =>
+        err instanceof SessionHandoffError &&
+        err.code === "HANDOFF_TRANSCRIPT_ELSEWHERE" &&
+        /druhy-mac/.test(err.message),
+    );
+    const after = await store.getSession(created.id);
+    assert.equal(after?.state, "suspended");
+    assert.equal(after?.handoff_path, null);
+  });
+
+  it("a thread whose run is live on another device is refused and stays running", async () => {
+    const { nodeId, store, runtime } = await withoutMirror([]);
+    const mirrorRoot = join(workspace!, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: "druhy-mac",
+    });
+    const run = await store.createRun({ session_id: created.id, runner: "fake", instance_id: null, host_id: "druhy-mac" });
+    assert.equal((await store.getSession(created.id))?.state, "running");
+
+    await assert.rejects(
+      () => runtime.handoff(created.id),
+      (err: unknown) =>
+        err instanceof SessionHandoffError && err.code === "HANDOFF_RUN_ELSEWHERE" && /druhy-mac/.test(err.message),
+    );
+    assert.equal((await store.getSession(created.id))?.state, "running");
+    const runs = await store.listRuns(created.id);
+    assert.equal(runs.find((r) => r.id === run.id)?.ended_at, null);
   });
 });
 

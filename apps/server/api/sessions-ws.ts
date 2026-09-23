@@ -39,7 +39,7 @@ import { getSessionRuntime } from "../boot/session-runtime.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import { listSessions } from "../domain/sessions.js";
 import { scopeAtLeast } from "../auth/roles.js";
-import { SessionHandoffError } from "../domain/runner/session-runtime.js";
+import { handoffRefusal } from "./session-handoff-errors.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 import { logAudit } from "../infra/audit.js";
@@ -488,8 +488,9 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       await deps.audit(conn.identity, "session_handoff", sessionId, { handoff_path });
       sendReply(conn.ws, frame.id, { session: await toSummary(session), handoff_path });
     } catch (err) {
-      if (err instanceof SessionHandoffError) {
-        sendErrorReply(conn.ws, frame.id, err.code, err.message);
+      const refusal = handoffRefusal(err);
+      if (refusal) {
+        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message);
         return;
       }
       throw err;

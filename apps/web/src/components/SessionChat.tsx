@@ -55,6 +55,7 @@ import {
   type TranscriptRow,
   type WorkingPhase,
 } from "../lib/session-chat";
+import { HandoffRefusedError, handoffErrorText } from "../lib/handoff-refusal";
 import { useNowTick } from "../lib/use-now-tick";
 import { contextRingState, latestContextUsage } from "../lib/context-ring";
 import { Button } from "@/components/ui/button";
@@ -194,6 +195,10 @@ export default function SessionChat({
   // on -- the path is the whole point of the action (it is what the other
   // machine opens), so it does not vanish with the request.
   const [handoffPath, setHandoffPath] = useState<string | null>(null);
+  // Once the server said Předat cannot work from here (no mirror of the
+  // node, the run or the transcript on another device), the action is not
+  // offered again in this view; the reason stays on screen.
+  const [handoffUnavailable, setHandoffUnavailable] = useState(false);
   // #378: "Uzavřít" is the one irreversible action, so it's the only one
   // that asks -- confirmed via this dialog, not window.confirm (a no-op in
   // the Tauri webview).
@@ -473,7 +478,8 @@ export default function SessionChat({
       setHandoffPath(handoff_path);
       setNoticeDismissed(false);
     } catch (e) {
-      setError(String(e));
+      setError(handoffErrorText(e));
+      if (e instanceof HandoffRefusedError && e.code !== "HANDOFF_NOT_ALLOWED") setHandoffUnavailable(true);
     } finally {
       setActionPending(null);
     }
@@ -628,7 +634,7 @@ export default function SessionChat({
                   done. #461: and only where the conversation is -- the
                   summary is written from the transcript, so a device that
                   holds none of it cannot hand the thread anywhere. */}
-              {(session.state === "running" || session.state === "suspended") && !elsewhere && (
+              {(session.state === "running" || session.state === "suspended") && !elsewhere && !handoffUnavailable && (
                 <HeaderIcon
                   onClick={() => void handleHandoff()}
                   disabled={actionPending !== null}

@@ -8,7 +8,7 @@
 
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
@@ -40,7 +40,8 @@ import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/ru
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
-import { getMirrorPath } from "../apps/server/domain/sync/mirror-registry.js";
+import { getMirrorPath, registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 
@@ -208,6 +209,15 @@ class FakeCentral implements CentralClient {
 
   async listSessionEvents(): Promise<SessionEventRow[]> {
     throw new Error("the sidecar must not read session events from central (#456)");
+  }
+
+  // The one-time legacy download runs at the sync agent's boot, not in
+  // these routes (test/content-import.test.ts covers it).
+  async listLegacySessionContent(): Promise<string[]> {
+    throw new Error("not used in this test");
+  }
+  async getLegacySessionContent(): ReturnType<CentralClient["getLegacySessionContent"]> {
+    throw new Error("not used in this test");
   }
 
   async orientation(): Promise<OrientationSummary | null> {
@@ -660,6 +670,39 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(body.code, "HANDOFF_NOT_ALLOWED");
     assert.match(body.error, /Předat lze jen/);
     assert.equal(fake.sessions.get(session.id)?.state, "draft");
+  });
+
+  // #459: a run live on another device can only be handed over there. The
+  // sync agent refuses before touching anything, and the record on central
+  // stays exactly as it was.
+  it("POST /sessions/:id/handoff 409s when the run is live on another device, and changes nothing", async () => {
+    if (!(await getMirrorPath(SOLO_USER, NODE_ID))) {
+      const mirror = join(workspace, "mirror-elsewhere");
+      await mkdir(mirror, { recursive: true });
+      await registerMirror(SOLO_USER, NODE_ID, mirror);
+    }
+    const created = await fake.createSessionRecord({
+      node_id: NODE_ID,
+      user_id: SOLO_USER,
+      runner: "fake",
+      instance_id: null,
+      host_id: "druhy-mac",
+    });
+    const run = await fake.createSessionRun({
+      session_id: created.id,
+      runner: "fake",
+      instance_id: null,
+      host_id: "druhy-mac",
+    });
+
+    const res = await fetch(`${base}/sessions/${created.id}/handoff`, { method: "POST" });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string; code: string };
+    assert.equal(body.code, "HANDOFF_RUN_ELSEWHERE");
+    assert.match(body.error, /druhy-mac/);
+    assert.equal(fake.sessions.get(created.id)?.state, "running");
+    assert.equal(fake.sessions.get(created.id)?.handoff_path, null);
+    assert.equal(fake.runs.get(run.id)?.ended_at, null);
   });
 
   // #460 "Navázat na handoff": the file and the run are this device's, the

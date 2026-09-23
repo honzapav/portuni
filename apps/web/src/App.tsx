@@ -60,6 +60,7 @@ import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import { loadOpenNodes, saveOpenNodes } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
+import { handoffErrorText } from "./lib/handoff-refusal";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
 // Náhled by default; everything else starts in the source editor.
@@ -928,7 +929,7 @@ export default function App() {
   const workspaceHandoffTask = useCallback(
     (session: SessionSummary) => {
       void handoffSession(session.id).catch((e) => {
-        setWorkspaceDetailError(`Vlákno se nepodařilo předat: ${String(e)}`);
+        setWorkspaceDetailError(`Vlákno se nepodařilo předat: ${handoffErrorText(e)}`);
       });
     },
     [],

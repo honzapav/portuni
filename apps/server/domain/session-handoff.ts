@@ -391,17 +391,34 @@ export interface SuspendServerSideDeps {
   trackHandoff(input: { userId: string; nodeId: string; localPath: string }): Promise<void>;
 }
 
+export interface SuspendServerSideOptions {
+  // #459 Předat on a thread that is already suspended but has no handoff
+  // FILE (it was suspended where the node had no mirror, so its summary is
+  // handoff_inline in this device's content.db, or it has none yet): write
+  // the file now, into the mirror this device has, and record its path.
+  // The caller has already checked that the mirror and the content are here.
+  writeFileIfSuspended?: boolean;
+}
+
+export type SuspendServerSide = (
+  sessionId: string,
+  reason: ServerHandoffReason,
+  opts?: SuspendServerSideOptions,
+) => Promise<SessionRow | null>;
+
 // Suspends a 'running' session with a summary the SERVER writes, not the
 // agent -- a real file in the mirror when one exists on this device (same
 // path writeHandoffAndSuspend uses), or handoff_inline when it doesn't
 // (no mirror for the node here). A no-op (returns the row unchanged) for
 // any state other than 'running': already-suspended or terminal sessions
-// have nothing for this to do.
-export function createSuspendServerSide(
-  deps: SuspendServerSideDeps,
-): (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null> {
-  return async function suspendServerSide(sessionId, reason) {
+// have nothing for this to do -- except a suspended one with no file when
+// the caller asks for it (writeFileIfSuspended).
+export function createSuspendServerSide(deps: SuspendServerSideDeps): SuspendServerSide {
+  return async function suspendServerSide(sessionId, reason, opts = {}) {
     const session = await deps.record.getSession(sessionId);
+    if (opts.writeFileIfSuspended && session?.state === "suspended" && !session.handoff_path) {
+      return writeFileForSuspended(deps, session, reason);
+    }
     if (session?.state !== "running") return session;
 
     // A suspend that does not come from the run's own end (a boot sweep after
@@ -510,13 +527,14 @@ async function endDanglingRuns(
   return open.map((r) => r.id);
 }
 
-async function suspendWithSummary(
+// The summary a server-side suspend writes, built from this device's
+// transcript and the session's scope.
+async function buildSuspendSummary(
   deps: SuspendServerSideDeps,
   session: SessionRow,
   reason: ServerHandoffReason,
-): Promise<SessionRow | null> {
+): Promise<string> {
   const sessionId = session.id;
-
   // A scope read that fails must not cost the session its suspend: the
   // summary is still worth writing without its scope sections, and the
   // alternative is a thread left 'running' with no handoff at all.
@@ -525,7 +543,7 @@ async function suspendWithSummary(
     return EMPTY_SUMMARY_SCOPE;
   });
   const events = await listSummaryEvents(deps.content, sessionId);
-  const summary = buildRunSummaryContent({
+  return buildRunSummaryContent({
     nodeName: scope.node_name,
     sessionName: session.name,
     reason,
@@ -534,36 +552,78 @@ async function suspendWithSummary(
     readSet: scope.read_set,
     lastActiveAt: session.last_active_at,
   });
-  const handoffHash = sha256Buffer(Buffer.from(summary, "utf8"));
-  const handoffTitle = extractHandoffTitle(summary);
+}
 
+// Writes `summary` as the thread's handoff file into the node's mirror,
+// records it (state suspended, path, hash) and tracks the file. The inline
+// copy on the device is cleared: the file is now the handoff.
+async function writeSummaryFileAndRecord(
+  deps: SuspendServerSideDeps,
+  session: SessionRow & { node_id: string },
+  mirrorRoot: string,
+  summary: string,
+): Promise<SessionRow | null> {
+  const relPath = handoffRelativePath(session.id);
+  const absPath = join(mirrorRoot, relPath);
+  await mkdir(dirname(absPath), { recursive: true });
+  await writeFile(absPath, summary, "utf8");
+  await deps.content.setContent(session.id, { handoff_inline: null });
+  const row = await deps.suspendRecord(session, {
+    handoffPath: relPath,
+    handoffHash: sha256Buffer(Buffer.from(summary, "utf8")),
+    handoffTitle: extractHandoffTitle(summary),
+  });
+
+  // Record-only in a personal workspace, a push in a team one -- either
+  // way best-effort: the file is on disk and the session IS suspended;
+  // a tracking failure must undo neither.
+  try {
+    await deps.trackHandoff({ userId: session.user_id, nodeId: session.node_id, localPath: absPath });
+  } catch (err) {
+    console.error(
+      `[portuni:session-handoff] tracking ${absPath} failed; the session is suspended and the handoff is written locally, but not yet tracked:`,
+      err,
+    );
+  }
+  return row;
+}
+
+async function suspendWithSummary(
+  deps: SuspendServerSideDeps,
+  session: SessionRow,
+  reason: ServerHandoffReason,
+): Promise<SessionRow | null> {
+  const summary = await buildSuspendSummary(deps, session, reason);
   const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
   if (mirrorRoot && session.node_id) {
-    const relPath = handoffRelativePath(sessionId);
-    const absPath = join(mirrorRoot, relPath);
-    await mkdir(dirname(absPath), { recursive: true });
-    await writeFile(absPath, summary, "utf8");
-    await deps.content.setContent(sessionId, { handoff_inline: null });
-    const row = await deps.suspendRecord(session, { handoffPath: relPath, handoffHash, handoffTitle });
-
-    // Record-only in a personal workspace, a push in a team one -- either
-    // way best-effort: the file is on disk and the session IS suspended;
-    // a tracking failure must undo neither.
-    try {
-      await deps.trackHandoff({ userId: session.user_id, nodeId: session.node_id, localPath: absPath });
-    } catch (err) {
-      console.error(
-        `[portuni:session-handoff] tracking ${absPath} failed; the session is suspended and the handoff is written locally, but not yet tracked:`,
-        err,
-      );
-    }
-    return row;
+    return writeSummaryFileAndRecord(deps, { ...session, node_id: session.node_id }, mirrorRoot, summary);
   }
 
   // No mirror here: the summary itself is the handoff, and it is content --
   // the device holds it, the record keeps only the hash (#456).
-  await deps.content.setContent(sessionId, { handoff_inline: summary });
-  return deps.suspendRecord(session, { handoffPath: null, handoffHash, handoffTitle });
+  await deps.content.setContent(session.id, { handoff_inline: summary });
+  return deps.suspendRecord(session, {
+    handoffPath: null,
+    handoffHash: sha256Buffer(Buffer.from(summary, "utf8")),
+    handoffTitle: extractHandoffTitle(summary),
+  });
+}
+
+// #459 Předat on a suspended thread with no handoff file. The summary is
+// the one its suspend already wrote when there was one (handoff_inline on
+// this device), otherwise the same summary a suspend writes, built from
+// this device's transcript now. No mirror here: nothing to write into, the
+// row comes back unchanged (the caller refuses before it gets here).
+async function writeFileForSuspended(
+  deps: SuspendServerSideDeps,
+  session: SessionRow,
+  reason: ServerHandoffReason,
+): Promise<SessionRow | null> {
+  const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
+  if (!mirrorRoot || !session.node_id) return session;
+  const inline = (await deps.content.getContent(session.id))?.handoff_inline ?? null;
+  const summary = inline ?? (await buildSuspendSummary(deps, session, reason));
+  return writeSummaryFileAndRecord(deps, { ...session, node_id: session.node_id }, mirrorRoot, summary);
 }
 
 // Claude Code's local conversation-transcript layout: one directory per

@@ -22,8 +22,11 @@ import {
   extractHandoffTitle,
   isHandoffRelativePath,
   readNodeHandoffFile,
-  suspendSessionServerSide,
+  createSuspendServerSide,
+  localSuspendDeps,
   type ServerHandoffReason,
+  type SuspendServerSide,
+  type SuspendServerSideOptions,
   type SummaryEvent,
 } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
@@ -32,7 +35,8 @@ import type { ListEventsOptions, SessionContentStore } from "./store-content.js"
 import type { SessionEventRow } from "../../shared/api-types.js";
 import { detectAll } from "./registry.js";
 import { getInstanceDefaults, getInstanceEnv, listInstances, type InstanceDefaults } from "./instances.js";
-import { localHostId } from "./hosts.js";
+import { localHostId, resolveHostLabel } from "./hosts.js";
+import { getMirrorPath } from "../sync/mirror-registry.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
@@ -60,7 +64,13 @@ export class NoRunnerAvailableError extends Error {}
 // is Czech, because it is shown to the user as-is.
 export class SessionHandoffError extends Error {
   constructor(
-    readonly code: "HANDOFF_NOT_ALLOWED" | "HANDOFF_NO_MIRROR" | "HANDOFF_FILE_NOT_HERE" | "HANDOFF_PATH_INVALID",
+    readonly code:
+      | "HANDOFF_NOT_ALLOWED"
+      | "HANDOFF_NO_MIRROR"
+      | "HANDOFF_RUN_ELSEWHERE"
+      | "HANDOFF_TRANSCRIPT_ELSEWHERE"
+      | "HANDOFF_FILE_NOT_HERE"
+      | "HANDOFF_PATH_INVALID",
     message: string,
   ) {
     super(message);
@@ -187,7 +197,7 @@ export interface CreateSessionRuntimeDeps {
   // boot/session-runtime.ts's createAgentSessionRuntime supplies the same
   // code with its two graph-db reads pointed at the central server (#458),
   // since agent mode has no graph db to write against.
-  suspendFallback?: (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null>;
+  suspendFallback?: SuspendServerSide;
   // #407: how a node's organization is resolved when a draft's first
   // message picks the organization's default runner instance. Defaults to
   // the local graph-db query; createAgentSessionRuntime supplies the
@@ -343,7 +353,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   const { store, content, registry, provision } = deps;
   const suspendFallback =
     deps.suspendFallback ??
-    ((sessionId: string, reason: ServerHandoffReason) => suspendSessionServerSide(getDb(), content, sessionId, reason));
+    ((sessionId: string, reason: ServerHandoffReason, opts?: SuspendServerSideOptions) =>
+      createSuspendServerSide(localSuspendDeps(getDb(), content))(sessionId, reason, opts));
   const resolveNodeOrgId = deps.resolveNodeOrgId ?? resolveNodeOrgIdLocal;
 
   const liveRuns = new Map<string, LiveRun>();
@@ -947,37 +958,86 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     await endRunWithReason(sessionId, "idle");
   }
 
-  // #459 "Předat". Running: cancel the turn in flight first (the summary
-  // should describe a finished thought, not one mid-sentence), let the
-  // queue drain, then end the run -- the run_ended that follows falls
-  // through handleAdapterEvent's auto-summary path, tagged "handoff", so
-  // the file, its registration and the record patch are the one suspend
-  // implementation, not a second copy. A running thread with no live run
-  // here (this device restarted under it) still gets its summary: the
-  // suspend path itself needs no adapter.
-  // The mirror check comes last on purpose: whether the summary could be
-  // written as a FILE is only known once it has been written (a node with
-  // no mirror on this device leaves handoff_path null and the summary in
-  // content.db), and the thread is genuinely suspended either way.
+  // #459 "Předat". Every refusal comes BEFORE any side effect: nothing is
+  // interrupted, ended or suspended unless the file can be written here.
+  //   - a draft or closed thread: nothing to hand over;
+  //   - no mirror of the node on this device: there is nowhere to write the
+  //     file;
+  //   - running, but the run is live on another device: only that device
+  //     can end it and summarise it;
+  //   - suspended with no file, and the transcript is on another device:
+  //     the summary is built from it, so only that device can write it.
+  // Running here: cancel the turn in flight first (the summary should
+  // describe a finished thought, not one mid-sentence), let the queue
+  // drain, then end the run -- the run_ended that follows falls through
+  // handleAdapterEvent's auto-summary path, tagged "handoff", so the file,
+  // its registration and the record patch are the one suspend
+  // implementation, not a second copy. A running thread whose run was on
+  // this device but has no live handle any more (the device restarted
+  // under it) still gets its summary: the suspend path needs no adapter.
+  // Suspended with no file: the same summary path writes the file now.
   async function handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
     const session = await mustGetSession(sessionId);
-    if (session.state === "suspended") {
-      if (!session.handoff_path) throw noMirrorHandoffError();
+    if (session.state === "suspended" && session.handoff_path) {
       return { session, handoff_path: session.handoff_path };
     }
-    if (session.state !== "running") {
+    if (session.state !== "running" && session.state !== "suspended") {
       throw new SessionHandoffError(
         "HANDOFF_NOT_ALLOWED",
         "Předat lze jen běžící nebo pozastavené vlákno.",
       );
     }
-    await interrupt(sessionId);
-    if (!(await endRunWithReason(sessionId, "handoff"))) {
-      await suspendFallback(sessionId, "handoff");
+    if (!session.node_id || !(await getMirrorPath(session.user_id, session.node_id))) {
+      throw noMirrorHandoffError();
+    }
+
+    if (session.state === "running") {
+      if (!liveRuns.has(sessionId)) {
+        const host = await runHostOf(session);
+        if (host && host !== localHostId()) {
+          throw new SessionHandoffError(
+            "HANDOFF_RUN_ELSEWHERE",
+            `Vlákno právě běží na zařízení ${resolveHostLabel(host) ?? host}; předat ho lze jen tam.`,
+          );
+        }
+      }
+      await interrupt(sessionId);
+      if (!(await endRunWithReason(sessionId, "handoff"))) {
+        await suspendFallback(sessionId, "handoff");
+      }
+    } else {
+      if (!(await contentIsHere(sessionId))) {
+        const host = await runHostOf(session);
+        if (host && host !== localHostId()) {
+          throw new SessionHandoffError(
+            "HANDOFF_TRANSCRIPT_ELSEWHERE",
+            `Transkript vlákna je na zařízení ${resolveHostLabel(host) ?? host}; předat ho lze jen tam.`,
+          );
+        }
+      }
+      await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true });
     }
     const after = await mustGetSession(sessionId);
     if (!after.handoff_path) throw noMirrorHandoffError();
     return { session: after, handoff_path: after.handoff_path };
+  }
+
+  // Where the thread last ran: the host of its open run if it has one,
+  // else of its latest run, else the record's own.
+  async function runHostOf(session: SessionRow): Promise<string | null> {
+    const runs = await store.listRuns(session.id);
+    const open = runs.filter((r) => r.ended_at === null && r.host_id);
+    if (open.length > 0) return open[open.length - 1].host_id;
+    const withHost = runs.filter((r) => r.host_id);
+    if (withHost.length > 0) return withHost[withHost.length - 1].host_id;
+    return session.host_id;
+  }
+
+  // Whether this device holds any of the thread's content -- its
+  // transcript or its content row.
+  async function contentIsHere(sessionId: string): Promise<boolean> {
+    if ((await content.listEvents(sessionId, { limit: 1 })).length > 0) return true;
+    return (await content.getContent(sessionId)) !== null;
   }
 
   // #460 "Navázat na handoff". The file is read BEFORE anything is created,
