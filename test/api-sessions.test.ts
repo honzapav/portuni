@@ -430,9 +430,10 @@ describe("session REST endpoints", () => {
     assert.equal(res.statusCode, 404);
   });
 
-  // #329: a server-generated suspend (here via the transport-disconnect GC
-  // backstop) must be distinguishable from an agent-written one at resume time.
-  test("GET /sessions/:id/resume-info reports generated_by 'server' and the reason after a server-side suspend", async () => {
+  // #329 made a server-generated suspend distinguishable at resume time by
+  // its summary; #497: a server-side suspend (here the transport-disconnect
+  // GC backstop) writes no summary, so there is nothing to attribute.
+  test("GET /sessions/:id/resume-info reports no generated summary after a server-side suspend (#497)", async () => {
     const session = await createSession(db, SOLO, {
       node_id: nodeId,
       session_type: "interactive_task",
@@ -442,8 +443,9 @@ describe("session REST endpoints", () => {
     const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/resume-info`);
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body) as SessionResumeInfo;
-    assert.equal(body.generated_by, "server");
-    assert.equal(body.reason, "disconnect");
+    assert.equal(body.generated_by, null);
+    assert.equal(body.reason, null);
+    assert.equal(body.handoff_path, null);
   });
 
   // The restart indicator (#342, SessionChat header): GET /sessions/:id/

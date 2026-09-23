@@ -161,8 +161,8 @@ A message written at the moment a run is ending is not lost either. A run
 can end while you are typing — the runner hit its spend or rate limit, it
 errored, the thread had been idle long enough to be suspended, or you
 pressed Předat. The message still lands in the transcript, and Portuni
-delivers it: it waits for that run to finish ending and for the thread's
-summary to be written, then wakes the thread with that message as the
+delivers it: it waits for that run to finish ending and for the thread to
+be suspended, then wakes the thread with that message as the
 first message of the next run. You see it once, the agent answers it, and
 nothing has to be typed again.
 
@@ -199,7 +199,9 @@ everything you sent, the run stays alive only to take your next message:
 the button is a plain send again and nothing is shown as working. The remaining header actions are
 **Předat** (see below), **Pokračovat v nové session** (offered any time
 there's an open thread — `POST /sessions/:id/continue`, which closes this
-session, seeds a new one with its summary, and switches Práce to it) and
+session, writes its summary to `wip/sessions/<id>-handoff.md` in the node's
+mirror when this device has one, seeds a new one with that summary, and
+switches Práce to it) and
 **Uzavřít**, which asks for confirmation first (the only irreversible
 action here) before doing the same close `interrupt` never does. All
 follow the access table below; a refused action surfaces the server's own
@@ -230,9 +232,12 @@ device writes the thread's summary to `wip/sessions/<id>-handoff.md` in the
 node's mirror — a tracked file of the node like any other, so the next sync
 carries it — and the thread goes to "Pozastaveno"; the chat then names the
 file it wrote. Pressing it again on the same thread changes nothing and
-answers the same path. On a suspended thread that has no file yet (it was
-suspended while the node had no mirror here), Předat writes the file now
-from the summary this device holds. Předat refuses, and says why, before
+answers the same path. A thread that was suspended on its own (idle, an
+error or a limit, the app quitting or restarting) has no file: Portuni
+writes a handoff file only when you ask for one, with Předat or
+Pokračovat v nové session, and the chat shows „Shrnutí uloženo" only
+then. On such a suspended thread Předat writes the file now, from the
+transcript this device holds. Předat refuses, and says why, before
 it touches anything: on a draft (nothing to summarise) or a closed thread,
 on a node that has no mirror on this device (there is nowhere to write the
 file; the running thread keeps running), on a thread whose run is live on
@@ -285,8 +290,10 @@ before, it does **not** disable while suspended: a suspended thread shows
 a dismissible notice above the composer instead ("the process was ended;
 the next message replays the whole conversation into the model") and
 stays fully usable — sending is exactly what resumes it, `--resume` on
-the last run's conversation while that's still valid, from the summary
-otherwise; the server decides, there is no mode picker any more.
+the last run's conversation while that's still valid, otherwise from a
+summary: the handoff file Předat wrote, or else one built from this
+device's transcript at that moment; the server decides, there is no mode
+picker any more.
 Dismissing the notice only hides that one instance; the next time the
 thread ends up here (a new run starts, then also ends other than by
 Uzavřít) shows a fresh one. The header names the runner, instance and
@@ -323,9 +330,9 @@ if the last one ended other than by Uzavřít, `--resume` or from the
 summary, the server's own choice), `POST
 /sessions/:id/questions/:request_id` (answer an open question), `POST
 /sessions/:id/interrupt` (cancels the current turn only — the run stays
-live), `POST /sessions/:id/continue` (closes this session, seeds a new
-one on the same node from its summary, returns `{ session, run }` for the
-new one), `POST /sessions/:id/close`, `GET /sessions/:id/signals`,
+live), `POST /sessions/:id/continue` (closes this session, writes its
+summary as its handoff file when the node has a mirror here, seeds a new
+one on the same node from it, returns `{ session, run }` for the new one), `POST /sessions/:id/close`, `GET /sessions/:id/signals`,
 `GET /sessions/:id/scope` (the session's read and write set by node id,
 the same two sets the written summary lists), and
 `GET /sessions/:id/events?after&limit` for the canonical event log the

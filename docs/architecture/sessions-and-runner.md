@@ -117,7 +117,12 @@ below) and `archived` only by the auto-archive sweep
 process that owns the graph db: closed for more than 30 days moves to
 archived, an archived session's event log is dropped after 90 days; the
 row, runs, audit and handoff stay). Everything else that ends a run
-suspends.
+suspends. A suspend writes no handoff (#497): idle, a provider error or
+limit, the process ending, a restart's boot sweep and a lost host only move
+the record to `suspended` (and clear any `handoff_path`/`handoff_hash` an
+earlier Předat left, which the transcript has outgrown since). A handoff
+file exists only because someone asked for one: Předat and Pokračovat v
+nové session.
 
 Every Uzavřít goes through `SessionRuntime.closeSession` (the socket's
 `close` frame from the chat header, `POST /sessions/:id/close` from the
@@ -145,14 +150,15 @@ only while the session is `running`.
 same answer `{ session, handoff_path }`): the owner hands the thread to
 another machine through its handoff file. On a `running` thread it
 interrupts the current turn, waits for the queue to drain and then ends the
-run with `pendingEndReason` `handoff`, so the same auto-summary path a limit
-or an idle end takes writes `wip/sessions/<id>-handoff.md` into the node's
-mirror, registers the file and patches the record to `suspended` -- one
-suspend implementation, the reason marker being the only difference
-(`portuni:server-handoff reason=handoff`, the one reason a person chose).
+run with `pendingEndReason` `handoff`, so the one suspend path every run end
+takes writes, for this reason only, `wip/sessions/<id>-handoff.md` into the
+node's mirror, registers the file, patches the record to `suspended` and
+appends the `handoff` event (the chat's "Shrnutí uloženo" row) -- one
+suspend implementation (`portuni:server-handoff reason=handoff`, the one
+reason a person chose).
 On an already `suspended` thread with its file, it is a no-op answering the
-same path. On a `suspended` thread without a file (suspended where the node
-had no mirror), the same suspend code writes the file now
+same path. On a `suspended` thread without a file (every suspend but
+Předat leaves one), the same suspend code writes the file now
 (`createSuspendServerSide`'s `writeFileIfSuspended`): its inline summary
 from `content.db` when there is one, else the summary built from the
 transcript here. Every refusal is a `SessionHandoffError` (REST 409, Czech
@@ -249,7 +255,7 @@ orientation, translates events, ends and suspends) is one implementation,
 | `store` (the record) | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
 | `content` (the transcript, the brief, the inline summary) | `SessionContentStore` over this device's `content.db` (`deviceSessionContentStore()`) | the same object, over the same file -- content never differs between workspaces and never reaches the central server |
 | provisioning | `provision.ts`: `createMirrorForNode`, `orientationForNode` (direct db read) | `provision-central.ts`: `createMirrorForNodeCentral`, `CentralClient.orientation` (`GET /nodes/:id/orientation`) |
-| `suspendFallback` | `suspendSessionServerSide(db, content, id, reason)` -- `createSuspendServerSide(localSuspendDeps(db, content))` | the same `createSuspendServerSide`, built in `boot/session-runtime.ts` with four seams: `record` = `CentralSessionStore`, `scope` = `CentralClient.sessionScopeRecord`, `suspendRecord` = a record `PATCH` over REST, `trackHandoff` = `registerLocalFileCentral`. Everything else -- the summary, the file in the device mirror, the name enrichment, the no-mirror case -- is the same code (#458). Without a mirror for the node the record gets `handoff_path: null` plus the hash, and the summary itself goes to `session_content.handoff_inline` on the device (#434, #456), so `getResumeInfo` hands the next run that text |
+| `suspendFallback` | `suspendSessionServerSide(db, content, id, reason)` -- `createSuspendServerSide(localSuspendDeps(db, content))` | the same `createSuspendServerSide`, built in `boot/session-runtime.ts` with four seams: `record` = `CentralSessionStore`, `scope` = `CentralClient.sessionScopeRecord`, `suspendRecord` = a record `PATCH` over REST, `trackHandoff` = `registerLocalFileCentral`. Everything else -- the summary, the file in the device mirror, the name enrichment, the no-mirror case -- is the same code (#458). Only Předat writes a summary (#497); every other reason patches `state` alone. `createSessionHandoffs` builds the suspend together with `summarize` and `writeFile` from the same four seams, and the runtime takes the pair as its `handoffs` dep for Pokračovat v nové session and a resume without a conversation |
 | `resolveNodeOrgId` | `belongs_to` graph query (a failed lookup is distinguishable from "no organization") | `CentralClient.nodeOrganizationId` (`GET /nodes/:id`, the outgoing `belongs_to` peer that is an organization) |
 | `session_scope` reads (`getSessionScope` in `startRun`/`sessionSignals`) | real | degrade to an empty scope, never throw |
 
@@ -269,9 +275,9 @@ orientation, translates events, ends and suspends) is one implementation,
 - Where each write goes: `promoteDraftAndStart` puts the first message in
   `session_content.brief` and the `user_message` event in the device's
   `session_events`, then patches the record (`state`, `name`, `runner`,
-  `instance_id`); a suspend writes the summary to the handoff file in the
-  node and `handoff_path`/`handoff_hash` to the record, with
-  `handoff_inline` on the device when there is no mirror here;
+  `instance_id`); Předat and Pokračovat v nové session write the summary
+  to the handoff file in the node and `handoff_path`/`handoff_hash` to the
+  record, and any other suspend patches the state alone (#497);
   `getResumeInfo` and the live channel's replay read the content store.
 - `PATCH /sessions/:id` has two shapes: `{name}` alone is a rename and
   returns `SessionSummary`; any other field (`state`, `waiting_since`,
@@ -281,8 +287,9 @@ orientation, translates events, ends and suspends) is one implementation,
   never fails a promotion; it logs one warning naming the node, only when
   the fallback is visible (two or more instances for that runner and some
   org default configured).
-- The team-workspace suspend writes the same summary the personal one does
-  because it is the same function (#427, #458). `session_scope` and the node's name are graph-db reads,
+- Předat in a team workspace writes the same summary the personal one does
+  because it is the same function (#427, #458); an automatic suspend reads
+  no scope and registers nothing on the central server (#497). `session_scope` and the node's name are graph-db reads,
   so they come from `GET /sessions/:id/scope`
   (`CentralClient.sessionScopeRecord`, a record-half route like the rest);
   a scope read that fails logs and degrades to empty sections rather than
@@ -368,16 +375,16 @@ live action, `sessions-ws.ts` in the same change.
 - Server-side suspend (`domain/session-handoff.ts`
   `suspendSessionServerSide(db, content, sessionId, reason)`,
   `ServerHandoffReason` = `disconnect | idle | terminal_exit | boot_sweep |
-  suspend_timeout | host_lost | run_ended | continue`) writes a minimal
-  handoff into the session's home mirror when this device has one, else
-  into the content store's `handoff_inline`; the record keeps
-  `handoff_path`/`handoff_hash` only, and `getResumeInfo` reads whichever
-  of the two is populated. The summary itself is built from the device's
-  transcript, so it is the same text in both workspaces.
-  The content carries a marker with its reason; `parseServerHandoffReason`
-  reads it back so `GET /sessions/:id/resume-info` reports
-  `generated_by: "server"` and the reason ("pozastaveno serverem
-  (nečinnost 30 min)").
+  suspend_timeout | host_lost | run_ended | continue | handoff`) writes a
+  summary only for `handoff` (#497): into the session's home mirror when
+  this device has one, else into the content store's `handoff_inline`;
+  the record keeps `handoff_path`/`handoff_hash` only, and `getResumeInfo`
+  reads whichever of the two is populated. Every other reason writes
+  neither and nulls both columns. The summary itself is built from the
+  device's transcript (`buildRunSummaryContent`), so it is the same text in
+  both workspaces. The content carries a marker with its reason;
+  `parseServerHandoffReason` reads it back so `GET /sessions/:id/resume-info`
+  reports `generated_by: "server"` and the reason for a handoff that has one.
 - A hand-opened CLI's row is suspended, never closed, by a dropped
   connection or the transport's idle GC (`mcp/transport.ts` decides
   `disconnect` vs `idle` in the same `onclose`) and by
@@ -622,12 +629,14 @@ human verification.
   at boot of the process that owns the graph db (`index.ts`, `desktop.ts`
   local branch; on the central server for team-workspace rows). A thread's `×` deletes
   an empty draft immediately.
-- **Every non-close end suspends with a summary the DEVICE writes.**
-  `closingSessions: Set<string>` marks an explicit close (`closeSession`,
-  `continueSession`). In `handleAdapterEvent`'s `run_ended` branch, a run
-  ending without that mark calls `suspendFallback` with `pendingEndReason`
-  (`"run_ended"`, or `"idle"` from the idle sweep) and then appends the
-  `handoff` event (`{path, hash}` off the suspended row).
+- **Every non-close end suspends; only Předat writes a summary, and the
+  DEVICE writes it.** `closingSessions: Set<string>` marks an explicit close
+  (`closeSession`, `continueSession`). In `handleAdapterEvent`'s `run_ended`
+  branch, a run ending without that mark calls `suspendFallback` with
+  `pendingEndReason` (`"run_ended"`, `"idle"` from the idle sweep,
+  `"handoff"` from Předat) and appends `state_changed`; only for
+  `"handoff"` does it also append the `handoff` event (`{path, hash}` off
+  the suspended row), since no other reason writes a summary (#497).
   `withSuspendReason` rewrites an adapter-reported `"completed"` to
   `"suspended"` unless the session is closing; `error`/`limit`/`host_lost`
   pass through. `HandoffEvent.payload` is `{path, hash}` only. The central
@@ -660,9 +669,13 @@ human verification.
   tasks there.
 - **Resume is writing.** `resumeByWriting` uses `checkConversationResumable`
   to continue the CLI's own conversation when still valid; otherwise it
-  reads `handoff_path`/`handoff_inline` and starts a fresh run with it as
-  orientation (`resume: "handoff"` on `run_started`, `resumed_from_run_id`
-  linking the runs). There is no `POST /sessions/:id/resume`,
+  starts a fresh run with a summary as orientation (`resume: "handoff"` on
+  `run_started`, `resumed_from_run_id` linking the runs). The summary
+  (`resumeSummary`, #497) is the file at `handoff_path` when Předat wrote
+  one and it is here; else it is built at that moment from this device's
+  transcript with the same builder a handoff uses, and stored nowhere;
+  else, with no transcript here, a `handoff_inline` an older sidecar left;
+  with none of them the run starts on its orientation alone. There is no `POST /sessions/:id/resume`,
   `/suspend`, no mode picker and no `SUSPEND_INSTRUCTION` handshake.
 - **A conversation is looked for where its profile keeps it.** The
   transcript lives under the instance's `CLAUDE_CONFIG_DIR`, so
@@ -675,8 +688,13 @@ human verification.
   id only there left every such run resumable from the summary alone.
 - **`POST /sessions/:id/continue`** (`continueSession`; `resume` access
   tier; also a `continue` WS frame) closes this session with its own
-  log-derived summary and starts a fresh running one on the same node,
-  returning `{session, run}` (the WS reply carries `toSummary`'s
+  log-derived summary and starts a fresh running one on the same node.
+  When this device has a mirror of the node, the summary is written as the
+  old thread's handoff file (`handoffs.writeFile`, registered like
+  Předat's; `handoff_path`/`handoff_hash` go on the old record with the
+  close) and the new thread's orientation names that file the way
+  Navázat na handoff's does (#497); without a mirror the summary goes into
+  the orientation only. It answers `{session, run}` (the WS reply carries `toSummary`'s
   `SessionSummary`). Web labels: "Pokračovat v nové session" on an open
   thread, "Navázat" on a closed one.
 - No context-usage ring exists: `RunEndedEvent.payload.usage` is

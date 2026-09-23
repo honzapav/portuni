@@ -89,7 +89,7 @@ describe("a closed MCP connection and a runner-driven thread (#487)", () => {
     }
   });
 
-  it("still suspends a hand-opened CLI with its summary -- that connection was the whole session", async () => {
+  it("still suspends a hand-opened CLI -- that connection was the whole session -- with no summary (#497)", async () => {
     const { db, nodeId } = await makeSharedDb();
     const { content } = await installTestContentDb();
     setDbForTesting(db);
@@ -103,7 +103,7 @@ describe("a closed MCP connection and a runner-driven thread (#487)", () => {
       await closeSessionIfRunning(db, cli.id, "disconnect");
 
       assert.equal((await getSession(db, cli.id))?.state, "suspended");
-      assert.ok((await content.getContent(cli.id))?.handoff_inline, "the device writes the summary");
+      assert.equal((await content.getContent(cli.id))?.handoff_inline ?? null, null, "no summary is written");
     } finally {
       setDbForTesting(null);
       clearTestContentDb();

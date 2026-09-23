@@ -30,8 +30,8 @@ async function setupServer() {
   const { ensureSchema } = await import("../apps/server/infra/schema.js");
   const { getDb, setDbForTesting } = await import("../apps/server/infra/db.js");
   const { resetGateCachesForTesting } = await import("../apps/server/http/middleware.js");
-  // #456: the suspend's summary is content and lands in this device's
-  // content.db, so the test needs one installed before the server runs.
+  // #456: the thread's content lives in this device's content.db, so the
+  // test needs one installed before the server runs.
   const { installTestContentDb, clearTestContentDb } = await import("./helpers/content-db.js");
   const { content } = await installTestContentDb();
 
@@ -87,12 +87,11 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number): Pr
   return false;
 }
 
-test("a client disconnecting on its own suspends its session with reason 'disconnect'", async (t) => {
+test("a client disconnecting on its own suspends its session, with no summary (#497)", async (t) => {
   const { base, db, content, teardown } = await setupServer();
   t.after(teardown);
 
   const { listSessions } = await import("../apps/server/domain/sessions.js");
-  const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
 
   const before = await listSessions(db);
   const client = await connectClient(base);
@@ -105,28 +104,21 @@ test("a client disconnecting on its own suspends its session with reason 'discon
   // Give the transport's own onclose path (a genuine disconnect signal) a
   // head start over the idle GC, then let the wait run comfortably past
   // the TTL too -- if the disconnect signal never reaches the server for
-  // whatever reason, the idle GC is the backstop that must still catch it
-  // (see the "reason" assertion below, which accepts either outcome for
-  // exactly that reason).
+  // whatever reason, the idle GC is the backstop that must still catch it.
   const suspended = await waitFor(async () => {
     const rows = await listSessions(db);
     return rows.find((s) => s.id === created!.id)?.state === "suspended";
   }, 5000);
   assert.ok(suspended, "the session must reach 'suspended', not 'closed'");
 
-  const reason = parseServerHandoffReason((await content.getContent(created!.id))?.handoff_inline ?? null);
-  assert.ok(
-    reason === "disconnect" || reason === "idle",
-    `expected a server-suspend reason for a dropped connection, got ${reason}`,
-  );
+  assert.equal((await content.getContent(created!.id))?.handoff_inline ?? null, null, "a suspend writes no summary");
 });
 
-test("the transport's own idle GC suspends a stale session with reason 'idle'", async (t) => {
+test("the transport's own idle GC suspends a stale session, with no summary (#497)", async (t) => {
   const { base, db, content, teardown } = await setupServer();
   t.after(teardown);
 
   const { listSessions } = await import("../apps/server/domain/sessions.js");
-  const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
 
   const before = await listSessions(db);
   // Deliberately never closed by the test -- left to the transport's own
@@ -143,7 +135,7 @@ test("the transport's own idle GC suspends a stale session with reason 'idle'", 
   }, 5000);
   assert.ok(suspended, "the idle GC must suspend the session, not leave it running forever");
 
-  assert.equal(parseServerHandoffReason((await content.getContent(created!.id))?.handoff_inline ?? null), "idle");
+  assert.equal((await content.getContent(created!.id))?.handoff_inline ?? null, null, "a suspend writes no summary");
 });
 
 // #487: the same two close paths on a thread the RUNNER drives -- its agent

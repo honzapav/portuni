@@ -97,10 +97,9 @@ describe("session runtime: startTask", () => {
         [2, "user_message"],
         [3, "run_ended"], // the fake's empty script auto-completes
         // #378: nobody closed this run explicitly, so it falls through to
-        // the auto-summary/suspend path and gets its handoff event too --
-        // after the transition the suspend made (#494).
+        // the suspend path -- the transition the suspend made (#494), and
+        // no handoff event: only Předat writes a summary (#497).
         [4, "state_changed"],
-        [5, "handoff"],
       ],
     );
     assert.equal(JSON.parse(events[0].payload).run_id, run.id);
@@ -204,7 +203,7 @@ describe("session runtime: interrupt (#378)", () => {
 });
 
 describe("session runtime: auto-summary on a non-close run end (#378)", () => {
-  it("a run that ends on its own (nobody closed it) writes a summary and suspends the session", async () => {
+  it("a run that ends on its own (nobody closed it) suspends the session and writes no summary (#497)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     // An empty script auto-completes right away -- nobody called close(),
@@ -216,10 +215,9 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    const summary = (await content.getContent(session.id))?.handoff_inline;
-    assert.ok(summary, "a summary must exist after a non-close run end");
-    assert.match(summary!, /Poslední zprávy/);
-    assert.match(summary!, /Fix the bug|x/); // the brief shows up as the first message
+    assert.equal(row?.handoff_path, null, "no handoff file is recorded");
+    assert.equal(row?.handoff_hash, null);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "no inline summary either");
 
     const runs = await store.listRuns(session.id);
     // The adapter itself reports "completed" (a graceful close it can't
@@ -228,8 +226,8 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     assert.equal(runs[0].end_reason, "suspended");
 
     const events = await content.listEvents(session.id);
-    const handoffEvent = events.find((e) => e.kind === "handoff");
-    assert.ok(handoffEvent, "a handoff/summary event must be appended");
+    assert.equal(events.some((e) => e.kind === "handoff"), false, "no handoff event: only Předat writes one");
+    assert.equal(events.at(-1)?.kind, "state_changed");
   });
 
   it("checkIdleRunsOnce ends a run idle for longer than idleMs, tagged 'idle'", async () => {
@@ -249,10 +247,10 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    const summary = (await content.getContent(session.id))?.handoff_inline ?? null;
-    assert.ok(summary);
-    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
-    assert.equal(parseServerHandoffReason(summary), "idle");
+    // #497: the idle suspend is a record flip only.
+    assert.equal(row?.handoff_path, null);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+    assert.equal((await content.listEvents(session.id)).some((e) => e.kind === "handoff"), false);
   });
 
   it("checkIdleRunsOnce never ends a run mid-turn: the agent is working, not idle", async () => {
@@ -302,7 +300,7 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    assert.ok((await content.getContent(session.id))?.handoff_inline, "a server-written summary must exist");
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "no summary is written (#497)");
 
     const runs = await store.listRuns(session.id);
     // withSuspendReason leaves an adapter-reported limit alone -- that IS
@@ -314,7 +312,7 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     assert.ok(error, "the provider message must be in the transcript");
     assert.equal(JSON.parse(error!.payload).class, "provider");
     assert.match(JSON.parse(error!.payload).message, /spend limit/);
-    assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
+    assert.equal(events.some((e) => e.kind === "handoff"), false, "no handoff event (#497)");
   });
 
   it("the run's conversation id is recorded while it runs, not only when it ends", async () => {
@@ -434,12 +432,12 @@ describe("session runtime: resume by writing (#378)", () => {
     }
   });
 
-  it("the new run's orientation carries the previous summary", async () => {
+  it("a resume without the conversation gets a summary built from the transcript then (#497)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
 
     // First run: a real FakeRunnerAdapter so startTask/checkIdleRunsOnce
-    // can drive it through a normal suspend with a summary written.
+    // can drive it through a normal suspend -- which writes no summary.
     const firstAdapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
     const registry = { getAdapter: (id: string) => (id === "fake" ? firstAdapter : null) };
     const runtime = createSessionRuntime({ store, content, registry, provision: stubProvision() });
@@ -447,7 +445,8 @@ describe("session runtime: resume by writing (#378)", () => {
     await runtime.checkIdleRunsOnce(0, Date.now() + 1);
     const suspended = await store.getSession(session.id);
     assert.equal(suspended?.state, "suspended");
-    assert.ok((await content.getContent(session.id))?.handoff_inline);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+    assert.equal(suspended?.handoff_path, null);
 
     // Swap in a capturing adapter for the resume run so the RunStart it
     // actually receives is observable.
@@ -490,6 +489,9 @@ describe("session runtime: resume by writing (#378)", () => {
     assert.ok(capturedOrientation);
     assert.match(capturedOrientation!, /Předání \(obnovení ze shrnutí\)/);
     assert.match(capturedOrientation!, /Poslední zprávy/); // the summary content itself
+    // Built from this device's transcript at resume: the first run's brief.
+    assert.match(capturedOrientation!, /\*\*Uživatel:\*\* x/);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "and nothing is stored");
   });
 });
 
@@ -1158,13 +1160,12 @@ describe("session runtime: handoff (#459 Předat)", () => {
   it("a suspended thread with no file but its transcript here gets the file written from it", async () => {
     const { nodeId, store, runtime } = await withoutMirror([TURN_DONE, { wait: "message" }]);
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
-    // Suspended while the node had no mirror here: the summary is inline.
+    // Suspended by the idle sweep: no summary anywhere (#497).
     await runtime.checkIdleRunsOnce(-1);
     const suspended = await store.getSession(session.id);
     assert.equal(suspended?.state, "suspended");
     assert.equal(suspended?.handoff_path, null);
-    const inline = (await content.getContent(session.id))?.handoff_inline;
-    assert.ok(inline);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
 
     // The mirror arrives; Předat now writes the file instead of refusing.
     const mirrorRoot = join(workspace!, "mirror");
@@ -1175,9 +1176,88 @@ describe("session runtime: handoff (#459 Předat)", () => {
     assert.equal(result.handoff_path, `wip/sessions/${session.id}-handoff.md`);
     assert.equal(result.session.state, "suspended");
     assert.equal((await store.getSession(session.id))?.handoff_path, result.handoff_path);
-    assert.equal(await readFile(join(mirrorRoot, result.handoff_path), "utf8"), inline);
-    // The file is the handoff now; the inline copy is gone.
+    // Built from the transcript now, by Předat.
+    const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
+    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
+    assert.equal(parseServerHandoffReason(onDisk), "handoff");
+    assert.match(onDisk, /\*\*Uživatel:\*\* x/);
     assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+  });
+
+  it("an idle suspend with a mirror here writes no file, tracks nothing and appends no handoff event (#497)", async () => {
+    const { db, nodeId, store, runtime, mirrorRoot } = await withMirror([TURN_DONE, { wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(-1);
+
+    const row = await store.getSession(session.id);
+    assert.equal(row?.state, "suspended");
+    assert.equal(row?.handoff_path, null);
+    assert.equal(row?.handoff_hash, null);
+    await assert.rejects(() => readFile(join(mirrorRoot, `wip/sessions/${session.id}-handoff.md`), "utf8"));
+    const files = await db.execute({ sql: "SELECT filename FROM files WHERE node_id = ?", args: [nodeId] });
+    assert.equal(files.rows.length, 0, "nothing registered in the node");
+    const kinds = (await content.listEvents(session.id)).map((e) => e.kind);
+    assert.equal(kinds.includes("handoff"), false);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+  });
+
+  it("an idle suspend after an earlier Předat drops the stale handoff from the record (#497)", async () => {
+    const { nodeId, store, runtime } = await withMirror([TURN_DONE, { wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.handoff(session.id);
+    assert.ok((await store.getSession(session.id))?.handoff_path);
+
+    // Resumed, then left alone: the record no longer points at the file the
+    // transcript has since outgrown.
+    await runtime.sendMessage(session.id, "dál");
+    await runtime.checkIdleRunsOnce(-1);
+    const row = await store.getSession(session.id);
+    assert.equal(row?.state, "suspended");
+    assert.equal(row?.handoff_path, null);
+  });
+
+  it("Pokračovat v nové session writes the old thread's handoff file and the new orientation points at it (#497)", async () => {
+    const shared = await sharedDb();
+    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-handoff-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    const mirrorRoot = join(workspace, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", shared.nodeId, mirrorRoot);
+    const store = new DbSessionStore(shared.db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session: oldSession } = await runtime.startTask({
+      userId: "U1",
+      nodeId: shared.nodeId,
+      brief: "the old task",
+      runner: "fake",
+    });
+    const { session: newSession } = await runtime.continueSession(oldSession.id);
+
+    const relPath = `wip/sessions/${oldSession.id}-handoff.md`;
+    const oldRow = await store.getSession(oldSession.id);
+    assert.equal(oldRow?.state, "closed");
+    assert.equal(oldRow?.handoff_path, relPath);
+    const onDisk = await readFile(join(mirrorRoot, relPath), "utf8");
+    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
+    assert.equal(parseServerHandoffReason(onDisk), "continue");
+    assert.match(onDisk, /the old task/);
+    const files = await shared.db.execute({
+      sql: "SELECT filename FROM files WHERE node_id = ?",
+      args: [shared.nodeId],
+    });
+    assert.deepEqual(
+      files.rows.map((r) => String(r.filename)),
+      [`${oldSession.id}-handoff.md`],
+    );
+
+    const orientation = adapter.getLastRunStart()?.orientation ?? "";
+    assert.match(orientation, /Pokračování z předchozí session/);
+    assert.ok(orientation.includes(`(\`${relPath}\`)`), "the new thread's orientation names the file");
+    assert.ok(orientation.includes(onDisk), "and carries its content");
+    await runtime.closeSession(newSession.id);
   });
 
   it("a suspended thread whose transcript is on another device is refused, naming the device", async () => {
@@ -1507,7 +1587,8 @@ describe("session runtime: one start per thread (#488)", () => {
     // no second suspend written on top of it.
     assert.equal((await store.getSession(session.id))?.state, "running");
     const events = await content.listEvents(session.id);
-    assert.equal(events.filter((e) => e.kind === "handoff").length, 1);
+    const suspends = events.filter((e) => e.kind === "state_changed" && JSON.parse(e.payload).to === "suspended");
+    assert.equal(suspends.length, 1);
     await runtime.sendMessage(session.id, "still here");
     assert.equal((await store.listRuns(session.id)).length, 2);
     assert.deepEqual(userTexts(await content.listEvents(session.id)), ["x", "keep going", "still here"]);
@@ -1657,11 +1738,11 @@ describe("session runtime: a message into a run that is ending (#489)", () => {
     assert.equal((await store.getSession(session.id))?.state, "running");
     assert.deepEqual(userTexts(await content.listEvents(session.id)), ["x", "ještě jedna věc"]);
 
-    // The suspend the idle end wrote is still the one the resume built on.
-    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
-    const summary = (await content.getContent(session.id))?.handoff_inline ?? null;
-    assert.ok(summary);
-    assert.equal(parseServerHandoffReason(summary), "idle");
+    // The idle end suspended the thread once, and the resume built on it.
+    const suspends = (await content.listEvents(session.id)).filter(
+      (e) => e.kind === "state_changed" && JSON.parse(e.payload).to === "suspended",
+    );
+    assert.equal(suspends.length, 1);
   });
 
   it("a message between run_ended and the suspend write is not refused", async () => {

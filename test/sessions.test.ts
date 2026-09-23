@@ -19,7 +19,6 @@ import {
   closeSessionIfRunning,
   suspendStaleRunningSessionsOnBoot,
 } from "../apps/server/domain/sessions.js";
-import { parseServerHandoffReason } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
@@ -221,7 +220,7 @@ describe("transitionSessionState: the state machine", () => {
 // #456: the inline summary is content -- the record keeps only the hash,
 // the text goes to this device's content.db.
 describe("closeSessionIfRunning (#218, GC backstop; #329 suspends)", () => {
-  it("suspends a running session with a disconnect handoff", async () => {
+  it("suspends a running session and writes no summary (#497)", async () => {
     const { db, nodeId } = await makeSharedDb();
     const { content } = await installTestContentDb();
     const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
@@ -229,17 +228,18 @@ describe("closeSessionIfRunning (#218, GC backstop; #329 suspends)", () => {
     const updated = await getSession(db, row.id);
     assert.equal(updated?.state, "suspended");
     assert.equal(updated?.handoff_inline, null, "nothing content-shaped stays on the record");
-    const inline = (await content.getContent(row.id))?.handoff_inline ?? null;
-    assert.equal(parseServerHandoffReason(inline), "disconnect");
+    assert.equal(updated?.handoff_path, null);
+    assert.equal(updated?.handoff_hash, null);
+    assert.equal((await content.getContent(row.id))?.handoff_inline ?? null, null);
   });
 
-  it("records idle as the reason when that is the caller's reason", async () => {
+  it("an idle reason writes no summary either (#497)", async () => {
     const { db, nodeId } = await makeSharedDb();
     const { content } = await installTestContentDb();
     const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     await closeSessionIfRunning(db, row.id, "idle");
-    const inline = (await content.getContent(row.id))?.handoff_inline ?? null;
-    assert.equal(parseServerHandoffReason(inline), "idle");
+    assert.equal((await getSession(db, row.id))?.state, "suspended");
+    assert.equal((await content.getContent(row.id))?.handoff_inline ?? null, null);
   });
 
   it("never touches a suspended session", async () => {
@@ -303,7 +303,7 @@ describe("suspendStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
   });
 
 
-  it("suspends every running row with a boot_sweep handoff, process-wide, leaving suspended untouched", async () => {
+  it("suspends every running row with no summary (#497), process-wide, leaving suspended untouched", async () => {
     const { db, nodeId } = await makeSharedDb();
     const { content } = await installTestContentDb();
     const running1 = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
@@ -318,10 +318,10 @@ describe("suspendStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
     const row2 = await getSession(db, running2.id);
     assert.equal(row1?.state, "suspended");
     assert.equal(row2?.state, "suspended");
-    const inline1 = (await content.getContent(running1.id))?.handoff_inline ?? null;
-    const inline2 = (await content.getContent(running2.id))?.handoff_inline ?? null;
-    assert.equal(parseServerHandoffReason(inline1), "boot_sweep");
-    assert.equal(parseServerHandoffReason(inline2), "boot_sweep");
+    assert.equal((await content.getContent(running1.id))?.handoff_inline ?? null, null);
+    assert.equal((await content.getContent(running2.id))?.handoff_inline ?? null, null);
+    assert.equal(row1?.handoff_path, null);
+    assert.equal(row2?.handoff_path, null);
     assert.equal((await getSession(db, suspended.id))?.state, "suspended");
   });
 
@@ -442,11 +442,10 @@ describe("autoArchiveClosedSessions", () => {
   });
 });
 
-// #329, the file branch: with a mirror registered on this device the
-// server-generated handoff is a real file at the same path the agent's own
-// portuni_session_suspend would use, not handoff_inline.
+// #329 wrote a real file here when the device had a mirror; #497: a suspend
+// the transport or a restart causes writes nothing, mirror or not.
 describe("closeSessionIfRunning with a local mirror (#329)", () => {
-  it("writes the handoff file into the mirror and records its path and reason", async () => {
+  it("writes no handoff file into the mirror and registers nothing (#497)", async () => {
     const { db, nodeId } = await makeSharedDb();
     const { mkdtemp, mkdir, readFile, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
@@ -469,11 +468,11 @@ describe("closeSessionIfRunning with a local mirror (#329)", () => {
 
       const after = await getSession(db, row.id);
       assert.equal(after?.state, "suspended");
-      assert.ok(after?.handoff_path, "a mirror on this device means a real handoff file");
+      assert.equal(after?.handoff_path, null, "a mirror here changes nothing: no file is written");
       assert.equal(after?.handoff_inline, null);
-      const content = await readFile(join(mirrorRoot, after!.handoff_path!), "utf8");
-      assert.equal(parseServerHandoffReason(content), "disconnect");
-      assert.match(content, /Konverzace nebyla uložena/);
+      await assert.rejects(() => readFile(join(mirrorRoot, `wip/sessions/${row.id}-handoff.md`), "utf8"));
+      const files = await db.execute({ sql: "SELECT id FROM files WHERE node_id = ?", args: [nodeId] });
+      assert.equal(files.rows.length, 0);
     } finally {
       setDbForTesting(null);
       resetLocalDbForTests();

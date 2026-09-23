@@ -14,7 +14,7 @@ import { getAdapter } from "../domain/runner/registry.js";
 import { provisionRun } from "../domain/runner/provision.js";
 import { createProvisionRunCentral } from "../domain/runner/provision-central.js";
 import { registerLocalFileCentral } from "../domain/sync/central/engine-central.js";
-import { createSuspendServerSide, handoffEnrichedName } from "../domain/session-handoff.js";
+import { createSessionHandoffs, handoffEnrichedName } from "../domain/session-handoff.js";
 import { createSessionRuntime, type SessionRuntime } from "../domain/runner/session-runtime.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
@@ -54,39 +54,39 @@ export function setSessionRuntimeForTesting(rt: SessionRuntime | null): void {
 export function createAgentSessionRuntime(client: CentralClient): SessionRuntime {
   const store = new CentralSessionStore(client);
   const content = deviceSessionContentStore();
+  // #458: the same suspend the personal workspace runs, with the two
+  // graph-db reads it needs pointed at the central server -- the summary
+  // itself, the file in the mirror and the inline fallback are shared
+  // code (domain/session-handoff.ts). The team-workspace copy of that
+  // algorithm is gone; these four seams replaced it.
+  // #497: the summary builder and the handoff-file writer Pokračovat v nové
+  // session and a resume use are the same seams.
+  const handoffs = createSessionHandoffs({
+    record: store,
+    content,
+    scope: (sessionId) => client.sessionScopeRecord(sessionId),
+    suspendRecord: (session, input) =>
+      store.patchSession(session.id, {
+        state: "suspended",
+        waiting_since: null,
+        handoff_path: input.handoffPath,
+        handoff_hash: input.handoffHash,
+        name: handoffEnrichedName(session, input.handoffTitle),
+      }),
+    // Record-only registration, exactly what the watcher does for a file
+    // that appeared in the mirror: the handoff shows up under Files at
+    // once, and the push is a later deliberate sync run (#427).
+    trackHandoff: async (input) => {
+      await registerLocalFileCentral(client, input);
+    },
+  });
   return createSessionRuntime({
     store,
     content,
     registry: { getAdapter },
     provision: createProvisionRunCentral(client),
-    // #458: the same suspend the personal workspace runs, with the two
-    // graph-db reads it needs pointed at the central server -- the summary
-    // itself, the file in the mirror and the inline fallback are shared
-    // code (domain/session-handoff.ts). The team-workspace copy of that
-    // algorithm is gone; these four seams replaced it.
-    suspendFallback: createSuspendServerSide({
-      record: store,
-      content,
-      scope: (sessionId) => client.sessionScopeRecord(sessionId),
-      suspendRecord: (session, input) =>
-        store.patchSession(session.id, {
-          state: "suspended",
-          waiting_since: null,
-          handoff_path: input.handoffPath,
-          handoff_hash: input.handoffHash,
-          name: handoffEnrichedName(session, input.handoffTitle),
-        }),
-      // Record-only registration, exactly what the watcher does for a file
-      // that appeared in the mirror: the handoff shows up under Files at
-      // once, and the push is a later deliberate sync run (#427).
-      trackHandoff: async (input) => {
-        await registerLocalFileCentral(client, input);
-      },
-    }),
-    // #407: the belongs_to edge lives on central's graph db, so the
-    // organization default instance is resolved there too -- without this
-    // the runtime's local query would throw here and every task in this
-    // mode would silently run on the runner's own default instance.
+    suspendFallback: handoffs.suspend,
+    handoffs,
     resolveNodeOrgId: (nodeId) => client.nodeOrganizationId(nodeId),
   });
 }

@@ -674,9 +674,10 @@ export interface SuspendSessionInput {
   // Null when there is nowhere on this device to write a file (#329:
   // suspendSessionServerSide on a session with no local mirror) -- the
   // handoff text then goes into the device content store's
-  // handoff_inline instead (#456), never onto the record.
+  // handoff_inline instead (#456), never onto the record. #497: both null
+  // for a suspend that writes no summary at all (every reason but Předat).
   handoffPath: string | null;
-  handoffHash: string;
+  handoffHash: string | null;
   agentSessionId?: string | null;
   // Title extracted from the handoff content (session-handoff.ts's
   // extractHandoffTitle). Spec: "enriched from the handoff title at

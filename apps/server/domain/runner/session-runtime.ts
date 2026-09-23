@@ -17,17 +17,16 @@ import { join } from "node:path";
 import { getDb } from "../../infra/db.js";
 import { getSessionScope, threadNameFromFirstMessage } from "../sessions.js";
 import {
-  buildRunSummaryContent,
   checkConversationResumable,
   extractHandoffTitle,
   isHandoffRelativePath,
   readNodeHandoffFile,
-  createSuspendServerSide,
+  createSessionHandoffs,
   localSuspendDeps,
   type ServerHandoffReason,
+  type SessionHandoffs,
   type SuspendServerSide,
   type SuspendServerSideOptions,
-  type SummaryEvent,
 } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
 import type { SessionRunRow, SessionStore } from "./store.js";
@@ -192,14 +191,20 @@ export interface CreateSessionRuntimeDeps {
   content: SessionContentStore;
   registry: RunnerRegistryLookup;
   provision: (input: ProvisionRunInput) => Promise<ProvisionRunResult>;
-  // #378: writes the mechanical summary and moves the session to suspended
-  // -- called whenever a run ends other than by Uzavřít/continue (any
-  // reason), and by the idle sweep specifically ("idle"). Defaults to the
-  // local-mode binding (suspendSessionServerSide against the graph db);
-  // boot/session-runtime.ts's createAgentSessionRuntime supplies the same
-  // code with its two graph-db reads pointed at the central server (#458),
-  // since agent mode has no graph db to write against.
+  // #378: moves the session to suspended -- called whenever a run ends
+  // other than by Uzavřít/continue (any reason), and by the idle sweep
+  // specifically ("idle"); #497: only Předat ("handoff") writes a summary
+  // with it. Defaults to the local-mode binding (suspendSessionServerSide
+  // against the graph db); boot/session-runtime.ts's
+  // createAgentSessionRuntime supplies the same code with its two graph-db
+  // reads pointed at the central server (#458), since agent mode has no
+  // graph db to write against.
   suspendFallback?: SuspendServerSide;
+  // #497: the summary builder and the handoff-file writer Pokračovat v nové
+  // session and a resume without a conversation use -- the same seams the
+  // suspend above has (createSessionHandoffs). Defaults to the local-mode
+  // binding; createAgentSessionRuntime supplies the central-backed one.
+  handoffs?: Pick<SessionHandoffs, "summarize" | "writeFile">;
   // #407: how a node's organization is resolved when a draft's first
   // message picks the organization's default runner instance. Defaults to
   // the local graph-db query; createAgentSessionRuntime supplies the
@@ -356,10 +361,15 @@ interface LiveRun {
 
 export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRuntime {
   const { store, content, registry, provision } = deps;
+  const localHandoffs = () => createSessionHandoffs(localSuspendDeps(getDb(), content));
   const suspendFallback =
     deps.suspendFallback ??
     ((sessionId: string, reason: ServerHandoffReason, opts?: SuspendServerSideOptions) =>
-      createSuspendServerSide(localSuspendDeps(getDb(), content))(sessionId, reason, opts));
+      localHandoffs().suspend(sessionId, reason, opts));
+  const handoffs: Pick<SessionHandoffs, "summarize" | "writeFile"> = deps.handoffs ?? {
+    summarize: (session, reason) => localHandoffs().summarize(session, reason),
+    writeFile: (session, summary) => localHandoffs().writeFile(session, summary),
+  };
   const resolveNodeOrgId = deps.resolveNodeOrgId ?? resolveNodeOrgIdLocal;
 
   const liveRuns = new Map<string, LiveRun>();
@@ -674,8 +684,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
         // #378: closeSession()/continueSession() already own the resulting
         // transition (to "closed") for their own run end -- everything else
-        // (idle, error, a natural CLI-initiated end) writes the mechanical
-        // summary and moves the session to suspended instead.
+        // (idle, error, a natural CLI-initiated end) moves the session to
+        // suspended instead; #497: with a summary only for Předat.
         if (closingSessions.has(sessionId)) {
           closingSessions.delete(sessionId);
         } else {
@@ -688,11 +698,20 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
             // but it read the row before this suspend wrote it, so every
             // window kept showing the thread as running. The transition
             // itself is what tells them it is suspended now.
+            // #497: the handoff event (the chat's "Shrnutí uloženo" row)
+            // only when a summary was actually written -- Předat.
             await appendAndPublish(sessionId, runId, [
               ...(suspended.state === "suspended"
                 ? [{ kind: "state_changed" as const, payload: { from: "running", to: "suspended", waiting: false } }]
                 : []),
-              { kind: "handoff", payload: { path: suspended.handoff_path, hash: suspended.handoff_hash } },
+              ...(reason === "handoff"
+                ? [
+                    {
+                      kind: "handoff" as const,
+                      payload: { path: suspended.handoff_path, hash: suspended.handoff_hash },
+                    },
+                  ]
+                : []),
             ]);
           }
         }
@@ -1015,9 +1034,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // starts a new one -- no mode picker, the server decides. `--resume` on
   // the last run's agent_session_id while the CLI's own transcript for it
   // still exists (checkConversationResumable, the same check GET
-  // /sessions/:id/resume-info already used); otherwise the session's own
-  // summary (written when the last run ended) becomes extra orientation,
-  // same as the old handoff-mode resume did.
+  // /sessions/:id/resume-info already used); otherwise a summary becomes
+  // extra orientation, same as the old handoff-mode resume did (#497:
+  // resumeSummary).
   async function resumeByWriting(
     sessionId: string,
     session: SessionRow,
@@ -1056,9 +1075,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     if (canResumeConversation && lastRun?.agent_session_id) {
       runStartResume = { agentSessionId: lastRun.agent_session_id };
     } else {
-      const summary = session.handoff_path
-        ? await readFile(join(provisioned.cwd, session.handoff_path), "utf8").catch(() => null)
-        : (await content.getContent(sessionId))?.handoff_inline ?? null;
+      const summary = await resumeSummary(session, provisioned.cwd);
       if (summary) {
         runProvisioned = {
           ...provisioned,
@@ -1090,6 +1107,24 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       policy: "default",
       logBrief: !logged,
     });
+  }
+
+  // #497: the summary a resume without a conversation continues from. A
+  // file Předat wrote is what the user handed over (and may have edited),
+  // so it wins; otherwise nothing was written at suspend and the summary is
+  // built now, from this device's transcript, with the same builder a
+  // handoff uses. With no transcript here either, an inline summary an
+  // older sidecar left behind is the last resort, and with none of the
+  // three the thread resumes on its orientation alone, as before.
+  async function resumeSummary(session: SessionRow, cwd: string): Promise<string | null> {
+    if (session.handoff_path) {
+      const file = await readFile(join(cwd, session.handoff_path), "utf8").catch(() => null);
+      if (file) return file;
+    }
+    if ((await content.listEvents(session.id, { limit: 1 })).length > 0) {
+      return handoffs.summarize(session, "run_ended");
+    }
+    return (await content.getContent(session.id))?.handoff_inline ?? null;
   }
 
   // Same ordering rule: the answered question (and the waiting: false
@@ -1391,23 +1426,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
   }
 
-  async function nodeNameForSession(nodeId: string): Promise<string | null> {
-    try {
-      const db = getDb();
-      const res = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [nodeId] });
-      return res.rows.length > 0 ? String(res.rows[0].name) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // #378: "Pokračovat v nové session" / "Navázat" -- closes THIS session
-  // (summary built from whatever's in its own log right now, used only to
-  // seed the new one -- not the auto-summary/suspend path, since this ends
-  // as closed, never suspended) and starts a fresh one, running, on the
-  // same node, carrying the old summary as extra orientation. No mode
-  // picker, no brief: the new thread starts itself, same shape as a
-  // handoff-mode resume used to, just into a brand new session row.
+  // #378: "Pokračovat v nové session" -- closes THIS session (summary built
+  // from whatever's in its own log right now -- not the suspend path, since
+  // this ends as closed, never suspended) and starts a fresh one, running,
+  // on the same node, carrying the old summary as extra orientation. No
+  // mode picker, no brief: the new thread starts itself. #497: the summary
+  // is written as the old thread's handoff file (when this device has a
+  // mirror of the node) and the new thread's orientation points at it, the
+  // way Navázat na handoff's does.
   async function continueSessionLocked(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
     const oldSession = await mustGetSession(sessionId);
     if (!oldSession.node_id) throw new Error(`continueSession: session ${sessionId} has no anchor node`);
@@ -1421,21 +1447,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await drain(sessionId);
     }
 
-    const scope = await getSessionScope(getDb(), sessionId).catch(() => []);
-    const rows = await content.listEvents(sessionId);
-    const events: SummaryEvent[] = rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
-    const nodeName = await nodeNameForSession(oldSession.node_id);
-    const summary = buildRunSummaryContent({
-      nodeName,
-      sessionName: oldSession.name,
-      reason: "continue",
-      events,
-      writeSet: scope.filter((s) => s.writable === 1).map((s) => s.node_id),
-      readSet: scope.map((s) => s.node_id),
-      lastActiveAt: oldSession.last_active_at,
-    });
+    const summary = await handoffs.summarize(oldSession, "continue");
+    const written = await handoffs.writeFile(oldSession, summary);
 
-    await store.patchSession(sessionId, { state: "closed" });
+    await store.patchSession(sessionId, {
+      state: "closed",
+      ...(written ? { handoff_path: written.handoffPath, handoff_hash: written.handoffHash } : {}),
+    });
     await appendAndPublish(sessionId, null, [
       { kind: "state_changed", payload: { from: oldSession.state, to: "closed", waiting: false } },
     ]);
@@ -1459,7 +1477,11 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     });
     const seededProvisioned = {
       ...provisioned,
-      orientation: `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n${summary}`,
+      orientation: written
+        ? `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n` +
+          `Navazuješ na předchozí vlákno; konverzace se nepřenáší, ` +
+          `pokračuješ z tohoto shrnutí (\`${written.handoffPath}\`):\n\n${summary}`
+        : `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n${summary}`,
     };
 
     const run = await store.createRun({

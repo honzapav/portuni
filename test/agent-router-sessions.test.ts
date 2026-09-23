@@ -406,10 +406,9 @@ describe("agent-router: sessions/tasks", () => {
         [2, "user_message"],
         [3, "run_ended"],
         // #378: nobody closed this run explicitly, so it falls through to
-        // the auto-summary/suspend path and gets its handoff event too --
-        // after the transition the suspend made (#494).
+        // the suspend path -- the transition the suspend made (#494), and
+        // no handoff event: only Předat writes a summary (#497).
         [4, "state_changed"],
-        [5, "handoff"],
       ],
     );
   });
@@ -610,12 +609,11 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(res.status, 201);
     const { session } = (await res.json()) as { session: SessionRow };
 
-    // #458: the one server-side suspend, agent-mode seams -- the summary
-    // lands in the device's own mirror, the state patch goes to central
-    // over REST.
+    // #458: the one server-side suspend, agent-mode seams -- the state
+    // patch goes to central over REST; #497: no summary with it.
     const stored = fake.sessions.get(session.id);
     assert.equal(stored?.state, "suspended");
-    assert.ok(stored?.handoff_path, "a server-written summary must be recorded on central");
+    assert.equal(stored?.handoff_path ?? null, null, "a suspend records no handoff on central");
 
     const run = [...fake.runs.values()][0];
     assert.equal(run.end_reason, "limit");
@@ -626,14 +624,13 @@ describe("agent-router: sessions/tasks", () => {
     const payload = JSON.parse(error!.payload) as { class: string; message: string };
     assert.equal(payload.class, "provider");
     assert.match(payload.message, /spend limit/);
-    assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
+    assert.equal(events.some((e) => e.kind === "handoff"), false, "no handoff event (#497)");
   });
 
-  // #427: the sync agent's suspend fallback writes the SAME summary the
-  // personal-workspace path writes -- scope sections filled from central --
-  // and registers the file record-only so it shows under Files at once
-  // instead of waiting for the next sync run's untracked discovery.
-  it("the suspend fallback fills the write/read set from central and registers the handoff", async () => {
+  // #497: a suspend the runtime does on its own (here the run ending by
+  // itself) writes no file, so nothing is registered on central and no
+  // scope is read for a summary.
+  it("a suspend registers no handoff on central and reads no scope for a summary (#497)", async () => {
     stubScript([{ end: "completed" }]);
     fake.registered = [];
     fake.scopeReads = [];
@@ -647,8 +644,37 @@ describe("agent-router: sessions/tasks", () => {
 
     const stored = fake.sessions.get(session.id);
     assert.equal(stored?.state, "suspended");
-    assert.ok(stored?.handoff_path, "a server-written summary must be recorded on central");
-    assert.deepEqual(fake.scopeReads, [session.id], "the fallback must read the session's scope from central");
+    assert.equal(stored?.handoff_path ?? null, null);
+    assert.equal(stored?.handoff_hash ?? null, null);
+    assert.deepEqual(fake.registered, [], "nothing registered on central");
+    assert.deepEqual(fake.scopeReads, [], "no summary, so no scope read");
+    const mirrorRoot = await getMirrorPath(stored!.user_id, NODE_ID);
+    assert.ok(mirrorRoot, "the task's mirror exists on this device");
+    await assert.rejects(() => readFile(join(mirrorRoot!, `wip/sessions/${session.id}-handoff.md`), "utf8"));
+  });
+
+  // #427: Předat in a sync agent writes the SAME summary the
+  // personal-workspace path writes -- scope sections filled from central --
+  // and registers the file record-only so it shows under Files at once
+  // instead of waiting for the next sync run's untracked discovery.
+  it("Předat fills the write/read set from central and registers the handoff (#497)", async () => {
+    stubScript([{ wait: "message" }]);
+    fake.registered = [];
+    fake.scopeReads = [];
+    const res = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    assert.equal(res.status, 201);
+    const { session } = (await res.json()) as { session: SessionRow };
+    const handedOver = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    assert.equal(handedOver.status, 200);
+
+    const stored = fake.sessions.get(session.id);
+    assert.equal(stored?.state, "suspended");
+    assert.ok(stored?.handoff_path, "Předat records the handoff on central");
+    assert.deepEqual(fake.scopeReads, [session.id], "the summary reads the session's scope from central");
 
     const mirrorRoot = await getMirrorPath(stored!.user_id, NODE_ID);
     assert.ok(mirrorRoot, "the task's mirror must exist on this device");
@@ -665,10 +691,10 @@ describe("agent-router: sessions/tasks", () => {
     );
   });
 
-  // A central that refuses the scope read must not cost the thread its
-  // suspend: the summary is still written, only without its scope sections.
-  it("a failing scope read still suspends the thread with a handoff", async () => {
-    stubScript([{ end: "completed" }]);
+  // A central that refuses the scope read must not cost Předat its file:
+  // the summary is still written, only without its scope sections.
+  it("a failing scope read still hands the thread over with a file", async () => {
+    stubScript([{ wait: "message" }]);
     const realScope = fake.sessionScopeRecord.bind(fake);
     fake.sessionScopeRecord = async () => {
       throw new CentralHttpError("scope unavailable", 500);
@@ -680,6 +706,8 @@ describe("agent-router: sessions/tasks", () => {
         body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
       });
       const { session } = (await res.json()) as { session: SessionRow };
+      const handedOver = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+      assert.equal(handedOver.status, 200);
       const stored = fake.sessions.get(session.id);
       assert.equal(stored?.state, "suspended");
       assert.ok(stored?.handoff_path);
@@ -719,6 +747,7 @@ describe("agent-router: sessions/tasks", () => {
 
   it("continue closes the old session and starts a new, running one on central (#378)", async () => {
     stubScript([{ wait: "message" }]);
+    fake.registered = [];
     const start = await fetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -734,6 +763,15 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.sessions.get(session.id)?.state, "closed");
     assert.equal(fake.sessions.get(continued.id)?.state, "running");
     assert.equal(fake.runs.size, 2, "continue must create a second run record on central");
+
+    // #497: Pokračovat v nové session writes the old thread's handoff file
+    // here, records it on central and registers it there.
+    const relPath = `wip/sessions/${session.id}-handoff.md`;
+    assert.equal(fake.sessions.get(session.id)?.handoff_path, relPath);
+    assert.deepEqual(fake.registered, [{ nodeId: NODE_ID, relPath }]);
+    const mirrorRoot = await getMirrorPath(fake.sessions.get(session.id)!.user_id, NODE_ID);
+    assert.match(await readFile(join(mirrorRoot!, relPath), "utf8"), /server-handoff reason=continue/);
+    await fetch(`${base}/sessions/${continued.id}/close`, { method: "POST" });
   });
 
   // The four device-local session/runner routes is_device_local_path sends
@@ -1081,9 +1119,9 @@ describe("agent-router: sessions/tasks", () => {
     assert.deepEqual(
       body.events.map((e) => e.kind),
       // #378: nobody closed this run explicitly, so it falls through to the
-      // auto-summary/suspend path and gets its handoff event too.
-      // #494: and the suspend itself is in the log, so the chat learns of it.
-      ["run_started", "user_message", "run_ended", "state_changed", "handoff"],
+      // suspend path; #494: the suspend itself is in the log, so the chat
+      // learns of it; #497: and no handoff event, only Předat writes one.
+      ["run_started", "user_message", "run_ended", "state_changed"],
     );
   });
 
@@ -1120,12 +1158,14 @@ describe("agent-router: sessions/tasks", () => {
   // reports on is content (content.db) and the handoff file it hashes is in
   // this device's mirror, neither of which central has.
   it("GET /sessions/:id/resume-info is served by the sidecar, off this device's mirror and content store", async () => {
+    stubScript([{ wait: "message" }]);
     const start = await fetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
+    assert.equal((await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" })).status, 200);
 
     const res = await fetch(`${base}/sessions/${session.id}/resume-info`);
     assert.equal(res.status, 200);
@@ -1136,8 +1176,7 @@ describe("agent-router: sessions/tasks", () => {
       generated_by: string | null;
     };
     assert.equal(info.session_id, session.id);
-    // The empty script auto-completes, so the run ends into the suspend
-    // path and writes its summary as a real file in this device's mirror.
+    // Předat wrote the summary as a real file in this device's mirror.
     assert.equal(info.handoff_path, `wip/sessions/${session.id}-handoff.md`);
     assert.equal(info.handoff_checkable, true, "the mirror is on this device, so the handoff is checkable here");
     assert.equal(info.generated_by, "server");
@@ -1161,7 +1200,7 @@ describe("agent-router: sessions/tasks", () => {
     const stored = fake.sessions.get(session.id);
     assert.equal(stored?.brief, null);
     assert.equal(stored?.handoff_inline, null);
-    assert.ok(stored?.handoff_hash, "the record still carries the handoff's hash");
+    assert.equal(stored?.handoff_hash ?? null, null, "an ordinary suspend records no handoff (#497)");
 
     const events = await content.listEvents(session.id);
     assert.ok(events.length > 0, "the transcript is on this device");
