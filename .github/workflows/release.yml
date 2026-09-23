@@ -165,10 +165,11 @@ jobs:
             --repo "${{ github.repository }}" --clobber
 
       # tauri-action writes each platform's url as the API asset endpoint
-      # (api.github.com/.../releases/assets/<id>). An unauthenticated client
-      # gets 60 API requests an hour per IP, so the updater's download fails
-      # with 403 once a network has spent them. Point every url at the
-      # asset's browser_download_url, which has no such limit.
+      # (api.github.com/.../releases/assets/<id>). The GitHub API answers
+      # 403 to a request without a User-Agent, which the updater's download
+      # sends none of, and limits unauthenticated clients to 60 requests an
+      # hour per IP besides. Point every url at the asset's
+      # browser_download_url, which has neither restriction.
       - name: Point latest.json at direct download urls
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
