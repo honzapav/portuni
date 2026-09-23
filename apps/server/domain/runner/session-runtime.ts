@@ -24,7 +24,9 @@ import {
   type SummaryEvent,
 } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
-import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
+import type { SessionRunRow, SessionStore } from "./store.js";
+import type { ListEventsOptions, SessionContentStore } from "./store-content.js";
+import type { SessionEventRow } from "../../shared/api-types.js";
 import { detectAll } from "./registry.js";
 import { getInstanceDefaults, getInstanceEnv, listInstances, type InstanceDefaults } from "./instances.js";
 import { localHostId } from "./hosts.js";
@@ -153,7 +155,14 @@ export type PublishedEvent = (CanonicalEvent & { seq: number }) | DeltaFrame | S
 export type RuntimeListener = (sessionId: string, event: PublishedEvent) => void;
 
 export interface CreateSessionRuntimeDeps {
+  // The RECORD half: state, runner, instance, runs. DbSessionStore in a
+  // personal workspace, CentralSessionStore in a team workspace.
   store: SessionStore;
+  // The CONTENT half, always this device's own content.db (#456,
+  // docs/superpowers/specs/2026-09-22-local-sessions-design.md): the
+  // transcript, the first message and the inline handoff summary. Same
+  // object in both workspaces -- the central server never sees any of it.
+  content: SessionContentStore;
   registry: RunnerRegistryLookup;
   provision: (input: ProvisionRunInput) => Promise<ProvisionRunResult>;
   // #378: writes the mechanical summary and moves the session to suspended
@@ -291,9 +300,10 @@ interface LiveRun {
 }
 
 export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRuntime {
-  const { store, registry, provision } = deps;
+  const { store, content, registry, provision } = deps;
   const suspendFallback =
-    deps.suspendFallback ?? ((sessionId: string, reason: ServerHandoffReason) => suspendSessionServerSide(getDb(), sessionId, reason));
+    deps.suspendFallback ??
+    ((sessionId: string, reason: ServerHandoffReason) => suspendSessionServerSide(getDb(), content, sessionId, reason));
   const resolveNodeOrgId = deps.resolveNodeOrgId ?? resolveNodeOrgIdLocal;
 
   const liveRuns = new Map<string, LiveRun>();
@@ -366,7 +376,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     runId: string | null,
     events: CanonicalEvent[],
   ): Promise<void> {
-    const seqs = await store.appendEvents(sessionId, runId, events);
+    const seqs = await content.appendEvents(sessionId, runId, events);
     events.forEach((event, i) => {
       publish(sessionId, { ...event, seq: seqs[i] });
     });
@@ -592,13 +602,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const session = await store.createSession({
       node_id: input.nodeId,
       user_id: input.userId,
-      brief: input.brief,
       runner: input.runner,
       instance_id: instanceId,
       host_id: localHostId(),
       model: input.model ?? null,
       effort: input.effort ?? null,
     });
+    // The brief is the thread's first message, i.e. content: it stays on
+    // this device even when the record above was created on central.
+    await content.setContent(session.id, { brief: input.brief });
 
     const provisioned = await provision({
       userId: input.userId,
@@ -668,9 +680,11 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const { runner, instanceId } = session.runner
       ? { runner: session.runner, instanceId: session.instance_id }
       : await resolveTaskDefaults(session.node_id, resolveNodeOrgId);
+    // Content first, record second: the first message and the user_message
+    // event below are the device's, the patch is the record's (#456).
+    await content.setContent(sessionId, { brief: text });
     const updated = await store.patchSession(sessionId, {
       state: "running",
-      brief: text,
       runner,
       instance_id: instanceId,
       // Naming (#374): the thread names itself from its first message,
@@ -739,7 +753,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     } else {
       const summary = session.handoff_path
         ? await readFile(join(provisioned.cwd, session.handoff_path), "utf8").catch(() => null)
-        : session.handoff_inline;
+        : (await content.getContent(sessionId))?.handoff_inline ?? null;
       if (summary) {
         runProvisioned = {
           ...provisioned,
@@ -917,7 +931,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
 
     const scope = await getSessionScope(getDb(), sessionId).catch(() => []);
-    const rows = await store.listEvents(sessionId);
+    const rows = await content.listEvents(sessionId);
     const events: SummaryEvent[] = rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
     const nodeName = await nodeNameForSession(oldSession.node_id);
     const summary = buildRunSummaryContent({
@@ -938,7 +952,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const newSession = await store.createSession({
       node_id: oldSession.node_id,
       user_id: oldSession.user_id,
-      brief: null,
       runner,
       instance_id: oldSession.instance_id,
       host_id: localHostId(),
@@ -1010,7 +1023,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   }
 
   function listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]> {
-    return store.listEvents(sessionId, opts);
+    return content.listEvents(sessionId, opts);
   }
 
   function subscriberCount(target: string): number {

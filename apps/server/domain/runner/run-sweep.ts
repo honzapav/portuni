@@ -25,6 +25,7 @@ import type { DbClient } from "../../infra/db.js";
 import type { SessionRow } from "../../shared/types.js";
 import { suspendSessionServerSide } from "../session-handoff.js";
 import { DbSessionStore, type SessionStore } from "./store.js";
+import { deviceSessionContentStore, type SessionContentStore } from "./store-content.js";
 import { isProcessAlive } from "./process-liveness.js";
 import { listPidFiles, readPidFile, removePidFileAt, type PidFileEntry } from "./pid-file.js";
 
@@ -43,12 +44,16 @@ export interface SweptRun {
   ended_at: string | null;
 }
 
-// What the sweep needs beyond the filesystem: where a run record lives and
-// how a session is suspended. Local mode reads both straight off the graph
-// db; central mode goes through CentralSessionStore and the same
-// suspend-fallback the runtime itself uses.
+// What the sweep needs beyond the filesystem: where a run record lives,
+// where the transcript is written and how a session is suspended. Local
+// mode reads the record straight off the graph db; central mode goes
+// through CentralSessionStore and the same suspend-fallback the runtime
+// itself uses. The transcript is the device's either way.
 export interface RunSweepBackend {
   store: SessionStore;
+  // The transcript the sweep's own run_ended/handoff events go into: this
+  // device's content.db in both workspaces (#456), never the record store.
+  content: SessionContentStore;
   resolveRun(runId: string, sessionId: string | null): Promise<SweptRun | null>;
   suspend(sessionId: string, reason: "host_lost"): Promise<SessionRow | null>;
 }
@@ -177,14 +182,14 @@ async function sweepOne(
   }
 
   const store = backend.store;
-  await store.appendEvents(run.session_id, run.id, [
+  await backend.content.appendEvents(run.session_id, run.id, [
     { kind: "run_ended", payload: { run_id: run.id, reason: "host_lost", usage: null } },
   ]);
   await store.patchRun(run.id, { ended_at: new Date().toISOString(), end_reason: "host_lost" });
 
   const session = await backend.suspend(run.session_id, "host_lost");
   if (session) {
-    await store.appendEvents(run.session_id, run.id, [
+    await backend.content.appendEvents(run.session_id, run.id, [
       { kind: "handoff", payload: { path: session.handoff_path, hash: session.handoff_hash } },
     ]);
   }
@@ -211,11 +216,13 @@ export async function sweepOrphanedRunsOn(
   return result;
 }
 
-export function localRunSweepBackend(db: DbClient): RunSweepBackend {
+export function localRunSweepBackend(db: DbClient, content?: SessionContentStore): RunSweepBackend {
+  const contentStore = content ?? deviceSessionContentStore();
   return {
     store: new DbSessionStore(db),
+    content: contentStore,
     resolveRun: (runId) => loadRun(db, runId),
-    suspend: (sessionId, reason) => suspendSessionServerSide(db, sessionId, reason),
+    suspend: (sessionId, reason) => suspendSessionServerSide(db, contentStore, sessionId, reason),
   };
 }
 
@@ -226,10 +233,12 @@ export function localRunSweepBackend(db: DbClient): RunSweepBackend {
 // to be re-examined at every boot forever.
 export function centralRunSweepBackend(
   store: SessionStore,
+  content: SessionContentStore,
   suspend: (sessionId: string, reason: "host_lost") => Promise<SessionRow | null>,
 ): RunSweepBackend {
   return {
     store,
+    content,
     resolveRun: async (runId, sessionId) => {
       if (!sessionId) return null;
       const runs = await store.listRuns(sessionId);
@@ -240,6 +249,11 @@ export function centralRunSweepBackend(
   };
 }
 
-export async function sweepOrphanedRuns(db: DbClient, dataDir: string, deps: RunSweepDeps = {}): Promise<RunSweepResult> {
-  return sweepOrphanedRunsOn(localRunSweepBackend(db), dataDir, deps);
+export async function sweepOrphanedRuns(
+  db: DbClient,
+  dataDir: string,
+  deps: RunSweepDeps = {},
+  content?: SessionContentStore,
+): Promise<RunSweepResult> {
+  return sweepOrphanedRunsOn(localRunSweepBackend(db, content), dataDir, deps);
 }

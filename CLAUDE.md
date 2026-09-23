@@ -235,11 +235,17 @@ One line each; the linked doc carries the mechanism and the reasoning.
 - The session row exists before the runner: `POST /sessions` creates it, the
   run's MCP connection binds to it via `X-Portuni-Spawn-Id`; a hand-opened CLI
   gets its row at the handshake, `cli` from `clientInfo.name`.
-- The runtime always runs on the device; only the store differs
-  (`DbSessionStore` locally, `CentralSessionStore` in sync-agent mode). Access is
-  enforced once, on the central server, by `auth/session-access.ts`'s table. A new
-  session verb lands in `router.ts`, `agent-router.ts`, `sessions-ws.ts`,
-  `min-scopes.ts` and `device-local-routes.json` together.
+- A thread is a **record** (exists, node, owner, state, runner, runs, scope)
+  and **content** (first message, transcript, inline handoff summary). The
+  runtime always runs on the device and takes both stores: the record store
+  differs by workspace (`DbSessionStore` locally, `CentralSessionStore` in
+  sync-agent mode), the content store never does -- it is always
+  `SessionContentStore` over this device's `content.db`. Nothing on the
+  device sends events, `brief` or `handoff_inline` to the central server.
+  Access is enforced once, on the central server, by
+  `auth/session-access.ts`'s table. A new session verb lands in
+  `router.ts`, `agent-router.ts`, `sessions-ws.ts`, `min-scopes.ts` and
+  `device-local-routes.json` together.
 - Nothing but Uzavřít and the auto-archive sweep reaches `closed`. Every other
   end (disconnect, idle `PORTUNI_RUN_IDLE_MS`, provider limit or error,
   boot sweep, orphaned pid) suspends with a server-written summary; the next
@@ -250,7 +256,11 @@ One line each; the linked doc carries the mechanism and the reasoning.
 - Migration 036 carries `draft`, `model`, `effort`; migration 039 the
   context counters; the 030 and 036 rebuilds, `DDL_SESSIONS` and
   `PG_BASELINE_DDL` carry the current full shape too. A new `sessions`
-  column goes into all of them.
+  column goes into all of them. `content.db` has its own DDL and version
+  row (`infra/device-content-db.ts`) and never a `MIGRATIONS` entry;
+  `sessions.brief`, `sessions.handoff_inline` and the graph db's
+  `session_events` are write-only leftovers for older sidecars until the
+  central migration drops them.
 
 ### MCP and scope (`mcp-scope-and-integrations.md`)
 

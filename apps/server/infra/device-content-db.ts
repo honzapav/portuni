@@ -24,6 +24,10 @@
 // Version history (a bump adds a numbered step here and raises
 // DEVICE_CONTENT_SCHEMA_VERSION; every step must be safe to re-run):
 //   1. session_content, session_events, device_schema (the DDL below).
+//   2. The one-time import of a personal workspace's existing session
+//      content out of its graph db (boot/content-import.ts) -- no DDL
+//      change, so a db created fresh still starts at version 1 and the
+//      import raises it to 2 on the next boot.
 
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";

@@ -23,14 +23,22 @@ import { writePidFile, readPidFile } from "../apps/server/domain/runner/pid-file
 import { isProcessAlive } from "../apps/server/domain/runner/process-liveness.js";
 import { getSession } from "../apps/server/domain/sessions.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
+import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
+import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 
 afterEach(() => {
   setDbForTesting(null);
+  clearTestContentDb();
 });
+
+// #456: the run_ended and handoff events the sweep appends are content and
+// land in this device's content.db, not on the record.
+let content: SessionContentStore;
 
 async function sharedDb(): Promise<SharedDb> {
   const shared = await makeSharedDb();
   setDbForTesting(shared.db);
+  content = (await installTestContentDb()).content;
   return shared;
 }
 
@@ -39,7 +47,6 @@ async function startSessionAndRun(db: SharedDb["db"]) {
   const session = await store.createSession({
     node_id: null,
     user_id: "U1",
-    brief: "Fix the bug",
     runner: "claude",
     instance_id: null,
     host_id: null,
@@ -90,7 +97,7 @@ describe("sweepOrphanedRuns (#325)", () => {
     const suspended = await getSession(shared.db, session.id);
     assert.equal(suspended?.state, "suspended");
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     assert.deepEqual(
       events.map((e) => e.kind),
       ["run_ended", "handoff"],
@@ -98,7 +105,7 @@ describe("sweepOrphanedRuns (#325)", () => {
     // #378: the handoff canonical event's payload is just {path, hash} now
     // -- "who generated it" is no longer part of the event, only of the
     // handoff CONTENT marker parseServerHandoffReason reads back off
-    // handoff_inline/handoff_path.
+    // the device's inline summary / handoff_path.
     const handoffPayload = JSON.parse(events[1].payload);
     assert.ok("hash" in handoffPayload);
 
@@ -198,7 +205,7 @@ describe("sweepOrphanedRuns in central mode (#393)", () => {
     await writePidFile(dataDir, run.id, 999_999_999, session.id);
 
     const suspended: Array<[string, string]> = [];
-    const backend = centralRunSweepBackend(store, async (sessionId, reason) => {
+    const backend = centralRunSweepBackend(store, content, async (sessionId, reason) => {
       suspended.push([sessionId, reason]);
       return null;
     });
@@ -212,7 +219,7 @@ describe("sweepOrphanedRuns in central mode (#393)", () => {
     assert.equal(runs[0].end_reason, "host_lost");
     assert.notEqual(runs[0].ended_at, null);
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     assert.equal(
       events.some((e) => e.kind === "run_ended"),
       true,
@@ -233,7 +240,7 @@ describe("sweepOrphanedRuns in central mode (#393)", () => {
       "utf8",
     );
 
-    const backend = centralRunSweepBackend(store, async () => null);
+    const backend = centralRunSweepBackend(store, content, async () => null);
     const result = await sweepOrphanedRunsOn(backend, dataDir, { isAlive: () => false });
     assert.equal(result.cleaned, 0);
     assert.equal(result.staleFilesRemoved, 0);

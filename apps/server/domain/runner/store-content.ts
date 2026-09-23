@@ -12,12 +12,13 @@
 // (`SessionStore` in ./store.ts), which is the central server's in a team
 // workspace.
 //
-// The event methods keep the signatures and the `seq` semantics
-// `SessionStore` has today; #456 moves the runtime onto this store and
-// drops them from the record store.
+// The runtime (#456) routes every event append, every event read and both
+// content columns here, in both workspaces; the record store carries none
+// of them.
 
 import { ulid } from "ulid";
 import { z } from "zod";
+import { getDeviceContentDb } from "../../infra/device-content-db.js";
 import type { DbClient, InStatement, InValue } from "../../infra/db.js";
 import type { SessionEventRow } from "../../shared/api-types.js";
 import type { CanonicalEvent } from "./types.js";
@@ -99,8 +100,24 @@ export interface ListEventsOptions {
   limit?: number;
 }
 
+// The content db is opened asynchronously (infra/device-content-db.ts's
+// getDeviceContentDb), while the composition roots that build a runtime
+// are synchronous -- so a resolver is accepted as well as a client, and
+// every method awaits it. Resolving on each call is what keeps
+// setDeviceContentDbForTesting() able to swap the db under a long-lived
+// store.
+export type SessionContentDb = DbClient | (() => DbClient | Promise<DbClient>);
+
 export class SessionContentStore {
-  constructor(private readonly db: DbClient) {}
+  private readonly resolve: () => DbClient | Promise<DbClient>;
+
+  constructor(db: SessionContentDb) {
+    this.resolve = typeof db === "function" ? db : () => db;
+  }
+
+  private db(): DbClient | Promise<DbClient> {
+    return this.resolve();
+  }
 
   // seq is assigned inside this one transaction: each INSERT's own
   // COALESCE(MAX(seq),0)+1 subquery sees every row the prior statement in
@@ -125,10 +142,10 @@ export class SessionContentStore {
         args: [ids[i], sessionId, runId, sessionId, capped.kind, JSON.stringify(capped.payload), now],
       };
     });
-    await this.db.batch(stmts, "write");
+    await (await this.db()).batch(stmts, "write");
 
     const placeholders = ids.map(() => "?").join(",");
-    const res = await this.db.execute({
+    const res = await (await this.db()).execute({
       sql: `SELECT id, seq FROM session_events WHERE session_id = ? AND id IN (${placeholders})`,
       args: [sessionId, ...ids],
     });
@@ -153,12 +170,12 @@ export class SessionContentStore {
       sql += " LIMIT ?";
       args.push(opts.limit);
     }
-    const res = await this.db.execute({ sql, args });
+    const res = await (await this.db()).execute({ sql, args });
     return res.rows.map((r) => SessionEventRowSchema.parse(r));
   }
 
   async getContent(sessionId: string): Promise<SessionContentRow | null> {
-    const res = await this.db.execute({
+    const res = await (await this.db()).execute({
       sql: "SELECT session_id, brief, handoff_inline FROM session_content WHERE session_id = ?",
       args: [sessionId],
     });
@@ -178,7 +195,7 @@ export class SessionContentStore {
       sets.length === 0
         ? "DO NOTHING"
         : `DO UPDATE SET ${sets.join(", ")}`;
-    await this.db.execute({
+    await (await this.db()).execute({
       sql: `INSERT INTO session_content (session_id, brief, handoff_inline) VALUES (?, ?, ?)
             ON CONFLICT(session_id) ${onConflict}`,
       args,
@@ -191,7 +208,7 @@ export class SessionContentStore {
   // Everything this device holds for the thread: the content row and its
   // transcript. There is no backup of either (spec, "Principle").
   async deleteContent(sessionId: string): Promise<void> {
-    await this.db.batch(
+    await (await this.db()).batch(
       [
         { sql: "DELETE FROM session_events WHERE session_id = ?", args: [sessionId] },
         { sql: "DELETE FROM session_content WHERE session_id = ?", args: [sessionId] },
@@ -199,4 +216,17 @@ export class SessionContentStore {
       "write",
     );
   }
+}
+
+// The process's own content store over content.db -- what every composition
+// root (boot/session-runtime.ts, boot/run-sweep.ts, boot/session-sweep.ts,
+// mcp/transport.ts) binds to, in both workspaces. getDeviceContentDb() is
+// async and opens the file lazily while those roots are synchronous, so the
+// resolver is what is handed over; a test swapping the db through
+// setDeviceContentDbForTesting() is picked up by the next call either way.
+let deviceStore: SessionContentStore | null = null;
+
+export function deviceSessionContentStore(): SessionContentStore {
+  if (!deviceStore) deviceStore = new SessionContentStore(() => getDeviceContentDb());
+  return deviceStore;
 }

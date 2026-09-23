@@ -1,11 +1,10 @@
 // #434: the sync agent's suspend fallback on a node this device has no
-// mirror for. The local half (suspendSessionServerSide) has always written
-// the summary into sessions.handoff_inline when there was no file to write
-// it to; the central half computed the hash and dropped the content, so the
-// thread resumed from nothing. These tests drive the real fallback against a
-// fake central server -- a CentralClient whose session methods go through
-// the central server's own REST handlers (routeApiRequest) on a test db --
-// and then read the handoff back the way a resume does.
+// mirror for -- the summary itself has to survive, or the thread resumes
+// from nothing. #456 moved that summary off the record and into this
+// device's content.db, so these tests drive the real fallback against a
+// fake central server (a CentralClient whose record methods go through the
+// central server's own REST handlers, routeApiRequest, on a test db) plus a
+// real content store, and then read the handoff back the way a resume does.
 
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -23,7 +22,8 @@ import { routeApiRequest } from "../apps/server/api/router.js";
 import { createSession } from "../apps/server/domain/sessions.js";
 import { createSuspendFallbackCentral } from "../apps/server/domain/runner/suspend-fallback-central.js";
 import { CentralSessionStore } from "../apps/server/domain/runner/store-central.js";
-import { DbSessionStore } from "../apps/server/domain/runner/store.js";
+import { installTestContentDb } from "./helpers/content-db.js";
+import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 import { sha256Buffer } from "../apps/server/domain/sync/hash.js";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
@@ -85,6 +85,7 @@ describe("central suspend fallback without a mirror (#434)", () => {
   let workspace: string;
   let nodeId: string;
   let client: CentralClient;
+  let content: SessionContentStore;
 
   before(async () => {
     // No mirror is ever registered under this root, so getMirrorPath
@@ -103,12 +104,13 @@ describe("central suspend fallback without a mirror (#434)", () => {
       args: [nodeId, SOLO],
     });
 
-    // The fake central server: only the four methods the fallback and
+    content = (await installTestContentDb()).content;
+
+    // The fake central server: only the record methods the fallback and
     // CentralSessionStore reach for, each one going through the central
     // server's real handler (the record write is the point of the test).
-    // GET /sessions/:id/events would pull in the whole session runtime for
-    // no gain here, so the event read talks to the same store that route's
-    // handler does.
+    // #456: there is no event method to fake at all -- the transcript is
+    // read from the device's own content store.
     client = {
       getSessionRecord: async (id: string) => {
         const r = await call("GET", `/sessions/${id}`);
@@ -119,7 +121,12 @@ describe("central suspend fallback without a mirror (#434)", () => {
         assert.equal(r.statusCode, 200, `PATCH /sessions/${id} answered ${r.statusCode}: ${r.body}`);
         return JSON.parse(r.body) as SessionRow;
       },
-      listSessionEvents: (sessionId: string) => new DbSessionStore(db).listEvents(sessionId),
+      appendSessionEvents: () => {
+        throw new Error("the central server must never receive session events (#456)");
+      },
+      listSessionEvents: () => {
+        throw new Error("the central server must never be asked for session events (#456)");
+      },
       sessionScopeRecord: async (sessionId: string) => {
         const r = await call("GET", `/sessions/${sessionId}/scope`);
         assert.equal(r.statusCode, 200);
@@ -134,38 +141,40 @@ describe("central suspend fallback without a mirror (#434)", () => {
     await rm(workspace, { recursive: true, force: true });
   });
 
-  test("suspends with the summary in handoff_inline and a hash that matches it", async () => {
+  test("suspends with the summary in the device content store and a hash that matches it", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
-    await new DbSessionStore(db).appendEvents(session.id, null, [
+    await content.appendEvents(session.id, null, [
       { kind: "user_message", payload: { text: "Oprav ten test", source: "chat" } },
       { kind: "assistant_message", payload: { text: "Hotovo, zbývá dokumentace." } },
     ]);
 
-    const fallback = createSuspendFallbackCentral(new CentralSessionStore(client), client);
+    const fallback = createSuspendFallbackCentral(new CentralSessionStore(client), content, client);
     const suspended = await fallback(session.id, "idle");
 
     assert.equal(suspended?.state, "suspended");
     assert.equal(suspended?.handoff_path, null, "no mirror here, so there is no handoff file to point at");
-    assert.ok(suspended?.handoff_inline && suspended.handoff_inline.length > 0, "the summary itself is stored");
-    assert.match(suspended!.handoff_inline!, /Oprav ten test/);
+    assert.equal(suspended?.handoff_inline, null, "the central record never carries the summary (#456)");
+    const inline = (await content.getContent(session.id))?.handoff_inline ?? null;
+    assert.ok(inline && inline.length > 0, "the summary itself is stored on the device");
+    assert.match(inline!, /Oprav ten test/);
     assert.equal(
       suspended?.handoff_hash,
-      sha256Buffer(Buffer.from(suspended!.handoff_inline!, "utf8")),
+      sha256Buffer(Buffer.from(inline!, "utf8")),
       "handoff_hash is the hash of the content that was stored",
     );
   });
 
-  test("the stored handoff is what a resume reads back from the central server", async () => {
+  test("the stored handoff is what a resume reads back", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
-    const fallback = createSuspendFallbackCentral(new CentralSessionStore(client), client);
+    const fallback = createSuspendFallbackCentral(new CentralSessionStore(client), content, client);
     await fallback(session.id, "disconnect");
 
     const res = await call("GET", `/sessions/${session.id}/resume-info`);
     assert.equal(res.statusCode, 200);
     const info = JSON.parse(res.body) as SessionResumeInfo;
     assert.equal(info.handoff_path, null);
-    // Both of these are read off the handoff's own content: without
-    // handoff_inline getResumeInfo would have nothing to parse.
+    // Both of these are read off the handoff's own content: without the
+    // device's inline summary getResumeInfo would have nothing to parse.
     assert.equal(info.generated_by, "server");
     assert.equal(info.reason, "disconnect");
   });

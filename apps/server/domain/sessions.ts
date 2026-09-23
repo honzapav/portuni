@@ -16,6 +16,7 @@ import {
 } from "../shared/types.js";
 import { writeAudit } from "../infra/audit.js";
 import { suspendSessionServerSide, type ServerHandoffReason } from "./session-handoff.js";
+import { deviceSessionContentStore } from "./runner/store-content.js";
 
 const SESSION_TYPES = ["interactive_task", "interactive_chat", "headless", "env"] as const;
 
@@ -408,7 +409,7 @@ export async function closeSessionIfRunning(
   sessionId: string,
   reason: ServerHandoffReason,
 ): Promise<void> {
-  await suspendSessionServerSide(db, sessionId, reason);
+  await suspendSessionServerSide(db, deviceSessionContentStore(), sessionId, reason);
 }
 
 // Boot sweep (#272): a 'running' row can survive a process restart (app
@@ -423,7 +424,7 @@ export async function closeSessionIfRunning(
 export async function closeStaleRunningSessionsOnBoot(db: DbClient): Promise<number> {
   const res = await db.execute({ sql: "SELECT id, user_id FROM sessions WHERE state = 'running'" });
   for (const row of res.rows) {
-    await suspendSessionServerSide(db, String(row.id), "boot_sweep");
+    await suspendSessionServerSide(db, deviceSessionContentStore(), String(row.id), "boot_sweep");
   }
   return res.rows.length;
 }
@@ -602,13 +603,10 @@ export async function getLatestRunHostId(db: DbClient, sessionId: string): Promi
 export interface SuspendSessionInput {
   // Null when there is nowhere on this device to write a file (#329:
   // suspendSessionServerSide on a session with no local mirror) -- the
-  // handoff text then goes into handoffInline instead.
+  // handoff text then goes into the device content store's
+  // handoff_inline instead (#456), never onto the record.
   handoffPath: string | null;
   handoffHash: string;
-  // Server-generated handoff content when handoffPath is null. Always
-  // cleared (set to null) on any suspend that DOES have a path -- only one
-  // representation is ever active for a given suspend.
-  handoffInline?: string | null;
   agentSessionId?: string | null;
   // Title extracted from the handoff content (session-handoff.ts's
   // extractHandoffTitle). Spec: "enriched from the handoff title at
@@ -643,13 +641,15 @@ export async function suspendSession(
       : existing.name;
   await db.execute({
     sql: `UPDATE sessions
-             SET state = 'suspended', handoff_path = ?, handoff_hash = ?, handoff_inline = ?,
+             SET state = 'suspended', handoff_path = ?, handoff_hash = ?, handoff_inline = NULL,
                  agent_session_id = COALESCE(?, agent_session_id), last_active_at = ?, name = ?
            WHERE id = ?`,
+    // handoff_inline is content and lives on the device now (#456); the
+    // column stays on the record until the central migration (#462) and is
+    // cleared here so no stale copy survives a re-suspend.
     args: [
       input.handoffPath,
       input.handoffHash,
-      input.handoffInline ?? null,
       input.agentSessionId ?? null,
       now,
       enrichedName,

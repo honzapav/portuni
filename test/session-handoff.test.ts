@@ -432,11 +432,11 @@ describe("checkConversationResumable: expired-conversation degradation to handof
       // cli is null on this session (not yet tracked by createSession's
       // input in this test) -- conversationResumable is always false
       // without it, matching "Claude first" / degrade-safe-by-default.
-      const infoNoCle = await getResumeInfo(suspended, mirrorRoot, fakeHome);
+      const infoNoCle = await getResumeInfo(suspended, mirrorRoot, { homeDir: fakeHome });
       assert.equal(infoNoCle.conversationResumable, false);
 
       const withCli = { ...suspended, cli: "claude" };
-      const info = await getResumeInfo(withCli, mirrorRoot, fakeHome);
+      const info = await getResumeInfo(withCli, mirrorRoot, { homeDir: fakeHome });
       assert.equal(info.conversationResumable, true);
     } finally {
       await rm(fakeHome, { recursive: true, force: true });

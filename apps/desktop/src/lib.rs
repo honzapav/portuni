@@ -1223,7 +1223,7 @@ fn device_local_patterns() -> &'static [Vec<RouteSegment>] {
 /// True when `path` (query string ignored) is one of the device-local routes
 /// in `apps/server/shared/device-local-routes.json`. Everything else goes to
 /// the central server: graph reads and writes, the session record half
-/// (`/sessions/<id>`, `/state`, `/resume-info`, `/runs...`, `/sessions/record`),
+/// (`/sessions/<id>`, `/state`, `/runs...`, `/sessions/record`),
 /// `/nodes/<id>/file-url` and `/nodes/<id>/folder-url`.
 pub(crate) fn is_device_local_path(path: &str) -> bool {
     let p = path.split('?').next().unwrap_or(path);
@@ -4009,13 +4009,20 @@ mod device_local_path_tests {
     }
 
     #[test]
+    fn session_resume_info_is_device_local() {
+        // #456: the inline handoff summary it reports is content, which
+        // lives in this device's content.db, and the handoff file it hashes
+        // is in this device's mirror -- central can answer neither.
+        assert!(is_device_local_path("/sessions/abc123/resume-info"));
+    }
+
+    #[test]
     fn session_record_half_stays_central() {
-        // Bare record fetch/patch, state, resume-info, record-create and
-        // run records are all central record-half routes, deliberately NOT
-        // matched here (see api/sessions.ts's header comment).
+        // Bare record fetch/patch, state, record-create and run records are
+        // all central record-half routes, deliberately NOT matched here
+        // (see api/sessions.ts's header comment).
         assert!(!is_device_local_path("/sessions/abc123"));
         assert!(!is_device_local_path("/sessions/abc123/state"));
-        assert!(!is_device_local_path("/sessions/abc123/resume-info"));
         assert!(!is_device_local_path("/sessions/abc123/runs"));
         assert!(!is_device_local_path("/sessions/abc123/runs/run1"));
         assert!(!is_device_local_path("/sessions/record"));

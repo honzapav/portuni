@@ -71,6 +71,8 @@ Two independent data planes, both called *sync*:
 |---|---|---|---|
 | **Graph plane** | nodes, edges, events, file *records* (name, canonical hash, who pushed) | the graph database (Turso today, Postgres after the cutover) | the central server |
 | **File-bytes plane** | the file *contents* (markdown, PDFs, transcripts) | local mirror folders and the remote | Google Drive (service account on a shared drive) |
+| **Session record** | that a thread exists, on which node, whose it is, its state, runner, instance, runs and scope | the graph database | the central server |
+| **Session content** | the first message, every transcript event, the inline handoff summary | `content.db` on the device that ran the thread | nothing -- it is never shared and never backed up; what crosses machines is the handoff file in the node (a file-bytes-plane artefact) |
 
 The graph stores the canonical content hash of each file (`hash is identity`,
 see [`file-sync.md`](./file-sync.md)); the remote holds the bytes. "Sync to
@@ -118,8 +120,9 @@ folders of its own; file content it serves is Drive-direct
 | Mirrors, watcher, reconcile | no | yes | yes |
 | File content `GET/PUT /nodes/:id/file` | Drive-direct fallback | mirror first, central fallback | mirror |
 | Remote (Drive) and remote watcher | yes, service account, `RemoteWatchLoop` | through the central server | never |
-| Session runtime (runs the task) | no | yes, `CentralSessionStore` | yes, `DbSessionStore` |
+| Session runtime (runs the task) | no | yes, `CentralSessionStore` + `SessionContentStore` | yes, `DbSessionStore` + `SessionContentStore` |
 | Session record, access checks | yes (`api/sessions.ts` record half) | on the central server | local db |
+| Session content (`content.db`) | never | yes, this device's | yes, this device's |
 | Live channel `GET /sessions/ws` | yes | yes (own runtime) | yes |
 | MCP | `/mcp` for remote MCP clients (OAuth grant) and proxied tool calls | front door: device tools local, the rest proxied | `/mcp` |
 | Runner registry `runners.json` | its own host's | this device's | this device's |

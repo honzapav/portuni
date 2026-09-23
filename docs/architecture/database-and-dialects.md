@@ -71,6 +71,16 @@ content is the device's, and it lives in a second libsql file,
   `desktop.ts` in both modes (before the central-mode branch), `index.ts`
   for the standalone server -- and `getDeviceContentDb()` is a lazy,
   idempotent process singleton for everything else.
+- **The one-time import.** A personal workspace's existing transcripts,
+  briefs and inline summaries are in its graph db. On the first boot after
+  #456 `desktop.ts` calls `boot/content-import.ts`'s
+  `importGraphDbSessionContentOnce`, which copies them into `content.db`
+  and raises `device_schema.version` to 2 -- step 2 of the version history,
+  no DDL change. Idempotent (the version row gates it, and a half-finished
+  copy resumes without duplicating a row), and never run by a
+  team-workspace sidecar, which has no graph db to copy from. The graph
+  db's own `session_events` table and the two `sessions` columns stay
+  until the central migration drops them.
 - There is no backup. Losing the device's `content.db` loses its
   transcripts; the records on the central server and the handoff files in
   the nodes remain.

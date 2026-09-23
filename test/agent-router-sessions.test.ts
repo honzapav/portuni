@@ -29,13 +29,11 @@ import type {
   CreateDraftSessionInput,
   CreateRunInput,
   CreateRunnerSessionInput,
-  ListEventsOptions,
   PatchRunInput,
   PatchSessionInput,
-  SessionEventRow,
   SessionRunRow,
 } from "../apps/server/domain/runner/store.js";
-import type { CanonicalEvent } from "../apps/server/domain/runner/types.js";
+import type { SessionEventRow } from "../apps/server/shared/api-types.js";
 import type { OrientationSummary } from "../apps/server/domain/write-scope.js";
 import type { SessionScopeRecord } from "../apps/server/shared/api-types.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
@@ -43,6 +41,8 @@ import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/ru
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { getMirrorPath } from "../apps/server/domain/sync/mirror-registry.js";
+import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
+import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 
 const NODE_ID = "N1";
 const NODE_SYNC_INFO: NodeSyncInfo = {
@@ -55,8 +55,6 @@ const NODE_SYNC_INFO: NodeSyncInfo = {
 class FakeCentral implements CentralClient {
   sessions = new Map<string, SessionRow>();
   runs = new Map<string, SessionRunRow>();
-  events = new Map<string, SessionEventRow[]>();
-  seq = new Map<string, number>();
   nodeVisible = new Set<string>([NODE_ID]);
   orientationValue: OrientationSummary | null = {
     node: { name: "Proj", type: "project", description: null, status: "active", goal: null, lifecycle_state: null },
@@ -87,7 +85,7 @@ class FakeCentral implements CentralClient {
       instance_id: input.instance_id,
       agent_session_id: null,
       terminal_id: null,
-      brief: input.brief,
+      brief: null,
       runner: input.runner,
       host_id: input.host_id,
       waiting_since: null,
@@ -153,10 +151,8 @@ class FakeCentral implements CentralClient {
       ...(patch.waiting_since !== undefined ? { waiting_since: patch.waiting_since } : {}),
       ...(patch.handoff_path !== undefined ? { handoff_path: patch.handoff_path } : {}),
       ...(patch.handoff_hash !== undefined ? { handoff_hash: patch.handoff_hash } : {}),
-      // Draft promotion (#374) sends these too, and central's own
-      // PatchSessionBody accepts them -- a fake that dropped them would
-      // leave the promoted row without a runner to resume under.
-      ...(patch.brief !== undefined ? { brief: patch.brief } : {}),
+      // Draft promotion (#374) sends the runner and instance; the brief
+      // itself is content and stays on the device (#456).
       ...(patch.runner !== undefined ? { runner: patch.runner } : {}),
       ...(patch.instance_id !== undefined ? { instance_id: patch.instance_id } : {}),
       ...(patch.name_is_custom !== undefined ? { name_is_custom: patch.name_is_custom ? 1 : 0 } : {}),
@@ -203,37 +199,15 @@ class FakeCentral implements CentralClient {
     return [...this.runs.values()].filter((r) => r.session_id === sessionId);
   }
 
-  async appendSessionEvents(
-    sessionId: string,
-    runId: string | null,
-    events: CanonicalEvent[],
-  ): Promise<number[]> {
-    const list = this.events.get(sessionId) ?? [];
-    let seq = this.seq.get(sessionId) ?? 0;
-    const seqs: number[] = [];
-    for (const e of events) {
-      seq += 1;
-      list.push({
-        id: ulid(),
-        session_id: sessionId,
-        run_id: runId,
-        seq,
-        kind: e.kind,
-        payload: JSON.stringify(e.payload),
-        created_at: new Date().toISOString(),
-      });
-      seqs.push(seq);
-    }
-    this.seq.set(sessionId, seq);
-    this.events.set(sessionId, list);
-    return seqs;
+  // #456: the central server must never receive a thread's content. These
+  // two are gone from CentralClient; a fake that still answers them would
+  // hide a sidecar that kept sending events, so they throw instead.
+  async appendSessionEvents(): Promise<number[]> {
+    throw new Error("the sidecar must not send session events to central (#456)");
   }
 
-  async listSessionEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]> {
-    let rows = this.events.get(sessionId) ?? [];
-    if (opts?.after !== undefined) rows = rows.filter((r) => r.seq > opts.after!);
-    if (opts?.limit !== undefined) rows = rows.slice(0, opts.limit);
-    return rows;
+  async listSessionEvents(): Promise<SessionEventRow[]> {
+    throw new Error("the sidecar must not read session events from central (#456)");
   }
 
   async orientation(): Promise<OrientationSummary | null> {
@@ -318,6 +292,9 @@ class FakeCentral implements CentralClient {
 let handle: HttpServerHandle;
 let base: string;
 let fake: FakeCentral;
+// #456: the transcript is this device's, in content.db -- reinstalled per
+// test so one thread's events never leak into the next one's assertions.
+let content: SessionContentStore;
 
 function stubScript(script: readonly FakeScriptStep[] = []): FakeRunnerAdapter {
   clearRegistryForTests();
@@ -373,19 +350,19 @@ describe("agent-router: sessions/tasks", () => {
     clearRegistryForTests();
     resetLocalDbForTests();
     setDbForTesting(null);
+    clearTestContentDb();
     delete process.env.PORTUNI_WORKSPACE_ROOT;
     await rm(workspace, { recursive: true, force: true });
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     fake.sessions.clear();
     fake.runs.clear();
-    fake.events.clear();
-    fake.seq.clear();
+    content = (await installTestContentDb()).content;
     stubScript([]);
   });
 
-  it("POST /sessions records the session, one run, and the run's events on the fake central", async () => {
+  it("POST /sessions records the session and its run on central, the events on this device", async () => {
     const res = await fetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -394,14 +371,17 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(res.status, 201);
     const body = (await res.json()) as { session: SessionRow; run: SessionRunRow };
     assert.equal(body.session.node_id, NODE_ID);
-    assert.equal(body.session.brief, "Fix the bug");
+    // #456: the brief is content -- central's record carries none of it,
+    // this device's content.db does.
+    assert.equal(body.session.brief, null);
+    assert.equal((await content.getContent(body.session.id))?.brief, "Fix the bug");
 
     assert.equal(fake.sessions.size, 1);
     assert.equal(fake.runs.size, 1);
     const run = [...fake.runs.values()][0];
     assert.equal(run.session_id, body.session.id);
 
-    const events = fake.events.get(body.session.id) ?? [];
+    const events = await content.listEvents(body.session.id);
     assert.deepEqual(
       events.map((e) => [e.seq, e.kind]),
       [
@@ -490,7 +470,7 @@ describe("agent-router: sessions/tasks", () => {
     const run = [...fake.runs.values()][0];
     assert.equal(run.end_reason, "limit");
 
-    const events = fake.events.get(session.id) ?? [];
+    const events = await content.listEvents(session.id);
     const error = events.find((e) => e.kind === "error");
     assert.ok(error, "the provider message must be in the transcript");
     const payload = JSON.parse(error!.payload) as { class: string; message: string };
@@ -727,7 +707,7 @@ describe("agent-router: sessions/tasks", () => {
     const body = (await res.json()) as { session: SessionRow };
     assert.equal(body.session.state, "closed");
     assert.equal(fake.sessions.get(session.id)?.state, "closed");
-    const kinds = (fake.events.get(session.id) ?? []).map((e) => e.kind);
+    const kinds = (await content.listEvents(session.id)).map((e) => e.kind);
     assert.ok(kinds.includes("run_ended"), `run must end on close, got ${kinds.join(",")}`);
     assert.ok(!kinds.includes("handoff"), "an explicit close writes no server summary");
   });
@@ -804,6 +784,58 @@ describe("agent-router: sessions/tasks", () => {
       // auto-summary/suspend path and gets its handoff event too.
       ["run_started", "user_message", "run_ended", "handoff"],
     );
+  });
+
+  // #456: resume-info moved to the device-local list -- the summary it
+  // reports on is content (content.db) and the handoff file it hashes is in
+  // this device's mirror, neither of which central has.
+  it("GET /sessions/:id/resume-info is served by the sidecar, off this device's mirror and content store", async () => {
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+
+    const res = await fetch(`${base}/sessions/${session.id}/resume-info`);
+    assert.equal(res.status, 200);
+    const info = (await res.json()) as {
+      session_id: string;
+      handoff_path: string | null;
+      handoff_checkable: boolean;
+      generated_by: string | null;
+    };
+    assert.equal(info.session_id, session.id);
+    // The empty script auto-completes, so the run ends into the suspend
+    // path and writes its summary as a real file in this device's mirror.
+    assert.equal(info.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+    assert.equal(info.handoff_checkable, true, "the mirror is on this device, so the handoff is checkable here");
+    assert.equal(info.generated_by, "server");
+
+    const unknown = await fetch(`${base}/sessions/nope/resume-info`);
+    assert.equal(unknown.status, 404);
+  });
+
+  // The one-line proof of the spec's principle: after a whole run, central
+  // holds a record with no content on it, and the transcript is here.
+  it("a full run leaves no content on central: no events, no brief, no inline summary", async () => {
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "Fix the bug", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+
+    // FakeCentral throws from both event methods, so reaching this line at
+    // all proves the sidecar never called them.
+    const stored = fake.sessions.get(session.id);
+    assert.equal(stored?.brief, null);
+    assert.equal(stored?.handoff_inline, null);
+    assert.ok(stored?.handoff_hash, "the record still carries the handoff's hash");
+
+    const events = await content.listEvents(session.id);
+    assert.ok(events.length > 0, "the transcript is on this device");
+    assert.equal((await content.getContent(session.id))?.brief, "Fix the bug");
   });
 
   it("a scripted question answered through POST /sessions/:id/questions/:request_id clears waiting", async () => {

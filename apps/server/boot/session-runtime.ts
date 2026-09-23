@@ -8,6 +8,7 @@
 
 import { getDb } from "../infra/db.js";
 import { DbSessionStore } from "../domain/runner/store.js";
+import { deviceSessionContentStore } from "../domain/runner/store-content.js";
 import { CentralSessionStore } from "../domain/runner/store-central.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { provisionRun } from "../domain/runner/provision.js";
@@ -22,6 +23,7 @@ export function getSessionRuntime(): SessionRuntime {
   if (!runtime) {
     runtime = createSessionRuntime({
       store: new DbSessionStore(getDb()),
+      content: deviceSessionContentStore(),
       registry: { getAdapter },
       provision: provisionRun,
     });
@@ -47,11 +49,13 @@ export function setSessionRuntimeForTesting(rt: SessionRuntime | null): void {
 // adapters (Claude, the fake) are not mode-specific.
 export function createAgentSessionRuntime(client: CentralClient): SessionRuntime {
   const store = new CentralSessionStore(client);
+  const content = deviceSessionContentStore();
   return createSessionRuntime({
     store,
+    content,
     registry: { getAdapter },
     provision: createProvisionRunCentral(client),
-    suspendFallback: createSuspendFallbackCentral(store, client),
+    suspendFallback: createSuspendFallbackCentral(store, content, client),
     // #407: the belongs_to edge lives on central's graph db, so the
     // organization default instance is resolved there too -- without this
     // the runtime's local query would throw here and every task in this

@@ -1,7 +1,10 @@
-// Persistence for the runner batch's task model (docs/superpowers/specs/
-// 2026-09-12-runner-and-session-design.md, "Model" and "Storage"):
-// session_runs (one row per attempt to run a session's task) and
-// session_events (the append-only canonical record the chat renders from).
+// Persistence for the RECORD half of a thread (docs/superpowers/specs/
+// 2026-09-22-local-sessions-design.md, "Record and content, column by
+// column"): that the thread exists, on which node, whose it is, its state,
+// runner, instance and its runs. The CONTENT half -- the transcript, the
+// first message, the inline handoff summary -- is the device's, and lives
+// behind SessionContentStore (./store-content.ts) in both workspaces; this
+// store never touches session_events and never carries a brief.
 //
 // SessionStore is the interface session-runtime.ts (a later issue) is
 // written against -- "one implementation" (rule 1) means the runtime never
@@ -13,7 +16,7 @@
 // over it, not a second writer.
 
 import { ulid } from "ulid";
-import type { DbClient, InStatement, InValue } from "../../infra/db.js";
+import type { DbClient, InValue } from "../../infra/db.js";
 import { z } from "zod";
 import {
   createSession as createSessionRow,
@@ -22,24 +25,14 @@ import {
   transitionSessionState,
 } from "../sessions.js";
 import type { SessionRow, SessionState } from "../../shared/types.js";
-import type { SessionRunRow, SessionEventRow } from "../../shared/api-types.js";
-import type { CanonicalEvent, RunEndReason } from "./types.js";
-// The transcript's own encoding rules (payload caps, the row shape) live
-// with the content store, which #456 makes their only user; the record
-// store borrows them until then.
-import {
-  capEventPayload,
-  SessionEventRowSchema,
-  type ListEventsOptions,
-} from "./store-content.js";
-
-export type { ListEventsOptions } from "./store-content.js";
+import type { SessionRunRow } from "../../shared/api-types.js";
+import type { RunEndReason } from "./types.js";
 
 // SessionRunRow/SessionEventRow are defined in shared/api-types.ts (so the
 // web can type the REST responses without importing server domain code);
 // re-exported here so existing call sites importing them from this module
 // keep working unchanged.
-export type { SessionRunRow, SessionEventRow } from "../../shared/api-types.js";
+export type { SessionRunRow } from "../../shared/api-types.js";
 
 // --- Row validators (runtime shape check for what comes back off the DB;
 // the TS types themselves live in shared/api-types.ts, re-exported above) --
@@ -66,7 +59,6 @@ const SessionRunRowSchema = z.object({
 export interface CreateRunnerSessionInput {
   node_id: string | null;
   user_id: string;
-  brief: string | null;
   runner: string;
   instance_id: string | null;
   host_id: string | null;
@@ -99,16 +91,10 @@ export interface PatchSessionInput {
   name?: string;
   handoff_path?: string | null;
   handoff_hash?: string | null;
-  // #434: the summary itself, for a suspend that had nowhere to write a
-  // handoff file (no mirror for the node on this device). The local half
-  // (suspendSession) has always written this column; it is on the patch
-  // shape so the central half -- CentralSessionStore -> PATCH
-  // /sessions/:id -> DbSessionStore -- can write the very same thing, and
-  // getResumeInfo reads whichever of the two is populated.
-  handoff_inline?: string | null;
   // Set together with state: "running" when promoting a draft (#374) --
-  // the draft had none of these chosen up front.
-  brief?: string;
+  // the draft had none of these chosen up front. The first message itself
+  // is content: it goes to SessionContentStore.setContent, never here
+  // (#456).
   runner?: string;
   instance_id?: string | null;
   // Set together with name when the promotion derives it from the first
@@ -152,8 +138,6 @@ export interface SessionStore {
   patchRun(runId: string, patch: PatchRunInput): Promise<SessionRunRow>;
   listRuns(sessionId: string): Promise<SessionRunRow[]>;
   liveRun(sessionId: string): Promise<SessionRunRow | null>;
-  appendEvents(sessionId: string, runId: string | null, events: CanonicalEvent[]): Promise<number[]>;
-  listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
 }
 
 // --- DbSessionStore: the local-mode implementation over libsql -----------
@@ -165,7 +149,6 @@ export class DbSessionStore implements SessionStore {
     return createSessionRow(this.db, input.user_id, {
       node_id: input.node_id,
       session_type: "interactive_task",
-      brief: input.brief,
       runner: input.runner,
       instance_id: input.instance_id,
       host_id: input.host_id,
@@ -211,14 +194,6 @@ export class DbSessionStore implements SessionStore {
     if (patch.handoff_hash !== undefined) {
       sets.push("handoff_hash = ?");
       args.push(patch.handoff_hash);
-    }
-    if (patch.handoff_inline !== undefined) {
-      sets.push("handoff_inline = ?");
-      args.push(patch.handoff_inline);
-    }
-    if (patch.brief !== undefined) {
-      sets.push("brief = ?");
-      args.push(patch.brief);
     }
     if (patch.runner !== undefined) {
       sets.push("runner = ?");
@@ -320,56 +295,6 @@ export class DbSessionStore implements SessionStore {
     });
     if (res.rows.length === 0) return null;
     return SessionRunRowSchema.parse(res.rows[0]);
-  }
-
-  // seq is assigned inside this one transaction: each INSERT's own
-  // COALESCE(MAX(seq),0)+1 subquery sees every row the prior statement in
-  // this same batch already inserted, so two events in one call get
-  // consecutive seqs without a round trip back into JS between them, and
-  // two concurrent appendEvents calls on the same session cannot assign the
-  // same seq -- db.batch runs as one transaction, serializing against any
-  // other writer.
-  async appendEvents(sessionId: string, runId: string | null, events: CanonicalEvent[]): Promise<number[]> {
-    if (events.length === 0) return [];
-    const now = new Date().toISOString();
-    const ids = events.map(() => ulid());
-    const stmts: InStatement[] = events.map((event, i) => {
-      const capped = capEventPayload(event);
-      return {
-        sql: `INSERT INTO session_events (id, session_id, run_id, seq, kind, payload, created_at)
-              SELECT ?, ?, ?, COALESCE((SELECT MAX(seq) FROM session_events WHERE session_id = ?), 0) + 1, ?, ?, ?`,
-        args: [ids[i], sessionId, runId, sessionId, capped.kind, JSON.stringify(capped.payload), now],
-      };
-    });
-    await this.db.batch(stmts, "write");
-
-    const placeholders = ids.map(() => "?").join(",");
-    const res = await this.db.execute({
-      sql: `SELECT id, seq FROM session_events WHERE session_id = ? AND id IN (${placeholders})`,
-      args: [sessionId, ...ids],
-    });
-    const seqById = new Map(res.rows.map((r) => [String(r.id), Number(r.seq)]));
-    return ids.map((id) => {
-      const seq = seqById.get(id);
-      if (seq === undefined) throw new Error(`appendEvents: event ${id} not found after insert`);
-      return seq;
-    });
-  }
-
-  async listEvents(sessionId: string, opts: ListEventsOptions = {}): Promise<SessionEventRow[]> {
-    const conds = ["session_id = ?"];
-    const args: InValue[] = [sessionId];
-    if (opts.after !== undefined) {
-      conds.push("seq > ?");
-      args.push(opts.after);
-    }
-    let sql = `SELECT * FROM session_events WHERE ${conds.join(" AND ")} ORDER BY seq ASC`;
-    if (opts.limit !== undefined) {
-      sql += " LIMIT ?";
-      args.push(opts.limit);
-    }
-    const res = await this.db.execute({ sql, args });
-    return res.rows.map((r) => SessionEventRowSchema.parse(r));
   }
 
   private async mustGetRun(id: string): Promise<SessionRunRow> {

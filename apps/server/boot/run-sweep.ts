@@ -15,6 +15,7 @@ import {
   type RunSweepBackend,
 } from "../domain/runner/run-sweep.js";
 import { createSuspendFallbackCentral } from "../domain/runner/suspend-fallback-central.js";
+import { deviceSessionContentStore } from "../domain/runner/store-content.js";
 import type { SessionStore } from "../domain/runner/store.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
@@ -40,6 +41,7 @@ export async function sweepOrphanedRunsOnBootCentral(
   store: SessionStore,
   client: CentralClient,
 ): Promise<void> {
-  const suspend = createSuspendFallbackCentral(store, client);
-  await sweepOrphanedRunsOnBoot(centralRunSweepBackend(store, suspend));
+  const content = deviceSessionContentStore();
+  const suspend = createSuspendFallbackCentral(store, content, client);
+  await sweepOrphanedRunsOnBoot(centralRunSweepBackend(store, content, suspend));
 }

@@ -17,13 +17,10 @@ import type {
   CreateDraftSessionInput,
   CreateRunInput,
   CreateRunnerSessionInput,
-  ListEventsOptions,
   PatchRunInput,
   PatchSessionInput,
-  SessionEventRow,
   SessionRunRow,
 } from "../../runner/store.js";
-import type { CanonicalEvent } from "../../runner/types.js";
 
 export class CentralHttpError extends Error {
   constructor(
@@ -134,12 +131,12 @@ export interface CentralClient {
   createSessionRun(input: CreateRunInput): Promise<SessionRunRow>;
   patchSessionRun(sessionId: string, runId: string, patch: PatchRunInput): Promise<SessionRunRow>;
   listSessionRuns(sessionId: string): Promise<SessionRunRow[]>;
-  appendSessionEvents(
-    sessionId: string,
-    runId: string | null,
-    events: CanonicalEvent[],
-  ): Promise<number[]>;
-  listSessionEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
+  // There is deliberately no event method here: a thread's transcript, its
+  // first message and its inline handoff summary are CONTENT and stay on
+  // the device that ran it (#456, docs/superpowers/specs/
+  // 2026-09-22-local-sessions-design.md, "Principle"). Nothing on the
+  // device sends them to the central server; SessionContentStore over the
+  // device's own content.db is their only writer and reader.
   // GET /sessions/:id/scope (#427): the session's read/write set by node id
   // and the anchor node's name. `session_scope` is a graph-db table, so a
   // sync agent has none -- the suspend fallback
@@ -490,25 +487,6 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       const r = await request("GET", p);
       if (r.status !== 200) throwFor(r.status, p, r.json);
       return (r.json as { runs: SessionRunRow[] }).runs;
-    },
-
-    async appendSessionEvents(sessionId, runId, events) {
-      const p = `/sessions/${encodeURIComponent(sessionId)}/events`;
-      const r = await request("POST", p, { run_id: runId, events });
-      if (r.status !== 200) throwFor(r.status, p, r.json);
-      return (r.json as { seqs: number[] }).seqs;
-    },
-
-    async listSessionEvents(sessionId, opts) {
-      const params = new URLSearchParams();
-      if (opts?.after !== undefined) params.set("after", String(opts.after));
-      if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
-      const qs = params.toString();
-      const p = `/sessions/${encodeURIComponent(sessionId)}/events${qs ? `?${qs}` : ""}`;
-      const r = await request("GET", p);
-      if (r.status !== 200) throwFor(r.status, p, r.json);
-      const events = (r.json as { events: Array<{ payload: unknown } & Omit<SessionEventRow, "payload">> }).events;
-      return events.map((e) => ({ ...e, payload: JSON.stringify(e.payload) }));
     },
 
     async sessionScopeRecord(sessionId) {

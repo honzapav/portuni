@@ -10,6 +10,9 @@
 //   POST  /sessions/:id/rename             write   -> rename through the runtime (owner only);
 //                                                      publishes the change to the live channel
 //   GET   /sessions/:id/resume-info        read    -> conversation-resumable? handoff changed?
+//                                                      device-local (#456): both inputs -- the
+//                                                      mirror's handoff file and the content
+//                                                      store's inline summary -- are the device's
 //   GET   /sessions/:id/signals            read    -> restart indicator (run age, read/write set)
 //   GET   /sessions/:id/scope              read    -> central record half (#427): the session's
 //                                                      read/write set by node id, for the sync
@@ -29,9 +32,12 @@
 //                                                      the same node seeded with its summary
 //                                                      (owner only; #378)
 //   POST  /sessions/:id/close              write   -> close the session (owner or manage)
-//   GET   /sessions/:id/events             read    -> canonical event log
-//   POST  /sessions/:id/events             write   -> central record half (#323): batch-append
-//                                                      events, returns the assigned seqs
+//   GET   /sessions/:id/events             read    -> canonical event log, from the device's
+//                                                      content.db (#456)
+//   POST  /sessions/:id/events             write   -> legacy (#323, retired by #456): batch-append
+//                                                      into the graph db's own session_events,
+//                                                      kept only for a sidecar released before
+//                                                      #456; no current code path calls it
 //   POST  /sessions/:id/runs               write   -> central record half (#323): create a run record
 //   PATCH /sessions/:id/runs/:run_id       write   -> central record half (#323): patch a run record
 //   GET   /sessions/:id/runs               read    -> central record half (#323): list a session's runs
@@ -42,6 +48,11 @@
 // (domain/runner/store-central.ts) over these REST endpoints -- "one
 // implementation" (spec rule 1): the session runtime itself never changes
 // between local and central/agent mode, only which SessionStore backs it.
+// That interface is the RECORD half only (#456): a thread's content -- the
+// first message, the transcript, the inline handoff summary -- is written
+// to the device's own content.db by SessionContentStore and never sent
+// here. `brief` and `handoff_inline` on the create/patch routes, and the
+// event-append route above, are accepted only for an older sidecar.
 // They're served here unconditionally (also reachable in env/local mode,
 // harmless) rather than gated to google/central mode specifically.
 //
@@ -83,6 +94,7 @@ import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
 import { resolveHostLabel } from "../domain/runner/hosts.js";
 import { DbSessionStore } from "../domain/runner/store.js";
+import { SessionContentStore, deviceSessionContentStore } from "../domain/runner/store-content.js";
 import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
 import type { SessionResumeInfo, SessionScopeRecord, SessionSummary } from "../shared/api-types.js";
@@ -307,6 +319,33 @@ const PatchSessionBody = z
   })
   .refine((b) => Object.keys(b).length > 0, "at least one field is required");
 
+// #456 compatibility shim: `sessions.brief` and `sessions.handoff_inline`
+// are content, which the device now keeps in its own content.db and never
+// sends here. The two columns stay on the central record until the central
+// migration (#462), and these routes keep accepting them so a sidecar
+// released before #456 is not broken by the server deploying first
+// (spec, "Rollout", step 1). Written directly, because the record store no
+// longer models either field.
+async function writeLegacyContentColumns(
+  db: DbClient,
+  sessionId: string,
+  body: { brief?: string | null; handoff_inline?: string | null },
+): Promise<void> {
+  const sets: string[] = [];
+  const args: Array<string | null> = [];
+  if (body.brief !== undefined) {
+    sets.push("brief = ?");
+    args.push(body.brief);
+  }
+  if (body.handoff_inline !== undefined) {
+    sets.push("handoff_inline = ?");
+    args.push(body.handoff_inline);
+  }
+  if (sets.length === 0) return;
+  args.push(sessionId);
+  await db.execute({ sql: `UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, args });
+}
+
 export async function handlePatchSession(
   req: IncomingMessage,
   res: ServerResponse,
@@ -343,14 +382,18 @@ export async function handlePatchSession(
     // Central record half (#323): raw SessionRow, same reasoning as
     // handleGetSession above -- the caller is CentralSessionStore, which
     // needs every column back, not the curated summary.
+    // #456: `brief` and `handoff_inline` are content and no longer reach
+    // the record store -- the device writes them to its own content.db.
+    // They are still accepted here, and written straight to the columns,
+    // so a sidecar released before #456 keeps working until the central
+    // migration (#462) drops both columns.
+    await writeLegacyContentColumns(db, sessionId, body);
     const updated = await new DbSessionStore(db).patchSession(sessionId, {
       name: body.name,
       state: body.state,
       waiting_since: body.waiting_since,
       handoff_path: body.handoff_path,
       handoff_hash: body.handoff_hash,
-      handoff_inline: body.handoff_inline,
-      brief: body.brief,
       runner: body.runner,
       instance_id: body.instance_id,
       name_is_custom: body.name_is_custom,
@@ -455,6 +498,28 @@ export async function handleTransitionSessionState(
   }
 }
 
+// The resume-info answer, built once for both routers: #456 made
+// GET /sessions/:id/resume-info device-local (the inline handoff summary is
+// content and lives in this device's content.db), so agent-router.ts serves
+// it in a team workspace from the very same code.
+export async function sessionResumeInfoPayload(
+  session: SessionRow,
+  mirrorRoot: string | null,
+  configDir: string | null,
+): Promise<SessionResumeInfo> {
+  const inline = (await deviceSessionContentStore().getContent(session.id))?.handoff_inline ?? null;
+  const info = await getResumeInfo(session, mirrorRoot, { configDir, handoffInline: inline });
+  return {
+    session_id: session.id,
+    handoff_path: info.handoffPath,
+    handoff_changed: info.handoffChanged,
+    handoff_checkable: info.handoffCheckable,
+    conversation_resumable: info.conversationResumable,
+    generated_by: info.generatedBy,
+    reason: info.reason,
+  };
+}
+
 export async function handleGetSessionResumeInfo(
   req: IncomingMessage,
   res: ServerResponse,
@@ -473,17 +538,7 @@ export async function handleGetSessionResumeInfo(
     // one applies) and passes it through so checkConversationResumable
     // checks the right transcript location instead of always the default.
     const configDir = url.searchParams.get("config_dir") || null;
-    const info = await getResumeInfo(existing, mirrorRoot, undefined, configDir);
-    const payload: SessionResumeInfo = {
-      session_id: existing.id,
-      handoff_path: info.handoffPath,
-      handoff_changed: info.handoffChanged,
-      handoff_checkable: info.handoffCheckable,
-      conversation_resumable: info.conversationResumable,
-      generated_by: info.generatedBy,
-      reason: info.reason,
-    };
-    respondJson(res, 200, payload);
+    respondJson(res, 200, await sessionResumeInfoPayload(existing, mirrorRoot, configDir));
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/resume-info`, err);
   }
@@ -886,11 +941,12 @@ export async function handleCreateSessionRecord(
         : await store.createSession({
             node_id: body.node_id,
             user_id: identity.userId,
-            brief: body.brief ?? null,
             runner: body.runner,
             instance_id: body.instance_id ?? null,
             host_id: body.host_id ?? null,
           });
+    // Same #456 compatibility as handlePatchSession's own legacy write.
+    if (body.draft !== true) await writeLegacyContentColumns(db, session.id, { brief: body.brief ?? null });
     await logAudit(identity.userId, "session_record", "session", session.id, {
       node_id: body.node_id,
       ...(body.draft === true ? { draft: true } : { runner: body.runner }),
@@ -1013,7 +1069,12 @@ export async function handleAppendSessionEvents(
     const body = await parseJsonBody(req, res, AppendEventsBody);
     if (!body) return;
 
-    const seqs = await new DbSessionStore(db).appendEvents(
+    // #456: the transcript is the device's, so the runtime writes it to
+    // content.db and never calls this route anymore. It stays for a
+    // sidecar released before #456, writing the graph db's own
+    // `session_events` -- the table the content store's DDL mirrors, which
+    // is why the very same store can serve it here until #462 drops it.
+    const seqs = await new SessionContentStore(db).appendEvents(
       sessionId,
       body.run_id,
       body.events as CanonicalEvent[],

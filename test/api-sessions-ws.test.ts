@@ -29,6 +29,7 @@ import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/ru
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import { createSessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
 import { setSessionRuntimeForTesting } from "../apps/server/boot/session-runtime.js";
+import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 
 const SECRET = "test-secret-at-least-32-chars-long!!";
@@ -179,6 +180,7 @@ describe("GET /sessions/ws", () => {
 
     currentRuntime = createSessionRuntime({
       store: new DbSessionStore(db),
+      content: (await installTestContentDb()).content,
       registry: { getAdapter },
       provision: stubProvision(),
     });
@@ -191,6 +193,7 @@ describe("GET /sessions/ws", () => {
     resetGateCachesForTesting();
     setDbForTesting(null);
     setSessionRuntimeForTesting(null);
+    clearTestContentDb();
     clearRegistryForTests();
     delete process.env.TURSO_URL;
     rmSync(tmp, { recursive: true, force: true });

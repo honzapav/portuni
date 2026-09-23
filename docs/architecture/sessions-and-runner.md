@@ -4,11 +4,18 @@ A session is the unit of agent work on a node: a `sessions` row that exists
 before any process runs, a task layer underneath it (`session_runs`,
 `session_events`), one runtime implementation that always executes on the
 device, and a store seam that decides whether that runtime writes to the
-local graph db or to the central server. An agent runs only as a task
+local graph db or to the central server. A thread has **two halves**: the
+**record** (that it exists, on which node, whose it is, its state, runner,
+instance, runs and scope) and the **content** (the first message, every
+transcript event, the inline handoff summary). The record goes to the
+record store; the content always goes to this device's `content.db`, in
+both workspaces. An agent runs only as a task
 (`POST /sessions`, the SessionChat surface) or as a hand-opened CLI that
 connects over MCP; there is no embedded terminal, PTY or sandbox profile.
 Specs: `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`,
-`docs/superpowers/specs/2026-09-15-task-surface-design.md`.
+`docs/superpowers/specs/2026-09-15-task-surface-design.md`,
+`docs/superpowers/specs/2026-09-22-local-sessions-design.md` (the
+record/content split).
 
 ## Session row and binding
 
@@ -45,12 +52,20 @@ Specs: `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`,
 - `sessions.terminal_id` is a dead column: permanently null for every new
   row, kept until a migration drops it. Nothing reads or writes it.
 - The task layer (migration 034): `sessions` carries
-  `brief`/`runner`/`host_id`/`waiting_since`/`instance_id`/`model`/`effort`;
-  each attempt to run the task is a `session_runs` row; the canonical,
-  append-only transcript is `session_events`. `domain/runner/store.ts`'s
-  `SessionStore` (`DbSessionStore`, `CentralSessionStore`) is the only
-  writer of runs and events. Every event kind and payload is in
-  `domain/runner/types.ts`'s `CanonicalEvent` union.
+  `runner`/`host_id`/`waiting_since`/`instance_id`/`model`/`effort`, and
+  each attempt to run the task is a `session_runs` row.
+  `domain/runner/store.ts`'s `SessionStore` (`DbSessionStore`,
+  `CentralSessionStore`) is the only writer of that record; it has no
+  event methods and carries no `brief`.
+- The canonical, append-only transcript is `session_events` in the
+  device's `content.db`, written and read only through
+  `domain/runner/store-content.ts`'s `SessionContentStore`, which also
+  owns `session_content(brief, handoff_inline)`. Every event kind and
+  payload is in `domain/runner/types.ts`'s `CanonicalEvent` union. The
+  `sessions.brief` and `sessions.handoff_inline` columns and the graph
+  db's own `session_events` table still exist; nothing writes them after
+  #456 except the two central record-half routes that keep accepting them
+  for a sidecar released before it, and the central migration drops them.
 
 ### States
 
@@ -131,21 +146,33 @@ orientation, translates events, ends and suspends) is one implementation,
 
 | dep | personal workspace | team workspace |
 |---|---|---|
-| `store` | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
+| `store` (the record) | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
+| `content` (the transcript, the brief, the inline summary) | `SessionContentStore` over this device's `content.db` (`deviceSessionContentStore()`) | the same object, over the same file -- content never differs between workspaces and never reaches the central server |
 | provisioning | `provision.ts`: `createMirrorForNode`, `orientationForNode` (direct db read) | `provision-central.ts`: `createMirrorForNodeCentral`, `CentralClient.orientation` (`GET /nodes/:id/orientation`) |
-| `suspendFallback` | `suspendSessionServerSide(db, id, reason)` | `domain/runner/suspend-fallback-central.ts`: writes the same handoff into the device mirror (scope sections from `CentralClient.sessionScopeRecord`), registers it record-only and patches the record over REST. Without a mirror for the node it patches the record with `handoff_path: null` and the summary itself in `handoff_inline` (#434), exactly as the local half does, so `getResumeInfo` on the central server hands the next run that text |
+| `suspendFallback` | `suspendSessionServerSide(db, content, id, reason)` | `domain/runner/suspend-fallback-central.ts`: writes the same handoff into the device mirror (scope sections from `CentralClient.sessionScopeRecord`), registers it record-only and patches the record over REST. Without a mirror for the node the record gets `handoff_path: null` plus the hash, and the summary itself goes to `session_content.handoff_inline` on the device (#434, #456), exactly as the local half does, so `getResumeInfo` hands the next run that text |
 | `resolveNodeOrgId` | `belongs_to` graph query (a failed lookup is distinguishable from "no organization") | `CentralClient.nodeOrganizationId` (`GET /nodes/:id`, the outgoing `belongs_to` peer that is an organization) |
 | `session_scope` reads (`getSessionScope` in `startRun`/`sessionSignals`) | real | degrade to an empty scope, never throw |
 
 - `CentralSessionStore` turns every `SessionStore` call into a REST round
   trip to the central server's record half (`api/sessions.ts`: `POST /sessions/record`,
   `GET`/`PATCH /sessions/:id`, `POST /sessions/:id/runs`,
-  `PATCH /sessions/:id/runs/:run_id`, `GET /sessions/:id/runs`,
-  `POST`/`GET /sessions/:id/events`), which are thin wrappers over
-  `DbSessionStore` on the central server's own db. It batches `appendEvents` within a
-  50 ms window into one POST and keeps an in-process `runId -> sessionId`
-  map (filled by `createRun`/`listRuns`) because `patchRun(runId, patch)`
-  carries no session id.
+  `PATCH /sessions/:id/runs/:run_id`, `GET /sessions/:id/runs`), which are
+  thin wrappers over `DbSessionStore` on the central server's own db. It
+  keeps an in-process `runId -> sessionId` map (filled by
+  `createRun`/`listRuns`) because `patchRun(runId, patch)` carries no
+  session id. **There is no event method on it and none on
+  `CentralClient`**: the transcript never crosses to the central server.
+  `POST /sessions/:id/events` and the `brief`/`handoff_inline` fields of
+  `POST /sessions/record` and `PATCH /sessions/:id` stay on the central
+  server only so a sidecar released before #456 keeps working; the central
+  migration removes them.
+- Where each write goes: `promoteDraftAndStart` puts the first message in
+  `session_content.brief` and the `user_message` event in the device's
+  `session_events`, then patches the record (`state`, `name`, `runner`,
+  `instance_id`); a suspend writes the summary to the handoff file in the
+  node and `handoff_path`/`handoff_hash` to the record, with
+  `handoff_inline` on the device when there is no mirror here;
+  `getResumeInfo` and the live channel's replay read the content store.
 - `PATCH /sessions/:id` has two shapes: `{name}` alone is a rename and
   returns `SessionSummary`; any other field (`state`, `waiting_since`,
   `handoff_path`, `handoff_hash`, promotion fields) returns the raw
@@ -171,10 +198,15 @@ orientation, translates events, ends and suspends) is one implementation,
 `is_device_local_path` (`apps/desktop/src/lib.rs`) sends to the device's sync
 agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
 `messages`, `interrupt`, `continue`, `close`, `events`, `signals`,
-`questions/:request_id`. The record half stays on the central server: bare
-`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/scope`,
+`resume-info`, `questions/:request_id`. The record half stays on the
+central server: bare `GET`/`PATCH /sessions/:id`, `/state`, `/scope`,
 `/runs...`, `/sessions/record`, plus `GET /nodes/:id/sessions` and
 `/overview`.
+`resume-info` is device-local (#456) because both of its inputs are the
+device's: the inline handoff summary in `content.db` and the handoff file
+in this device's mirror, which it hashes to report `handoff_changed`.
+Both routers build the answer from the one
+`sessionResumeInfoPayload` in `api/sessions.ts`.
 `signals` is device-local because it reads in-memory live-run state
 (`liveRuns`, `runStartScopeSize`) that exists only in the process running
 the task. A new per-session verb must be added to `router.ts`,
@@ -224,13 +256,18 @@ live action, `sessions-ws.ts` in the same change.
   resolves the run by id in `session_runs`); `desktop.ts`'s `agentMain`
   calls `sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client))`
   (`centralRunSweepBackend`, resolves via `store.listRuns(session_id)`,
-  suspends via `createSuspendFallbackCentral`).
+  suspends via `createSuspendFallbackCentral`). Both backends carry the
+  device's `SessionContentStore`: the `run_ended` and `handoff` events the
+  sweep appends are content and go to `content.db`.
 - Server-side suspend (`domain/session-handoff.ts`
-  `suspendSessionServerSide(db, sessionId, reason)`, `ServerHandoffReason`
-  = `disconnect | idle | terminal_exit | boot_sweep | suspend_timeout |
-  host_lost | run_ended | continue`) writes a minimal handoff into the
-  session's home mirror when this device has one, else into
-  `sessions.handoff_inline`; `getResumeInfo` reads whichever is populated.
+  `suspendSessionServerSide(db, content, sessionId, reason)`,
+  `ServerHandoffReason` = `disconnect | idle | terminal_exit | boot_sweep |
+  suspend_timeout | host_lost | run_ended | continue`) writes a minimal
+  handoff into the session's home mirror when this device has one, else
+  into the content store's `handoff_inline`; the record keeps
+  `handoff_path`/`handoff_hash` only, and `getResumeInfo` reads whichever
+  of the two is populated. The summary itself is built from the device's
+  transcript, so it is the same text in both workspaces.
   The content carries a marker with its reason; `parseServerHandoffReason`
   reads it back so `GET /sessions/:id/resume-info` reports
   `generated_by: "server"` and the reason ("pozastaveno serverem

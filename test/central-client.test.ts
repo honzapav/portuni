@@ -415,32 +415,13 @@ describe("createHttpCentralClient", () => {
     assert.equal(calls[0].method, "GET");
   });
 
-  it("appendSessionEvents posts run_id + events and returns the assigned seqs", async () => {
-    const { fetchImpl, calls } = fakeFetch([{ status: 200, json: { seqs: [1, 2] } }]);
-    const c = createHttpCentralClient({ ...BASE, fetchImpl });
-    const events = [
-      { kind: "user_message", payload: { text: "hi", source: "chat" } },
-      { kind: "assistant_message", payload: { text: "hello" } },
-    ];
-    const seqs = await c.appendSessionEvents("S1", "R1", events as never);
-    assert.deepEqual(seqs, [1, 2]);
-    assert.equal(calls[0].url, "https://api.example.com/sessions/S1/events");
-    assert.deepEqual(JSON.parse(calls[0].body ?? ""), { run_id: "R1", events });
-  });
-
-  it("listSessionEvents GETs /sessions/:id/events with after/limit and re-stringifies the payload", async () => {
-    const { fetchImpl, calls } = fakeFetch([
-      {
-        status: 200,
-        json: { events: [{ id: "E1", session_id: "S1", run_id: "R1", seq: 3, kind: "assistant_message", payload: { text: "hi" }, created_at: "t" }] },
-      },
-    ]);
-    const c = createHttpCentralClient({ ...BASE, fetchImpl });
-    const events = await c.listSessionEvents("S1", { after: 2, limit: 50 });
-    assert.equal(events.length, 1);
-    assert.equal(events[0].seq, 3);
-    assert.deepEqual(JSON.parse(events[0].payload), { text: "hi" });
-    assert.equal(calls[0].url, "https://api.example.com/sessions/S1/events?after=2&limit=50");
+  // #456: the client has no event methods at all -- a thread's transcript
+  // is content and never leaves the device
+  // (docs/superpowers/specs/2026-09-22-local-sessions-design.md).
+  it("exposes no session-event method", () => {
+    const c = createHttpCentralClient({ ...BASE, fetchImpl: fakeFetch([]).fetchImpl }) as unknown as Record<string, unknown>;
+    assert.equal(c.appendSessionEvents, undefined);
+    assert.equal(c.listSessionEvents, undefined);
   });
 
   it("orientation GETs /nodes/:id/orientation and returns null on 404 or a null orientation", async () => {

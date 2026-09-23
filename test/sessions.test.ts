@@ -22,6 +22,8 @@ import {
 import { parseServerHandoffReason } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
+import { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
+import { installTestContentDb } from "./helpers/content-db.js";
 
 describe("createSession / getSession / listSessions", () => {
   it("creates a session row and reads it back", async () => {
@@ -216,36 +218,48 @@ describe("transitionSessionState: the state machine", () => {
   });
 });
 
+// #456: the inline summary is content -- the record keeps only the hash,
+// the text goes to this device's content.db.
 describe("closeSessionIfRunning (#218, GC backstop; #329 suspends)", () => {
   it("suspends a running session with a disconnect handoff", async () => {
     const { db, nodeId } = await makeSharedDb();
+    const { content } = await installTestContentDb();
     const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     await closeSessionIfRunning(db, row.id, "disconnect");
     const updated = await getSession(db, row.id);
     assert.equal(updated?.state, "suspended");
-    assert.equal(parseServerHandoffReason(updated?.handoff_inline ?? null), "disconnect");
+    assert.equal(updated?.handoff_inline, null, "nothing content-shaped stays on the record");
+    const inline = (await content.getContent(row.id))?.handoff_inline ?? null;
+    assert.equal(parseServerHandoffReason(inline), "disconnect");
   });
 
   it("records idle as the reason when that is the caller's reason", async () => {
     const { db, nodeId } = await makeSharedDb();
+    const { content } = await installTestContentDb();
     const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     await closeSessionIfRunning(db, row.id, "idle");
-    const updated = await getSession(db, row.id);
-    assert.equal(parseServerHandoffReason(updated?.handoff_inline ?? null), "idle");
+    const inline = (await content.getContent(row.id))?.handoff_inline ?? null;
+    assert.equal(parseServerHandoffReason(inline), "idle");
   });
 
   it("never touches a suspended session", async () => {
     const { db, nodeId } = await makeSharedDb();
+    const { content } = await installTestContentDb();
     const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     await transitionSessionState(db, "U1", row.id, "suspended");
     await closeSessionIfRunning(db, row.id, "disconnect");
     const updated = await getSession(db, row.id);
     assert.equal(updated?.state, "suspended");
-    assert.equal(updated?.handoff_inline, null, "an already-suspended session's handoff is left alone");
+    assert.equal(
+      (await content.getContent(row.id))?.handoff_inline ?? null,
+      null,
+      "an already-suspended session's handoff is left alone",
+    );
   });
 
   it("is a no-op for an unknown session id", async () => {
     const { db } = await makeSharedDb();
+    await installTestContentDb();
     await assert.doesNotReject(closeSessionIfRunning(db, "nope", "disconnect"));
   });
 });
@@ -258,9 +272,10 @@ describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
   it("ends the dangling run and appends run_ended + state_changed, so a replay sees no live run", async () => {
     const { db, nodeId } = await makeSharedDb();
     const store = new DbSessionStore(db);
+    const { content } = await installTestContentDb();
     const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     const run = await store.createRun({ session_id: session.id, runner: "fake", instance_id: null, host_id: null });
-    await store.appendEvents(session.id, run.id, [
+    await content.appendEvents(session.id, run.id, [
       { kind: "run_started", payload: { run_id: run.id, runner: "fake", instance_id: null, resume: null } },
     ]);
 
@@ -269,7 +284,7 @@ describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
     const [runRow] = await store.listRuns(session.id);
     assert.ok(runRow.ended_at, "the run row is ended");
     assert.equal(runRow.end_reason, "suspended");
-    const kinds = (await store.listEvents(session.id)).map((e) => `${e.kind}:${(JSON.parse(e.payload) as { run_id?: string; to?: string }).run_id ?? (JSON.parse(e.payload) as { to?: string }).to ?? ""}`);
+    const kinds = (await content.listEvents(session.id)).map((e) => `${e.kind}:${(JSON.parse(e.payload) as { run_id?: string; to?: string }).run_id ?? (JSON.parse(e.payload) as { to?: string }).to ?? ""}`);
     assert.deepEqual(kinds, [`run_started:${run.id}`, `run_ended:${run.id}`, "state_changed:suspended"]);
     assert.equal((await getSession(db, session.id))?.state, "suspended");
   });
@@ -277,18 +292,20 @@ describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
   it("appends nothing extra for a session whose run the runtime already ended", async () => {
     const { db, nodeId } = await makeSharedDb();
     const store = new DbSessionStore(db);
+    const { content } = await installTestContentDb();
     const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     const run = await store.createRun({ session_id: session.id, runner: "fake", instance_id: null, host_id: null });
     await store.patchRun(run.id, { ended_at: new Date().toISOString(), end_reason: "completed" });
-    const before = (await store.listEvents(session.id)).length;
+    const before = (await content.listEvents(session.id)).length;
     await closeStaleRunningSessionsOnBoot(db);
-    assert.equal((await store.listEvents(session.id)).length, before);
+    assert.equal((await content.listEvents(session.id)).length, before);
     assert.equal((await store.listRuns(session.id))[0].end_reason, "completed", "an ended run is left alone");
   });
 
 
   it("suspends every running row with a boot_sweep handoff, process-wide, leaving suspended untouched", async () => {
     const { db, nodeId } = await makeSharedDb();
+    const { content } = await installTestContentDb();
     const running1 = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     const running2 = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
     const suspended = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
@@ -301,13 +318,16 @@ describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
     const row2 = await getSession(db, running2.id);
     assert.equal(row1?.state, "suspended");
     assert.equal(row2?.state, "suspended");
-    assert.equal(parseServerHandoffReason(row1?.handoff_inline ?? null), "boot_sweep");
-    assert.equal(parseServerHandoffReason(row2?.handoff_inline ?? null), "boot_sweep");
+    const inline1 = (await content.getContent(running1.id))?.handoff_inline ?? null;
+    const inline2 = (await content.getContent(running2.id))?.handoff_inline ?? null;
+    assert.equal(parseServerHandoffReason(inline1), "boot_sweep");
+    assert.equal(parseServerHandoffReason(inline2), "boot_sweep");
     assert.equal((await getSession(db, suspended.id))?.state, "suspended");
   });
 
   it("is a no-op when nothing is running", async () => {
     const { db } = await makeSharedDb();
+    await installTestContentDb();
     assert.equal(await closeStaleRunningSessionsOnBoot(db), 0);
   });
 });
@@ -390,13 +410,16 @@ describe("autoArchiveClosedSessions", () => {
   // keeps its events.
   it("deletes session_events only of archived sessions closed longer ago than the retention window", async () => {
     const { db, nodeId } = await makeSharedDb();
-    const { DbSessionStore } = await import("../apps/server/domain/runner/store.js");
-    const store = new DbSessionStore(db);
+    // The retention sweep prunes the graph db's own `session_events`, which
+    // stays until the central migration (#462) even though nothing writes
+    // it after #456 -- a content store over the graph db writes exactly
+    // that table, which is what makes this assertable at all.
+    const legacyEvents = new SessionContentStore(db);
     const oldArchived = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
     const youngArchived = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
     const closedOnly = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
     for (const s of [oldArchived, youngArchived, closedOnly]) {
-      await store.appendEvents(s.id, null, [{ kind: "assistant_message", payload: { text: "hi" } }]);
+      await legacyEvents.appendEvents(s.id, null, [{ kind: "assistant_message", payload: { text: "hi" } }]);
       await transitionSessionState(db, "U1", s.id, "closed");
     }
     const days = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
@@ -413,9 +436,9 @@ describe("autoArchiveClosedSessions", () => {
     assert.equal((await getSession(db, oldArchived.id))?.state, "archived");
     assert.equal((await getSession(db, youngArchived.id))?.state, "archived");
     assert.equal((await getSession(db, closedOnly.id))?.state, "closed");
-    assert.equal((await store.listEvents(oldArchived.id)).length, 0);
-    assert.equal((await store.listEvents(youngArchived.id)).length, 1);
-    assert.equal((await store.listEvents(closedOnly.id)).length, 1);
+    assert.equal((await legacyEvents.listEvents(oldArchived.id)).length, 0);
+    assert.equal((await legacyEvents.listEvents(youngArchived.id)).length, 1);
+    assert.equal((await legacyEvents.listEvents(closedOnly.id)).length, 1);
   });
 });
 

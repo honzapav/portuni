@@ -18,8 +18,8 @@ import { getMirrorPath } from "./sync/mirror-registry.js";
 import { isLocalWorkspace } from "../infra/server-config.js";
 import { getSession, getSessionScope, suspendSession } from "./sessions.js";
 import type { SessionRow } from "../shared/types.js";
-import { ulid } from "ulid";
-import type { CanonicalEvent, RunEndReason } from "./runner/types.js";
+import type { SessionContentStore } from "./runner/store-content.js";
+import type { RunEndReason } from "./runner/types.js";
 
 // Fixed synced-path convention for a session's handoff -- a pure function
 // of the session id so both the write path here and any future reader
@@ -280,16 +280,12 @@ async function nodeNameForHandoff(db: DbClient, nodeId: string): Promise<string 
   return res.rows.length > 0 ? String(res.rows[0].name) : null;
 }
 
-// The summary builder's own input shape, straight off session_events --
-// domain/runner/store.ts's DbSessionStore.listEvents does the identical
-// query; this file stays independent of the runner layer (see SummaryEvent
-// above), so it reads the table directly instead of importing that module.
-async function listSummaryEvents(db: DbClient, sessionId: string): Promise<SummaryEvent[]> {
-  const res = await db.execute({
-    sql: "SELECT kind, payload FROM session_events WHERE session_id = ? ORDER BY seq ASC",
-    args: [sessionId],
-  });
-  return res.rows.map((r) => ({ kind: String(r.kind), payload: JSON.parse(String(r.payload)) as unknown }));
+// The summary builder's own input shape, straight off the device's
+// transcript (#456: session_events lives in content.db, in both
+// workspaces, never on the record).
+async function listSummaryEvents(content: SessionContentStore, sessionId: string): Promise<SummaryEvent[]> {
+  const rows = await content.listEvents(sessionId);
+  return rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
 }
 
 // Suspends a 'running' session with a summary the SERVER writes, not the
@@ -300,6 +296,7 @@ async function listSummaryEvents(db: DbClient, sessionId: string): Promise<Summa
 // or terminal sessions have nothing for this to do.
 export async function suspendSessionServerSide(
   db: DbClient,
+  content: SessionContentStore,
   sessionId: string,
   reason: ServerHandoffReason,
 ): Promise<SessionRow | null> {
@@ -314,13 +311,13 @@ export async function suspendSessionServerSide(
   // the dangling runs here and say so in the log, the way the runtime's
   // own run_ended does. A run the runtime already ended (ended_at set) is
   // left alone, so its path appends nothing twice.
-  const endedRuns = await endDanglingRuns(db, sessionId, reason);
-  const suspended = await suspendWithSummary(db, session, reason);
+  const endedRuns = await endDanglingRuns(db, content, sessionId, reason);
+  const suspended = await suspendWithSummary(db, content, session, reason);
   // Only when THIS call ended a run: the runtime's own path (run_ended
   // already in the log, run row already ended) appends nothing here, so
   // its event sequence stays exactly what it was.
   if (endedRuns.length > 0 && suspended?.state === "suspended") {
-    await appendSessionEvents(db, sessionId, null, [
+    await content.appendEvents(sessionId, null, [
       { kind: "state_changed", payload: { from: "running", to: "suspended", waiting: false } },
     ]);
   }
@@ -331,7 +328,12 @@ function runEndReasonFor(reason: ServerHandoffReason): RunEndReason {
   return reason === "host_lost" ? "host_lost" : "suspended";
 }
 
-async function endDanglingRuns(db: DbClient, sessionId: string, reason: ServerHandoffReason): Promise<string[]> {
+async function endDanglingRuns(
+  db: DbClient,
+  content: SessionContentStore,
+  sessionId: string,
+  reason: ServerHandoffReason,
+): Promise<string[]> {
   const open = await db.execute({
     sql: "SELECT id FROM session_runs WHERE session_id = ? AND ended_at IS NULL",
     args: [sessionId],
@@ -345,34 +347,16 @@ async function endDanglingRuns(db: DbClient, sessionId: string, reason: ServerHa
       sql: "UPDATE session_runs SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
       args: [now, endReason, runId],
     });
-    await appendSessionEvents(db, sessionId, runId, [
+    await content.appendEvents(sessionId, runId, [
       { kind: "run_ended", payload: { run_id: runId, reason: endReason, usage: null } },
     ]);
   }
   return runIds;
 }
 
-// The same seq assignment DbSessionStore.appendEvents uses (domain/runner/
-// store.ts); duplicated here because this file stays independent of the
-// runner layer (see listSummaryEvents above).
-async function appendSessionEvents(
-  db: DbClient,
-  sessionId: string,
-  runId: string | null,
-  events: CanonicalEvent[],
-): Promise<void> {
-  const now = new Date().toISOString();
-  for (const event of events) {
-    await db.execute({
-      sql: `INSERT INTO session_events (id, session_id, run_id, seq, kind, payload, created_at)
-            SELECT ?, ?, ?, COALESCE((SELECT MAX(seq) FROM session_events WHERE session_id = ?), 0) + 1, ?, ?, ?`,
-      args: [ulid(), sessionId, runId, sessionId, event.kind, JSON.stringify(event.payload), now],
-    });
-  }
-}
-
 async function suspendWithSummary(
   db: DbClient,
+  content: SessionContentStore,
   session: SessionRow,
   reason: ServerHandoffReason,
 ): Promise<SessionRow | null> {
@@ -380,8 +364,8 @@ async function suspendWithSummary(
 
   const nodeName = session.node_id ? await nodeNameForHandoff(db, session.node_id) : null;
   const scope = await getSessionScope(db, sessionId);
-  const events = await listSummaryEvents(db, sessionId);
-  const content = buildRunSummaryContent({
+  const events = await listSummaryEvents(content, sessionId);
+  const summary = buildRunSummaryContent({
     nodeName,
     sessionName: session.name,
     reason,
@@ -393,21 +377,24 @@ async function suspendWithSummary(
 
   const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
   if (mirrorRoot && session.node_id) {
+    await content.setContent(sessionId, { handoff_inline: null });
     const result = await writeHandoffAndSuspend(
       db,
       session.user_id,
       { id: session.id, nodeId: session.node_id, mirrorRoot },
-      content,
+      summary,
     );
     return result.session;
   }
 
-  const handoffHash = sha256Buffer(Buffer.from(content, "utf8"));
+  // No mirror here: the summary itself is the handoff, and it is content --
+  // the device holds it, the record keeps only the hash (#456).
+  const handoffHash = sha256Buffer(Buffer.from(summary, "utf8"));
+  await content.setContent(sessionId, { handoff_inline: summary });
   return suspendSession(db, session.user_id, session.id, {
     handoffPath: null,
     handoffHash,
-    handoffInline: content,
-    handoffTitle: extractHandoffTitle(content),
+    handoffTitle: extractHandoffTitle(summary),
   });
 }
 
@@ -496,12 +483,22 @@ export interface ResumeInfo {
 // mirrorRoot is the absolute path of the session's home node mirror on THIS
 // machine (getMirrorPath), when one exists -- also the cwd the CLI was
 // spawned in, so it doubles as the conversation-resumability check's input.
+export interface ResumeInfoOptions {
+  homeDir?: string;
+  configDir?: string | null;
+  // #456: the inline handoff summary, read by the caller off this device's
+  // content store (it is content, so it is never on the record). Only used
+  // when the session has no handoff file to read instead.
+  handoffInline?: string | null;
+}
+
 export async function getResumeInfo(
   session: SessionRow,
   mirrorRoot: string | null,
-  homeDir: string = homedir(),
-  configDir: string | null = null,
+  opts: ResumeInfoOptions = {},
 ): Promise<ResumeInfo> {
+  const homeDir = opts.homeDir ?? homedir();
+  const configDir = opts.configDir ?? null;
   const handoffCheckable = mirrorRoot !== null;
   let currentHandoffHash: string | null = null;
   let handoffContent: string | null = null;
@@ -514,7 +511,7 @@ export async function getResumeInfo(
       currentHandoffHash = null;
     }
   } else if (!session.handoff_path) {
-    handoffContent = session.handoff_inline;
+    handoffContent = opts.handoffInline ?? null;
   }
   const handoffChanged =
     handoffCheckable && session.handoff_hash !== null && currentHandoffHash !== session.handoff_hash;

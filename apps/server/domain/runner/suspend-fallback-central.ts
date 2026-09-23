@@ -31,6 +31,7 @@ import type { CentralClient } from "../sync/central/client.js";
 import type { SessionScopeRecord } from "../../shared/api-types.js";
 import type { SessionRow } from "../../shared/types.js";
 import type { SessionStore } from "./store.js";
+import type { SessionContentStore } from "./store-content.js";
 
 const EMPTY_SCOPE: Omit<SessionScopeRecord, "session_id"> = {
   node_name: null,
@@ -40,16 +41,17 @@ const EMPTY_SCOPE: Omit<SessionScopeRecord, "session_id"> = {
 
 export function createSuspendFallbackCentral(
   store: SessionStore,
+  content: SessionContentStore,
   client: CentralClient,
 ): (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null> {
   return async function suspendFallbackCentral(sessionId, reason) {
     const session = await store.getSession(sessionId);
     if (session?.state !== "running") return session;
 
-    // #378: the summary's events come through the same SessionStore
-    // abstraction every other agent-mode call already goes through --
-    // listEvents works identically to the local path.
-    const rows = await store.listEvents(sessionId);
+    // #456: the transcript is this device's, in content.db -- the same
+    // store the local path reads, so the summary is built from the very
+    // same rows in both workspaces.
+    const rows = await content.listEvents(sessionId);
     const events: SummaryEvent[] = rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
     // A scope read that fails must not cost the session its suspend: the
     // summary is still worth writing without its scope sections, and the
@@ -60,7 +62,7 @@ export function createSuspendFallbackCentral(
       console.error(`[portuni:suspend-fallback] scope read failed for session ${sessionId}:`, err);
       return EMPTY_SCOPE;
     });
-    const content = buildRunSummaryContent({
+    const summary = buildRunSummaryContent({
       nodeName: scope.node_name,
       sessionName: session.name,
       reason,
@@ -69,7 +71,7 @@ export function createSuspendFallbackCentral(
       readSet: scope.read_set,
       lastActiveAt: session.last_active_at,
     });
-    const handoffHash = sha256Buffer(Buffer.from(content, "utf8"));
+    const handoffHash = sha256Buffer(Buffer.from(summary, "utf8"));
 
     const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
     let handoffPath: string | null = null;
@@ -77,7 +79,7 @@ export function createSuspendFallbackCentral(
       const relPath = handoffRelativePath(session.id);
       const absPath = join(mirrorRoot, relPath);
       await mkdir(dirname(absPath), { recursive: true });
-      await writeFile(absPath, content, "utf8");
+      await writeFile(absPath, summary, "utf8");
       handoffPath = relPath;
 
       // Record-only registration, exactly what the watcher does for a file
@@ -101,17 +103,16 @@ export function createSuspendFallbackCentral(
     }
 
     // #434: without a mirror there is no file to point at, so the summary
-    // itself rides along in handoff_inline -- the same column the local
-    // half (suspendWithSummary) writes in that case, and the one
-    // getResumeInfo falls back to when handoff_path is null. Writing only
-    // the hash, as this used to, left the thread with a handoff it could
-    // never resume from.
+    // itself rides along in the content store's handoff_inline, which
+    // getResumeInfo falls back to when handoff_path is null. It is content,
+    // so it stays on the device (#456) -- only the path and the hash go to
+    // the record.
+    await content.setContent(sessionId, { handoff_inline: handoffPath ? null : summary });
     return store.patchSession(sessionId, {
       state: "suspended",
       waiting_since: null,
       handoff_path: handoffPath,
       handoff_hash: handoffHash,
-      handoff_inline: handoffPath ? null : content,
     });
   };
 }
