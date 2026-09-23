@@ -624,7 +624,11 @@ human verification.
   zeroes the count, and a message a run that is ending refused gives its
   own back. The web counts the same way over the transcript
   (`turnInFlight`), forward from the live run's `run_started` and never
-  below zero. Wired in `index.ts` and in both
+  below zero. The sweep picks its list once but checks every session again
+  the moment before ending it (#491): ending one takes seconds, so a
+  session that has been touched since it was picked -- a message, an
+  answer, an adapter event -- or whose run is already gone is skipped, and
+  the sweep never ends a thread the user went back to mid-sweep. Wired in `index.ts` and in both
   branches of `desktop.ts` against the runtime instance that actually runs
   tasks there.
 - **Resume is writing.** `resumeByWriting` uses `checkConversationResumable`

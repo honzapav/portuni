@@ -1699,3 +1699,80 @@ describe("session runtime: a message into a run that is ending (#489)", () => {
     assert.equal((await store.listRuns(session.id)).length, 2);
   });
 });
+
+describe("session runtime: the idle sweep re-checks before it ends (#491)", () => {
+  // The sweep computes its list once and then ends the runs on it one at a
+  // time; ending one takes seconds. A message written into the next session
+  // on the list in the meantime makes it busy, so the sweep has to skip it.
+  it("a message into the next session on the list keeps it running", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new TeardownAdapter({ holdClose: true });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const first = await runtime.startTask({ userId: "U1", nodeId, brief: "první", runner: "fake" });
+    const firstRun = adapter.last;
+    const second = await runtime.startTask({ userId: "U1", nodeId, brief: "druhá", runner: "fake" });
+    const secondRun = adapter.last;
+
+    // Both turns are over, so both runs are on the sweep's list. interrupt()
+    // is a no-op on this adapter and drains the event queue.
+    for (const run of [firstRun, secondRun]) {
+      run.emit({ kind: "turn_ended", payload: { run_id: run.start.runId } });
+    }
+    await runtime.interrupt(first.session.id);
+    await runtime.interrupt(second.session.id);
+
+    const ending = runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    await firstRun.closing;
+    // The user goes back to the second thread while the first one is ending.
+    await runtime.sendMessage(second.session.id, "ještě počkej");
+    firstRun.releaseClose();
+    secondRun.releaseClose(); // never awaited if the sweep skips it
+    await ending;
+
+    assert.equal((await store.getSession(first.session.id))?.state, "suspended", "the idle one ended");
+    assert.equal((await store.getSession(second.session.id))?.state, "running", "the one written into stayed");
+    assert.equal(secondRun.closeCount, 0, "the sweep never closed the second run");
+    assert.deepEqual(secondRun.delivered, ["ještě počkej"]);
+  });
+
+  // Not only a message: answering the question the sweep picked the session
+  // up FOR is activity too, and it can land in the same millisecond the
+  // session was picked in -- so the re-check counts activity, it does not
+  // compare clocks.
+  it("answering the open question during the sweep keeps that session running", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new TeardownAdapter({ holdClose: true });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const first = await runtime.startTask({ userId: "U1", nodeId, brief: "první", runner: "fake" });
+    const firstRun = adapter.last;
+    const second = await runtime.startTask({ userId: "U1", nodeId, brief: "druhá", runner: "fake" });
+    const secondRun = adapter.last;
+
+    firstRun.emit({ kind: "turn_ended", payload: { run_id: firstRun.start.runId } });
+    // The second thread waits on the user: an open question is the one turn
+    // in flight the sweep is allowed to end.
+    secondRun.emit({
+      kind: "question",
+      payload: { request_id: "q1", type: "approval", tool: "Bash", title: "Smím?", detail: "", options: null, decision: null },
+    });
+    // interrupt() is a no-op on this adapter and drains the event queue.
+    await runtime.interrupt(first.session.id);
+    await runtime.interrupt(second.session.id);
+    assert.equal(runtime.pendingQuestion(second.session.id)?.request_id, "q1");
+
+    const ending = runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    await firstRun.closing;
+    await runtime.answer(second.session.id, "q1", { by: "U1", value: "allow", at: new Date().toISOString() });
+    firstRun.releaseClose();
+    secondRun.releaseClose(); // never awaited if the sweep skips it
+    await ending;
+
+    assert.equal((await store.getSession(first.session.id))?.state, "suspended");
+    assert.equal((await store.getSession(second.session.id))?.state, "running", "the answered thread stayed");
+    assert.equal(secondRun.closeCount, 0, "the sweep never closed the answered run");
+  });
+});

@@ -399,6 +399,12 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // (started, a message sent, an adapter event, a question answered) --
   // the idle sweep's own cutoff. Cleared once the run ends.
   const lastActivityAt = new Map<string, number>();
+  // #491: how many times activity was observed for this session's live run.
+  // The idle sweep re-checks a session against this before ending it -- two
+  // activities inside the same millisecond share a timestamp, so the count,
+  // not the clock, is what says "something happened since I picked this
+  // one". Cleared with lastActivityAt when the run ends.
+  const activityTicks = new Map<string, number>();
   // #490: how many messages the session's live run has been sent that no
   // turn has answered yet -- a count, not a flag: a message written while
   // the agent works queues behind the turn in flight, and the first
@@ -462,6 +468,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   function touchActivity(sessionId: string): void {
     lastActivityAt.set(sessionId, Date.now());
+    activityTicks.set(sessionId, (activityTicks.get(sessionId) ?? 0) + 1);
   }
 
   function publish(sessionId: string, event: PublishedEvent): void {
@@ -652,6 +659,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         if (current) {
           liveRuns.delete(sessionId);
           lastActivityAt.delete(sessionId);
+          activityTicks.delete(sessionId);
         }
         runStartScopeSize.delete(runId);
         await store.patchRun(runId, {
@@ -1348,12 +1356,29 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     );
   }
 
+  // A run is idle when no turn of it is in flight (an unanswered question is
+  // the one turn that waits on the user, not on the agent) and nothing has
+  // touched it since the sweep's cutoff.
+  function isIdleRun(sessionId: string, idleMs: number, now: number): boolean {
+    if (isTurnInFlight(sessionId) && !pendingQuestions.has(sessionId)) return false;
+    return now - (lastActivityAt.get(sessionId) ?? now) > idleMs;
+  }
+
+  // #491: the list of idle runs is computed once, but ending one takes
+  // seconds (the child process has to go and the suspend has to be
+  // written), and a user who starts writing into the next session on the
+  // list in the meantime must keep it running. So every session is checked
+  // again the moment before it is ended, against the activity it had when
+  // it was picked: a run that has been touched since -- a message, an
+  // answer, an adapter event, a run that is already gone -- is skipped.
   async function checkIdleRunsOnce(idleMs: number, now: number = Date.now()): Promise<void> {
-    const staleIds = [...liveRuns.keys()].filter(
-      (id) =>
-        (!isTurnInFlight(id) || pendingQuestions.has(id)) && now - (lastActivityAt.get(id) ?? now) > idleMs,
-    );
-    for (const id of staleIds) {
+    const stale = [...liveRuns.keys()]
+      .filter((id) => isIdleRun(id, idleMs, now))
+      .map((id) => ({ id, tick: activityTicks.get(id) }));
+    for (const { id, tick } of stale) {
+      if (!liveRuns.has(id)) continue;
+      if (activityTicks.get(id) !== tick) continue;
+      if (!isIdleRun(id, idleMs, now)) continue;
       await endIdleRun(id);
     }
   }

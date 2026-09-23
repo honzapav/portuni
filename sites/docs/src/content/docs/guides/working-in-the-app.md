@@ -166,6 +166,13 @@ summary to be written, then wakes the thread with that message as the
 first message of the next run. You see it once, the agent answers it, and
 nothing has to be typed again.
 
+The inactivity timeout never catches a thread you have just gone back to.
+It looks over all your live threads at once, but suspending one takes a
+few seconds, and each remaining thread is checked again the moment before
+it is suspended: one you wrote into, answered a question in, or that the
+agent started working in again in the meantime keeps running and waits
+for the next round.
+
 Every thread you have open in the window stays live while you look at
 another one: each one keeps its own chat, and switching is only a change
 of which one is on screen. You come back to the same scroll position in
