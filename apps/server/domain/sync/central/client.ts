@@ -139,9 +139,9 @@ export interface CentralClient {
   // device's own content.db is their only writer and reader.
   // GET /sessions/:id/scope (#427): the session's read/write set by node id
   // and the anchor node's name. `session_scope` is a graph-db table, so a
-  // sync agent has none -- the suspend fallback
-  // (domain/runner/suspend-fallback-central.ts) fills its summary's scope
-  // sections from here instead of leaving them empty.
+  // sync agent has none -- the server-side suspend
+  // (domain/session-handoff.ts's createSuspendServerSide, #458) fills its
+  // summary's scope sections from here instead of leaving them empty.
   sessionScopeRecord(sessionId: string): Promise<SessionScopeRecord>;
   // GET /nodes/:id/orientation: what buildOrientationHint would render
   // locally, computed by the central server (which has the real graph db)

@@ -180,7 +180,8 @@ suspend, idle sweep, pid-file boot sweep) is one implementation and always
 runs on the device. What differs is the `SessionStore` behind it and the
 seams a device without a graph db needs: `CentralSessionStore` over the central server's
 record REST routes, `provision-central.ts` (`createMirrorForNodeCentral`,
-`CentralClient.orientation`), `suspend-fallback-central.ts`, and
+`CentralClient.orientation`), the `scope`/`suspendRecord`/`trackHandoff`
+seams of `createSuspendServerSide` (#458), and
 `CentralClient.nodeOrganizationId` for the organization's default runner
 instance. Access checks run exactly once, on the central server. Detail:
 [`sessions-and-runner.md`](./sessions-and-runner.md).

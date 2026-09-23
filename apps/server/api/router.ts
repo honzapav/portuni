@@ -786,7 +786,7 @@ async function routeSessions(
     return true;
   }
   // Central record half (#427): the session's read/write set, read by the
-  // sync agent's suspend fallback -- a central route, never device-local
+  // sync agent's server-side suspend -- a central route, never device-local
   // (the device is exactly the side that has no session_scope table).
   const scopeMatch = pathname.match(/^\/sessions\/([^/]+)\/scope$/);
   if (scopeMatch && method === "GET") {

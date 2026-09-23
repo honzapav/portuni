@@ -168,10 +168,10 @@ export interface CreateSessionRuntimeDeps {
   // #378: writes the mechanical summary and moves the session to suspended
   // -- called whenever a run ends other than by Uzavřít/continue (any
   // reason), and by the idle sweep specifically ("idle"). Defaults to the
-  // local-mode implementation (suspendSessionServerSide against the graph
-  // db); boot/session-runtime.ts's createAgentSessionRuntime supplies
-  // domain/runner/suspend-fallback-central.ts's version instead, since
-  // agent mode has no graph db to write against.
+  // local-mode binding (suspendSessionServerSide against the graph db);
+  // boot/session-runtime.ts's createAgentSessionRuntime supplies the same
+  // code with its two graph-db reads pointed at the central server (#458),
+  // since agent mode has no graph db to write against.
   suspendFallback?: (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null>;
   // #407: how a node's organization is resolved when a draft's first
   // message picks the organization's default runner instance. Defaults to

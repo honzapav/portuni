@@ -73,6 +73,7 @@ import {
 import { mimeFor, localHashFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { safeMirrorJoin, deriveLocalPath, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
+import { transcriptHostLabel } from "../domain/runner/hosts.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
 import { removeLocalCopyAndState } from "../domain/sync/local-cleanup.js";
 import { trackPendingPush, clearPendingPushIfCurrent, awaitPendingPush } from "../domain/sync/pending-pushes.js";
@@ -685,7 +686,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           limit: limit !== null ? Number(limit) : undefined,
         });
         const events = rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
-        respondJson(res, 200, { events });
+        // #458: the transcript is this device's content.db. A thread the
+        // record says ran on another device has none here, and the answer
+        // says so rather than looking like an empty chat.
+        const session = await sessionRuntime.getSession(sessionId);
+        const transcriptHost = transcriptHostLabel(session?.host_id ?? null, rows.length);
+        respondJson(res, 200, { events, ...(transcriptHost ? { transcript_host: transcriptHost } : {}) });
       } catch (err) {
         respondError(res, `GET /sessions/${sessionId}/events`, err);
       }

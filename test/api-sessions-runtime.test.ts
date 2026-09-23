@@ -22,6 +22,7 @@ import { installTestContentDb } from "./helpers/content-db.js";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import { createSession } from "../apps/server/domain/sessions.js";
+import { localHostId } from "../apps/server/domain/runner/hosts.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import type { SessionSummary, SessionRunRow, SessionEventRow } from "../apps/server/shared/api-types.js";
@@ -582,6 +583,35 @@ describe("task REST endpoints under /sessions", () => {
       !events.some((e) => e.kind === "state_changed" && (e.payload as { by?: string }).by === "U2"),
       "a non-owner never appends anything to the owner's thread",
     );
+  });
+
+  // #458: the transcript is the device's, so a device that did not run a
+  // thread has no rows for it -- the answer says where they are instead of
+  // looking like an empty chat.
+  test("events of a thread that ran on another device answer empty with transcript_host", async () => {
+    await installRuntime([]);
+    const elsewhere = await createSession(dbFixture.db, "U1", {
+      node_id: dbFixture.nodeId,
+      session_type: "interactive_task",
+      host_id: "jina-masina",
+    });
+
+    const res = await call(makeIdentity("U1"), "GET", `/sessions/${elsewhere.id}/events`);
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as { events: SessionEventRow[]; transcript_host?: string };
+    assert.deepEqual(body.events, []);
+    assert.equal(body.transcript_host, "jina-masina");
+
+    // A thread of this device says nothing, even before its first event.
+    const here = await createSession(dbFixture.db, "U1", {
+      node_id: dbFixture.nodeId,
+      session_type: "interactive_task",
+      host_id: localHostId(),
+    });
+    const hereRes = await call(makeIdentity("U1"), "GET", `/sessions/${here.id}/events`);
+    const hereBody = JSON.parse(hereRes.body) as { events: SessionEventRow[]; transcript_host?: string };
+    assert.deepEqual(hereBody.events, []);
+    assert.equal(hereBody.transcript_host, undefined);
   });
 
   test("a node-less session is invisible to everyone but the owner", async () => {

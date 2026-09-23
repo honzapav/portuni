@@ -391,12 +391,12 @@ describe("session runtime: event ordering", () => {
       { wait: "message" },
     ];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
     const row = await store.getSession(session.id);
     assert.equal(row?.waiting_since, null, "the closed question must not leave the session waiting");
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     const stateChanged = events.filter((e) => e.kind === "state_changed").map((e) => JSON.parse(e.payload));
     assert.deepEqual(
       stateChanged.map((s) => s.waiting),

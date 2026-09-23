@@ -250,8 +250,12 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `device-local-routes.json` together.
 - Nothing but Uzavřít and the auto-archive sweep reaches `closed`. Every other
   end (disconnect, idle `PORTUNI_RUN_IDLE_MS`, provider limit or error,
-  boot sweep, orphaned pid) suspends with a server-written summary; the next
-  message resumes by writing. `interrupt()` cancels the current turn only.
+  boot sweep) suspends with a summary **the device** writes -- it holds the
+  transcript, so the central server never writes one; the next message
+  resumes by writing. An orphaned pid found by the device's boot sweep
+  suspends with no summary at all, and a thread whose device disappeared
+  mid-run stays `running` until that sweep runs. `interrupt()` cancels the
+  current turn only.
 - `@anthropic-ai/claude-agent-sdk` is pinned exact; never let `npm update`
   touch it. The adapter always uses streaming input, never starts a process
   to answer `models()`, and ends a run on a `result` that carries an error.

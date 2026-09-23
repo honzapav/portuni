@@ -460,9 +460,9 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(res.status, 201);
     const { session } = (await res.json()) as { session: SessionRow };
 
-    // createSuspendFallbackCentral is the agent-mode suspend path: the
-    // summary lands in the device's own mirror, the state patch goes to
-    // central over REST.
+    // #458: the one server-side suspend, agent-mode seams -- the summary
+    // lands in the device's own mirror, the state patch goes to central
+    // over REST.
     const stored = fake.sessions.get(session.id);
     assert.equal(stored?.state, "suspended");
     assert.ok(stored?.handoff_path, "a server-written summary must be recorded on central");
@@ -784,6 +784,35 @@ describe("agent-router: sessions/tasks", () => {
       // auto-summary/suspend path and gets its handoff event too.
       ["run_started", "user_message", "run_ended", "handoff"],
     );
+  });
+
+  // #458: a thread the record says ran on another device has no rows in
+  // THIS device's content.db -- the sidecar answers empty and names the
+  // host the transcript is on, so the chat can say so.
+  it("GET /sessions/:id/events names the host when the transcript is on another device", async () => {
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+
+    // Same record, but the run happened elsewhere: this device never wrote
+    // a transcript for it.
+    const elsewhere: SessionRow = { ...fake.sessions.get(session.id)!, id: ulid(), host_id: "jina-masina" };
+    fake.sessions.set(elsewhere.id, elsewhere);
+
+    const res = await fetch(`${base}/sessions/${elsewhere.id}/events`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { events: unknown[]; transcript_host?: string };
+    assert.deepEqual(body.events, []);
+    assert.equal(body.transcript_host, "jina-masina");
+
+    // The thread this device ran says nothing of the sort.
+    const own = (await (await fetch(`${base}/sessions/${session.id}/events`)).json()) as {
+      transcript_host?: string;
+    };
+    assert.equal(own.transcript_host, undefined);
   });
 
   // #456: resume-info moved to the device-local list -- the summary it

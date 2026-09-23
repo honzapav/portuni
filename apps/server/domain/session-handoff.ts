@@ -205,9 +205,9 @@ function isQuestionPayload(payload: unknown): payload is { request_id: string; t
   return typeof p?.request_id === "string" && typeof p?.title === "string";
 }
 
-// Exported for domain/runner/suspend-fallback-central.ts (#323): the
-// agent-mode counterpart of suspendSessionServerSide below reuses this same
-// content format so a summary written by either mode looks identical.
+// Exported because createSuspendServerSide below builds every summary with
+// it, in both workspaces -- a summary written by either mode is identical
+// by construction.
 //
 // #378: "the summary replaces the suspend handshake" -- mechanical, built
 // entirely from session_events and session_scope, no agent cooperation
@@ -288,40 +288,163 @@ async function listSummaryEvents(content: SessionContentStore, sessionId: string
   return rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
 }
 
+// The name a suspend gives the thread: the handoff's own title, unless the
+// user named it themselves. One rule, two record writers -- the local
+// UPDATE in domain/sessions.ts's suspendSession and the record patch a
+// team-workspace sidecar sends over REST (boot/session-runtime.ts).
+export function handoffEnrichedName(
+  session: { name: string; name_is_custom: number },
+  handoffTitle: string | null,
+): string {
+  const title = handoffTitle?.trim();
+  return session.name_is_custom === 0 && title ? title : session.name;
+}
+
+// --- The one server-side suspend (#458) ----------------------------------
+//
+// Writing the summary needs four things the two workspaces reach
+// differently: the record (state, runs), the node name and scope sections,
+// the record write itself, and tracking the written file. Everything else --
+// what the summary contains, where the file goes, what happens when this
+// device has no mirror for the node -- is the same code in both, which is
+// the point: #458 deleted the second implementation a team-workspace
+// sidecar used to carry and left these seams in its place (rule 1,
+// "written once"). The local bindings are below (localSuspendDeps); the
+// team-workspace ones are built in boot/session-runtime.ts, where the
+// CentralClient lives.
+
+export interface SuspendSummaryScope {
+  node_name: string | null;
+  write_set: readonly string[];
+  read_set: readonly string[];
+}
+
+const EMPTY_SUMMARY_SCOPE: SuspendSummaryScope = { node_name: null, write_set: [], read_set: [] };
+
+// The record reads/writes the suspend needs, narrower than SessionStore on
+// purpose: both SessionStore implementations satisfy it structurally, and a
+// test can hand it a two-method object.
+export interface SuspendRecordReader {
+  getSession(id: string): Promise<SessionRow | null>;
+  listRuns(sessionId: string): Promise<{ id: string; ended_at: string | null }[]>;
+  patchRun(runId: string, patch: { ended_at: string; end_reason: RunEndReason }): Promise<unknown>;
+}
+
+export interface SuspendRecordInput {
+  handoffPath: string | null;
+  handoffHash: string;
+  handoffTitle: string | null;
+}
+
+export interface SuspendServerSideDeps {
+  record: SuspendRecordReader;
+  // The transcript the summary is built from, and where the summary itself
+  // lands when this device has no mirror: the device's content.db in both
+  // workspaces (#456), never the record.
+  content: SessionContentStore;
+  // Node name + write/read set for the summary's sections.
+  scope(sessionId: string, session: SessionRow): Promise<SuspendSummaryScope>;
+  // Records the suspend on the record store.
+  suspendRecord(session: SessionRow, input: SuspendRecordInput): Promise<SessionRow | null>;
+  // Best-effort: makes the written handoff a tracked file of the node.
+  trackHandoff(input: { userId: string; nodeId: string; localPath: string }): Promise<void>;
+}
+
 // Suspends a 'running' session with a summary the SERVER writes, not the
 // agent -- a real file in the mirror when one exists on this device (same
 // path writeHandoffAndSuspend uses), or handoff_inline when it doesn't
-// (central mode, or simply no mirror registered here). A no-op (returns
-// the row unchanged) for any state other than 'running': already-suspended
-// or terminal sessions have nothing for this to do.
+// (no mirror for the node here). A no-op (returns the row unchanged) for
+// any state other than 'running': already-suspended or terminal sessions
+// have nothing for this to do.
+export function createSuspendServerSide(
+  deps: SuspendServerSideDeps,
+): (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null> {
+  return async function suspendServerSide(sessionId, reason) {
+    const session = await deps.record.getSession(sessionId);
+    if (session?.state !== "running") return session;
+
+    // A suspend that does not come from the run's own end (a boot sweep after
+    // a restart, a dropped transport, a lost host) leaves the run row open and
+    // the event log on a run_started with no run_ended -- and every client
+    // replaying that log then treats the run as live: working row, stop
+    // button, no composer, on a session the server says is suspended. End
+    // the dangling runs here and say so in the log, the way the runtime's
+    // own run_ended does. A run the runtime already ended (ended_at set) is
+    // left alone, so its path appends nothing twice.
+    const endedRuns = await endDanglingRuns(deps, sessionId, reason);
+    const suspended = await suspendWithSummary(deps, session, reason);
+    // Only when THIS call ended a run: the runtime's own path (run_ended
+    // already in the log, run row already ended) appends nothing here, so
+    // its event sequence stays exactly what it was.
+    if (endedRuns.length > 0 && suspended?.state === "suspended") {
+      await deps.content.appendEvents(sessionId, null, [
+        { kind: "state_changed", payload: { from: "running", to: "suspended", waiting: false } },
+      ]);
+    }
+    return suspended;
+  };
+}
+
 export async function suspendSessionServerSide(
   db: DbClient,
   content: SessionContentStore,
   sessionId: string,
   reason: ServerHandoffReason,
 ): Promise<SessionRow | null> {
-  const session = await getSession(db, sessionId);
-  if (session?.state !== "running") return session;
+  return createSuspendServerSide(localSuspendDeps(db, content))(sessionId, reason);
+}
 
-  // A suspend that does not come from the run's own end (a boot sweep after
-  // a restart, a dropped transport, a lost host) leaves the run row open and
-  // the event log on a run_started with no run_ended -- and every client
-  // replaying that log then treats the run as live: working row, stop
-  // button, no composer, on a session the server says is suspended. End
-  // the dangling runs here and say so in the log, the way the runtime's
-  // own run_ended does. A run the runtime already ended (ended_at set) is
-  // left alone, so its path appends nothing twice.
-  const endedRuns = await endDanglingRuns(db, content, sessionId, reason);
-  const suspended = await suspendWithSummary(db, content, session, reason);
-  // Only when THIS call ended a run: the runtime's own path (run_ended
-  // already in the log, run row already ended) appends nothing here, so
-  // its event sequence stays exactly what it was.
-  if (endedRuns.length > 0 && suspended?.state === "suspended") {
-    await content.appendEvents(sessionId, null, [
-      { kind: "state_changed", payload: { from: "running", to: "suspended", waiting: false } },
-    ]);
-  }
-  return suspended;
+// The personal-workspace bindings: the graph db is right here, so every
+// seam is a direct query.
+export function localSuspendDeps(db: DbClient, content: SessionContentStore): SuspendServerSideDeps {
+  return {
+    record: {
+      getSession: (id) => getSession(db, id),
+      listRuns: async (sessionId) => {
+        const res = await db.execute({
+          sql: "SELECT id, ended_at FROM session_runs WHERE session_id = ?",
+          args: [sessionId],
+        });
+        return res.rows.map((r) => ({
+          id: String(r.id),
+          ended_at: r.ended_at === null ? null : String(r.ended_at),
+        }));
+      },
+      patchRun: (runId, patch) =>
+        db.execute({
+          sql: "UPDATE session_runs SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+          args: [patch.ended_at, patch.end_reason, runId],
+        }),
+    },
+    content,
+    scope: async (sessionId, session) => {
+      const rows = await getSessionScope(db, sessionId);
+      return {
+        node_name: session.node_id ? await nodeNameForHandoff(db, session.node_id) : null,
+        write_set: rows.filter((s) => s.writable === 1).map((s) => s.node_id),
+        read_set: rows.map((s) => s.node_id),
+      };
+    },
+    suspendRecord: (session, input) =>
+      suspendSession(db, session.user_id, session.id, {
+        handoffPath: input.handoffPath,
+        handoffHash: input.handoffHash,
+        handoffTitle: input.handoffTitle,
+      }),
+    // A local workspace has no remote (#310): the handoff is registered as
+    // a tracked file, same as the watcher would do, and never pushed
+    // anywhere.
+    trackHandoff: async (input) => {
+      const track = isLocalWorkspace() ? registerLocalFile : storeFile;
+      await track(db, {
+        userId: input.userId,
+        nodeId: input.nodeId,
+        localPath: input.localPath,
+        subpath: "sessions",
+        status: "wip",
+      });
+    },
+  };
 }
 
 function runEndReasonFor(reason: ServerHandoffReason): RunEndReason {
@@ -329,73 +452,77 @@ function runEndReasonFor(reason: ServerHandoffReason): RunEndReason {
 }
 
 async function endDanglingRuns(
-  db: DbClient,
-  content: SessionContentStore,
+  deps: SuspendServerSideDeps,
   sessionId: string,
   reason: ServerHandoffReason,
 ): Promise<string[]> {
-  const open = await db.execute({
-    sql: "SELECT id FROM session_runs WHERE session_id = ? AND ended_at IS NULL",
-    args: [sessionId],
-  });
-  const runIds = open.rows.map((r) => String(r.id));
-  if (runIds.length === 0) return runIds;
+  const open = (await deps.record.listRuns(sessionId)).filter((r) => r.ended_at === null);
+  if (open.length === 0) return [];
   const now = new Date().toISOString();
   const endReason = runEndReasonFor(reason);
-  for (const runId of runIds) {
-    await db.execute({
-      sql: "UPDATE session_runs SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
-      args: [now, endReason, runId],
-    });
-    await content.appendEvents(sessionId, runId, [
-      { kind: "run_ended", payload: { run_id: runId, reason: endReason, usage: null } },
+  for (const run of open) {
+    await deps.record.patchRun(run.id, { ended_at: now, end_reason: endReason });
+    await deps.content.appendEvents(sessionId, run.id, [
+      { kind: "run_ended", payload: { run_id: run.id, reason: endReason, usage: null } },
     ]);
   }
-  return runIds;
+  return open.map((r) => r.id);
 }
 
 async function suspendWithSummary(
-  db: DbClient,
-  content: SessionContentStore,
+  deps: SuspendServerSideDeps,
   session: SessionRow,
   reason: ServerHandoffReason,
 ): Promise<SessionRow | null> {
   const sessionId = session.id;
 
-  const nodeName = session.node_id ? await nodeNameForHandoff(db, session.node_id) : null;
-  const scope = await getSessionScope(db, sessionId);
-  const events = await listSummaryEvents(content, sessionId);
+  // A scope read that fails must not cost the session its suspend: the
+  // summary is still worth writing without its scope sections, and the
+  // alternative is a thread left 'running' with no handoff at all.
+  const scope = await deps.scope(sessionId, session).catch((err) => {
+    console.error(`[portuni:session-handoff] scope read failed for session ${sessionId}:`, err);
+    return EMPTY_SUMMARY_SCOPE;
+  });
+  const events = await listSummaryEvents(deps.content, sessionId);
   const summary = buildRunSummaryContent({
-    nodeName,
+    nodeName: scope.node_name,
     sessionName: session.name,
     reason,
     events,
-    writeSet: scope.filter((s) => s.writable === 1).map((s) => s.node_id),
-    readSet: scope.map((s) => s.node_id),
+    writeSet: scope.write_set,
+    readSet: scope.read_set,
     lastActiveAt: session.last_active_at,
   });
+  const handoffHash = sha256Buffer(Buffer.from(summary, "utf8"));
+  const handoffTitle = extractHandoffTitle(summary);
 
   const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
   if (mirrorRoot && session.node_id) {
-    await content.setContent(sessionId, { handoff_inline: null });
-    const result = await writeHandoffAndSuspend(
-      db,
-      session.user_id,
-      { id: session.id, nodeId: session.node_id, mirrorRoot },
-      summary,
-    );
-    return result.session;
+    const relPath = handoffRelativePath(sessionId);
+    const absPath = join(mirrorRoot, relPath);
+    await mkdir(dirname(absPath), { recursive: true });
+    await writeFile(absPath, summary, "utf8");
+    await deps.content.setContent(sessionId, { handoff_inline: null });
+    const row = await deps.suspendRecord(session, { handoffPath: relPath, handoffHash, handoffTitle });
+
+    // Record-only in a personal workspace, a push in a team one -- either
+    // way best-effort: the file is on disk and the session IS suspended;
+    // a tracking failure must undo neither.
+    try {
+      await deps.trackHandoff({ userId: session.user_id, nodeId: session.node_id, localPath: absPath });
+    } catch (err) {
+      console.error(
+        `[portuni:session-handoff] tracking ${absPath} failed; the session is suspended and the handoff is written locally, but not yet tracked:`,
+        err,
+      );
+    }
+    return row;
   }
 
   // No mirror here: the summary itself is the handoff, and it is content --
   // the device holds it, the record keeps only the hash (#456).
-  const handoffHash = sha256Buffer(Buffer.from(summary, "utf8"));
-  await content.setContent(sessionId, { handoff_inline: summary });
-  return suspendSession(db, session.user_id, session.id, {
-    handoffPath: null,
-    handoffHash,
-    handoffTitle: extractHandoffTitle(summary),
-  });
+  await deps.content.setContent(sessionId, { handoff_inline: summary });
+  return deps.suspendRecord(session, { handoffPath: null, handoffHash, handoffTitle });
 }
 
 // Claude Code's local conversation-transcript layout: one directory per

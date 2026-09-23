@@ -52,3 +52,16 @@ export function resolveHostLabel(hostId: string | null): string | null {
   const label = localHostLabel();
   return label && label !== hostId ? label : null;
 }
+
+// #458: what GET /sessions/:id/events says when this device has no
+// transcript for a thread the record says ran elsewhere -- the label the
+// chat shows ("Transkript je na zařízení X"), which is the host's display
+// name when this process can name it and the host id otherwise, exactly
+// what the web's hostDisplayName falls back to. null means "say nothing":
+// either there ARE events here, or the thread's host is this device (a
+// thread that simply has no events yet).
+export function transcriptHostLabel(hostId: string | null, eventCount: number): string | null {
+  if (eventCount > 0) return null;
+  if (!hostId || hostId === localHostId()) return null;
+  return resolveHostLabel(hostId) ?? hostId;
+}

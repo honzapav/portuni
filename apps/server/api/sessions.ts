@@ -16,7 +16,7 @@
 //   GET   /sessions/:id/signals            read    -> restart indicator (run age, read/write set)
 //   GET   /sessions/:id/scope              read    -> central record half (#427): the session's
 //                                                      read/write set by node id, for the sync
-//                                                      agent's own suspend fallback
+//                                                      agent's own server-side suspend
 //   POST  /sessions                        write   -> start a task (session + first run)
 //   POST  /sessions/record                 write   -> central record half (#323): create the row
 //                                                      only, no run -- the agent-mode sidecar's own
@@ -91,7 +91,7 @@ import { getSessionRuntime } from "../boot/session-runtime.js";
 import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
-import { resolveHostLabel } from "../domain/runner/hosts.js";
+import { resolveHostLabel, transcriptHostLabel } from "../domain/runner/hosts.js";
 import { DbSessionStore } from "../domain/runner/store.js";
 import { SessionContentStore, deviceSessionContentStore } from "../domain/runner/store-content.js";
 import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
@@ -266,7 +266,7 @@ const PatchSessionBody = z
     waiting_since: z.string().nullable().optional(),
     handoff_path: z.string().nullable().optional(),
     handoff_hash: z.string().nullable().optional(),
-    // #434: the suspend fallback's summary when this device had no mirror
+    // #434: a team-workspace suspend's summary when this device had no mirror
     // to write a handoff file into -- the same column the local half
     // (suspendSession) writes, so a team-workspace suspend without a
     // mirror resumes from the summary exactly as a personal one does.
@@ -537,9 +537,9 @@ export async function handleGetSessionSignals(
 // #427: the session's persisted scope, by node id, plus the anchor node's
 // name -- everything domain/session-handoff.ts's local suspend path reads
 // off the graph db to fill a summary's "Zápisový rozsah" / "Čtecí rozsah"
-// sections. A sync agent has neither table, so its suspend fallback
-// (domain/runner/suspend-fallback-central.ts) reads them here instead of
-// writing an empty-scope summary. A pure read of the record half, so it
+// sections. A sync agent has neither table, so the same suspend reads them
+// here instead of writing an empty-scope summary (#458: one implementation,
+// this route is its `scope` seam in a team workspace). A pure read of the record half, so it
 // follows the same read-tier gate resume-info and signals do.
 export async function handleGetSessionScope(
   req: IncomingMessage,
@@ -836,7 +836,15 @@ export async function handleListSessionEvents(
     const rows = await getSessionRuntime().listEvents(sessionId, { after, limit });
     const events = rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
     const nextAfter = rows.length === limit ? rows[rows.length - 1].seq : null;
-    respondJson(res, 200, { events, next_after: nextAfter });
+    // #458: the transcript lives on the device that ran the thread. A
+    // device that did not run it has no rows to answer with and says where
+    // they are instead of showing an empty chat.
+    const transcriptHost = transcriptHostLabel(existing.host_id, rows.length);
+    respondJson(res, 200, {
+      events,
+      next_after: nextAfter,
+      ...(transcriptHost ? { transcript_host: transcriptHost } : {}),
+    });
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/events`, err);
   }

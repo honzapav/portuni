@@ -15,7 +15,7 @@ import {
   type SessionState,
 } from "../shared/types.js";
 import { writeAudit } from "../infra/audit.js";
-import { suspendSessionServerSide, type ServerHandoffReason } from "./session-handoff.js";
+import { handoffEnrichedName, suspendSessionServerSide, type ServerHandoffReason } from "./session-handoff.js";
 import { deviceSessionContentStore } from "./runner/store-content.js";
 
 const SESSION_TYPES = ["interactive_task", "interactive_chat", "headless", "env"] as const;
@@ -635,10 +635,7 @@ export async function suspendSession(
   }
 
   const now = new Date().toISOString();
-  const enrichedName =
-    !existing.name_is_custom && input.handoffTitle && input.handoffTitle.trim().length > 0
-      ? input.handoffTitle.trim()
-      : existing.name;
+  const enrichedName = handoffEnrichedName(existing, input.handoffTitle ?? null);
   await db.execute({
     sql: `UPDATE sessions
              SET state = 'suspended', handoff_path = ?, handoff_hash = ?, handoff_inline = NULL,
