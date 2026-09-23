@@ -217,9 +217,7 @@ The table is one line: **every action is the owner's** (#457).
 - A session the caller does not own is `SESSION_NOT_FOUND` (404) for every
   action -- node-anchored or not, `manage` and `admin` included. Seeing the
   anchor node says nothing about the threads on it; a teammate is never told
-  the thread exists. No session route answers 403 on access grounds any
-  more, so `SESSION_FORBIDDEN` is a code the union still carries and nothing
-  raises.
+  the thread exists. No session route answers 403 on access grounds.
 - The list routes follow the same rule and are filtered in SQL by
   `user_id = identity`: `GET /sessions?state=…`, `GET /nodes/:id/sessions`
   (of every state, drafts included -- the node's own read gate decides only

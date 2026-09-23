@@ -8,9 +8,8 @@
 // A thread is its owner's. Nobody else reads the record: not a teammate who
 // can see the anchor node, not `manage`, not `admin`. Seeing the node says
 // nothing about its threads any more, so a non-owner gets SESSION_NOT_FOUND
-// for every action on every session -- node-anchored or not. There is no
-// SESSION_FORBIDDEN answer left: a caller who is not the owner is never
-// told the thread exists.
+// for every action on every session -- node-anchored or not: a caller who
+// is not the owner is never told the thread exists.
 //
 // This supersedes the "Visibility and control" table of
 // docs/superpowers/specs/2026-09-12-remote-hosts-and-task-queue-design.md,
@@ -22,7 +21,7 @@ import type { RequestIdentity } from "./request-identity.js";
 import type { SessionRow } from "../shared/types.js";
 
 export type SessionAccessAction = "read" | "message" | "stop" | "resume";
-export type SessionAccessErrorCode = "SESSION_NOT_FOUND" | "SESSION_FORBIDDEN";
+export type SessionAccessErrorCode = "SESSION_NOT_FOUND";
 
 export class SessionAccessError extends Error {
   readonly code: SessionAccessErrorCode;
