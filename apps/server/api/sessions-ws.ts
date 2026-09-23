@@ -273,7 +273,23 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     });
   }
 
-  async function broadcastSessionState(sessionId: string): Promise<void> {
+  // #494: one broadcast at a time per session, in the order the events
+  // fired. Each broadcast reads the row afresh, so two in flight at once (a
+  // run_ended and the suspend right after it) could otherwise land out of
+  // order -- a slow read against the central server finishing last -- and
+  // leave every window on the older state.
+  const broadcastChains = new Map<string, Promise<void>>();
+  function broadcastSessionState(sessionId: string): Promise<void> {
+    const prev = broadcastChains.get(sessionId) ?? Promise.resolve();
+    const next = prev.then(() => broadcastSessionStateNow(sessionId)).catch(() => undefined);
+    broadcastChains.set(sessionId, next);
+    void next.then(() => {
+      if (broadcastChains.get(sessionId) === next) broadcastChains.delete(sessionId);
+    });
+    return next;
+  }
+
+  async function broadcastSessionStateNow(sessionId: string): Promise<void> {
     const row = await deps.runtime().getSession(sessionId);
     if (!row) return;
     // One visibility answer per distinct identity, not per connection: a

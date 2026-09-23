@@ -406,8 +406,10 @@ describe("agent-router: sessions/tasks", () => {
         [2, "user_message"],
         [3, "run_ended"],
         // #378: nobody closed this run explicitly, so it falls through to
-        // the auto-summary/suspend path and gets its handoff event too.
-        [4, "handoff"],
+        // the auto-summary/suspend path and gets its handoff event too --
+        // after the transition the suspend made (#494).
+        [4, "state_changed"],
+        [5, "handoff"],
       ],
     );
   });
@@ -497,6 +499,35 @@ describe("agent-router: sessions/tasks", () => {
       .filter((e) => e.kind === "user_message")
       .map((e) => JSON.parse(e.payload).text as string);
     assert.deepEqual(texts, ["x", "tak co teď?"]);
+  });
+
+  // #494: a run that ends on its own is suspended by the runtime, and the
+  // live channel (api/sessions-ws.ts) learns it from a published
+  // state_changed -- in the primary runtime, a team workspace's sync agent
+  // whose record store is CentralSessionStore over the fake central server.
+  it("a run that ends on its own publishes running -> suspended after the record is suspended (#494)", async () => {
+    clearRegistryForTests();
+    const adapter = new TeardownAdapter();
+    registerAdapter(adapter);
+    const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+    const { session } = await runtime.startTask({
+      userId: SOLO_USER,
+      nodeId: NODE_ID,
+      brief: "první",
+      runner: "fake",
+    });
+    const suspendedSeen = new Promise<string | undefined>((resolve) => {
+      runtime.subscribe(session.id, (_id, event) => {
+        if ("kind" in event && event.kind === "state_changed" && event.payload.to === "suspended") {
+          // What sessions-ws.ts reads the moment it sees the event.
+          resolve(fake.sessions.get(session.id)?.state);
+        }
+      });
+    });
+    adapter.last.endRun("completed");
+    assert.equal(await suspendedSeen, "suspended");
+    clearRegistryForTests();
   });
 
   // #490: the same count of unanswered messages, in the primary runtime --
@@ -1051,7 +1082,8 @@ describe("agent-router: sessions/tasks", () => {
       body.events.map((e) => e.kind),
       // #378: nobody closed this run explicitly, so it falls through to the
       // auto-summary/suspend path and gets its handoff event too.
-      ["run_started", "user_message", "run_ended", "handoff"],
+      // #494: and the suspend itself is in the log, so the chat learns of it.
+      ["run_started", "user_message", "run_ended", "state_changed", "handoff"],
     );
   });
 

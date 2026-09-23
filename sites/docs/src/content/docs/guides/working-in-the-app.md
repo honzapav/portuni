@@ -386,7 +386,10 @@ delta is a live preview of; and
 listing every running or suspended session you can see (newest activity
 first, at most 500); and `session_state { session_id, state, waiting_since,
 node_id }` — one session, sent on every `state_changed`, `question` or
-`run_ended` anywhere, with no subscription needed. This is what lets the Relace tab, the Práce sidebar and Přehled
+`run_ended` anywhere, with no subscription needed. A thread the runtime
+suspends on its own (idle, an error or limit, the process ending) sends one
+more `state_changed` once it is suspended, so the last frame always says
+`suspended`. This is what lets the Relace tab, the Práce sidebar and Přehled
 update live instead of polling. A frame for a node open in Práce also refetches that node's thread
 list (`GET /nodes/:id/sessions`), which is how a thread started outside the sidebar shows up there;
 the refetch is coalesced per node, so a burst of frames costs at most two round trips.

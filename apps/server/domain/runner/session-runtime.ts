@@ -683,7 +683,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
           pendingEndReason.delete(sessionId);
           const suspended = await suspendFallback(sessionId, reason);
           if (suspended) {
+            // #494: the run_ended above already fanned a session_state out
+            // (api/sessions-ws.ts reads the row the moment it sees one) --
+            // but it read the row before this suspend wrote it, so every
+            // window kept showing the thread as running. The transition
+            // itself is what tells them it is suspended now.
             await appendAndPublish(sessionId, runId, [
+              ...(suspended.state === "suspended"
+                ? [{ kind: "state_changed" as const, payload: { from: "running", to: "suspended", waiting: false } }]
+                : []),
               { kind: "handoff", payload: { path: suspended.handoff_path, hash: suspended.handoff_hash } },
             ]);
           }

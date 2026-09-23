@@ -777,7 +777,14 @@ in the codebase. The desktop bridge is documented with the desktop shell.
 - `session_state` fans out to every connection whose identity owns the
   session (`canSee`, the same one-line rule) through one server-lifetime
   `subscribe("*", ...)` per `WebSocketServer`, created lazily on the first
-  connection, and a broadcast resolves visibility once per identity. A test
+  connection, and a broadcast resolves visibility once per identity.
+  Broadcasts for one session run one at a time in event order, each reading
+  the row afresh, so a slow read never lands an older state last (#494).
+  A suspend the runtime makes itself (idle, error, limit, the process
+  ending) appends and publishes `state_changed {from: "running", to:
+  "suspended"}` once the record is suspended, before the `handoff` event:
+  the `run_ended` broadcast reads the row before that suspend is written.
+  A test
   must keep one runtime and re-register the fake adapter between cases
   (`test/api-sessions-ws.test.ts`), or that subscription sticks to an
   abandoned instance. `SessionRuntime.subscriberCount(target)` exists for

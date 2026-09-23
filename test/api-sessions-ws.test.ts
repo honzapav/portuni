@@ -348,6 +348,39 @@ describe("GET /sessions/ws", () => {
     await waitClose(ws);
   });
 
+  test("a run that ends on its own leaves suspended as the last session_state (#494)", async () => {
+    installAdapter([{ wait: "message" }, { end: "completed" }]);
+    const runtime = currentRuntime;
+    const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
+
+    const token = await tokenFor(U1);
+    const ws = openSocket(base, token);
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === "session_states");
+
+    // Unblocks the script into its end: the runtime suspends the thread
+    // itself after run_ended, with no REST call in between.
+    await runtime.sendMessage(session.id, "done");
+    const isOwn = (f: Frame) =>
+      f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id;
+    await collector.waitFor((f) => isOwn(f) && (f.payload as { state: string }).state === "suspended");
+    assert.equal((await runtime.getSession(session.id))?.state, "suspended");
+    // The transition is in the log too, so a replay says the same.
+    const events = await runtime.listEvents(session.id);
+    assert.ok(
+      events.some((e) => {
+        if (e.kind !== "state_changed") return false;
+        const payload = JSON.parse(e.payload) as { from: string; to: string };
+        return payload.from === "running" && payload.to === "suspended";
+      }),
+    );
+    const own = collector.frames.filter(isOwn);
+    assert.equal((own[own.length - 1].payload as { state: string }).state, "suspended");
+    ws.close();
+    await waitClose(ws);
+  });
+
   test("a rename through the runtime fans out as session_state carrying the new name", async () => {
     installAdapter([{ wait: "message" }]);
     const runtime = currentRuntime;

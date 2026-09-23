@@ -97,8 +97,10 @@ describe("session runtime: startTask", () => {
         [2, "user_message"],
         [3, "run_ended"], // the fake's empty script auto-completes
         // #378: nobody closed this run explicitly, so it falls through to
-        // the auto-summary/suspend path and gets its handoff event too.
-        [4, "handoff"],
+        // the auto-summary/suspend path and gets its handoff event too --
+        // after the transition the suspend made (#494).
+        [4, "state_changed"],
+        [5, "handoff"],
       ],
     );
     assert.equal(JSON.parse(events[0].payload).run_id, run.id);
@@ -162,7 +164,11 @@ describe("session runtime: question / answer", () => {
     assert.deepEqual(answered.decision, decision);
     assert.equal(answered.request_id, "req-1");
 
-    const stateChanged = events.filter((e) => e.kind === "state_changed").map((e) => JSON.parse(e.payload));
+    // The waiting transitions only; the run's end adds running -> suspended (#494).
+    const stateChanged = events
+      .filter((e) => e.kind === "state_changed")
+      .map((e) => JSON.parse(e.payload))
+      .filter((s) => s.to === "running");
     assert.deepEqual(
       stateChanged.map((s) => s.waiting),
       [true, false],
@@ -511,7 +517,11 @@ describe("session runtime: event ordering", () => {
     const row = await store.getSession(session.id);
     assert.equal(row?.waiting_since, null, "the closed question must not leave the session waiting");
     const events = await content.listEvents(session.id);
-    const stateChanged = events.filter((e) => e.kind === "state_changed").map((e) => JSON.parse(e.payload));
+    // The waiting transitions only; the run's end adds running -> suspended (#494).
+    const stateChanged = events
+      .filter((e) => e.kind === "state_changed")
+      .map((e) => JSON.parse(e.payload))
+      .filter((s) => s.to === "running");
     assert.deepEqual(
       stateChanged.map((s) => s.waiting),
       [true, false],
