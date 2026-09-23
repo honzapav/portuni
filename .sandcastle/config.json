@@ -53,7 +53,8 @@
   "mainBranch": "main",
   "requireMain": true,
   "review": {
-    "model": "opus",
+    "model": "claude-fable-5-1",
+    "fallbackModel": "opus",
     "when": "run"
   },
   "telemetry": {
