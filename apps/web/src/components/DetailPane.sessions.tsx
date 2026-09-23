@@ -13,17 +13,10 @@ import {
   continueSession,
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
-  fetchUsers,
   closePersistentSession,
   renamePersistentSession,
 } from "../api";
-import {
-  hostDisplayName,
-  mergeLiveSessionStates,
-  sessionRowAccess,
-  sessionRowChip,
-  type SessionRowAccess,
-} from "../lib/session-views";
+import { hostDisplayName, mergeLiveSessionStates, sessionRowChip } from "../lib/session-views";
 import type { SessionStateMessage } from "../lib/sessions-client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -83,9 +76,6 @@ type Props = {
   // sidebar gets the row at once instead of waiting for something else to
   // refetch the node.
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
-  // #321's access table, echoed client-side for sessionRowAccess (useMe).
-  canManage: boolean;
-  meId: string | null;
   // The window's live session_state map (App.tsx, from the socket) --
   // overlaid onto the REST rows so state and "Čeká na mě" update without
   // a reload, and a change on THIS node's sessions (one started, one
@@ -99,32 +89,12 @@ export function SessionsSection({
   onOpenFile,
   onOpenChat,
   onSessionStarted,
-  canManage,
-  meId,
   liveStates,
 }: Props) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
-  // "owner name when not the caller" -- fetchUsers is manage-scope-gated
-  // and degrades to [] for anyone below that (see its own doc comment), so
-  // a plain teammate viewing this tab just never resolves a name; that's
-  // fine, the row still works without one.
-  const [userNames, setUserNames] = useState<Record<string, string>>({});
-  useEffect(() => {
-    let cancelled = false;
-    void fetchUsers()
-      .then((users) => {
-        if (cancelled) return;
-        setUserNames(Object.fromEntries(users.map((u) => [u.id, u.name])));
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -227,8 +197,6 @@ export function SessionsSection({
             <SessionRow
               key={s.id}
               session={s}
-              access={sessionRowAccess(s.user_id, meId, canManage)}
-              ownerName={s.user_id !== meId ? (userNames[s.user_id] ?? null) : null}
               onRenamed={updateOne}
               onClose={() => setCloseConfirm(s)}
               onOpenChat={onOpenChat}
@@ -276,8 +244,6 @@ export function SessionsSection({
 
 function SessionRow({
   session,
-  access,
-  ownerName,
   onRenamed,
   onClose,
   onOpenChat,
@@ -285,10 +251,6 @@ function SessionRow({
   onOpenHandoff,
 }: {
   session: SessionSummary;
-  access: SessionRowAccess;
-  // Resolved display name of the owner, only when it's NOT the caller
-  // (null either way otherwise) -- see SessionsSection's userNames map.
-  ownerName: string | null;
   onRenamed: (updated: SessionSummary) => void;
   onClose: () => void;
   onOpenChat?: (sessionId: string) => void;
@@ -345,8 +307,10 @@ function SessionRow({
   // hover or keyboard focus (the list stays quiet); rename is one of them.
   // Uzavřít, the one irreversible action, sits last behind a separator.
   const showChat = (session.state === "running" || session.state === "suspended") && !!onOpenChat;
-  const showContinue = session.state === "closed" && access.canResume;
-  const showClose = (session.state === "running" || session.state === "suspended") && access.canPauseOrClose;
+  // #457: the list carries the caller's own threads only, so every action
+  // here is the owner's and nothing is gated beyond the state.
+  const showContinue = session.state === "closed";
+  const showClose = session.state === "running" || session.state === "suspended";
 
   return (
     <div className="group rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">
@@ -450,7 +414,6 @@ function SessionRow({
               otherwise the host id. Hidden when neither exists. */}
           {host ? ` · ${host}` : ""}
         </span>
-        {ownerName && <span>Vlastník: {ownerName}</span>}
         <span title="Počet uzlů v zápisovém rozsahu této relace">
           Zápis: {session.write_count}
         </span>

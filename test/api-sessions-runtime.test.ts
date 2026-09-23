@@ -551,7 +551,10 @@ describe("task REST endpoints under /sessions", () => {
     assert.ok(restEvents.every((e) => e.seq > firstSeq));
   });
 
-  test("a second user who can see the node reads events but cannot message; interrupt needs manage scope", async () => {
+  // #457: a thread is its owner's. A second user who can see the node --
+  // manage scope included -- reaches none of its routes and is told the
+  // thread does not exist.
+  test("a second user who can see the node reaches nothing of the owner's thread, manage included", async () => {
     await installRuntime([{ wait: "message" }]);
     const start = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
@@ -561,26 +564,27 @@ describe("task REST endpoints under /sessions", () => {
     const { session } = JSON.parse(start.body) as { session: SessionSummary };
 
     const eventsRes = await call(makeIdentity("U2"), "GET", `/sessions/${session.id}/events`);
-    assert.equal(eventsRes.statusCode, 200);
+    assert.equal(eventsRes.statusCode, 404);
 
     const messageRes = await call(makeIdentity("U2"), "POST", `/sessions/${session.id}/messages`, { text: "hi" });
-    assert.equal(messageRes.statusCode, 403);
+    assert.equal(messageRes.statusCode, 404);
 
     const interruptDenied = await call(makeIdentity("U2", "write"), "POST", `/sessions/${session.id}/interrupt`);
-    assert.equal(interruptDenied.statusCode, 403);
+    assert.equal(interruptDenied.statusCode, 404);
 
-    const interruptAllowed = await call(makeIdentity("U2", "manage"), "POST", `/sessions/${session.id}/interrupt`);
-    assert.equal(interruptAllowed.statusCode, 200);
+    const interruptAsManager = await call(makeIdentity("U2", "manage"), "POST", `/sessions/${session.id}/interrupt`);
+    assert.equal(interruptAsManager.statusCode, 404);
 
+    // Nothing reached the runtime, so the owner's transcript is untouched.
     const eventsAfter = await call(makeIdentity("U1"), "GET", `/sessions/${session.id}/events`);
     const events = (JSON.parse(eventsAfter.body) as { events: SessionEventRow[] }).events;
-    const stateChanged = events.find(
-      (e) => e.kind === "state_changed" && (e.payload as { by?: string }).by === "U2",
+    assert.ok(
+      !events.some((e) => e.kind === "state_changed" && (e.payload as { by?: string }).by === "U2"),
+      "a non-owner never appends anything to the owner's thread",
     );
-    assert.ok(stateChanged, "a non-owner interrupt must append a state_changed event naming the actor");
   });
 
-  test("a node-less session is forbidden for everyone but the owner", async () => {
+  test("a node-less session is invisible to everyone but the owner", async () => {
     await installRuntime([]);
     const session = await createSession(dbFixture.db, "U1", { node_id: null, session_type: "interactive_chat" });
 
@@ -588,6 +592,6 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal(ownerRes.statusCode, 200);
 
     const otherRes = await call(makeIdentity("U2", "manage"), "GET", `/sessions/${session.id}/events`);
-    assert.equal(otherRes.statusCode, 403);
+    assert.equal(otherRes.statusCode, 404);
   });
 });

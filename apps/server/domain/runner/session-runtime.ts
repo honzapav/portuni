@@ -273,12 +273,6 @@ export interface SessionRuntime {
   // REST answer route) validate a request_id against the actually-pending
   // question before forwarding a decision to the adapter.
   pendingQuestion(sessionId: string): QuestionPayload | null;
-  // Access table (remote-hosts-and-task-queue-design spec, "Visibility and
-  // control"): appends a state_changed event naming the actor for an
-  // interrupt/suspend/close performed by someone other than the session's
-  // owner -- called by the REST route right after the action succeeds, so
-  // "from"/"to" reflect the actor, not a real state transition.
-  recordStoppedBy(sessionId: string, by: string): Promise<void>;
   listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
   // Number of live listeners currently registered for `target` (a session
   // id, or "*" for the global one) -- the live channel (api/sessions-ws.ts)
@@ -1009,19 +1003,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return pendingQuestions.get(sessionId) ?? null;
   }
 
-  async function recordStoppedBy(sessionId: string, by: string): Promise<void> {
-    const session = await mustGetSession(sessionId);
-    const runId = liveRuns.get(sessionId)?.runId ?? (await store.liveRun(sessionId))?.id ?? null;
-    await enqueue(sessionId, () =>
-      appendAndPublish(sessionId, runId, [
-        {
-          kind: "state_changed",
-          payload: { from: session.state, to: session.state, waiting: session.waiting_since !== null, by },
-        },
-      ]),
-    );
-  }
-
   function listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]> {
     return content.listEvents(sessionId, opts);
   }
@@ -1042,7 +1023,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     closeSession,
     continueSession,
     pendingQuestion,
-    recordStoppedBy,
     subscriberCount,
     listEvents,
     subscribe,

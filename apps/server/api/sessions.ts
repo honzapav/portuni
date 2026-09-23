@@ -56,12 +56,11 @@
 // They're served here unconditionally (also reachable in env/local mode,
 // harmless) rather than gated to google/central mode specifically.
 //
-// Who may do what beyond the list route is auth/session-access.ts's
-// sessionAccess table (docs/superpowers/specs/2026-09-12-remote-hosts-and-
-// task-queue-design.md, "Visibility and control"): read is anyone who can
-// see the anchor node, message/resume are owner-only, stop (interrupt/
-// suspend/close) is the owner or manage scope. The list route itself keeps
-// following the anchor node's own read gate (handleListNodeSessions).
+// Who may do what is auth/session-access.ts's sessionAccess table, one line
+// since #457 (docs/superpowers/specs/2026-09-22-local-sessions-design.md,
+// "Access"): a thread is its owner's, for every action, `manage` included.
+// The list routes below follow the same rule -- they return the caller's own
+// sessions only, so no thread of another user is ever named here.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DbClient } from "../infra/db.js";
@@ -134,15 +133,14 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
   };
 }
 
-// GET /sessions?state=running,suspended&limit=500 -- every session the
-// caller can see in the given states, raw rows (the consumer is
+// GET /sessions?state=running,suspended&limit=500 -- the caller's OWN
+// sessions in the given states, raw rows (the consumer is
 // CentralClient.listSessionRecords feeding the agent-mode live channel's
 // initial session_state burst, which needs state/waiting_since/node_id and
-// nothing curated). Visibility is the same rule sessionAccess("read")
-// applies: a node-anchored session iff its node is visible, a node-less
-// one only to its owner. `state=draft` is accepted and answers with the
-// caller's own drafts only (#463); another user's draft is never listed,
-// however visible its node is.
+// nothing curated). Visibility is the same one-line rule sessionAccess
+// applies (#457): a thread is its owner's, so another user's row is never
+// listed however visible its anchor node is. `state=draft` is accepted and
+// answers with the caller's own drafts like any other state.
 const ListSessionsQuery = z.object({
   state: z
     .string()
@@ -168,29 +166,11 @@ export async function handleListSessions(
     }
     const db = getDb();
     const rows: SessionRow[] = [];
-    for (const state of parsed.data.state) rows.push(...(await listSessions(db, { state })));
-    rows.sort((a, b) => (a.last_active_at < b.last_active_at ? 1 : a.last_active_at > b.last_active_at ? -1 : 0));
-    const sessions: SessionRow[] = [];
-    // One visibility answer per node, not per row.
-    const nodeVerdicts = new Map<string, Promise<boolean>>();
-    for (const row of rows) {
-      if (sessions.length >= parsed.data.limit) break;
-      if (row.user_id === identity.userId) {
-        sessions.push(row);
-        continue;
-      }
-      // #463: a draft belongs to its owner only. Node visibility opens
-      // every other state to a teammate, never an unsent draft.
-      if (row.state === "draft") continue;
-      if (row.node_id === null) continue;
-      let verdict = nodeVerdicts.get(row.node_id);
-      if (!verdict) {
-        verdict = nodeVisibleTo(db, identity, row.node_id);
-        nodeVerdicts.set(row.node_id, verdict);
-      }
-      if (await verdict) sessions.push(row);
+    for (const state of parsed.data.state) {
+      rows.push(...(await listSessions(db, { state, user_id: identity.userId })));
     }
-    respondJson(res, 200, { sessions });
+    rows.sort((a, b) => (a.last_active_at < b.last_active_at ? 1 : a.last_active_at > b.last_active_at ? -1 : 0));
+    respondJson(res, 200, { sessions: rows.slice(0, parsed.data.limit) });
   } catch (err) {
     respondError(res, `${req.method} /sessions`, err);
   }
@@ -212,16 +192,15 @@ export async function handleListNodeSessions(
     }
 
     const includeArchived = url.searchParams.get("include_archived") === "1";
-    let rows = await listSessions(db, { node_id: nodeId });
+    // The node's own read gate above decides whether the tab exists at all;
+    // which threads it carries is the session rule (#457): the caller's own,
+    // of every state, drafts (#374) included. Another user's thread on this
+    // node is never returned, so the Relace tab of a shared node shows each
+    // member their own work only.
+    let rows = await listSessions(db, { node_id: nodeId, user_id: identity.userId });
     if (!includeArchived) {
       rows = rows.filter((r) => r.state !== "archived");
     }
-    // A draft (#374) is a thread of the node like any other, so the list
-    // carries the caller's own (#463): a reload, a second window or any
-    // other surface of the same user sees it without a client-side draft
-    // map. Someone else's draft is never returned -- it is theirs until
-    // the first message promotes it.
-    rows = rows.filter((r) => r.state !== "draft" || r.user_id === identity.userId);
     const sessions = await Promise.all(rows.map(toSummary));
     respondJson(res, 200, { sessions });
   } catch (err) {
@@ -247,16 +226,6 @@ async function guardSessionAccess(
       return null;
     }
     throw err;
-  }
-}
-
-// Access-table stop actions (interrupt/suspend/close) performed by someone
-// other than the session's owner append a state_changed event naming the
-// actor -- "the chat shows who stopped it" (remote-hosts-and-task-queue-
-// design spec, "Visibility and control").
-async function noteIfNotOwner(existing: SessionRow, identity: RequestIdentity, sessionId: string): Promise<void> {
-  if (existing.user_id !== identity.userId) {
-    await getSessionRuntime().recordStoppedBy(sessionId, identity.userId);
   }
 }
 
@@ -795,7 +764,6 @@ export async function handleInterruptSession(
     if (!existing) return;
     await getSessionRuntime().interrupt(sessionId);
     await logAudit(identity.userId, "session_interrupt", "session", sessionId, {});
-    await noteIfNotOwner(existing, identity, sessionId);
     const updated = await getSession(db, sessionId);
     respondJson(res, 200, { session: await toSummary(updated ?? existing) });
   } catch (err) {
@@ -839,7 +807,6 @@ export async function handleCloseSession(
     if (!existing) return;
     const updated = await getSessionRuntime().closeSession(sessionId);
     await logAudit(identity.userId, "session_close", "session", sessionId, {});
-    await noteIfNotOwner(existing, identity, sessionId);
     respondJson(res, 200, { session: await toSummary(updated) });
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/close`, err);

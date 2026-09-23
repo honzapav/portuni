@@ -225,9 +225,8 @@ function DetailPane({
   onOpenChat,
   liveSessionStates,
 }: Props) {
-  // Drives whether the sharing section is editable, and (canManage + meId
-  // together) the Relace tab's #321 action gating (sessionRowAccess).
-  const { meId, canManage } = useMe();
+  // Drives whether the sharing section is editable.
+  const { canManage } = useMe();
 
   if (loading && !node) {
     return (
@@ -271,7 +270,6 @@ function DetailPane({
       node={node}
       graph={graph}
       canManage={canManage}
-      meId={meId}
       onSelect={onSelect}
       canGoBack={canGoBack}
       onBack={onBack}
@@ -290,7 +288,6 @@ function DetailPaneBody({
   node,
   graph,
   canManage,
-  meId,
   onSelect,
   canGoBack,
   onBack,
@@ -305,7 +302,6 @@ function DetailPaneBody({
   node: NodeDetail;
   graph: GraphPayload | null;
   canManage: boolean;
-  meId: string | null;
   onSelect: (id: string | null) => void;
   canGoBack: boolean;
   onBack: () => void;
@@ -1294,8 +1290,6 @@ function DetailPaneBody({
             onOpenChat={onOpenChat ? (sessionId) => onOpenChat(node.id, sessionId) : undefined}
             onSessionStarted={onSessionStarted}
             liveStates={liveSessionStates}
-            canManage={canManage}
-            meId={meId}
           />
         )}
 

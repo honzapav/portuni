@@ -534,15 +534,17 @@ calls `patchSessionRunnerInstance` (`PATCH /sessions/:id`, central in a
 team workspace; 409 `SESSION_NOT_DRAFT` once promoted). The host is
 `hostDisplayName(session)`, a label, hidden when unknown.
 
-## Access echo
+## No access echo
 
-`sessionRowAccess(ownerId, meId, canManage)` (`lib/session-views.ts`)
-mirrors the server's access table: `canResume` (message, answer, continue,
-picker) is owner-only; `canPauseOrClose` is owner or manage scope. It only
-decides which controls to offer, so a button that would always 403 is not
-shown. The server remains the gate; a refused action surfaces its own
-error. `meId` comes from `useMe()` (`fetchMe()` returns `id` and
-`global_scope`).
+There is none, since #457: a thread is its owner's, so every thread the app
+can list is the caller's own and the state alone decides which control is
+offered. `sessionRowAccess` and the `canManage`/`meId` props that fed it are
+gone from `lib/session-views.ts`, `SessionChat`, `DetailPane.sessions` and
+`OverviewView`; `sortInboxSessions(running, suspended)` and
+`overviewCounters(running, suspended, attention, unsynced)` take no identity
+either, because `GET /overview` already filtered by owner. `useMe()` is left
+for the node sharing UI. The server remains the gate; a refused action
+surfaces its own error.
 
 Two chip wordings exist on purpose: `sessionRowChip` (compact rows:
 Hotovo / Archiv) and `sessionStatusChip` (chat header: Uzavřeno /

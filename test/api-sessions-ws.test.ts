@@ -364,7 +364,7 @@ describe("GET /sessions/ws", () => {
     await waitClose(ws);
   });
 
-  test("a second user who can see the node gets session_state and event frames but an error reply to message", async () => {
+  test("a second user who can see the node sees nothing of the owner's thread (#457)", async () => {
     installAdapter([{ wait: "message" }]);
     const runtime = currentRuntime;
     const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
@@ -374,18 +374,21 @@ describe("GET /sessions/ws", () => {
     const collector = new FrameCollector(ws);
     await waitOpen(ws);
 
-    await collector.waitFor(
-      (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
-    );
-
+    // The snapshot burst is U2's own threads; U1's never appears in it.
     ws.send(JSON.stringify({ id: "sub1", type: "subscribe", payload: { session_id: session.id, after: 0 } }));
-    await collector.waitFor((f) => f.id === "sub1" && f.type === "reply");
-    assert.ok(collector.frames.some((f) => f.type === "event"));
+    const subReply = await collector.waitFor((f) => f.id === "sub1");
+    assert.equal(subReply.type, "error");
+    assert.equal((subReply.payload as { code: string }).code, "SESSION_NOT_FOUND");
+    assert.ok(
+      !collector.frames.some(
+        (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
+      ),
+    );
 
     ws.send(JSON.stringify({ id: "msg1", type: "message", payload: { session_id: session.id, text: "nope" } }));
     const errorReply = await collector.waitFor((f) => f.id === "msg1");
     assert.equal(errorReply.type, "error");
-    assert.equal((errorReply.payload as { code: string }).code, "SESSION_FORBIDDEN");
+    assert.equal((errorReply.payload as { code: string }).code, "SESSION_NOT_FOUND");
 
     ws.close();
     await waitClose(ws);
@@ -439,7 +442,7 @@ describe("GET /sessions/ws", () => {
     await waitClose(ws);
   });
 
-  test("GET /sessions lists only the sessions the caller can see, newest activity first", async () => {
+  test("GET /sessions lists the caller's own sessions only (#457)", async () => {
     const runtime = currentRuntime;
     const own = await runtime.startTask({ userId: U1, nodeId, brief: "mine", runner: "fake" });
     // A chat session with no anchor node belongs to U2 alone: U1 never
@@ -460,9 +463,9 @@ describe("GET /sessions/ws", () => {
     const asU2 = await fetch(`${base}/sessions?state=running,suspended`, { headers: { authorization: `Bearer ${await tokenFor(U2)}` } });
     const u2Ids = ((await asU2.json()) as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id);
     assert.ok(u2Ids.includes(chatId));
-    // U2 can see the project node (org-visible by default), so U1's
-    // node-anchored task is listed for U2 too.
-    assert.ok(u2Ids.includes(own.session.id));
+    // U2 can see the project node (org-visible by default), and that says
+    // nothing about U1's thread on it any more (#457).
+    assert.ok(!u2Ids.includes(own.session.id));
 
     const bad = await fetch(`${base}/sessions?state=bogus`, { headers: { authorization: `Bearer ${await tokenFor(U1)}` } });
     assert.equal(bad.status, 400);

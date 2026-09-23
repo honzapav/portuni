@@ -1,10 +1,9 @@
 // The caller's own identity, as GET /me answers it: id and whether the
-// global scope allows the manage tier. One hook for every surface that
-// gates session actions on ownership or manage scope (DetailPane's Relace
-// tab, OverviewView's inbox ordering, SessionChat's header actions) --
-// each used to run its own fetchMe(). Defaults to "nobody, no manage"
-// until the fetch resolves or if it fails, so nothing is ever offered
-// optimistically.
+// global scope allows the manage tier. Session surfaces no longer consult
+// it -- a thread is its owner's (#457) and nothing else is ever listed --
+// so the live consumer is the node sharing UI (DetailPane's AccessSection,
+// SettingsPage). Defaults to "nobody, no manage" until the fetch resolves
+// or if it fails, so nothing is ever offered optimistically.
 import { useEffect, useState } from "react";
 import { fetchMe } from "../api";
 

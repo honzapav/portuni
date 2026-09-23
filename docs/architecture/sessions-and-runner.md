@@ -116,21 +116,31 @@ Práce sidebar, the Relace tab and the chat header in every window show the
 new name at once. The plain-rename branch of `PATCH /sessions/:id` remains
 the central record half only.
 
-## Access tiers
+## Access: a thread is its owner's
 
 `auth/session-access.ts` `sessionAccess(identity, sessionId, action)` with
-actions `read | message | stop | resume` (spec: remote-hosts-and-task-queue,
-"Visibility and control"):
+actions `read | message | stop | resume` (spec: local-sessions, "Access").
+The table is one line: **every action is the owner's** (#457).
 
-- A node-anchored session hidden from the caller is `SESSION_NOT_FOUND`
-  (404) for every action, manage scope included.
-- A visible session with an insufficient tier is `SESSION_FORBIDDEN` (403):
-  `message` and `resume` require ownership; `stop` (interrupt, close)
-  requires ownership or manage scope; `read` requires seeing the node.
-- A node-less session (`interactive_chat`) is `SESSION_FORBIDDEN` for anyone
-  but the owner.
-- A stop by someone other than the owner appends a `state_changed` event
-  carrying `by` (`SessionRuntime.recordStoppedBy`) so the chat shows who.
+- A session the caller does not own is `SESSION_NOT_FOUND` (404) for every
+  action -- node-anchored or not, `manage` and `admin` included. Seeing the
+  anchor node says nothing about the threads on it; a teammate is never told
+  the thread exists. No session route answers 403 on access grounds any
+  more, so `SESSION_FORBIDDEN` is a code the union still carries and nothing
+  raises.
+- The list routes follow the same rule and are filtered in SQL by
+  `user_id = identity`: `GET /sessions?state=…`, `GET /nodes/:id/sessions`
+  (of every state, drafts included -- the node's own read gate decides only
+  whether the Relace tab exists), the `sessions` section of `GET /overview`
+  and `activity.session_writes`. The running count and every sidebar list
+  therefore count the owner's threads only.
+- Because no non-owner can reach a stop, there is no "stopped by someone
+  else" path: the `state_changed` event carrying `by` and
+  `SessionRuntime.recordStoppedBy` are gone.
+- The web carries no access echo. `sessionRowAccess` and the `canManage`/
+  `meId` props that fed it are removed from `lib/session-views.ts`,
+  `SessionChat`, `DetailPane.sessions` and `OverviewView`: every listed
+  thread is the caller's own, so the state alone decides which action shows.
 - Coarse route scopes (`auth/min-scopes.ts`): `GET` routes are `read`,
   every mutating `/sessions*` route and `POST /sessions` are `write`.
 - In a team workspace these checks run on the central server, on every store round
@@ -399,14 +409,12 @@ human verification.
 - Promotion appends `state_changed {from: "draft", to: "running"}` so the
   live channel's `session_state` broadcast fires (`sessions-ws.ts` reacts
   only to `state_changed`, `question`, `run_ended`).
-- **A list carries the caller's own drafts, nobody else's** (#463).
-  `GET /nodes/:id/sessions` returns the node's drafts whose `user_id` is the
-  caller's, and `GET /sessions?state=draft` answers with the caller's drafts
-  only -- node visibility opens every other state to a teammate, never an
-  unsent draft. So a reload, a second window or any other surface of the
-  same user shows a draft without a client-side draft map. `GET /overview`
-  and the WS snapshot still list running and suspended threads only, by the
-  states they ask for.
+- **A list carries the caller's own threads, nobody else's** (#463, #457).
+  `GET /nodes/:id/sessions` and `GET /sessions?state=…` filter on
+  `user_id = identity` for every state, drafts included, so a reload, a
+  second window or any other surface of the same user shows a draft without
+  a client-side draft map. `GET /overview` and the WS snapshot still list
+  running and suspended threads only, by the states they ask for.
 - **Prune.** `sweepStaleDraftSessionsOnBoot` deletes drafts older than 24 h
   at boot of the process that owns the graph db (`index.ts`, `desktop.ts`
   local branch; on the central server for team-workspace rows). A thread's `×` deletes
@@ -519,16 +527,17 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   `agentMain` passes `createSessionsWsServer(createAgentSessionsWsDeps(
   client, runtime))` with the same runtime instance its router drives. The
   sync-agent snapshot is `GET /sessions?state=running,suspended&limit=500`
-  on the central server (`CentralClient.listSessionRecords`), visibility-filtered
-  there; the local snapshot is bounded by the same `SNAPSHOT_LIMIT`.
+  on the central server (`CentralClient.listSessionRecords`), which answers
+  with the device user's own records; the local snapshot is the same query
+  against the graph db, bounded by the same `SNAPSHOT_LIMIT`.
 - `subscribe` subscribes to the runtime first, replays
   `store.listEvents(after)` in pages of 200, buffers live events meanwhile
   and flushes them skipping any `seq` the replay covered. A published
   canonical event carries the `seq` the store assigned
   (`PublishedEvent = (CanonicalEvent & {seq}) | DeltaFrame`,
   `appendAndPublish`).
-- `session_state` fans out to every connection that can see the session
-  (`api/overview.ts` `filterSessions`'s rule) through one server-lifetime
+- `session_state` fans out to every connection whose identity owns the
+  session (`canSee`, the same one-line rule) through one server-lifetime
   `subscribe("*", ...)` per `WebSocketServer`, created lazily on the first
   connection, and a broadcast resolves visibility once per identity. A test
   must keep one runtime and re-register the fake adapter between cases

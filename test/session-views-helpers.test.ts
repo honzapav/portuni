@@ -2,7 +2,6 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   sessionRowChip,
-  sessionRowAccess,
   applyLiveSessionState,
   mergeLiveSessionStates,
   sortInboxSessions,
@@ -72,32 +71,6 @@ describe("sessionRowChip", () => {
   });
 });
 
-describe("sessionRowAccess", () => {
-  it("the owner can resume and pause/close", () => {
-    const access = sessionRowAccess("U1", "U1", false);
-    assert.equal(access.canResume, true);
-    assert.equal(access.canPauseOrClose, true);
-  });
-
-  it("a manage-scoped non-owner can pause/close but not resume", () => {
-    const access = sessionRowAccess("U1", "U2", true);
-    assert.equal(access.canResume, false);
-    assert.equal(access.canPauseOrClose, true);
-  });
-
-  it("a plain teammate can do neither", () => {
-    const access = sessionRowAccess("U1", "U2", false);
-    assert.equal(access.canResume, false);
-    assert.equal(access.canPauseOrClose, false);
-  });
-
-  it("an unknown caller (meId null) can do neither", () => {
-    const access = sessionRowAccess("U1", null, false);
-    assert.equal(access.canResume, false);
-    assert.equal(access.canPauseOrClose, false);
-  });
-});
-
 describe("applyLiveSessionState / mergeLiveSessionStates", () => {
   const base = { id: "S1", state: "running" as const, waiting_since: null as string | null };
 
@@ -138,26 +111,26 @@ describe("applyLiveSessionState / mergeLiveSessionStates", () => {
 });
 
 describe("sortInboxSessions", () => {
-  it("orders waiting, then running, then suspended, all restricted to the caller", () => {
+  it("orders waiting, then running, then suspended", () => {
     const running1 = overviewRow({ id: "r1", user_id: "me" });
     const waiting1 = overviewRow({ id: "w1", user_id: "me", waiting_since: "2026-09-13 09:00:00" });
     const suspended1 = overviewRow({ id: "p1", user_id: "me", state: "suspended" });
-    const notMine = overviewRow({ id: "x1", user_id: "someone-else" });
-    const ordered = sortInboxSessions([running1, waiting1, notMine], [suspended1], "me");
+    const ordered = sortInboxSessions([running1, waiting1], [suspended1]);
     assert.deepEqual(
       ordered.map((s) => s.id),
       ["w1", "r1", "p1"],
     );
   });
 
-  it("excludes sessions belonging to another user entirely", () => {
-    const theirs = overviewRow({ id: "x1", user_id: "someone-else" });
-    assert.deepEqual(sortInboxSessions([theirs], [], "me"), []);
-  });
-
-  it("returns nothing when the caller's id is unknown", () => {
-    const mine = overviewRow({ id: "m1", user_id: "me" });
-    assert.deepEqual(sortInboxSessions([mine], [], null), []);
+  // #457: GET /overview already answers with the caller's own threads only,
+  // so this helper no longer filters by owner -- it just orders what it got.
+  it("keeps every row it is given, in bucket order", () => {
+    const a = overviewRow({ id: "a", user_id: "me" });
+    const b = overviewRow({ id: "b", user_id: "me", state: "suspended" });
+    assert.deepEqual(
+      sortInboxSessions([a], [b]).map((s) => s.id),
+      ["a", "b"],
+    );
   });
 });
 

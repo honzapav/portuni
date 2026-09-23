@@ -41,11 +41,10 @@ export type OverviewCounters = { waiting: number; running: number; attention: nu
 export function overviewCounters(
   running: readonly OverviewSessionRow[],
   suspended: readonly OverviewSessionRow[],
-  meId: string | null,
   attention: number,
   unsynced: number,
 ): OverviewCounters {
-  const mine = sortInboxSessions(running, suspended, meId).filter(isThreadSession);
+  const mine = sortInboxSessions(running, suspended).filter(isThreadSession);
   return {
     waiting: mine.filter((s) => s.state === "running" && s.waiting_since !== null).length,
     running: mine.filter((s) => s.state === "running" && s.waiting_since === null).length,

@@ -1037,9 +1037,11 @@ export async function fetchAccountUsers(): Promise<AccountUser[]> {
   return body.users;
 }
 
-// canManage (global_scope 'manage' | 'admin') drives the sharing UI; `id`
-// drives #343's owner-only action gating (sessionRowAccess). /me returns
-// more (email, name, groups, via) but nothing else here consumes it yet.
+// canManage (global_scope 'manage' | 'admin') drives the sharing UI. Since
+// #457 no session surface gates on identity any more -- every thread the
+// app lists is the caller's own -- so `id` is carried for future callers.
+// /me returns more (email, name, groups, via) but nothing else here
+// consumes it yet.
 export async function fetchMe(): Promise<{ id: string; global_scope: string }> {
   const res = await apiFetch("/me");
   await throwForStatus(res, "me");

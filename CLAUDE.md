@@ -243,7 +243,9 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `SessionContentStore` over this device's `content.db`. Nothing on the
   device sends events, `brief` or `handoff_inline` to the central server.
   Access is enforced once, on the central server, by
-  `auth/session-access.ts`'s table. A new session verb lands in
+  `auth/session-access.ts`, whose table is one line: a thread is its
+  owner's, for every action, `manage` included; anyone else gets
+  `SESSION_NOT_FOUND`, and every list route filters on `user_id`. A new session verb lands in
   `router.ts`, `agent-router.ts`, `sessions-ws.ts`, `min-scopes.ts` and
   `device-local-routes.json` together.
 - Nothing but Uzavřít and the auto-archive sweep reaches `closed`. Every other

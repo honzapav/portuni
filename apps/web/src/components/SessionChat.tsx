@@ -19,7 +19,7 @@
 // suspend/resume, handoffs, access control -- stays ours.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hostDisplayName, sessionRowAccess } from "../lib/session-views";
+import { hostDisplayName } from "../lib/session-views";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
 import { useSessionStore } from "../lib/use-session-store";
@@ -29,7 +29,6 @@ import {
   runnerChoiceLabel,
   runnerPickerGroups,
 } from "../lib/runner-picker";
-import { useMe } from "../lib/use-me";
 import type { SessionsClient } from "../lib/sessions-client";
 import {
   toCanonicalEvent,
@@ -194,7 +193,6 @@ export default function SessionChat({
   // #378: a new run starting is "the thread woken again" -- the notice bar
   // (below) is dismissible per-occurrence.
   const [noticeDismissed, setNoticeDismissed] = useState(false);
-  const { meId, canManage } = useMe();
 
   // Composer row 2 (v2 rule 5): the runner/instance choice, open while the
   // thread is a draft. The lists come from the device (both routes are
@@ -337,7 +335,6 @@ export default function SessionChat({
   // and half a record would render a nameless header.
   if (!session || session.partial) return null;
 
-  const access = sessionRowAccess(session.user_id, meId, canManage);
   const host = hostDisplayName(session);
   const startRename = () => {
     setNameDraft(session.name);
@@ -482,10 +479,9 @@ export default function SessionChat({
     }
   };
 
-  // Messages and answers are owner-only (#321's access table); a
-  // non-owner who can see the node reads the chat but cannot type into it.
-  const composerDisabled =
-    session.state === "closed" || session.state === "archived" || isWaiting || !access.canResume;
+  // #457: every thread the app can show is the caller's own, so there is no
+  // access echo left here -- only the state decides.
+  const composerDisabled = session.state === "closed" || session.state === "archived" || isWaiting;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -573,12 +569,10 @@ export default function SessionChat({
                   </ContextContent>
                 </Context>
               )}
-              {access.canResume && (
-                <HeaderIcon onClick={startRename} disabled={actionPending !== null} title="Přejmenovat">
-                  <Pencil />
-                </HeaderIcon>
-              )}
-              {(session.state === "running" || session.state === "suspended") && access.canResume && (
+              <HeaderIcon onClick={startRename} disabled={actionPending !== null} title="Přejmenovat">
+                <Pencil />
+              </HeaderIcon>
+              {(session.state === "running" || session.state === "suspended") && (
                 <HeaderIcon
                   onClick={() => void handleContinue()}
                   disabled={actionPending !== null}
@@ -590,7 +584,7 @@ export default function SessionChat({
                   <Redo2 />
                 </HeaderIcon>
               )}
-              {(session.state === "running" || session.state === "suspended") && access.canPauseOrClose && (
+              {(session.state === "running" || session.state === "suspended") && (
                 <>
                   <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
                   <HeaderIcon
@@ -689,7 +683,7 @@ export default function SessionChat({
         <ConversationScrollButton />
       </Conversation>
 
-      {openQuestion && isWaiting && access.canResume && (
+      {openQuestion && isWaiting && (
         <QuestionConfirmation question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
       )}
 
@@ -714,13 +708,11 @@ export default function SessionChat({
                 }
               }}
               placeholder={
-                !access.canResume
-                  ? "Zprávy může posílat jen vlastník relace."
-                  : isWaiting
-                    ? "Relace čeká na odpověď na otázku výše."
-                    : session.state === "closed" || session.state === "archived"
-                      ? "Relace je uzavřená."
-                      : "Napiš zprávu…"
+                isWaiting
+                  ? "Relace čeká na odpověď na otázku výše."
+                  : session.state === "closed" || session.state === "archived"
+                    ? "Relace je uzavřená."
+                    : "Napiš zprávu…"
               }
             />
           </PromptInputBody>
@@ -729,38 +721,34 @@ export default function SessionChat({
           <PromptInputFooter className="flex-col items-stretch gap-1">
             <div className="flex items-center justify-between gap-2">
             <PromptInputTools>
-              {access.canResume && (
-                <>
-                  <PromptInputSelect value={session.model ?? ""} onValueChange={handleModelChange}>
-                    <PromptInputSelectTrigger className="w-auto min-w-0" title="Model">
-                      <PromptInputSelectValue placeholder="Model (výchozí)" />
-                    </PromptInputSelectTrigger>
-                    <PromptInputSelectContent>
-                      {models.map((m) => (
-                        <PromptInputSelectItem key={m.id} value={m.id} title={m.description}>
-                          {m.displayName}
-                        </PromptInputSelectItem>
-                      ))}
-                    </PromptInputSelectContent>
-                  </PromptInputSelect>
-                  {selectedModel?.supportsEffort && (
-                    <PromptInputSelect value={session.effort ?? ""} onValueChange={handleEffortChange}>
-                      <PromptInputSelectTrigger
-                        className="w-auto min-w-0"
-                        title="Úsilí uvažování — projeví se od příštího běhu"
-                      >
-                        <PromptInputSelectValue placeholder="Úsilí (výchozí)" />
-                      </PromptInputSelectTrigger>
-                      <PromptInputSelectContent>
-                        {selectedModel.effortLevels.map((e) => (
-                          <PromptInputSelectItem key={e} value={e}>
-                            {e}
-                          </PromptInputSelectItem>
-                        ))}
-                      </PromptInputSelectContent>
-                    </PromptInputSelect>
-                  )}
-                </>
+              <PromptInputSelect value={session.model ?? ""} onValueChange={handleModelChange}>
+                <PromptInputSelectTrigger className="w-auto min-w-0" title="Model">
+                  <PromptInputSelectValue placeholder="Model (výchozí)" />
+                </PromptInputSelectTrigger>
+                <PromptInputSelectContent>
+                  {models.map((m) => (
+                    <PromptInputSelectItem key={m.id} value={m.id} title={m.description}>
+                      {m.displayName}
+                    </PromptInputSelectItem>
+                  ))}
+                </PromptInputSelectContent>
+              </PromptInputSelect>
+              {selectedModel?.supportsEffort && (
+                <PromptInputSelect value={session.effort ?? ""} onValueChange={handleEffortChange}>
+                  <PromptInputSelectTrigger
+                    className="w-auto min-w-0"
+                    title="Úsilí uvažování — projeví se od příštího běhu"
+                  >
+                    <PromptInputSelectValue placeholder="Úsilí (výchozí)" />
+                  </PromptInputSelectTrigger>
+                  <PromptInputSelectContent>
+                    {selectedModel.effortLevels.map((e) => (
+                      <PromptInputSelectItem key={e} value={e}>
+                        {e}
+                      </PromptInputSelectItem>
+                    ))}
+                  </PromptInputSelectContent>
+                </PromptInputSelect>
               )}
             </PromptInputTools>
             <PromptInputSubmit
@@ -774,7 +762,7 @@ export default function SessionChat({
             />
             </div>
             <div className="flex min-h-6 items-center gap-1.5 px-1 text-[11.5px] text-[var(--color-text-dim)]">
-              {session.state === "draft" && access.canResume && session.runner ? (
+              {session.state === "draft" && session.runner ? (
                 <PromptInputSelect
                   value={encodeRunnerChoice(session.runner, session.instance_id)}
                   onValueChange={handleRunnerChange}

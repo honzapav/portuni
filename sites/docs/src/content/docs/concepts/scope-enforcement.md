@@ -195,6 +195,25 @@ The same domain-layer gate also covers the REST API's graph-plane mutations (nod
 
 **The `env` identity's REST blanket exemption can be hardened to be proxy-proven instead of self-declared (#213).** `env` auth mode resolves every request to the same unscoped solo identity, so a spawned agent process holds the exact same loopback bearer token as the desktop webview and could otherwise claim the same exemption by simply omitting `X-Portuni-Spawn-Id`. Setting `PORTUNI_WEBVIEW_PROXY_SECRET` closes this: once configured, an `env`-mode request gets the blanket exemption only when it carries a valid `X-Portuni-Webview-Proxy` header matching that secret (`apps/server/api/write-gate.ts`) — a request with neither that header nor a resolvable `X-Portuni-Spawn-Id` session is refused entirely, and a spawn id that fails to resolve (unknown, foreign, stale) fails closed instead of falling back to the blanket exemption. Leaving the variable unset keeps the historical behavior (every `env`-mode REST write allowed) — the packaged desktop app's Tauri host always sets its own per-launch value, so the hardened posture is always active there regardless of this default; the standalone/Vite dev flow opts in the same way `PORTUNI_AUTH_TOKEN` itself does, by setting matching values on both the server and `apps/web/vite.config.ts`'s dev proxy (which injects the header the same way the Tauri host's `api_request` proxy does, generated fresh per launch and never written to disk or exported into a spawned agent's own env). `X-Portuni-Spawn-Id` scoping itself is unconditional and available to every identity shape, not just `env`. `session_jwt` (team-workspace desktop webview, authenticated by a real per-user login JWT that never leaves the Keychain/webview boundary) is unaffected either way — it keeps the unconditional exemption, since team-workspace graph writes never reach this local, env-mode auth path.
 
+## A session belongs to its owner
+
+Scope bounds what a session may reach. Who may reach the **session** is a
+separate, much simpler rule: a thread is its owner's. Every action on it —
+reading its record and transcript, sending a message, stopping it, resuming
+it — is the owner's alone. Seeing the node a session is anchored to grants
+nothing about the sessions on it, and neither does `manage` or `admin`
+scope: a request from anyone but the owner answers `SESSION_NOT_FOUND`
+(404), so a teammate is never even told the thread exists
+(`apps/server/auth/session-access.ts`).
+
+The list routes follow the same rule: `GET /sessions`, a node's
+`GET /nodes/:id/sessions` and the sessions part of `GET /overview` return
+the caller's own threads only. So a node's Relace tab, the Práce sidebar,
+the Přehled inbox and the running count show each person their own work,
+even on a node the whole organisation can see. What people share on a node
+is its **files** — including the handoff file a suspended thread writes —
+not the conversations that produced them.
+
 ## Why this is its own page (and not a permission system)
 
 Scope is **orthogonal** to permissions. Permissions (visibility, including group-based access via Google Groups) are enforced server-side in `apps/server/auth/` — every tool call and HTTP route passes through identity resolution, global scope gates (TOOL_MIN_SCOPE), and node-level access checks before scope is consulted. Scope decides what an in-progress session is currently focused on — a second, intentionality-shaped filter applied on top of permissions.

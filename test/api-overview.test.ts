@@ -183,6 +183,26 @@ describe("GET /overview", () => {
     assert.ok(!otherBody.sessions.running.some((s) => s.id === chat.id));
   });
 
+  // #457: a thread is its owner's, so the Přehled card (and the running
+  // count that reads it) never carries another user's row -- admin scope on
+  // a node both users can see included.
+  test("a node-anchored session on a visible node is not in another user's Přehled, admin included", async () => {
+    const theirs = await createSession(db, OTHER_USER, {
+      node_id: visibleNodeId,
+      session_type: "interactive_task",
+    });
+
+    const own = await call(makeIdentity(OTHER_USER, "admin"), "/overview");
+    const ownBody = JSON.parse(own.body) as OverviewPayload;
+    assert.ok(ownBody.sessions.running.some((s) => s.id === theirs.id));
+
+    const other = await call(makeIdentity(SOLO, "admin"), "/overview");
+    const otherBody = JSON.parse(other.body) as OverviewPayload;
+    assert.ok(!otherBody.sessions.running.some((s) => s.id === theirs.id));
+
+    await db.execute({ sql: "DELETE FROM sessions WHERE id = ?", args: [theirs.id] });
+  });
+
   test("headless review queue lists disconnected jumps, excludes non-headless sessions", async () => {
     const headless = await createSession(db, SOLO, { node_id: visibleNodeId, session_type: "headless" });
     await upsertSessionScopeRead(db, headless.id, visibleNodeId, "disconnected", "found via search");
@@ -263,6 +283,28 @@ describe("GET /overview", () => {
     const body = JSON.parse(res.body) as OverviewPayload;
     assert.ok(body.activity.events.some((e) => e.node_id === visibleNodeId && e.content === "Something happened"));
     assert.ok(body.activity.session_writes.some((w) => w.session_id === session.id && w.node_id === visibleNodeId));
+  });
+
+  // #457: activity.session_writes is filtered by the session's owner, not
+  // by the node -- a teammate's write on a node both can see is not mine.
+  test("activity.session_writes carries the caller's own sessions only", async () => {
+    const theirs = await createSession(db, OTHER_USER, {
+      node_id: visibleNodeId,
+      session_type: "interactive_task",
+    });
+    await upsertSessionScopeRead(db, theirs.id, visibleNodeId, "seed", null);
+    await setSessionScopeWritable(db, theirs.id, visibleNodeId);
+
+    const own = await call(makeIdentity(OTHER_USER, "admin"), "/overview");
+    const ownBody = JSON.parse(own.body) as OverviewPayload;
+    assert.ok(ownBody.activity.session_writes.some((w) => w.session_id === theirs.id));
+
+    const other = await call(makeIdentity(SOLO, "admin"), "/overview");
+    const otherBody = JSON.parse(other.body) as OverviewPayload;
+    assert.ok(!otherBody.activity.session_writes.some((w) => w.session_id === theirs.id));
+
+    await db.execute({ sql: "DELETE FROM session_scope WHERE session_id = ?", args: [theirs.id] });
+    await db.execute({ sql: "DELETE FROM sessions WHERE id = ?", args: [theirs.id] });
   });
 
   test("new_nodes lists recently created nodes with creator name", async () => {
