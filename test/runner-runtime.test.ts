@@ -64,6 +64,10 @@ function registryOf(adapter: RunnerAdapter) {
   return { getAdapter: (id: string) => (id === adapter.id ? adapter : null) };
 }
 
+// The first turn is over and the run waits for the next message -- what a
+// real run looks like when nobody has written for a while.
+const TURN_DONE: FakeScriptStep = { kind: "turn_ended", payload: { run_id: "fake" } };
+
 describe("session runtime: startTask", () => {
   it("persists run_started, then the brief as user_message, with monotonic seq", async () => {
     const { db, nodeId } = await sharedDb();
@@ -219,7 +223,7 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
   it("checkIdleRunsOnce ends a run idle for longer than idleMs, tagged 'idle'", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
-    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
     const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
@@ -237,6 +241,36 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     assert.ok(summary);
     const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
     assert.equal(parseServerHandoffReason(summary), "idle");
+  });
+
+  it("checkIdleRunsOnce never ends a run mid-turn: the agent is working, not idle", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(60_000, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "running");
+  });
+
+  it("checkIdleRunsOnce ends a run whose open question has waited on the user past idleMs", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({
+      script: [
+        {
+          kind: "question",
+          payload: { request_id: "q1", type: "approval", tool: "Bash", title: "Smím?", detail: "", options: null, decision: null },
+        },
+        { wait: "answer" },
+      ],
+    });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(60_000, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
   });
 
   it("a run ending on a provider limit suspends the thread with the provider message in its events (#411)", async () => {
@@ -309,7 +343,7 @@ describe("session runtime: resume by writing (#378)", () => {
   it("sending into a suspended thread starts a new, linked run from the summary", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
-    const script: FakeScriptStep[] = [{ wait: "message" }];
+    const script: FakeScriptStep[] = [TURN_DONE, { wait: "message" }];
     const adapter = new FakeRunnerAdapter({ script, agentSessionId: "claude-conv-1" });
     const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
@@ -324,7 +358,7 @@ describe("session runtime: resume by writing (#378)", () => {
     assert.equal(runs[1].resumed_from_run_id, firstRun.id);
     // No conversation-resume in this environment (see the block comment
     // above) -- a fresh run from the summary, not --resume.
-    assert.equal(runs[1].agent_session_id, null);
+    assert.equal(adapter.getLastRunStart()?.resume, null);
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "running");
@@ -356,7 +390,7 @@ describe("session runtime: resume by writing (#378)", () => {
       await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
       await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-1.jsonl"), "{}\n", "utf8");
 
-      const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }], agentSessionId: "conv-1" });
+      const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }], agentSessionId: "conv-1" });
       const runtime = createSessionRuntime({
         store,
         content,
@@ -394,7 +428,7 @@ describe("session runtime: resume by writing (#378)", () => {
 
     // First run: a real FakeRunnerAdapter so startTask/checkIdleRunsOnce
     // can drive it through a normal suspend with a summary written.
-    const firstAdapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const firstAdapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
     const registry = { getAdapter: (id: string) => (id === "fake" ? firstAdapter : null) };
     const runtime = createSessionRuntime({ store, content, registry, provision: stubProvision() });
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
@@ -571,7 +605,7 @@ describe("session runtime: close", () => {
   it("closeSession publishes state_changed to closed for a suspended session (no live run)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
-    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
     const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
@@ -1106,7 +1140,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
   });
 
   it("a suspended thread with no file but its transcript here gets the file written from it", async () => {
-    const { nodeId, store, runtime } = await withoutMirror([{ wait: "message" }]);
+    const { nodeId, store, runtime } = await withoutMirror([TURN_DONE, { wait: "message" }]);
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     // Suspended while the node had no mirror here: the summary is inline.
     await runtime.checkIdleRunsOnce(-1);

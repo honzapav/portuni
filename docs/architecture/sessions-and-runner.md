@@ -567,7 +567,9 @@ human verification.
 - **Idle is the server's.** `boot/session-sweep.ts` `startIdleRunSweep`
   (60 s, unref'd; `PORTUNI_RUN_IDLE_MS`, default 30 min) drives
   `checkIdleRunsOnce`; `endIdleRun` sets `pendingEndReason: "idle"` and
-  calls `close()` on the live handle. Wired in `index.ts` and in both
+  calls `close()` on the live handle. A run mid-turn (a `user_message`
+  with no `turn_ended` yet) is never idle, unless an open question waits
+  on the user; every adapter event counts as activity. Wired in `index.ts` and in both
   branches of `desktop.ts` against the runtime instance that actually runs
   tasks there.
 - **Resume is writing.** `resumeByWriting` uses `checkConversationResumable`

@@ -387,6 +387,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // (started, a message sent, an adapter event, a question answered) --
   // the idle sweep's own cutoff. Cleared once the run ends.
   const lastActivityAt = new Map<string, number>();
+  // Sessions whose live run is mid-turn: a user_message went in and no
+  // turn_ended came back yet. The idle sweep never ends such a run -- the
+  // agent is working, only an open question waits on the user.
+  const turnsInFlight = new Set<string>();
 
   function touchActivity(sessionId: string): void {
     lastActivityAt.set(sessionId, Date.now());
@@ -497,6 +501,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
     const canonical = event as CanonicalEvent;
     await appendAndPublish(sessionId, runId, [canonical]);
+    touchActivity(sessionId);
+    if (canonical.kind === "turn_ended" || canonical.kind === "run_ended") turnsInFlight.delete(sessionId);
     if (canonical.kind !== "run_ended") await captureAgentSessionId(sessionId, runId);
 
     if (canonical.kind === "context_usage") {
@@ -633,6 +639,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await appendAndPublish(session.id, run.id, [
         { kind: "user_message", payload: { text: opts.brief, source: "chat" } },
       ]);
+      turnsInFlight.add(session.id);
     }
 
     const runStart: RunStart = {
@@ -732,6 +739,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const live = liveRuns.get(sessionId);
     if (live) {
       touchActivity(sessionId);
+      turnsInFlight.add(sessionId);
       await enqueue(sessionId, () =>
         appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
       );
@@ -1158,7 +1166,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   }
 
   async function checkIdleRunsOnce(idleMs: number, now: number = Date.now()): Promise<void> {
-    const staleIds = [...liveRuns.keys()].filter((id) => now - (lastActivityAt.get(id) ?? now) > idleMs);
+    const staleIds = [...liveRuns.keys()].filter(
+      (id) =>
+        (!turnsInFlight.has(id) || pendingQuestions.has(id)) && now - (lastActivityAt.get(id) ?? now) > idleMs,
+    );
     for (const id of staleIds) {
       await endIdleRun(id);
     }
