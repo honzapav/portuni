@@ -58,6 +58,42 @@ The default is applied when a thread opens: the device resolves the node's organ
 
 Clears the given organization's default instance (no instance is the default for it afterwards). Requires `write` scope.
 
+## Where a thread's record and its transcript live
+
+A runner runs on a device, and so does everything it produces. A thread has
+two halves, and only one of them reaches the central server:
+
+| | Held by | What it is |
+|---|---|---|
+| **Record** | the central server (a personal workspace: the same process) | that the thread exists, its node, its owner, state, `runner`, `instance_id`, `host_id`, model, effort, its runs and its write scope |
+| **Content** | the device that ran the thread, in the sidecar's own `content.db` | the first message, every event of the transcript, the inline handoff summary |
+
+Content is never sent to the central server. `SessionSummary` and the
+`GET /overview` rows are therefore record only — they name a thread, they
+never quote it — and `GET /sessions/:id/events` is a device-local route,
+answered by the machine you ask. Ask a device that did not run the thread
+and it answers 200 with an empty list plus `transcript_host`, the label of
+the machine that has the log; the app shows that as „Transkript je na
+zařízení X" rather than an empty chat.
+
+There is no backup of transcripts: losing a device's database loses the
+conversations that ran on it. The records on the central server and the
+`wip/sessions/<id>-handoff.md` files tracked in the nodes remain, and the
+handoff file is the supported way to move work between machines (**Předat**
+there, **Navázat na handoff** here).
+
+In a personal workspace both halves are the same machine, so nothing about
+this is visible — the split only decides what a team workspace's sidecar
+sends to `api.portuni.com`, which is the record and nothing else.
+
+Threads from before this split keep their history. A personal workspace
+copies its transcripts into `content.db` on the first boot. In a team
+workspace an older desktop sent the content to the central server; on
+its first boot after the upgrade each device downloads, once, the content
+of your threads that ran on that device, and keeps it from then on. A
+download that fails (the server unreachable, say) runs again on the next
+start.
+
 ## Model and reasoning effort
 
 `POST /sessions` accepts `model` (a runner-defined model id/alias, free text) and `effort` (`"low" | "medium" | "high" | "xhigh" | "max"`) at creation, `POST /sessions/:id/model` changes either afterwards, and `SessionSummary` carries both back. Either is a per-thread override; when unset, the value resolves at the start of every run, first match wins:

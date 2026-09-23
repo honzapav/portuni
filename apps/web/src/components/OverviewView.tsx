@@ -23,7 +23,6 @@ import type {
 } from "../types";
 import { HEALTH_COLORS, LIFECYCLE_COLORS } from "../types";
 import { fetchOverview } from "../api";
-import { useMe } from "../lib/use-me";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -68,10 +67,6 @@ export default function OverviewView({
   const [data, setData] = useState<OverviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  // The Relace card is "my own inbox" (sortInboxSessions) -- needs the
-  // caller's own id.
-  const { meId } = useMe();
-
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -126,7 +121,6 @@ export default function OverviewView({
             counters={overviewCounters(
               liveStates ? mergeLiveSessionStates(data.sessions.running, liveStates) : data.sessions.running,
               liveStates ? mergeLiveSessionStates(data.sessions.suspended, liveStates) : data.sessions.suspended,
-              meId,
               data.attention.nodes.length + data.attention.access_requests.length + data.attention.sync_issues.length,
               unsyncedCount,
             )}
@@ -141,7 +135,6 @@ export default function OverviewView({
             <SessionsCard
               running={liveStates ? mergeLiveSessionStates(data.sessions.running, liveStates) : data.sessions.running}
               suspended={liveStates ? mergeLiveSessionStates(data.sessions.suspended, liveStates) : data.sessions.suspended}
-              meId={meId}
               disconnectedJumps={data.sessions.disconnected_jumps}
               onOpenSession={onOpenSession}
               onSelectNode={onSelectNode}
@@ -276,24 +269,22 @@ function Row({
 function SessionsCard({
   running,
   suspended,
-  meId,
   disconnectedJumps,
   onOpenSession,
   onSelectNode,
 }: {
   running: OverviewSessionRow[];
   suspended: OverviewSessionRow[];
-  meId: string | null;
   disconnectedJumps: OverviewDisconnectedJump[];
   onOpenSession: (nodeId: string, sessionId: string) => void;
   onSelectNode: (nodeId: string) => void;
 }) {
-  // The inbox: Čeká na mě first, then Běží, then Pozastaveno, restricted to
-  // the caller's own sessions -- the team-wide list is the hosts spec's job.
-  // Threads only (v2 rule 7): a hand-opened CLI session is a count in the
-  // footer, the node's Relace tab keeps it.
+  // The inbox: Čeká na mě first, then Běží, then Pozastaveno. Since #457
+  // GET /overview carries the caller's own threads only, so there is nothing
+  // to filter here. Threads only (v2 rule 7): a hand-opened CLI session is a
+  // count in the footer, the node's Relace tab keeps it.
   const [expanded, setExpanded] = useState(false);
-  const { threads, cli } = splitThreadsAndCli(sortInboxSessions(running, suspended, meId));
+  const { threads, cli } = splitThreadsAndCli(sortInboxSessions(running, suspended));
   const { shown, hidden } = capRows(threads, expanded);
   const cliLine =
     cli.total > 0 ? `K tomu ${cli.total} ${cli.total === 1 ? "relace" : cli.total < 5 ? "relace" : "relací"} z CLI (${cli.running} běží)` : null;

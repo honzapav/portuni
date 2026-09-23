@@ -12,7 +12,7 @@
 //   node's name underneath. The group says the state; there are no state
 //   dots here, so the only dots in this view are node-type dots.
 import { useState } from "react";
-import { Plus, X } from "lucide-react";
+import { Plus, Share2, X } from "lucide-react";
 import type { WorkspaceNodeRow } from "../lib/sessions";
 import { nodeRowActive } from "../lib/session-views";
 import { scopedKey } from "../lib/workspace-storage";
@@ -36,11 +36,11 @@ type Props = {
   // "+" on a node row: start a new task there (opens a thread directly,
   // #374 -- no dialog, no required field).
   onNewTask: (id: string) => void;
-  // #343: each open node's own running/suspended persistent (runner)
-  // sessions, already live-overlaid by the caller (mergeLiveSessionStates),
-  // plus (#374) any locally-opened draft not yet promoted -- every list the
-  // server serves excludes a draft, so the caller merges its own in.
-  // Status comes from state/waiting_since (session_state frames).
+  // #343: each open node's own steerable threads -- running, waiting,
+  // suspended and (#374) draft alike, drafts included because since #463
+  // the node's session list carries the caller's own. The caller derives
+  // the map from the session store (#465), so the status shown here is the
+  // record's own state/waiting_since, kept current by session_state frames.
   threadsByNode: Record<string, SessionSummary[]>;
   // #412: the thread the canvas currently shows, marked in both
   // arrangements (the per-node tree and the grouped task list) the same way
@@ -54,6 +54,10 @@ type Props = {
   // asks first -- #378 is what will replace this stand-in confirm() with
   // a real dialog carrying the session's summary.
   onCloseTask: (session: SessionSummary) => void;
+  // #459 "Předat": ends the turn and the run and writes the thread's
+  // handoff file into the node's mirror, so another machine can pick the
+  // work up from it. Offered on a running or suspended thread only.
+  onHandoffTask: (session: SessionSummary) => void;
 };
 
 export type ListMode = "nodes" | "state";
@@ -138,6 +142,7 @@ function NodeTree({
   onOpenSessionChat,
   onRenameTask,
   onCloseTask,
+  onHandoffTask,
 }: Props) {
   if (rows.length === 0) {
     return (
@@ -244,6 +249,7 @@ function NodeTree({
                       onClick={() => onOpenSessionChat(r.id, s.id)}
                       onRename={(name) => onRenameTask(s, name)}
                       onClose={() => onCloseTask(s)}
+                      onHandoff={() => onHandoffTask(s)}
                     />
                   </li>
                 ))}
@@ -285,6 +291,7 @@ function TaskRow({
   onClick,
   onRename,
   onClose,
+  onHandoff,
 }: {
   session: SessionSummary;
   title: string;
@@ -292,6 +299,7 @@ function TaskRow({
   onClick: () => void;
   onRename: (name: string) => void;
   onClose: () => void;
+  onHandoff: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(session.name);
@@ -344,7 +352,7 @@ function TaskRow({
         }}
         title={title}
         aria-current={active ? "true" : undefined}
-        className={`h-8 w-full min-w-0 justify-start gap-2.5 pr-7 pl-7 font-normal text-[12.5px] ${
+        className={`h-8 w-full min-w-0 justify-start gap-2.5 pr-13 pl-7 font-normal text-[12.5px] ${
           active
             ? "bg-[var(--color-surface-2)] font-medium text-[var(--color-text)]"
             : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
@@ -352,6 +360,23 @@ function TaskRow({
       >
         <span className="min-w-0 flex-1 truncate text-left">{session.name}</span>
       </Button>
+      {/* #459: Předat -- running and suspended threads only; a draft has
+          nothing to summarise and a closed one is done. */}
+      {(session.state === "running" || session.state === "suspended") && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={(e) => {
+            e.stopPropagation();
+            onHandoff();
+          }}
+          title="Předat na jiné zařízení"
+          aria-label="Předat na jiné zařízení"
+          className="absolute right-7 hidden text-muted-foreground group-hover/task:inline-flex group-focus-within/task:inline-flex"
+        >
+          <Share2 />
+        </Button>
+      )}
       <Button
         variant="ghost"
         size="icon-xs"

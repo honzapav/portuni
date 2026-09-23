@@ -12,11 +12,11 @@ still the production driver everywhere.
 
 ## Which database runs where
 
-| Runtime | Graph db | Per-device sync db |
-|---|---|---|
-| Personal workspace (desktop sidecar without `TURSO_URL`, or a standalone server with a `file:` URL) | `file:<dataDir>/portuni.db` via libsql (`apps/server/desktop.ts` sets `TURSO_URL` to that path when unset); PGlite after B4 | `<workspace>/.portuni/sync.db` |
-| Central server (`PORTUNI_AUTH_MODE=google`) | Turso today; managed Postgres after B6 | none (no mirrors) |
-| Team-workspace sidecar (`PORTUNI_AGENT_MODE=1`) | **none** | `<workspace>/.portuni/sync.db` |
+| Runtime | Graph db | Per-device sync db | Device content db |
+|---|---|---|---|
+| Personal workspace (desktop sidecar without `TURSO_URL`, or a standalone server with a `file:` URL) | `file:<dataDir>/portuni.db` via libsql (`apps/server/desktop.ts` sets `TURSO_URL` to that path when unset); PGlite after B4 | `<workspace>/.portuni/sync.db` | `<dataDir>/content.db` |
+| Central server (`PORTUNI_AUTH_MODE=google`) | Turso today; managed Postgres after B6 | none (no mirrors) | **none** (the central server holds no content) |
+| Team-workspace sidecar (`PORTUNI_AGENT_MODE=1`) | **none** | `<workspace>/.portuni/sync.db` | `<dataDir>/content.db` |
 
 Rules that follow:
 
@@ -38,6 +38,64 @@ Rules that follow:
   the graph db in B4.
 - A personal workspace cannot register or route to a remote; that rule and its
   legacy-row handling live in [`data-modes.md`](./data-modes.md).
+
+## The device content db (`content.db`)
+
+A thread has two parts: the **record** (that it exists, on which node,
+whose it is, its state, runner, runs and scope) and the **content** (the
+first message, every transcript event, the inline handoff summary). The
+record is the graph db's -- the central server's in a team workspace. The
+content is the device's, and it lives in a second libsql file,
+`content.db`, next to `runners.json` in the runner data dir
+(`PORTUNI_DATA_DIR`, else `process.cwd()`). Spec:
+`docs/superpowers/specs/2026-09-22-local-sessions-design.md`.
+
+- `apps/server/infra/device-content-db.ts` opens it. It never goes through
+  `getDb()`, `schema.ts` or `MIGRATIONS`: `getDb()` is the graph db, which
+  a team-workspace device does not have, and `MIGRATIONS`/`PG_BASELINE_DDL`
+  are the two-dialect story for the graph db, while this file is libsql on
+  a device, always.
+- Three tables, no foreign keys, keyed by the central session id:
+  `session_content(session_id PRIMARY KEY, brief, handoff_inline)`,
+  `session_events(id, session_id, run_id, seq, kind, payload, created_at,
+  UNIQUE(session_id, seq))` in the shape `session_events` has in
+  `schema.ts`, and `device_schema(version)` with exactly one row.
+- **A schema change here is never a `MIGRATIONS` entry.** It is a new
+  numbered step in the version history comment at the top of
+  `device-content-db.ts` plus a raised `DEVICE_CONTENT_SCHEMA_VERSION`;
+  every step must be safe to re-run, because `ensureDeviceContentSchema`
+  runs on every boot.
+- `apps/server/domain/runner/store-content.ts`'s `SessionContentStore` is
+  the only reader and writer: `appendEvents`, `listEvents`, `getContent`,
+  `setContent`, `deleteContent`. `desktop.ts` opens the db at boot in both
+  modes (before the central-mode branch), `index.ts` only in a personal
+  workspace; `getDeviceContentDb()` is a lazy, idempotent process singleton
+  for everything else and **refuses on the central server**, which never
+  opens a `content.db`. There, `LegacyGraphContentStore` (the same store
+  over the graph db's `session_events` and the two `sessions` columns)
+  serves an older sidecar's content until the central migration.
+- Timestamps follow the rule below: the store writes `created_at` as
+  `YYYY-MM-DD HH:MM:SS` UTC (`infra/sql.ts` `dbTimestamp`); the DDL has no
+  `datetime('now')` default.
+- **The one-time import** (`boot/content-import.ts`, step 2 of the version
+  history, no DDL change). A personal workspace's existing transcripts,
+  briefs and inline summaries are in its graph db:
+  `importPersonalWorkspaceSessionContentOnBoot`, run by both `index.ts`
+  and `desktop.ts`'s local branch before serving, copies them. A sync
+  agent's are on the central server: `importTeamWorkspaceSessionContentOnBoot`
+  downloads those of its user's threads that ran on this device. Both
+  check each source table and column explicitly (none left after the
+  central migration is not an error; a failing read is), copy each thread
+  in one `batch` transaction, skip a thread an earlier attempt copied
+  (its first event id is here), keep events a thread got here before a
+  retried import after the imported ones, normalise imported timestamps,
+  and raise `device_schema.version` to 2 only when every thread went
+  through -- otherwise the next boot tries again. The graph db's own
+  `session_events` table and the two `sessions` columns stay until the
+  central migration drops them.
+- There is no backup. Losing the device's `content.db` loses its
+  transcripts; the records on the central server and the handoff files in
+  the nodes remain.
 
 ## The `DbClient` interface and its drivers
 

@@ -33,8 +33,10 @@
     { "method": "POST", "pattern": "/sessions/{id}/interrupt", "example": "/sessions/abc123/interrupt" },
     { "method": "POST", "pattern": "/sessions/{id}/continue", "example": "/sessions/abc123/continue" },
     { "method": "POST", "pattern": "/sessions/{id}/close", "example": "/sessions/abc123/close" },
+    { "method": "POST", "pattern": "/sessions/{id}/handoff", "example": "/sessions/abc123/handoff" },
     { "method": "GET", "pattern": "/sessions/{id}/events", "example": "/sessions/abc123/events?after=5" },
     { "method": "GET", "pattern": "/sessions/{id}/signals", "example": "/sessions/abc123/signals" },
+    { "method": "GET", "pattern": "/sessions/{id}/resume-info", "example": "/sessions/abc123/resume-info" },
     { "method": "POST", "pattern": "/sessions/{id}/questions/{requestId}", "example": "/sessions/abc123/questions/req-1" }
   ],
   "central": [
@@ -50,11 +52,12 @@
     { "method": "GET", "pattern": "/sessions/{id}", "example": "/sessions/abc123" },
     { "method": "PATCH", "pattern": "/sessions/{id}", "example": "/sessions/abc123" },
     { "method": "GET", "pattern": "/sessions/{id}/state", "example": "/sessions/abc123/state" },
-    { "method": "GET", "pattern": "/sessions/{id}/resume-info", "example": "/sessions/abc123/resume-info" },
     { "method": "GET", "pattern": "/sessions/{id}/scope", "example": "/sessions/abc123/scope" },
     { "method": "GET", "pattern": "/sessions/{id}/runs", "example": "/sessions/abc123/runs" },
     { "method": "PATCH", "pattern": "/sessions/{id}/runs/{runId}", "example": "/sessions/abc123/runs/run1" },
     { "method": "POST", "pattern": "/sessions/record", "example": "/sessions/record" },
+    { "method": "GET", "pattern": "/sessions/legacy-content", "example": "/sessions/legacy-content?host_id=honzas-macbook-pro" },
+    { "method": "GET", "pattern": "/sessions/{id}/legacy-content", "example": "/sessions/abc123/legacy-content?after=500" },
     { "method": "GET", "pattern": "/runnersx", "example": "/runnersx" }
   ],
   "sidecar_direct": {

@@ -4,11 +4,18 @@ A session is the unit of agent work on a node: a `sessions` row that exists
 before any process runs, a task layer underneath it (`session_runs`,
 `session_events`), one runtime implementation that always executes on the
 device, and a store seam that decides whether that runtime writes to the
-local graph db or to the central server. An agent runs only as a task
+local graph db or to the central server. A thread has **two halves**: the
+**record** (that it exists, on which node, whose it is, its state, runner,
+instance, runs and scope) and the **content** (the first message, every
+transcript event, the inline handoff summary). The record goes to the
+record store; the content always goes to this device's `content.db`, in
+both workspaces. An agent runs only as a task
 (`POST /sessions`, the SessionChat surface) or as a hand-opened CLI that
 connects over MCP; there is no embedded terminal, PTY or sandbox profile.
 Specs: `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`,
-`docs/superpowers/specs/2026-09-15-task-surface-design.md`.
+`docs/superpowers/specs/2026-09-15-task-surface-design.md`,
+`docs/superpowers/specs/2026-09-22-local-sessions-design.md` (the
+record/content split).
 
 ## Session row and binding
 
@@ -45,12 +52,53 @@ Specs: `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`,
 - `sessions.terminal_id` is a dead column: permanently null for every new
   row, kept until a migration drops it. Nothing reads or writes it.
 - The task layer (migration 034): `sessions` carries
-  `brief`/`runner`/`host_id`/`waiting_since`/`instance_id`/`model`/`effort`;
-  each attempt to run the task is a `session_runs` row; the canonical,
-  append-only transcript is `session_events`. `domain/runner/store.ts`'s
-  `SessionStore` (`DbSessionStore`, `CentralSessionStore`) is the only
-  writer of runs and events. Every event kind and payload is in
-  `domain/runner/types.ts`'s `CanonicalEvent` union.
+  `runner`/`host_id`/`waiting_since`/`instance_id`/`model`/`effort`, and
+  each attempt to run the task is a `session_runs` row.
+  `domain/runner/store.ts`'s `SessionStore` (`DbSessionStore`,
+  `CentralSessionStore`) is the only writer of that record; it has no
+  event methods and carries no `brief`.
+- The canonical, append-only transcript is `session_events` in the
+  device's `content.db`, written and read only through
+  `domain/runner/store-content.ts`'s `SessionContentStore`, which also
+  owns `session_content(brief, handoff_inline)`. Every event kind and
+  payload is in `domain/runner/types.ts`'s `CanonicalEvent` union. The
+  `sessions.brief` and `sessions.handoff_inline` columns and the graph
+  db's own `session_events` table still exist; nothing writes them after
+  #456 except the central routes that keep accepting them for a sidecar
+  released before it, and the central migration drops them.
+- **The central server never opens a `content.db`** (`getDeviceContentDb`
+  refuses when `isCentralServer()`). Its content store,
+  `sessionContentStoreForProcess()`, is `LegacyGraphContentStore`: the
+  graph db's `session_events` plus the two `sessions` columns. That is
+  where an older sidecar's `POST /sessions/:id/events` writes and where
+  its `GET /sessions/:id/events` and `resume-info` read, so it reads back
+  what it wrote. On a device (sidecar, sync agent, a standalone personal
+  server) the same function answers the device's `content.db`.
+- **The history that predates `content.db` is imported once**
+  (`boot/content-import.ts`, step 2 of `content.db`'s version history).
+  A personal workspace copies its graph db's rows at boot, before serving
+  (`importPersonalWorkspaceSessionContentOnBoot`, called by both
+  `index.ts` and `desktop.ts`'s local branch). A sync agent downloads,
+  in the background after it binds, the legacy content of its user's
+  threads that ran on this device (the record's `host_id` or a run's):
+  `CentralClient.listLegacySessionContent(hostId)` and
+  `getLegacySessionContent(id, {after})` over the central, owner-only
+  `GET /sessions/legacy-content?host_id=…` and
+  `GET /sessions/:id/legacy-content` (500 events a page). The central copy
+  stays. Each thread is copied in one transaction and skipped when an
+  earlier attempt already copied it; events a thread got here before a
+  retried import stay after the imported ones. The version is raised only
+  when every thread went through, so a failure runs again on the next
+  boot. Imported timestamps are normalised to `YYYY-MM-DD HH:MM:SS`.
+- `GET /sessions/:id/events` answers from the `content.db` of the device
+  serving it, in both routers. When that device has no rows for the thread
+  and the record's `host_id` is another device, the answer carries
+  `transcript_host` -- the host's label if this process can name it, the
+  host id otherwise (`domain/runner/hosts.ts` `transcriptHostLabel`, #458)
+  -- and the chat says "Transkript je na zařízení X" instead of showing an
+  empty conversation. On the device that ran the thread the field is
+  absent, empty transcript or not. There is no transcript backup: a
+  transcript exists on exactly one device.
 
 ### States
 
@@ -92,6 +140,65 @@ own suspend path appends nothing twice. The web never trusts the replayed
 log against the server's state: `runIsLiveFor(liveRunId, state)` is live
 only while the session is `running`.
 
+**Předat** (#459) is `SessionRuntime.handoff`, `POST /sessions/:id/handoff`
+(device-local, `write` tier, owner; the socket's `handoff` frame carries the
+same answer `{ session, handoff_path }`): the owner hands the thread to
+another machine through its handoff file. On a `running` thread it
+interrupts the current turn, waits for the queue to drain and then ends the
+run with `pendingEndReason` `handoff`, so the same auto-summary path a limit
+or an idle end takes writes `wip/sessions/<id>-handoff.md` into the node's
+mirror, registers the file and patches the record to `suspended` -- one
+suspend implementation, the reason marker being the only difference
+(`portuni:server-handoff reason=handoff`, the one reason a person chose).
+On an already `suspended` thread with its file, it is a no-op answering the
+same path. On a `suspended` thread without a file (suspended where the node
+had no mirror), the same suspend code writes the file now
+(`createSuspendServerSide`'s `writeFileIfSuspended`): its inline summary
+from `content.db` when there is one, else the summary built from the
+transcript here. Every refusal is a `SessionHandoffError` (REST 409, Czech
+message; `api/session-handoff-errors.ts` is the one mapping the local
+router, the agent router and the socket share) and comes before any side
+effect -- nothing is interrupted, ended or suspended:
+`HANDOFF_NOT_ALLOWED` (a `draft` or `closed` thread), `HANDOFF_NO_MIRROR`
+(no mirror of the node on this device: nowhere to write the file),
+`HANDOFF_RUN_ELSEWHERE` (running, with no live run here and the open run's
+host another device: only that device can end it) and
+`HANDOFF_TRANSCRIPT_ELSEWHERE` (suspended without a file and no content
+here while the thread last ran on another device) and `HANDOFF_NO_CONTENT`
+(suspended without a file and no content here although it ran here: the
+first-boot download has not finished, and an empty summary would stand in
+for the real one). `HANDOFF_RUN_ELSEWHERE` and `HANDOFF_TRANSCRIPT_ELSEWHERE`
+name the device the way `transcript_host` does. The web shows the message as-is
+(`apps/web/src/lib/handoff-refusal.ts`) and does not offer Předat in the
+chat where the transcript is on another device. The other machine picks
+the work up from the file once it syncs.
+
+**Navázat na handoff** (#460) is the other end of it:
+`SessionRuntime.startFromHandoff`, `POST /sessions` with `handoff_path` (the
+same device-local route a task or a draft goes through, `write` tier). The
+path is node-relative and must be exactly what `handoffRelativePath` writes
+(`wip/sessions/<id>-handoff.md`); the runtime reads it from the node's
+mirror **on this device** (`readNodeHandoffFile`, the mirror registry in
+`sync.db` plus the local bytes, so a sync agent answers it without reaching
+central) before it creates anything. No mirror or no file yet is
+`HANDOFF_FILE_NOT_HERE` (409, „Soubor handoffu ještě není na tomto
+zařízení.") and no record is created; a path of any other shape is
+`HANDOFF_PATH_INVALID` (the routers' schema rejects it as a 400 first). With
+the file in hand it is `continueSession`'s shape minus the close: a new
+record on this device (`runner`/`instance_id` resolved as for a draft,
+`host_id` this device, `name` from the summary's own H1 via
+`extractHandoffTitle`, `name_is_custom` left 0 so this thread's own first
+summary may rename it), and a first run with no brief whose orientation
+carries the file's content under "## Navázání na handoff", the way a resume
+from a summary does -- generalised to a file that belongs to another
+session. No events are imported: the transcript starts on this device, and
+the source thread's record, file and transcript are never touched, which is
+what lets the file come from another machine. The Relace tab of the node
+lists the node's handoff files (`apps/web/src/lib/handoff-files.ts`, built
+from the node's file records; the title and the host come from the source
+record when the user can see it, otherwise the file name is all there is)
+and that is where the action lives.
+
 A rename is `POST /sessions/:id/rename`, device-local, through
 `SessionRuntime.renameSession`: it writes `name` (`name_is_custom`) and
 publishes a `session_changed` frame, which is never persisted or replayed
@@ -101,21 +208,31 @@ Práce sidebar, the Relace tab and the chat header in every window show the
 new name at once. The plain-rename branch of `PATCH /sessions/:id` remains
 the central record half only.
 
-## Access tiers
+## Access: a thread is its owner's
 
 `auth/session-access.ts` `sessionAccess(identity, sessionId, action)` with
-actions `read | message | stop | resume` (spec: remote-hosts-and-task-queue,
-"Visibility and control"):
+actions `read | message | stop | resume` (spec: local-sessions, "Access").
+The table is one line: **every action is the owner's** (#457).
 
-- A node-anchored session hidden from the caller is `SESSION_NOT_FOUND`
-  (404) for every action, manage scope included.
-- A visible session with an insufficient tier is `SESSION_FORBIDDEN` (403):
-  `message` and `resume` require ownership; `stop` (interrupt, close)
-  requires ownership or manage scope; `read` requires seeing the node.
-- A node-less session (`interactive_chat`) is `SESSION_FORBIDDEN` for anyone
-  but the owner.
-- A stop by someone other than the owner appends a `state_changed` event
-  carrying `by` (`SessionRuntime.recordStoppedBy`) so the chat shows who.
+- A session the caller does not own is `SESSION_NOT_FOUND` (404) for every
+  action -- node-anchored or not, `manage` and `admin` included. Seeing the
+  anchor node says nothing about the threads on it; a teammate is never told
+  the thread exists. No session route answers 403 on access grounds any
+  more, so `SESSION_FORBIDDEN` is a code the union still carries and nothing
+  raises.
+- The list routes follow the same rule and are filtered in SQL by
+  `user_id = identity`: `GET /sessions?state=…`, `GET /nodes/:id/sessions`
+  (of every state, drafts included -- the node's own read gate decides only
+  whether the Relace tab exists), the `sessions` section of `GET /overview`
+  and `activity.session_writes`. The running count and every sidebar list
+  therefore count the owner's threads only.
+- Because no non-owner can reach a stop, there is no "stopped by someone
+  else" path: the `state_changed` event carrying `by` and
+  `SessionRuntime.recordStoppedBy` are gone.
+- The web carries no access echo. `sessionRowAccess` and the `canManage`/
+  `meId` props that fed it are removed from `lib/session-views.ts`,
+  `SessionChat`, `DetailPane.sessions` and `OverviewView`: every listed
+  thread is the caller's own, so the state alone decides which action shows.
 - Coarse route scopes (`auth/min-scopes.ts`): `GET` routes are `read`,
   every mutating `/sessions*` route and `POST /sessions` are `write`.
 - In a team workspace these checks run on the central server, on every store round
@@ -131,21 +248,33 @@ orientation, translates events, ends and suspends) is one implementation,
 
 | dep | personal workspace | team workspace |
 |---|---|---|
-| `store` | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
+| `store` (the record) | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
+| `content` (the transcript, the brief, the inline summary) | `SessionContentStore` over this device's `content.db` (`deviceSessionContentStore()`) | the same object, over the same file -- content never differs between workspaces and never reaches the central server |
 | provisioning | `provision.ts`: `createMirrorForNode`, `orientationForNode` (direct db read) | `provision-central.ts`: `createMirrorForNodeCentral`, `CentralClient.orientation` (`GET /nodes/:id/orientation`) |
-| `suspendFallback` | `suspendSessionServerSide(db, id, reason)` | `domain/runner/suspend-fallback-central.ts`: writes the same handoff into the device mirror (scope sections from `CentralClient.sessionScopeRecord`), registers it record-only and patches the record over REST. Without a mirror for the node it patches the record with `handoff_path: null` and the summary itself in `handoff_inline` (#434), exactly as the local half does, so `getResumeInfo` on the central server hands the next run that text |
+| `suspendFallback` | `suspendSessionServerSide(db, content, id, reason)` -- `createSuspendServerSide(localSuspendDeps(db, content))` | the same `createSuspendServerSide`, built in `boot/session-runtime.ts` with four seams: `record` = `CentralSessionStore`, `scope` = `CentralClient.sessionScopeRecord`, `suspendRecord` = a record `PATCH` over REST, `trackHandoff` = `registerLocalFileCentral`. Everything else -- the summary, the file in the device mirror, the name enrichment, the no-mirror case -- is the same code (#458). Without a mirror for the node the record gets `handoff_path: null` plus the hash, and the summary itself goes to `session_content.handoff_inline` on the device (#434, #456), so `getResumeInfo` hands the next run that text |
 | `resolveNodeOrgId` | `belongs_to` graph query (a failed lookup is distinguishable from "no organization") | `CentralClient.nodeOrganizationId` (`GET /nodes/:id`, the outgoing `belongs_to` peer that is an organization) |
 | `session_scope` reads (`getSessionScope` in `startRun`/`sessionSignals`) | real | degrade to an empty scope, never throw |
 
 - `CentralSessionStore` turns every `SessionStore` call into a REST round
   trip to the central server's record half (`api/sessions.ts`: `POST /sessions/record`,
   `GET`/`PATCH /sessions/:id`, `POST /sessions/:id/runs`,
-  `PATCH /sessions/:id/runs/:run_id`, `GET /sessions/:id/runs`,
-  `POST`/`GET /sessions/:id/events`), which are thin wrappers over
-  `DbSessionStore` on the central server's own db. It batches `appendEvents` within a
-  50 ms window into one POST and keeps an in-process `runId -> sessionId`
-  map (filled by `createRun`/`listRuns`) because `patchRun(runId, patch)`
-  carries no session id.
+  `PATCH /sessions/:id/runs/:run_id`, `GET /sessions/:id/runs`), which are
+  thin wrappers over `DbSessionStore` on the central server's own db. It
+  keeps an in-process `runId -> sessionId` map (filled by
+  `createRun`/`listRuns`) because `patchRun(runId, patch)` carries no
+  session id. **There is no event method on it and none on
+  `CentralClient`**: the transcript never crosses to the central server.
+  `POST /sessions/:id/events` and the `brief`/`handoff_inline` fields of
+  `POST /sessions/record` and `PATCH /sessions/:id` stay on the central
+  server only so a sidecar released before #456 keeps working; the central
+  migration removes them.
+- Where each write goes: `promoteDraftAndStart` puts the first message in
+  `session_content.brief` and the `user_message` event in the device's
+  `session_events`, then patches the record (`state`, `name`, `runner`,
+  `instance_id`); a suspend writes the summary to the handoff file in the
+  node and `handoff_path`/`handoff_hash` to the record, with
+  `handoff_inline` on the device when there is no mirror here;
+  `getResumeInfo` and the live channel's replay read the content store.
 - `PATCH /sessions/:id` has two shapes: `{name}` alone is a rename and
   returns `SessionSummary`; any other field (`state`, `waiting_since`,
   `handoff_path`, `handoff_hash`, promotion fields) returns the raw
@@ -154,8 +283,8 @@ orientation, translates events, ends and suspends) is one implementation,
   never fails a promotion; it logs one warning naming the node, only when
   the fallback is visible (two or more instances for that runner and some
   org default configured).
-- The team-workspace suspend fallback writes the same summary the personal
-  one does (#427). `session_scope` and the node's name are graph-db reads,
+- The team-workspace suspend writes the same summary the personal one does
+  because it is the same function (#427, #458). `session_scope` and the node's name are graph-db reads,
   so they come from `GET /sessions/:id/scope`
   (`CentralClient.sessionScopeRecord`, a record-half route like the rest);
   a scope read that fails logs and degrades to empty sections rather than
@@ -170,11 +299,18 @@ orientation, translates events, ends and suspends) is one implementation,
 
 `is_device_local_path` (`apps/desktop/src/lib.rs`) sends to the device's sync
 agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
-`messages`, `interrupt`, `continue`, `close`, `events`, `signals`,
-`questions/:request_id`. The record half stays on the central server: bare
-`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/scope`,
+`messages`, `interrupt`, `continue`, `close`, `handoff`, `events`,
+`signals`, `resume-info`, `questions/:request_id`. The record half stays on the
+central server: bare `GET`/`PATCH /sessions/:id`, `/state`, `/scope`,
 `/runs...`, `/sessions/record`, plus `GET /nodes/:id/sessions` and
-`/overview`.
+`/overview`. The two legacy-content routes (`/sessions/legacy-content`,
+`/sessions/:id/legacy-content`) are central too; only the sync agent's
+boot import calls them, through `CentralClient`.
+`resume-info` is device-local (#456) because both of its inputs are the
+device's: the inline handoff summary in `content.db` and the handoff file
+in this device's mirror, which it hashes to report `handoff_changed`.
+Both routers build the answer from the one
+`sessionResumeInfoPayload` in `api/sessions.ts`.
 `signals` is device-local because it reads in-memory live-run state
 (`liveRuns`, `runStartScopeSize`) that exists only in the process running
 the task. A new per-session verb must be added to `router.ts`,
@@ -216,21 +352,30 @@ live action, `sessions-ws.ts` in the same change.
     time no later than the file's): SIGTERM the process group, wait 5 s,
     SIGKILL;
   - in every case `patchRun(end_reason: "host_lost")`, append
-    `run_ended {reason: "host_lost"}`, suspend with reason `host_lost`
-    (Relace label "proces osiřel po restartu") and append a `handoff` event.
+    `run_ended {reason: "host_lost"}` and patch the record `suspended` with
+    **no handoff** (#458): the process that could have summarised the run is
+    the one that died, and the central server has no content to summarise.
+    The thread resumes from its transcript, which is on this device.
 - A pid file is only ever found by the next boot of the same process on the
-  same machine. Both kinds of workspace run the sweep: `index.ts` and `desktop.ts`'s
-  local branch call `sweepOrphanedRunsOnBoot` (`localRunSweepBackend`,
+  same machine. Both kinds of workspace run the sweep: `index.ts` in a
+  personal workspace (the central server runs no runner, so it has no pid
+  file to sweep) and `desktop.ts`'s local branch call `sweepOrphanedRunsOnBoot` (`localRunSweepBackend`,
   resolves the run by id in `session_runs`); `desktop.ts`'s `agentMain`
   calls `sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client))`
-  (`centralRunSweepBackend`, resolves via `store.listRuns(session_id)`,
-  suspends via `createSuspendFallbackCentral`).
+  (`centralRunSweepBackend`, resolves via `store.listRuns(session_id)`).
+  The outcome is the same code in both backends -- `RunSweepBackend` is
+  `{store, content, resolveRun}`, nothing mode-specific about the suspend.
+  Both carry the device's `SessionContentStore`: the `run_ended` event the
+  sweep appends is content and goes to `content.db`.
 - Server-side suspend (`domain/session-handoff.ts`
-  `suspendSessionServerSide(db, sessionId, reason)`, `ServerHandoffReason`
-  = `disconnect | idle | terminal_exit | boot_sweep | suspend_timeout |
-  host_lost | run_ended | continue`) writes a minimal handoff into the
-  session's home mirror when this device has one, else into
-  `sessions.handoff_inline`; `getResumeInfo` reads whichever is populated.
+  `suspendSessionServerSide(db, content, sessionId, reason)`,
+  `ServerHandoffReason` = `disconnect | idle | terminal_exit | boot_sweep |
+  suspend_timeout | host_lost | run_ended | continue`) writes a minimal
+  handoff into the session's home mirror when this device has one, else
+  into the content store's `handoff_inline`; the record keeps
+  `handoff_path`/`handoff_hash` only, and `getResumeInfo` reads whichever
+  of the two is populated. The summary itself is built from the device's
+  transcript, so it is the same text in both workspaces.
   The content carries a marker with its reason; `parseServerHandoffReason`
   reads it back so `GET /sessions/:id/resume-info` reports
   `generated_by: "server"` and the reason ("pozastaveno serverem
@@ -239,9 +384,14 @@ live action, `sessions-ws.ts` in the same change.
   connection or the transport's idle GC (`mcp/transport.ts` decides
   `disconnect` vs `idle` in the same `onclose`) and by
   `boot/session-sweep.ts` finding a `running` row from a dead process.
-  Both delegate to `suspendSessionServerSide`; `closeSessionIfRunning` still
-  carries its pre-#329 name. `portuni_session_suspend` is the only channel
-  such a CLI has to write its own handoff.
+  On a device both delegate to `suspendSessionServerSide`;
+  `closeSessionIfRunning` still carries its pre-#329 name. On the central
+  server (#458) they suspend only a session no device drives (no runner, no
+  open run: a hand-opened CLI or connector whose connection was to that
+  process), record only and with no summary, and never touch a task thread:
+  its run lives on a device, and a dropped proxied MCP connection or a
+  central restart says nothing about it. `portuni_session_suspend` is
+  the only channel such a CLI has to write its own handoff.
 
 ## The Claude adapter
 
@@ -386,19 +536,17 @@ human verification.
 - Promotion appends `state_changed {from: "draft", to: "running"}` so the
   live channel's `session_state` broadcast fires (`sessions-ws.ts` reacts
   only to `state_changed`, `question`, `run_ended`).
-- **A list carries the caller's own drafts, nobody else's** (#463).
-  `GET /nodes/:id/sessions` returns the node's drafts whose `user_id` is the
-  caller's, and `GET /sessions?state=draft` answers with the caller's drafts
-  only -- node visibility opens every other state to a teammate, never an
-  unsent draft. So a reload, a second window or any other surface of the
-  same user shows a draft without a client-side draft map. `GET /overview`
-  and the WS snapshot still list running and suspended threads only, by the
-  states they ask for.
+- **A list carries the caller's own threads, nobody else's** (#463, #457).
+  `GET /nodes/:id/sessions` and `GET /sessions?state=…` filter on
+  `user_id = identity` for every state, drafts included, so a reload, a
+  second window or any other surface of the same user shows a draft without
+  a client-side draft map. `GET /overview` and the WS snapshot still list
+  running and suspended threads only, by the states they ask for.
 - **Prune.** `sweepStaleDraftSessionsOnBoot` deletes drafts older than 24 h
   at boot of the process that owns the graph db (`index.ts`, `desktop.ts`
   local branch; on the central server for team-workspace rows). A thread's `×` deletes
   an empty draft immediately.
-- **Every non-close end suspends with a server-written summary.**
+- **Every non-close end suspends with a summary the DEVICE writes.**
   `closingSessions: Set<string>` marks an explicit close (`closeSession`,
   `continueSession`). In `handleAdapterEvent`'s `run_ended` branch, a run
   ending without that mark calls `suspendFallback` with `pendingEndReason`
@@ -406,7 +554,14 @@ human verification.
   `handoff` event (`{path, hash}` off the suspended row).
   `withSuspendReason` rewrites an adapter-reported `"completed"` to
   `"suspended"` unless the session is closing; `error`/`limit`/`host_lost`
-  pass through. `HandoffEvent.payload` is `{path, hash}` only.
+  pass through. `HandoffEvent.payload` is `{path, hash}` only. The central
+  server never writes a summary of its own: it has no transcript to build
+  one from (#458). A thread whose device disappears mid-run stays `running`
+  until that device's own boot sweep ends it, and that sweep suspends it
+  with no handoff. The central server's `sweepStaleRunningSessionsOnBoot`,
+  `sweepStaleDraftSessionsOnBoot` and `sweepArchivedSessionsOnBoot` stay,
+  as record maintenance; the running sweep there leaves every thread a
+  device drives alone (see the hand-opened CLI bullet above).
 - **Idle is the server's.** `boot/session-sweep.ts` `startIdleRunSweep`
   (60 s, unref'd; `PORTUNI_RUN_IDLE_MS`, default 30 min) drives
   `checkIdleRunsOnce`; `endIdleRun` sets `pendingEndReason: "idle"` and
@@ -500,7 +655,7 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   response before the socket is destroyed. A plain GET without `Upgrade`
   gets 426 from the normal request path. The upgrade applies
   `minScopeForRoute` (`read`).
-- `message`, `answer`, `interrupt`, `close`, `continue` frames need `write`
+- `message`, `answer`, `interrupt`, `close`, `continue`, `handoff` frames need `write`
   scope (`FORBIDDEN`) and, with `PORTUNI_WEBVIEW_PROXY_SECRET` set, an
   upgrade that carried the proven `X-Portuni-Webview-Proxy` header
   (`UpgradeContext.webviewProven`, else `WEBVIEW_PROXY_REQUIRED`). The same
@@ -515,16 +670,17 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   `agentMain` passes `createSessionsWsServer(createAgentSessionsWsDeps(
   client, runtime))` with the same runtime instance its router drives. The
   sync-agent snapshot is `GET /sessions?state=running,suspended&limit=500`
-  on the central server (`CentralClient.listSessionRecords`), visibility-filtered
-  there; the local snapshot is bounded by the same `SNAPSHOT_LIMIT`.
+  on the central server (`CentralClient.listSessionRecords`), which answers
+  with the device user's own records; the local snapshot is the same query
+  against the graph db, bounded by the same `SNAPSHOT_LIMIT`.
 - `subscribe` subscribes to the runtime first, replays
   `store.listEvents(after)` in pages of 200, buffers live events meanwhile
   and flushes them skipping any `seq` the replay covered. A published
   canonical event carries the `seq` the store assigned
   (`PublishedEvent = (CanonicalEvent & {seq}) | DeltaFrame`,
   `appendAndPublish`).
-- `session_state` fans out to every connection that can see the session
-  (`api/overview.ts` `filterSessions`'s rule) through one server-lifetime
+- `session_state` fans out to every connection whose identity owns the
+  session (`canSee`, the same one-line rule) through one server-lifetime
   `subscribe("*", ...)` per `WebSocketServer`, created lazily on the first
   connection, and a broadcast resolves visibility once per identity. A test
   must keep one runtime and re-register the fake adapter between cases

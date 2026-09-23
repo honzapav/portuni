@@ -78,8 +78,8 @@ type Props = {
   // Every thread open in this window, in a stable order (#429): each one
   // keeps a mounted chat so switching threads keeps its scroll position,
   // its streaming buffers and its composer draft, and costs no
-  // re-subscribe. Includes `openSession`; App.tsx derives it with
-  // lib/session-views.ts's mountedChatSessions.
+  // re-subscribe. Includes `openSession`; App.tsx derives it from the
+  // session store with lib/session-selectors.ts's selectMountedThreads.
   mountedSessions: readonly SessionSummary[];
   sessionsClient: SessionsClient;
   // The window's one record per thread (#466): SessionChat reads its own

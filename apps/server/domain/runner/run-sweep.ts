@@ -8,23 +8,22 @@
 // ever find it -- there is no cross-host lookup to build. "Local mode" is
 // about the machine, not the data mode: a central-mode sidecar spawns the
 // same children and leaves the same pid files behind, so #393 made the
-// db-shaped half of this sweep a pair of injected functions (resolveRun +
-// suspend) and central mode supplies its own, backed by CentralSessionStore.
+// db-shaped half of this sweep injected (the record store and how a run is
+// resolved) and central mode supplies its own, backed by CentralSessionStore.
 //
 // Mirrors boot/session-sweep.ts's shape one level down: that sweep already
 // suspends a 'running' session row with no live run at all (a hand-opened
 // CLI); this one additionally reaps the child process and closes out the
 // run row for a session a runner task was driving. Order matters (spec):
 // this sweep must run BEFORE sweepStaleRunningSessionsOnBoot, since it is
-// this sweep's own suspendSessionServerSide call that already resolves the
-// session -- by the time the other sweep looks at 'running' rows, a session
-// this one touched is no longer one of them.
+// this sweep's own suspend that already resolves the session -- by the time
+// the other sweep looks at 'running' rows, a session this one touched is no
+// longer one of them.
 
 import { execFile as nodeExecFile } from "node:child_process";
 import type { DbClient } from "../../infra/db.js";
-import type { SessionRow } from "../../shared/types.js";
-import { suspendSessionServerSide } from "../session-handoff.js";
 import { DbSessionStore, type SessionStore } from "./store.js";
+import { sessionContentStoreForProcess, type SessionContentStore } from "./store-content.js";
 import { isProcessAlive } from "./process-liveness.js";
 import { listPidFiles, readPidFile, removePidFileAt, type PidFileEntry } from "./pid-file.js";
 
@@ -44,13 +43,18 @@ export interface SweptRun {
 }
 
 // What the sweep needs beyond the filesystem: where a run record lives and
-// how a session is suspended. Local mode reads both straight off the graph
-// db; central mode goes through CentralSessionStore and the same
-// suspend-fallback the runtime itself uses.
+// where the transcript is written. Local mode reads the record straight off
+// the graph db; central mode goes through CentralSessionStore. The
+// transcript is the device's either way. #458 dropped the third member (how
+// a session is suspended): a dead run's session is suspended with no
+// handoff in both backends, which is a plain record patch -- the process
+// that could have summarised the run is the one that died.
 export interface RunSweepBackend {
   store: SessionStore;
+  // The transcript the sweep's own run_ended event goes into: this device's
+  // content.db in both workspaces (#456), never the record store.
+  content: SessionContentStore;
   resolveRun(runId: string, sessionId: string | null): Promise<SweptRun | null>;
-  suspend(sessionId: string, reason: "host_lost"): Promise<SessionRow | null>;
 }
 
 export interface RunSweepResult {
@@ -177,16 +181,19 @@ async function sweepOne(
   }
 
   const store = backend.store;
-  await store.appendEvents(run.session_id, run.id, [
+  await backend.content.appendEvents(run.session_id, run.id, [
     { kind: "run_ended", payload: { run_id: run.id, reason: "host_lost", usage: null } },
   ]);
   await store.patchRun(run.id, { ended_at: new Date().toISOString(), end_reason: "host_lost" });
 
-  const session = await backend.suspend(run.session_id, "host_lost");
-  if (session) {
-    await store.appendEvents(run.session_id, run.id, [
-      { kind: "handoff", payload: { path: session.handoff_path, hash: session.handoff_hash } },
-    ]);
+  // #458: suspended with no handoff. The run this sweep is closing out died
+  // with the process that was driving it; there is no summary to write on
+  // its behalf that the next run could trust, and the central server has no
+  // content to write one from either. The thread is resumable from its
+  // transcript, which is on this device.
+  const session = await store.getSession(run.session_id);
+  if (session?.state === "running") {
+    await store.patchSession(run.session_id, { state: "suspended", waiting_since: null });
   }
 
   await removePidFileAt(entry.path);
@@ -211,11 +218,11 @@ export async function sweepOrphanedRunsOn(
   return result;
 }
 
-export function localRunSweepBackend(db: DbClient): RunSweepBackend {
+export function localRunSweepBackend(db: DbClient, content?: SessionContentStore): RunSweepBackend {
   return {
     store: new DbSessionStore(db),
+    content: content ?? sessionContentStoreForProcess(),
     resolveRun: (runId) => loadRun(db, runId),
-    suspend: (sessionId, reason) => suspendSessionServerSide(db, sessionId, reason),
   };
 }
 
@@ -224,22 +231,24 @@ export function localRunSweepBackend(db: DbClient): RunSweepBackend {
 // (#393). A file written before that field existed names no session, so
 // there is nothing to resolve -- it is removed as stale rather than left
 // to be re-examined at every boot forever.
-export function centralRunSweepBackend(
-  store: SessionStore,
-  suspend: (sessionId: string, reason: "host_lost") => Promise<SessionRow | null>,
-): RunSweepBackend {
+export function centralRunSweepBackend(store: SessionStore, content: SessionContentStore): RunSweepBackend {
   return {
     store,
+    content,
     resolveRun: async (runId, sessionId) => {
       if (!sessionId) return null;
       const runs = await store.listRuns(sessionId);
       const run = runs.find((r) => r.id === runId);
       return run ? { id: run.id, session_id: run.session_id, ended_at: run.ended_at } : null;
     },
-    suspend,
   };
 }
 
-export async function sweepOrphanedRuns(db: DbClient, dataDir: string, deps: RunSweepDeps = {}): Promise<RunSweepResult> {
-  return sweepOrphanedRunsOn(localRunSweepBackend(db), dataDir, deps);
+export async function sweepOrphanedRuns(
+  db: DbClient,
+  dataDir: string,
+  deps: RunSweepDeps = {},
+  content?: SessionContentStore,
+): Promise<RunSweepResult> {
+  return sweepOrphanedRunsOn(localRunSweepBackend(db, content), dataDir, deps);
 }

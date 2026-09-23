@@ -48,7 +48,6 @@ function row(overrides: Partial<SessionSummary> & { id: string }): SessionSummar
     cli: null,
     instance_id: null,
     terminal_id: null,
-    brief: null,
     runner: "claude",
     host_id: null,
     host_label: null,
@@ -186,6 +185,58 @@ describe("scenario 4: a rename shows everywhere without a refetch", () => {
   });
 });
 
+// #474: the sidebar's rename is the same server call as the chat header's,
+// a draft included. Both tests run App.tsx's `workspaceRenameTask` step for
+// step -- the optimistic put, the call, the previous record back on a
+// refusal -- against the real store and the real api.ts.
+describe("scenario 4b: a draft renamed in the sidebar survives the node's refetch", () => {
+  it("renames on the server, so the row the refetch carries has the new name", async () => {
+    store.put(row({ id: "d1", state: "draft", name: "Nové vlákno" }));
+    answer("POST /sessions/d1/rename", row({ id: "d1", state: "draft", name: "Rozpočet", name_is_custom: true }));
+
+    const before = store.get("d1")!;
+    store.put({ ...before, name: "Rozpočet", name_is_custom: true });
+    await renamePersistentSession("d1", "Rozpočet");
+    assert.equal(selectSession(store, "d1")?.name, "Rozpočet");
+
+    // Since #463 the node's list carries the caller's drafts: before the
+    // rename went to the server this refetch wrote the old name back.
+    answer("GET /nodes/n1/sessions", {
+      sessions: [row({ id: "d1", state: "draft", name: "Rozpočet", name_is_custom: true })],
+    });
+    await fetchNodePersistentSessions("n1");
+
+    assert.equal(selectSession(store, "d1")?.name, "Rozpočet");
+    assert.equal(selectNodeThreads(store, "n1")[0].name, "Rozpočet");
+    assert.equal(store.snapshot().size, 1);
+    assert.deepEqual(calls, ["POST /sessions/d1/rename", "GET /nodes/n1/sessions"]);
+  });
+
+  it("puts the previous record back and names the reason when the rename is refused", async () => {
+    store.put(row({ id: "d1", state: "draft", name: "Nové vlákno", instance_id: "work" }));
+    answers.set("POST /sessions/d1/rename", { status: 409, body: { error: "session_closed" } });
+
+    let detailError: string | null = null;
+    const before = store.get("d1")!;
+    store.put({ ...before, name: "Rozpočet", name_is_custom: true });
+    await renamePersistentSession("d1", "Rozpočet").catch((e) => {
+      store.put(before);
+      detailError = `Vlákno se nepodařilo přejmenovat: ${String(e)}`;
+    });
+
+    const after = selectSession(store, "d1");
+    assert.equal(after?.name, "Nové vlákno");
+    assert.equal(after?.name_is_custom, false);
+    // The restore is the whole previous record, not a patch of the
+    // optimistic one.
+    assert.equal(after?.instance_id, "work");
+    assert.equal(after?.state, "draft");
+    assert.equal(selectNodeThreads(store, "n1")[0].name, "Nové vlákno");
+    assert.notEqual(detailError, null);
+    assert.match(String(detailError), /Vlákno se nepodařilo přejmenovat/);
+  });
+});
+
 describe("scenario 5: a frame for an unknown thread is a partial record the list completes", () => {
   it("creates the stub and replaces it whole on the refetch", async () => {
     store.applyFrame(frame({ session_id: "x9", state: "running", name: "Běží jinde" }));
@@ -193,10 +244,11 @@ describe("scenario 5: a frame for an unknown thread is a partial record the list
     assert.equal(partial?.partial, true);
     assert.equal(partial?.runner, null);
     assert.equal(selectRunningCount(store), 1);
-    assert.deepEqual(
-      selectNodeThreads(store, "n1").map((s) => s.id),
-      ["x9"],
-    );
+    // Heard of, but not a thread yet (#475): the burst of frames carries
+    // every running session the caller can see, a hand-opened CLI session
+    // included, so the list is what says whether this one belongs in the
+    // node's sub-rows at all.
+    assert.deepEqual(selectNodeThreads(store, "n1"), []);
 
     answer("GET /nodes/n1/sessions", {
       sessions: [row({ id: "x9", name: "Běží jinde", runner: "claude", instance_id: "tempo" })],
@@ -207,6 +259,10 @@ describe("scenario 5: a frame for an unknown thread is a partial record the list
     assert.equal(complete?.runner, "claude");
     assert.equal(complete?.instance_id, "tempo");
     assert.equal(store.snapshot().size, 1);
+    assert.deepEqual(
+      selectNodeThreads(store, "n1").map((s) => s.id),
+      ["x9"],
+    );
   });
 });
 

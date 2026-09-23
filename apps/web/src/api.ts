@@ -29,6 +29,7 @@ import { apiFetch } from "./lib/backend-url";
 import { isCentralMode } from "./lib/data-mode";
 import type { MoveTarget } from "./lib/file-plan";
 import type { SessionStore } from "./lib/session-store";
+import { parseHandoffRefusal } from "./lib/handoff-refusal";
 
 // The window's session store (#465, spec
 // docs/superpowers/specs/2026-09-22-web-session-state-design.md, "Writing"):
@@ -50,7 +51,10 @@ export function bindSessionStore(store: SessionStore | null): void {
 // state would be the copy going stale in one step.
 function foldIntoSession(id: string, patch: Record<string, unknown>): void {
   const existing = sessionStore?.get(id);
-  if (!existing) return;
+  // A record known only from a live frame is not a row to fold into: it has
+  // no name and no runner, and the refetch that frame triggered replaces it
+  // whole in a moment.
+  if (!existing || existing.partial) return;
   sessionStore?.put({ ...existing, ...patch });
 }
 
@@ -240,6 +244,29 @@ export function closePersistentSession(id: string): Promise<SessionSummary> {
   );
 }
 
+// POST /sessions/:id/handoff (#459) -- "Předat": ends the turn and the run
+// and writes the thread's summary to wip/sessions/<id>-handoff.md in the
+// node's mirror, so another machine can pick the work up from the file
+// (Navázat na handoff there). The answer carries the suspended record and
+// the file's node-relative path; the record goes into the session store,
+// which is what makes the sidebar, the chat header and Relace agree.
+// A plain REST wrapper (not sessionsClient) for the same reason
+// continueSession is one: the Relace tab has no live-channel client.
+// A refusal (409) rejects with HandoffRefusedError carrying the server's
+// Czech reason, which is what the caller shows (handoffErrorText).
+export async function handoffSession(id: string): Promise<{ session: SessionSummary; handoff_path: string }> {
+  const path = `/sessions/${encodeURIComponent(id)}/handoff`;
+  const res = await apiFetch(path, { method: "POST" });
+  if (res.status === 409) {
+    const refusal = parseHandoffRefusal(res.status, await res.clone().text().catch(() => ""));
+    if (refusal) throw refusal;
+  }
+  await throwForStatus(res, `POST ${path}`);
+  const r = (await res.json()) as { session: SessionSummary; handoff_path: string };
+  sessionStore?.put(r.session);
+  return r;
+}
+
 // #375/#376/#426: sets the thread's own model/effort override. Its own
 // device-local route rather than a PATCH /sessions/:id field, because a
 // model change reaches the live run's Query immediately and that run only
@@ -291,6 +318,20 @@ export function fetchPersistentSessionResumeInfo(
   return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
 }
 
+// GET /sessions/:id/events -- a device-local route (#458): the transcript
+// is the running device's own content.db, so the machine that answers is
+// the one that has it. The chat replays the log over the live channel, so
+// this asks for a single row and reads the header only: `transcript_host`
+// is the label of the machine holding the conversation, set only when this
+// device has none of it. Null means "the transcript is here (or there is
+// none yet)".
+export function fetchTranscriptHost(id: string): Promise<string | null> {
+  return jsonRequest<{ events: unknown[]; transcript_host?: string }>(
+    "GET",
+    `/sessions/${encodeURIComponent(id)}/events?limit=1`,
+  ).then((r) => r.transcript_host ?? null);
+}
+
 // GET /sessions/:id -- the raw session record (apps/server/shared/types.ts's
 // SessionRow, a zod schema server-side, deliberately not imported here so
 // this stays web-safe). Every SessionSummary field except the two the server
@@ -315,16 +356,21 @@ export function fetchSession(id: string): Promise<Omit<SessionSummary, "write_co
   });
 }
 
-// POST /sessions -- starts a task (session + first run) as a server-driven
-// run. `brief` omitted creates a draft instead (#374, "a thread opens
-// empty"): no run, `run` comes back null; the first message
-// (sessionsClient.message) is what promotes it and starts the run.
+// POST /sessions -- opens a thread. The web never sends a first message
+// here (#374, "a thread opens empty", and #461: the first message is
+// content, so it travels over the live channel to the device that runs the
+// thread, not through this record route): no run, `run` comes back null,
+// and `sessionsClient.message` is what promotes the draft and starts the
+// run.
 export function startSession(input: {
   node_id: string;
-  brief?: string;
   runner?: string;
   instance_id?: string | null;
   policy?: "default" | "auto";
+  // #460 "Navázat na handoff": a node-relative wip/sessions/<id>-handoff.md
+  // path. The new thread starts from that file's content on this device --
+  // no runner goes with it, the server resolves it.
+  handoff_path?: string;
 }): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
   return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", input).then(
     (r) => {
@@ -332,6 +378,17 @@ export function startSession(input: {
       return r;
     },
   );
+}
+
+// #460 "Navázat na handoff": a new thread on THIS device that continues
+// from a handoff file of the node -- one another thread wrote, possibly on
+// another machine. 409 (Czech message) when the file has not synced here
+// yet; nothing is created then.
+export function startSessionFromHandoff(
+  nodeId: string,
+  handoffPath: string,
+): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
+  return startSession({ node_id: nodeId, handoff_path: handoffPath });
 }
 
 // Opens a new, empty thread on a node -- one click, no modal (#374). The
@@ -1034,9 +1091,11 @@ export async function fetchAccountUsers(): Promise<AccountUser[]> {
   return body.users;
 }
 
-// canManage (global_scope 'manage' | 'admin') drives the sharing UI; `id`
-// drives #343's owner-only action gating (sessionRowAccess). /me returns
-// more (email, name, groups, via) but nothing else here consumes it yet.
+// canManage (global_scope 'manage' | 'admin') drives the sharing UI. Since
+// #457 no session surface gates on identity any more -- every thread the
+// app lists is the caller's own -- so `id` is carried for future callers.
+// /me returns more (email, name, groups, via) but nothing else here
+// consumes it yet.
 export async function fetchMe(): Promise<{ id: string; global_scope: string }> {
   const res = await apiFetch("/me");
   await throwForStatus(res, "me");

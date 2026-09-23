@@ -18,8 +18,11 @@ import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/ru
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import { createSessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
 import { setSessionRuntimeForTesting } from "../apps/server/boot/session-runtime.js";
+import { installTestContentDb } from "./helpers/content-db.js";
+import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import { createSession } from "../apps/server/domain/sessions.js";
+import { localHostId } from "../apps/server/domain/runner/hosts.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import type { SessionSummary, SessionRunRow, SessionEventRow } from "../apps/server/shared/api-types.js";
@@ -99,12 +102,18 @@ function stubProvision(overrides: Partial<ProvisionRunResult> = {}) {
   });
 }
 
-function installRuntime(script: readonly FakeScriptStep[]) {
+// #456: the runtime writes the transcript to the device's content.db; a
+// fresh in-memory one per runtime keeps each test's transcript its own.
+let content: SessionContentStore;
+
+async function installRuntime(script: readonly FakeScriptStep[]) {
   clearRegistryForTests();
   const adapter = new FakeRunnerAdapter({ script });
   registerAdapter(adapter);
+  content = (await installTestContentDb()).content;
   const runtime = createSessionRuntime({
     store: new DbSessionStore(dbFixture.db),
+    content,
     registry: { getAdapter: (id) => (id === adapter.id ? adapter : null) },
     provision: stubProvision(),
   });
@@ -148,7 +157,7 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   test("POST /sessions starts a task; GET events shows run_started + the brief as user_message", async () => {
-    installRuntime([]);
+    await installRuntime([]);
     const res = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "Fix the bug",
@@ -157,7 +166,12 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal(res.statusCode, 201);
     const body = JSON.parse(res.body) as { session: SessionSummary; run: SessionRunRow };
     assert.equal(body.session.node_id, dbFixture.nodeId);
-    assert.equal(body.session.brief, "Fix the bug");
+    // #456: the brief is content -- the record carries none of it; the
+    // device's content store does, and the transcript shows it as the
+    // first user_message (asserted just below). #461: the record's wire
+    // shape does not even have the field.
+    assert.ok(!("brief" in body.session));
+    assert.equal((await content.getContent(body.session.id))?.brief, "Fix the bug");
     assert.equal(body.session.runner, "fake");
     assert.equal(body.run.session_id, body.session.id);
 
@@ -175,7 +189,7 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   test("POST /sessions 400s for an unknown runner", async () => {
-    installRuntime([]);
+    await installRuntime([]);
     const res = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -186,7 +200,7 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   test("POST /sessions 400s for an unknown instance", async () => {
-    installRuntime([]);
+    await installRuntime([]);
     const res = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -200,7 +214,7 @@ describe("task REST endpoints under /sessions", () => {
   // #375/#426: model/effort round-trip through POST /sessions and
   // POST /sessions/:id/model.
   test("POST /sessions persists model/effort; SessionSummary carries them", async () => {
-    installRuntime([]);
+    await installRuntime([]);
     const res = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -218,7 +232,7 @@ describe("task REST endpoints under /sessions", () => {
   // back from there -- so the Relace row and the chat header show which
   // machine ran the task without a per-row GET /sessions/:id/runs.
   test("POST /sessions stamps this host on the run; SessionSummary carries id and label", async () => {
-    installRuntime([]);
+    await installRuntime([]);
     const res = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -235,7 +249,7 @@ describe("task REST endpoints under /sessions", () => {
   // half has to run on the device driving the run, so it got its own
   // device-local route.
   test("POST /sessions/:id/model sets model on a session with a live run, reaching the adapter's live query", async () => {
-    const { adapter } = installRuntime([{ wait: "message" }]);
+    const { adapter } = await installRuntime([{ wait: "message" }]);
     const startRes = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -255,7 +269,7 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   test("POST /sessions/:id/model sets effort without touching the live run (no live setter for it)", async () => {
-    const { adapter } = installRuntime([{ wait: "message" }]);
+    const { adapter } = await installRuntime([{ wait: "message" }]);
     const startRes = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -276,13 +290,13 @@ describe("task REST endpoints under /sessions", () => {
   // already carries the device's default runner (the fake is the only
   // one registered) and instance (none configured, so null).
   test("POST /sessions without a brief creates a draft, no run started", async () => {
-    installRuntime([]);
+    await installRuntime([]);
     const res = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
     assert.equal(res.statusCode, 201);
     const body = JSON.parse(res.body) as { session: SessionSummary; run: SessionRunRow | null };
     assert.equal(body.session.state, "draft");
     assert.equal(body.session.name, "Nový úkol");
-    assert.equal(body.session.brief, null);
+    assert.ok(!("brief" in body.session));
     assert.equal(body.session.runner, "fake");
     assert.equal(body.session.instance_id, null);
     assert.equal(body.run, null);
@@ -301,7 +315,7 @@ describe("task REST endpoints under /sessions", () => {
   // v2 context ring: the runtime folds each context_usage event's counters
   // onto the session row, so a list row carries them without the log.
   test("a context_usage event folds its counters into the session summary", async () => {
-    installRuntime([
+    await installRuntime([
       {
         kind: "context_usage",
         payload: {
@@ -333,7 +347,7 @@ describe("task REST endpoints under /sessions", () => {
   // patched onto the draft after creation -- instead of re-resolving the
   // organisation's default.
   test("promotion keeps the draft's own runner/instance instead of re-resolving", async () => {
-    installRuntime([{ wait: "message" }]);
+    await installRuntime([{ wait: "message" }]);
     const draftRes = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
     const { session: draft } = JSON.parse(draftRes.body) as { session: SessionSummary };
     const patchRes = await call(makeIdentity("U1"), "PATCH", `/sessions/${draft.id}`, { instance_id: "01INST" });
@@ -352,7 +366,7 @@ describe("task REST endpoints under /sessions", () => {
     // A trailing wait keeps the run live -- an empty script would auto-
     // complete right away and (#378) fall into the auto-summary/suspend
     // path, which is not what this test is about.
-    installRuntime([{ wait: "message" }]);
+    await installRuntime([{ wait: "message" }]);
     const draftRes = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
     const { session: draft } = JSON.parse(draftRes.body) as { session: SessionSummary };
 
@@ -368,7 +382,11 @@ describe("task REST endpoints under /sessions", () => {
     const updated = JSON.parse(getRes.body) as { state: string; runner: string; brief: string; name: string; name_is_custom: number };
     assert.equal(updated.state, "running");
     assert.equal(updated.runner, "fake");
-    assert.equal(updated.brief, "Fix the login bug please, it throws on empty passwords");
+    assert.equal(updated.brief, null, "#456: the first message is content, not a record column");
+    assert.equal(
+      (await content.getContent(draft.id))?.brief,
+      "Fix the login bug please, it throws on empty passwords",
+    );
     assert.equal(updated.name, "Fix the login bug please, it throws on empty passwords");
     assert.equal(updated.name_is_custom, 1);
 
@@ -403,7 +421,7 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   test("DELETE /sessions/:id removes a draft", async () => {
-    installRuntime([]);
+    await installRuntime([]);
     const draftRes = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
     const { session: draft } = JSON.parse(draftRes.body) as { session: SessionSummary };
 
@@ -415,7 +433,7 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   test("DELETE /sessions/:id refuses a non-draft session", async () => {
-    installRuntime([]);
+    await installRuntime([]);
     const res0 = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -445,7 +463,7 @@ describe("task REST endpoints under /sessions", () => {
       { wait: "answer" },
       { kind: "assistant_message", payload: { text: "done" } },
     ];
-    installRuntime(script);
+    await installRuntime(script);
     const start = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -476,7 +494,7 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   test("interrupt leaves the run live, continue moves to a new session, and close ends it (#378)", async () => {
-    installRuntime([{ wait: "message" }]);
+    await installRuntime([{ wait: "message" }]);
     const start = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -516,7 +534,7 @@ describe("task REST endpoints under /sessions", () => {
   });
 
   test("events?after pages", async () => {
-    installRuntime([{ kind: "assistant_message", payload: { text: "hello" } }]);
+    await installRuntime([{ kind: "assistant_message", payload: { text: "hello" } }]);
     const start = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -535,8 +553,11 @@ describe("task REST endpoints under /sessions", () => {
     assert.ok(restEvents.every((e) => e.seq > firstSeq));
   });
 
-  test("a second user who can see the node reads events but cannot message; interrupt needs manage scope", async () => {
-    installRuntime([{ wait: "message" }]);
+  // #457: a thread is its owner's. A second user who can see the node --
+  // manage scope included -- reaches none of its routes and is told the
+  // thread does not exist.
+  test("a second user who can see the node reaches nothing of the owner's thread, manage included", async () => {
+    await installRuntime([{ wait: "message" }]);
     const start = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
       brief: "x",
@@ -545,33 +566,63 @@ describe("task REST endpoints under /sessions", () => {
     const { session } = JSON.parse(start.body) as { session: SessionSummary };
 
     const eventsRes = await call(makeIdentity("U2"), "GET", `/sessions/${session.id}/events`);
-    assert.equal(eventsRes.statusCode, 200);
+    assert.equal(eventsRes.statusCode, 404);
 
     const messageRes = await call(makeIdentity("U2"), "POST", `/sessions/${session.id}/messages`, { text: "hi" });
-    assert.equal(messageRes.statusCode, 403);
+    assert.equal(messageRes.statusCode, 404);
 
     const interruptDenied = await call(makeIdentity("U2", "write"), "POST", `/sessions/${session.id}/interrupt`);
-    assert.equal(interruptDenied.statusCode, 403);
+    assert.equal(interruptDenied.statusCode, 404);
 
-    const interruptAllowed = await call(makeIdentity("U2", "manage"), "POST", `/sessions/${session.id}/interrupt`);
-    assert.equal(interruptAllowed.statusCode, 200);
+    const interruptAsManager = await call(makeIdentity("U2", "manage"), "POST", `/sessions/${session.id}/interrupt`);
+    assert.equal(interruptAsManager.statusCode, 404);
 
+    // Nothing reached the runtime, so the owner's transcript is untouched.
     const eventsAfter = await call(makeIdentity("U1"), "GET", `/sessions/${session.id}/events`);
     const events = (JSON.parse(eventsAfter.body) as { events: SessionEventRow[] }).events;
-    const stateChanged = events.find(
-      (e) => e.kind === "state_changed" && (e.payload as { by?: string }).by === "U2",
+    assert.ok(
+      !events.some((e) => e.kind === "state_changed" && (e.payload as { by?: string }).by === "U2"),
+      "a non-owner never appends anything to the owner's thread",
     );
-    assert.ok(stateChanged, "a non-owner interrupt must append a state_changed event naming the actor");
   });
 
-  test("a node-less session is forbidden for everyone but the owner", async () => {
-    installRuntime([]);
+  // #458: the transcript is the device's, so a device that did not run a
+  // thread has no rows for it -- the answer says where they are instead of
+  // looking like an empty chat.
+  test("events of a thread that ran on another device answer empty with transcript_host", async () => {
+    await installRuntime([]);
+    const elsewhere = await createSession(dbFixture.db, "U1", {
+      node_id: dbFixture.nodeId,
+      session_type: "interactive_task",
+      host_id: "jina-masina",
+    });
+
+    const res = await call(makeIdentity("U1"), "GET", `/sessions/${elsewhere.id}/events`);
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as { events: SessionEventRow[]; transcript_host?: string };
+    assert.deepEqual(body.events, []);
+    assert.equal(body.transcript_host, "jina-masina");
+
+    // A thread of this device says nothing, even before its first event.
+    const here = await createSession(dbFixture.db, "U1", {
+      node_id: dbFixture.nodeId,
+      session_type: "interactive_task",
+      host_id: localHostId(),
+    });
+    const hereRes = await call(makeIdentity("U1"), "GET", `/sessions/${here.id}/events`);
+    const hereBody = JSON.parse(hereRes.body) as { events: SessionEventRow[]; transcript_host?: string };
+    assert.deepEqual(hereBody.events, []);
+    assert.equal(hereBody.transcript_host, undefined);
+  });
+
+  test("a node-less session is invisible to everyone but the owner", async () => {
+    await installRuntime([]);
     const session = await createSession(dbFixture.db, "U1", { node_id: null, session_type: "interactive_chat" });
 
     const ownerRes = await call(makeIdentity("U1"), "GET", `/sessions/${session.id}/events`);
     assert.equal(ownerRes.statusCode, 200);
 
     const otherRes = await call(makeIdentity("U2", "manage"), "GET", `/sessions/${session.id}/events`);
-    assert.equal(otherRes.statusCode, 403);
+    assert.equal(otherRes.statusCode, 404);
   });
 });

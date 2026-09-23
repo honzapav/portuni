@@ -4,6 +4,8 @@
 
 import "varlock/auto-load";
 import { ensureSchema } from "./infra/schema.js";
+import { isCentralServer } from "./infra/server-config.js";
+import { importPersonalWorkspaceSessionContentOnBoot } from "./boot/content-import.js";
 import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { startRemoteWatcher } from "./boot/remote-watch.js";
@@ -21,6 +23,15 @@ import { getSessionRuntime } from "./boot/session-runtime.js";
 
 async function main() {
   await ensureSchema();
+  // This entry point is either the central server or a personal workspace.
+  // A personal workspace keeps its threads' content in content.db
+  // (PORTUNI_DATA_DIR, else cwd, next to runners.json): opened here and
+  // filled once from the graph db before a request is served -- the same
+  // boot step desktop.ts's local branch runs. The central server never
+  // opens a content.db: what content it has is the legacy rows an older
+  // sidecar wrote (sessionContentStoreForProcess()).
+  const central = isCentralServer();
+  if (!central) await importPersonalWorkspaceSessionContentOnBoot();
   registerRunnerAdapters();
   startHttpServer();
   // Standalone server: opt in with PORTUNI_WATCH_MIRRORS=1. Default off so it
@@ -37,7 +48,10 @@ async function main() {
   // resolves any 'running' session a runner task was driving, so the other
   // sweep's own query for stale 'running' rows sees an already-correct
   // picture instead of racing it.
-  void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
+  // The central server runs no runner process, so it has no pid file to
+  // sweep; its running sweep is record maintenance only (#458).
+  if (central) void sweepStaleRunningSessionsOnBoot();
+  else void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
   void sweepStaleDraftSessionsOnBoot();
   void sweepArchivedSessionsOnBoot();
   // #406: no MCP transport survives a restart, so every read-file spill

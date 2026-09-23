@@ -112,6 +112,7 @@ import {
   handleAppendSessionEvents,
   handleCloseSession,
   handleContinueSession,
+  handleHandoffSession,
   handleCreateSessionRecord,
   handleCreateSessionRun,
   handleDeleteSession,
@@ -131,6 +132,8 @@ import {
   handleStartSession,
   handleListSessions,
   handleTransitionSessionState,
+  handleListLegacySessionContent,
+  handleGetLegacySessionContent,
 } from "./sessions.js";
 import {
   handleCreateRunnerInstance,
@@ -770,6 +773,19 @@ async function routeSessions(
     await handleCreateSessionRecord(req, res, identity);
     return true;
   }
+  // Central, read once by a sync agent on its first boot (#456 follow-up):
+  // the legacy content of the caller's own threads that ran on that device.
+  // Before the bare /sessions/:id match, which would read the literal
+  // segment as a session id.
+  if (pathname === "/sessions/legacy-content" && method === "GET") {
+    await handleListLegacySessionContent(req, res, identity, url);
+    return true;
+  }
+  const legacyContentMatch = pathname.match(/^\/sessions\/([^/]+)\/legacy-content$/);
+  if (legacyContentMatch && method === "GET") {
+    await handleGetLegacySessionContent(req, res, identity, decodeURIComponent(legacyContentMatch[1]), url);
+    return true;
+  }
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
   if (stateMatch && method === "POST") {
     await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));
@@ -786,7 +802,7 @@ async function routeSessions(
     return true;
   }
   // Central record half (#427): the session's read/write set, read by the
-  // sync agent's suspend fallback -- a central route, never device-local
+  // sync agent's server-side suspend -- a central route, never device-local
   // (the device is exactly the side that has no session_scope table).
   const scopeMatch = pathname.match(/^\/sessions\/([^/]+)\/scope$/);
   if (scopeMatch && method === "GET") {
@@ -839,6 +855,12 @@ async function routeSessions(
   const closeMatch = pathname.match(/^\/sessions\/([^/]+)\/close$/);
   if (closeMatch && method === "POST") {
     await handleCloseSession(req, res, identity, decodeURIComponent(closeMatch[1]));
+    return true;
+  }
+  // #459: "Předat" -- ends the turn and the run, writes the handoff file.
+  const handoffMatch = pathname.match(/^\/sessions\/([^/]+)\/handoff$/);
+  if (handoffMatch && method === "POST") {
+    await handleHandoffSession(req, res, identity, decodeURIComponent(handoffMatch[1]));
     return true;
   }
   const eventsMatch = pathname.match(/^\/sessions\/([^/]+)\/events$/);

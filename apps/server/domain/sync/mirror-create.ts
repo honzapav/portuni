@@ -150,7 +150,7 @@ async function materializeAndRegen(
       portuniRoot,
       guardScriptPath,
       dataSources: await dataSourcesForNode(m.node_id),
-      orientation: await orientationForNode(m.node_id),
+      orientation: await orientationForNode(m.node_id, SOLO_USER),
     });
     aggregated.written.push(...r.written);
     aggregated.errors.push(...r.errors);
@@ -164,7 +164,7 @@ async function materializeAndRegen(
       portuniRoot,
       guardScriptPath,
       dataSources: await dataSourcesForNode(newNodeId),
-      orientation: await orientationForNode(newNodeId),
+      orientation: await orientationForNode(newNodeId, SOLO_USER),
     });
     aggregated.written.push(...r.written);
     aggregated.errors.push(...r.errors);

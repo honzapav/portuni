@@ -30,6 +30,10 @@ async function setupServer() {
   const { ensureSchema } = await import("../apps/server/infra/schema.js");
   const { getDb, setDbForTesting } = await import("../apps/server/infra/db.js");
   const { resetGateCachesForTesting } = await import("../apps/server/http/middleware.js");
+  // #456: the suspend's summary is content and lands in this device's
+  // content.db, so the test needs one installed before the server runs.
+  const { installTestContentDb, clearTestContentDb } = await import("./helpers/content-db.js");
+  const { content } = await installTestContentDb();
 
   const tmp = mkdtempSync(join(tmpdir(), "portuni-mcp-transport-suspend-"));
   const dbPath = join(tmp, "portuni.db");
@@ -50,9 +54,11 @@ async function setupServer() {
   return {
     base: `http://127.0.0.1:${address.port}`,
     db: getDb(),
+    content,
     async teardown() {
       await handle.shutdown();
       setDbForTesting(null);
+      clearTestContentDb();
       if (prevTurso === undefined) delete process.env.TURSO_URL;
       else process.env.TURSO_URL = prevTurso;
       rmSync(tmp, { recursive: true, force: true });
@@ -80,7 +86,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number): Pr
 }
 
 test("a client disconnecting on its own suspends its session with reason 'disconnect'", async (t) => {
-  const { base, db, teardown } = await setupServer();
+  const { base, db, content, teardown } = await setupServer();
   t.after(teardown);
 
   const { listSessions } = await import("../apps/server/domain/sessions.js");
@@ -106,9 +112,7 @@ test("a client disconnecting on its own suspends its session with reason 'discon
   }, 5000);
   assert.ok(suspended, "the session must reach 'suspended', not 'closed'");
 
-  const rows = await listSessions(db);
-  const row = rows.find((s) => s.id === created!.id);
-  const reason = parseServerHandoffReason(row?.handoff_inline ?? null);
+  const reason = parseServerHandoffReason((await content.getContent(created!.id))?.handoff_inline ?? null);
   assert.ok(
     reason === "disconnect" || reason === "idle",
     `expected a server-suspend reason for a dropped connection, got ${reason}`,
@@ -116,7 +120,7 @@ test("a client disconnecting on its own suspends its session with reason 'discon
 });
 
 test("the transport's own idle GC suspends a stale session with reason 'idle'", async (t) => {
-  const { base, db, teardown } = await setupServer();
+  const { base, db, content, teardown } = await setupServer();
   t.after(teardown);
 
   const { listSessions } = await import("../apps/server/domain/sessions.js");
@@ -137,7 +141,5 @@ test("the transport's own idle GC suspends a stale session with reason 'idle'", 
   }, 5000);
   assert.ok(suspended, "the idle GC must suspend the session, not leave it running forever");
 
-  const rows = await listSessions(db);
-  const row = rows.find((s) => s.id === created!.id);
-  assert.equal(parseServerHandoffReason(row?.handoff_inline ?? null), "idle");
+  assert.equal(parseServerHandoffReason((await content.getContent(created!.id))?.handoff_inline ?? null), "idle");
 });

@@ -8,8 +8,9 @@ import assert from "node:assert/strict";
 import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { createSessionsClient, createDirectWsTransport } from "../apps/web/src/lib/sessions-client.js";
-import { mountedChatSessions } from "../apps/web/src/lib/session-views.js";
-import type { SessionState } from "../apps/web/src/types.js";
+import { createSessionStore } from "../apps/web/src/lib/session-store.js";
+import { selectMountedThreads, selectNodeRecordIds } from "../apps/web/src/lib/session-selectors.js";
+import type { SessionState, SessionSummary } from "../apps/web/src/types.js";
 
 interface SubscribeCall {
   session_id: string;
@@ -244,15 +245,42 @@ describe("sessions-client: direct-WS transport", () => {
 // #429: Práce keeps one mounted SessionChat per open thread and only flips
 // which one is visible, so a switch must not re-subscribe. There is no DOM
 // here, so this drives the real client through the mount set the real
-// helper computes, reconciled the way React reconciles keyed children --
-// a key that appears mounts (subscribe), a key that disappears unmounts
-// (unsubscribe), a key that stays put does nothing.
+// selector computes off the real store, reconciled the way React reconciles
+// keyed children -- a key that appears mounts (subscribe), a key that
+// disappears unmounts (unsubscribe), a key that stays put does nothing.
 describe("sessions-client: the mounted-thread set (#429)", () => {
-  type Thread = { id: string; node_id: string | null; state: SessionState };
+  function row(id: string, node_id: string | null, state: SessionState): SessionSummary {
+    return {
+      id,
+      node_id,
+      user_id: "u1",
+      session_type: "interactive_task",
+      cli: null,
+      instance_id: null,
+      terminal_id: null,
+      brief: null,
+      runner: "claude",
+      host_id: null,
+      host_label: null,
+      waiting_since: null,
+      state,
+      name: id,
+      name_is_custom: false,
+      handoff_path: null,
+      write_count: 0,
+      model: null,
+      effort: null,
+      context_used_tokens: null,
+      context_max_tokens: null,
+      created_at: "2026-09-22 10:00:00",
+      last_active_at: "2026-09-22 10:00:00",
+      closed_at: null,
+    };
+  }
 
   function keyedReconciler(client: { subscribe(id: string): Promise<void>; unsubscribe(id: string): void }) {
     let mounted: string[] = [];
-    return async (next: readonly Thread[]) => {
+    return async (next: readonly { id: string }[]) => {
       const ids = next.map((s) => s.id);
       for (const id of mounted) if (!ids.includes(id)) client.unsubscribe(id);
       for (const id of ids) if (!mounted.includes(id)) await client.subscribe(id);
@@ -265,20 +293,18 @@ describe("sessions-client: the mounted-thread set (#429)", () => {
     const client = createSessionsClient({ transport: testTransport(server) });
     clients.push(client);
 
-    const a: Thread = { id: "A", node_id: "n1", state: "running" };
-    const b: Thread = { id: "B", node_id: "n1", state: "suspended" };
-    const c: Thread = { id: "C", node_id: "n2", state: "running" };
-    const byNode = { n1: [a, b], n2: [c] };
+    const store = createSessionStore();
+    store.putMany([row("A", "n1", "running"), row("B", "n1", "suspended"), row("C", "n2", "running")]);
     const render = keyedReconciler(client);
 
     // Two nodes open, A shown.
-    await render(mountedChatSessions(byNode, ["n1", "n2"], a));
+    await render(selectMountedThreads(store, ["n1", "n2"], "A"));
     await waitUntil(() => server.subscribeCalls.length === 3);
 
     // Switch to B, then to C, then back to A: the mounted set never changes.
-    await render(mountedChatSessions(byNode, ["n1", "n2"], b));
-    await render(mountedChatSessions(byNode, ["n1", "n2"], c));
-    await render(mountedChatSessions(byNode, ["n1", "n2"], a));
+    await render(selectMountedThreads(store, ["n1", "n2"], "B"));
+    await render(selectMountedThreads(store, ["n1", "n2"], "C"));
+    await render(selectMountedThreads(store, ["n1", "n2"], "A"));
 
     const subscribesFor = (id: string) => server.subscribeCalls.filter((call) => call.session_id === id).length;
     assert.equal(subscribesFor("A"), 1);
@@ -286,13 +312,16 @@ describe("sessions-client: the mounted-thread set (#429)", () => {
     assert.equal(subscribesFor("C"), 1);
     assert.deepEqual(server.unsubscribeCalls, []);
 
-    // Closing node n2 unmounts its thread and unsubscribes it, and only it.
-    await render(mountedChatSessions({ n1: [a, b] }, ["n1"], a));
+    // Closing node n2 drops its records and unsubscribes its thread, and
+    // only it.
+    store.removeMany(selectNodeRecordIds(store, "n2", "A"));
+    await render(selectMountedThreads(store, ["n1"], "A"));
     await waitUntil(() => server.unsubscribeCalls.length === 1);
     assert.deepEqual(server.unsubscribeCalls, ["C"]);
 
     // Closing thread B (the × on its sub-row) unsubscribes B alone.
-    await render(mountedChatSessions({ n1: [a] }, ["n1"], a));
+    store.put(row("B", "n1", "closed"));
+    await render(selectMountedThreads(store, ["n1"], "A"));
     await waitUntil(() => server.unsubscribeCalls.length === 2);
     assert.deepEqual(server.unsubscribeCalls, ["C", "B"]);
     assert.equal(subscribesFor("A"), 1);

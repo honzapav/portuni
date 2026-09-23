@@ -6,6 +6,7 @@ dist/
 *.tsbuildinfo
 env.d.ts
 portuni.db
+content.db
 .firecrawl/
 
 # Project-scoped MCP configs are no longer used by Portuni — connection

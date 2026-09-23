@@ -19,15 +19,24 @@ import { getSessionScope, threadNameFromFirstMessage } from "../sessions.js";
 import {
   buildRunSummaryContent,
   checkConversationResumable,
-  suspendSessionServerSide,
+  extractHandoffTitle,
+  isHandoffRelativePath,
+  readNodeHandoffFile,
+  createSuspendServerSide,
+  localSuspendDeps,
   type ServerHandoffReason,
+  type SuspendServerSide,
+  type SuspendServerSideOptions,
   type SummaryEvent,
 } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
-import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
+import type { SessionRunRow, SessionStore } from "./store.js";
+import type { ListEventsOptions, SessionContentStore } from "./store-content.js";
+import type { SessionEventRow } from "../../shared/api-types.js";
 import { detectAll } from "./registry.js";
 import { getInstanceDefaults, getInstanceEnv, listInstances, type InstanceDefaults } from "./instances.js";
-import { localHostId } from "./hosts.js";
+import { localHostId, resolveHostLabel } from "./hosts.js";
+import { getMirrorPath } from "../sync/mirror-registry.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
@@ -49,6 +58,25 @@ import type {
 // installed-and-logged-in runner, and the node's organization's default
 // instance for it, if one is set.
 export class NoRunnerAvailableError extends Error {}
+
+// #459 (Předat): the thread cannot be handed to another machine right now.
+// `code` is what the REST/live-channel layer answers with (409); `message`
+// is Czech, because it is shown to the user as-is.
+export class SessionHandoffError extends Error {
+  constructor(
+    readonly code:
+      | "HANDOFF_NOT_ALLOWED"
+      | "HANDOFF_NO_MIRROR"
+      | "HANDOFF_RUN_ELSEWHERE"
+      | "HANDOFF_TRANSCRIPT_ELSEWHERE"
+      | "HANDOFF_NO_CONTENT"
+      | "HANDOFF_FILE_NOT_HERE"
+      | "HANDOFF_PATH_INVALID",
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 // Resolves the node's organization -- the key the runner instance's
 // org_defaults are looked up under. Local mode reads the belongs_to edge
@@ -153,17 +181,24 @@ export type PublishedEvent = (CanonicalEvent & { seq: number }) | DeltaFrame | S
 export type RuntimeListener = (sessionId: string, event: PublishedEvent) => void;
 
 export interface CreateSessionRuntimeDeps {
+  // The RECORD half: state, runner, instance, runs. DbSessionStore in a
+  // personal workspace, CentralSessionStore in a team workspace.
   store: SessionStore;
+  // The CONTENT half, always this device's own content.db (#456,
+  // docs/superpowers/specs/2026-09-22-local-sessions-design.md): the
+  // transcript, the first message and the inline handoff summary. Same
+  // object in both workspaces -- the central server never sees any of it.
+  content: SessionContentStore;
   registry: RunnerRegistryLookup;
   provision: (input: ProvisionRunInput) => Promise<ProvisionRunResult>;
   // #378: writes the mechanical summary and moves the session to suspended
   // -- called whenever a run ends other than by Uzavřít/continue (any
   // reason), and by the idle sweep specifically ("idle"). Defaults to the
-  // local-mode implementation (suspendSessionServerSide against the graph
-  // db); boot/session-runtime.ts's createAgentSessionRuntime supplies
-  // domain/runner/suspend-fallback-central.ts's version instead, since
-  // agent mode has no graph db to write against.
-  suspendFallback?: (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null>;
+  // local-mode binding (suspendSessionServerSide against the graph db);
+  // boot/session-runtime.ts's createAgentSessionRuntime supplies the same
+  // code with its two graph-db reads pointed at the central server (#458),
+  // since agent mode has no graph db to write against.
+  suspendFallback?: SuspendServerSide;
   // #407: how a node's organization is resolved when a draft's first
   // message picks the organization's default runner instance. Defaults to
   // the local graph-db query; createAgentSessionRuntime supplies the
@@ -198,6 +233,18 @@ export interface CreateDraftInput {
   nodeId: string;
   model?: string | null;
   effort?: string | null;
+}
+
+// #460 "Navázat na handoff": a new thread on THIS device that starts from a
+// handoff file some other thread wrote -- possibly on another machine, which
+// is the whole point. Only the node and the file's node-relative path: the
+// runner/instance are resolved here the way a draft's are, and the name
+// comes out of the summary's own title.
+export interface StartFromHandoffInput {
+  userId: string;
+  nodeId: string;
+  handoffPath: string;
+  policy?: PermissionPolicy;
 }
 
 export interface SessionSignals {
@@ -251,6 +298,25 @@ export interface SessionRuntime {
   // suspend never overwrites it) and publishes a session_changed frame.
   renameSession(sessionId: string, name: string): Promise<SessionRow>;
   closeSession(sessionId: string): Promise<SessionRow>;
+  // #459 "Předat": hands the thread to another machine through its handoff
+  // file. On a running thread the current turn is interrupted, the run is
+  // drained and ended, and the same summary path a limit or an idle end
+  // takes writes wip/sessions/<id>-handoff.md into the node's mirror,
+  // registers it and suspends the record -- only this time because the
+  // owner asked (reason "handoff"). On an already-suspended thread that
+  // has its file, a no-op answering the same path. A draft, a closed
+  // thread, or a node with no mirror on this device throws
+  // SessionHandoffError -- there is no file to hand over.
+  handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }>;
+  // #459/#460 "Navázat na handoff": the other end of Předat. Creates a new
+  // thread on this device from a handoff file of the node -- a new record
+  // (runner/instance resolved as for a draft, name from the summary's
+  // title), whose first run gets the file's content as orientation, the way
+  // a resume from a summary does. No events are imported: the transcript
+  // starts here, and the thread the file came from is never touched.
+  // The file is read from this device's mirror; no mirror or no file yet is
+  // a SessionHandoffError and creates no record at all.
+  startFromHandoff(input: StartFromHandoffInput): Promise<{ session: SessionRow; run: SessionRunRow }>;
   // #378: closes THIS session (summary written from what's in the log,
   // used to seed the new one -- not from a fresh suspend, since Uzavřít-
   // shaped closes never go through the auto-summary path) and starts a new
@@ -264,12 +330,6 @@ export interface SessionRuntime {
   // REST answer route) validate a request_id against the actually-pending
   // question before forwarding a decision to the adapter.
   pendingQuestion(sessionId: string): QuestionPayload | null;
-  // Access table (remote-hosts-and-task-queue-design spec, "Visibility and
-  // control"): appends a state_changed event naming the actor for an
-  // interrupt/suspend/close performed by someone other than the session's
-  // owner -- called by the REST route right after the action succeeds, so
-  // "from"/"to" reflect the actor, not a real state transition.
-  recordStoppedBy(sessionId: string, by: string): Promise<void>;
   listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
   // Number of live listeners currently registered for `target` (a session
   // id, or "*" for the global one) -- the live channel (api/sessions-ws.ts)
@@ -294,9 +354,11 @@ interface LiveRun {
 }
 
 export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRuntime {
-  const { store, registry, provision } = deps;
+  const { store, content, registry, provision } = deps;
   const suspendFallback =
-    deps.suspendFallback ?? ((sessionId: string, reason: ServerHandoffReason) => suspendSessionServerSide(getDb(), sessionId, reason));
+    deps.suspendFallback ??
+    ((sessionId: string, reason: ServerHandoffReason, opts?: SuspendServerSideOptions) =>
+      createSuspendServerSide(localSuspendDeps(getDb(), content))(sessionId, reason, opts));
   const resolveNodeOrgId = deps.resolveNodeOrgId ?? resolveNodeOrgIdLocal;
 
   const liveRuns = new Map<string, LiveRun>();
@@ -369,7 +431,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     runId: string | null,
     events: CanonicalEvent[],
   ): Promise<void> {
-    const seqs = await store.appendEvents(sessionId, runId, events);
+    const seqs = await content.appendEvents(sessionId, runId, events);
     events.forEach((event, i) => {
       publish(sessionId, { ...event, seq: seqs[i] });
     });
@@ -627,13 +689,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const session = await store.createSession({
       node_id: input.nodeId,
       user_id: input.userId,
-      brief: input.brief,
       runner: input.runner,
       instance_id: instanceId,
       host_id: localHostId(),
       model: input.model ?? null,
       effort: input.effort ?? null,
     });
+    // The brief is the thread's first message, i.e. content: it stays on
+    // this device even when the record above was created on central.
+    await content.setContent(session.id, { brief: input.brief });
 
     const provisioned = await provision({
       userId: input.userId,
@@ -703,9 +767,11 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const { runner, instanceId } = session.runner
       ? { runner: session.runner, instanceId: session.instance_id }
       : await resolveTaskDefaults(session.node_id, resolveNodeOrgId);
+    // Content first, record second: the first message and the user_message
+    // event below are the device's, the patch is the record's (#456).
+    await content.setContent(sessionId, { brief: text });
     const updated = await store.patchSession(sessionId, {
       state: "running",
-      brief: text,
       runner,
       instance_id: instanceId,
       // Naming (#374): the thread names itself from its first message,
@@ -786,7 +852,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     } else {
       const summary = session.handoff_path
         ? await readFile(join(provisioned.cwd, session.handoff_path), "utf8").catch(() => null)
-        : session.handoff_inline;
+        : (await content.getContent(sessionId))?.handoff_inline ?? null;
       if (summary) {
         runProvisioned = {
           ...provisioned,
@@ -916,12 +982,179 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // -- the resulting run_ended is meant to fall through to the auto-
   // summary/suspend path in handleAdapterEvent, tagged "idle" specifically
   // (via pendingEndReason) rather than the generic "run_ended".
-  async function endIdleRun(sessionId: string): Promise<void> {
+  async function endRunWithReason(sessionId: string, reason: ServerHandoffReason): Promise<boolean> {
     const live = liveRuns.get(sessionId);
-    if (!live) return;
-    pendingEndReason.set(sessionId, "idle");
+    if (!live) return false;
+    pendingEndReason.set(sessionId, reason);
     await live.handle.close();
     await drain(sessionId);
+    return true;
+  }
+
+  async function endIdleRun(sessionId: string): Promise<void> {
+    await endRunWithReason(sessionId, "idle");
+  }
+
+  // #459 "Předat". Every refusal comes BEFORE any side effect: nothing is
+  // interrupted, ended or suspended unless the file can be written here.
+  //   - a draft or closed thread: nothing to hand over;
+  //   - no mirror of the node on this device: there is nowhere to write the
+  //     file;
+  //   - running, but the run is live on another device: only that device
+  //     can end it and summarise it;
+  //   - suspended with no file, and the transcript is on another device:
+  //     the summary is built from it, so only that device can write it.
+  // Running here: cancel the turn in flight first (the summary should
+  // describe a finished thought, not one mid-sentence), let the queue
+  // drain, then end the run -- the run_ended that follows falls through
+  // handleAdapterEvent's auto-summary path, tagged "handoff", so the file,
+  // its registration and the record patch are the one suspend
+  // implementation, not a second copy. A running thread whose run was on
+  // this device but has no live handle any more (the device restarted
+  // under it) still gets its summary: the suspend path needs no adapter.
+  // Suspended with no file: the same summary path writes the file now.
+  async function handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
+    const session = await mustGetSession(sessionId);
+    if (session.state === "suspended" && session.handoff_path) {
+      return { session, handoff_path: session.handoff_path };
+    }
+    if (session.state !== "running" && session.state !== "suspended") {
+      throw new SessionHandoffError(
+        "HANDOFF_NOT_ALLOWED",
+        "Předat lze jen běžící nebo pozastavené vlákno.",
+      );
+    }
+    if (!session.node_id || !(await getMirrorPath(session.user_id, session.node_id))) {
+      throw noMirrorHandoffError();
+    }
+
+    if (session.state === "running") {
+      if (!liveRuns.has(sessionId)) {
+        const host = await runHostOf(session);
+        if (host && host !== localHostId()) {
+          throw new SessionHandoffError(
+            "HANDOFF_RUN_ELSEWHERE",
+            `Vlákno právě běží na zařízení ${resolveHostLabel(host) ?? host}; předat ho lze jen tam.`,
+          );
+        }
+      }
+      await interrupt(sessionId);
+      if (!(await endRunWithReason(sessionId, "handoff"))) {
+        await suspendFallback(sessionId, "handoff");
+      }
+    } else {
+      if (!(await contentIsHere(sessionId))) {
+        const host = await runHostOf(session);
+        if (host && host !== localHostId()) {
+          throw new SessionHandoffError(
+            "HANDOFF_TRANSCRIPT_ELSEWHERE",
+            `Transkript vlákna je na zařízení ${resolveHostLabel(host) ?? host}; předat ho lze jen tam.`,
+          );
+        }
+        // Ran here (or nowhere recorded) but nothing is here: the first-boot
+        // download from the central server has not finished or failed. A
+        // summary built now would be empty and would stand in for the real
+        // one, so refuse until the content arrives.
+        throw new SessionHandoffError(
+          "HANDOFF_NO_CONTENT",
+          "Obsah vlákna na tomto zařízení zatím není; zkus to znovu, až se stáhne.",
+        );
+      }
+      await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true });
+    }
+    const after = await mustGetSession(sessionId);
+    if (!after.handoff_path) throw noMirrorHandoffError();
+    return { session: after, handoff_path: after.handoff_path };
+  }
+
+  // Where the thread last ran: the host of its open run if it has one,
+  // else of its latest run, else the record's own.
+  async function runHostOf(session: SessionRow): Promise<string | null> {
+    const runs = await store.listRuns(session.id);
+    const open = runs.filter((r) => r.ended_at === null && r.host_id);
+    if (open.length > 0) return open[open.length - 1].host_id;
+    const withHost = runs.filter((r) => r.host_id);
+    if (withHost.length > 0) return withHost[withHost.length - 1].host_id;
+    return session.host_id;
+  }
+
+  // Whether this device holds any of the thread's content -- its
+  // transcript or its content row.
+  async function contentIsHere(sessionId: string): Promise<boolean> {
+    if ((await content.listEvents(sessionId, { limit: 1 })).length > 0) return true;
+    return (await content.getContent(sessionId)) !== null;
+  }
+
+  // #460 "Navázat na handoff". The file is read BEFORE anything is created,
+  // so a handoff that has not reached this device yet leaves no half-made
+  // thread behind. Everything after that is continueSession's shape minus
+  // the close: a new record, the summary as extra orientation, a first run
+  // that starts itself with no brief. The source thread is never read and
+  // never written -- the file is the whole handover, which is what lets it
+  // come from another machine.
+  async function startFromHandoff(input: StartFromHandoffInput): Promise<{
+    session: SessionRow;
+    run: SessionRunRow;
+  }> {
+    if (!isHandoffRelativePath(input.handoffPath)) {
+      throw new SessionHandoffError("HANDOFF_PATH_INVALID", "Cesta k souboru handoffu není platná.");
+    }
+    const summary = await readNodeHandoffFile(input.userId, input.nodeId, input.handoffPath);
+    if (summary === null) {
+      throw new SessionHandoffError("HANDOFF_FILE_NOT_HERE", "Soubor handoffu ještě není na tomto zařízení.");
+    }
+
+    const { runner, instanceId } = await resolveTaskDefaults(input.nodeId, resolveNodeOrgId);
+    const created = await store.createSession({
+      node_id: input.nodeId,
+      user_id: input.userId,
+      runner,
+      instance_id: instanceId,
+      host_id: localHostId(),
+    });
+    // name_is_custom stays 0: the title is the summary's, not the user's,
+    // so this thread's own first summary may rename it later, exactly as a
+    // thread named from its first message is left alone.
+    const title = extractHandoffTitle(summary);
+    const session = title ? await store.patchSession(created.id, { name: title }) : created;
+
+    const provisioned = await provision({
+      userId: input.userId,
+      nodeId: input.nodeId,
+      sessionId: session.id,
+      resume: null,
+    });
+    const seededProvisioned = {
+      ...provisioned,
+      orientation:
+        `${provisioned.orientation}\n\n## Navázání na handoff\n\n` +
+        `Navazuješ na vlákno z jiného zařízení; konverzace se nepřenáší, ` +
+        `pokračuješ z tohoto shrnutí (\`${input.handoffPath}\`):\n\n${summary}`,
+    };
+
+    const run = await store.createRun({
+      session_id: session.id,
+      runner,
+      instance_id: instanceId,
+      host_id: localHostId(),
+    });
+    const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
+
+    await startRun(session, run, seededProvisioned, instanceEnv, {
+      brief: null,
+      runStartResume: null,
+      resumeMode: "handoff",
+      policy: input.policy ?? "default",
+    });
+
+    return { session: await mustGetSession(session.id), run };
+  }
+
+  function noMirrorHandoffError(): SessionHandoffError {
+    return new SessionHandoffError(
+      "HANDOFF_NO_MIRROR",
+      "Uzel nemá na tomto zařízení zrcadlo, soubor s předáním nelze zapsat.",
+    );
   }
 
   async function checkIdleRunsOnce(idleMs: number, now: number = Date.now()): Promise<void> {
@@ -962,7 +1195,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
 
     const scope = await getSessionScope(getDb(), sessionId).catch(() => []);
-    const rows = await store.listEvents(sessionId);
+    const rows = await content.listEvents(sessionId);
     const events: SummaryEvent[] = rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
     const nodeName = await nodeNameForSession(oldSession.node_id);
     const summary = buildRunSummaryContent({
@@ -983,7 +1216,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const newSession = await store.createSession({
       node_id: oldSession.node_id,
       user_id: oldSession.user_id,
-      brief: null,
       runner,
       instance_id: oldSession.instance_id,
       host_id: localHostId(),
@@ -1041,21 +1273,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return pendingQuestions.get(sessionId) ?? null;
   }
 
-  async function recordStoppedBy(sessionId: string, by: string): Promise<void> {
-    const session = await mustGetSession(sessionId);
-    const runId = liveRuns.get(sessionId)?.runId ?? (await store.liveRun(sessionId))?.id ?? null;
-    await enqueue(sessionId, () =>
-      appendAndPublish(sessionId, runId, [
-        {
-          kind: "state_changed",
-          payload: { from: session.state, to: session.state, waiting: session.waiting_since !== null, by },
-        },
-      ]),
-    );
-  }
-
   function listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]> {
-    return store.listEvents(sessionId, opts);
+    return content.listEvents(sessionId, opts);
   }
 
   function subscriberCount(target: string): number {
@@ -1072,9 +1291,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     setModelAndEffort,
     renameSession,
     closeSession,
+    handoff,
+    startFromHandoff,
     continueSession,
     pendingQuestion,
-    recordStoppedBy,
     subscriberCount,
     listEvents,
     subscribe,

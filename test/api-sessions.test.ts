@@ -196,6 +196,46 @@ describe("session REST endpoints", () => {
     await db.execute({ sql: "DELETE FROM sessions WHERE id IN (?, ?)", args: [mine.id, theirs.id] });
   });
 
+  // #457: a thread is its owner's, of every state -- the node's read gate
+  // decides whether the Relace tab exists at all, never which threads it
+  // carries. Two identities on the same org-visible node see disjoint lists.
+  test("GET /nodes/:id/sessions returns the caller's own threads only, whatever the state", async () => {
+    const mine = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const theirs = await createSession(db, "U2", { node_id: nodeId, session_type: "interactive_task" });
+
+    const asOwner = await call(makeIdentity(SOLO), "GET", `/nodes/${nodeId}/sessions`);
+    assert.equal(asOwner.statusCode, 200);
+    const ownerIds = (JSON.parse(asOwner.body) as { sessions: SessionSummary[] }).sessions.map((s) => s.id);
+    assert.ok(ownerIds.includes(mine.id));
+    assert.ok(!ownerIds.includes(theirs.id), "SOLO never sees U2's running thread");
+
+    // manage scope buys nothing either.
+    const asManager = await call(makeIdentity("U2", "manage"), "GET", `/nodes/${nodeId}/sessions`);
+    const managerIds = (JSON.parse(asManager.body) as { sessions: SessionSummary[] }).sessions.map((s) => s.id);
+    assert.ok(managerIds.includes(theirs.id));
+    assert.ok(!managerIds.includes(mine.id), "manage does not see past ownership");
+
+    await db.execute({ sql: "DELETE FROM sessions WHERE id IN (?, ?)", args: [mine.id, theirs.id] });
+  });
+
+  test("GET /sessions?state=running returns the caller's own threads only, manage included", async () => {
+    const mine = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const theirs = await createSession(db, "U2", { node_id: nodeId, session_type: "interactive_task" });
+
+    const asOwner = await call(makeIdentity(SOLO), "GET", "/sessions?state=running");
+    assert.equal(asOwner.statusCode, 200);
+    const ownerIds = (JSON.parse(asOwner.body) as { sessions: { id: string }[] }).sessions.map((s) => s.id);
+    assert.ok(ownerIds.includes(mine.id));
+    assert.ok(!ownerIds.includes(theirs.id));
+
+    const asManager = await call(makeIdentity("U2", "manage"), "GET", "/sessions?state=running");
+    const managerIds = (JSON.parse(asManager.body) as { sessions: { id: string }[] }).sessions.map((s) => s.id);
+    assert.ok(managerIds.includes(theirs.id));
+    assert.ok(!managerIds.includes(mine.id));
+
+    await db.execute({ sql: "DELETE FROM sessions WHERE id IN (?, ?)", args: [mine.id, theirs.id] });
+  });
+
   test("GET /nodes/:id/sessions includes terminal_id, null when the session carries none (#231)", async () => {
     const identity = makeIdentity(SOLO);
     const withTerminal = await createSession(db, SOLO, {
@@ -292,20 +332,14 @@ describe("session REST endpoints", () => {
     assert.equal(body.name_is_custom, true);
   });
 
-  // Renaming is owner-only (auth/session-access.ts's sessionAccess "message"
-  // tier); a session owned by someone else on a node the caller CAN see
-  // (the fixture's project node has no ACL) is visible but forbidden --
-  // 403, not 404, since the caller already knows it exists (it shows up in
-  // the node's Relace tab).
-  test("PATCH /sessions/:id 403s for a session owned by someone else on a visible node", async () => {
+  // #457: a thread is its owner's. A session owned by someone else is hidden
+  // whether or not the caller can see the anchor node -- 404, never 403.
+  test("PATCH /sessions/:id 404s for a session owned by someone else on a visible node", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity("U2"), "PATCH", `/sessions/${session.id}`, { name: "Nope" });
-    assert.equal(res.statusCode, 403);
+    assert.equal(res.statusCode, 404);
   });
 
-  // A session anchored to a node the caller cannot see at all is hidden
-  // entirely -- 404, same "non-members do not see it AT ALL" rule
-  // auth/node-access.ts applies to the node itself.
   test("PATCH /sessions/:id 404s for a session anchored to a node the caller cannot see", async () => {
     const restrictedNodeId = ulid();
     await db.execute({
@@ -344,21 +378,20 @@ describe("session REST endpoints", () => {
     assert.equal(res.statusCode, 409);
   });
 
-  // State transitions are the "stop" tier (owner or manage scope);
-  // makeIdentity's default scope is "write", below manage, so a visible
-  // session owned by someone else is forbidden, not hidden.
-  test("POST /sessions/:id/state 403s for a session owned by someone else without manage scope", async () => {
+  // #457: stopping is the owner's like every other action -- a non-owner
+  // gets 404, manage scope included.
+  test("POST /sessions/:id/state 404s for a session owned by someone else", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity("U2"), "POST", `/sessions/${session.id}/state`, { state: "closed" });
-    assert.equal(res.statusCode, 403);
+    assert.equal(res.statusCode, 404);
   });
 
-  test("POST /sessions/:id/state succeeds for someone else with manage scope", async () => {
+  test("POST /sessions/:id/state 404s for someone else even with manage scope", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity("U2", "manage"), "POST", `/sessions/${session.id}/state`, {
       state: "closed",
     });
-    assert.equal(res.statusCode, 200);
+    assert.equal(res.statusCode, 404);
   });
 
   test("GET /sessions/:id/resume-info reports conversationResumable false with no mirror on this machine", async () => {
@@ -386,13 +419,12 @@ describe("session REST endpoints", () => {
     assert.equal(body.conversation_resumable, false);
   });
 
-  // Reading is the "read" tier: anyone who can see the anchor node may read
-  // resume-info for a session owned by someone else (same rule as reading
-  // the chat/events) -- the fixture's project node has no ACL.
-  test("GET /sessions/:id/resume-info is readable by anyone who can see the anchor node", async () => {
+  // #457: reading is the owner's too -- seeing the anchor node says nothing
+  // about the threads on it.
+  test("GET /sessions/:id/resume-info 404s for a non-owner who can see the anchor node", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity("U2"), "GET", `/sessions/${session.id}/resume-info`);
-    assert.equal(res.statusCode, 200);
+    assert.equal(res.statusCode, 404);
   });
 
   // #329: a server-generated suspend (here via the transport-disconnect GC
@@ -412,8 +444,8 @@ describe("session REST endpoints", () => {
   });
 
   // The restart indicator (#342, SessionChat header): GET /sessions/:id/
-  // signals is a plain read of sessionSignals, gated by the same "read"
-  // tier as resume-info (auth/session-access.ts).
+  // signals is a plain read of sessionSignals, gated by the same owner-only
+  // rule as resume-info (auth/session-access.ts).
   test("GET /sessions/:id/signals reports zeros/null for a session with no live run", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/signals`);
@@ -430,10 +462,10 @@ describe("session REST endpoints", () => {
     assert.equal(body.expansionsSinceRunStart, 0);
   });
 
-  test("GET /sessions/:id/signals is readable by anyone who can see the anchor node", async () => {
+  test("GET /sessions/:id/signals 404s for a non-owner who can see the anchor node", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity("U2"), "GET", `/sessions/${session.id}/signals`);
-    assert.equal(res.statusCode, 200);
+    assert.equal(res.statusCode, 404);
   });
 
   test("GET /sessions/:id/signals 404s for an unknown session id", async () => {

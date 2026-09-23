@@ -235,22 +235,41 @@ One line each; the linked doc carries the mechanism and the reasoning.
 - The session row exists before the runner: `POST /sessions` creates it, the
   run's MCP connection binds to it via `X-Portuni-Spawn-Id`; a hand-opened CLI
   gets its row at the handshake, `cli` from `clientInfo.name`.
-- The runtime always runs on the device; only the store differs
-  (`DbSessionStore` locally, `CentralSessionStore` in sync-agent mode). Access is
-  enforced once, on the central server, by `auth/session-access.ts`'s table. A new
-  session verb lands in `router.ts`, `agent-router.ts`, `sessions-ws.ts`,
-  `min-scopes.ts` and `device-local-routes.json` together.
+- A thread is a **record** (exists, node, owner, state, runner, runs, scope)
+  and **content** (first message, transcript, inline handoff summary). The
+  runtime always runs on the device and takes both stores: the record store
+  differs by workspace (`DbSessionStore` locally, `CentralSessionStore` in
+  sync-agent mode), the content store never does -- it is always
+  `SessionContentStore` over this device's `content.db`. Nothing on the
+  device sends events, `brief` or `handoff_inline` to the central server;
+  the central server never opens a `content.db` and writes no summary, and
+  its legacy rows (read back to older sidecars) are downloaded once by
+  each sync agent at boot.
+  Access is enforced once, on the central server, by
+  `auth/session-access.ts`, whose table is one line: a thread is its
+  owner's, for every action, `manage` included; anyone else gets
+  `SESSION_NOT_FOUND`, and every list route filters on `user_id`. A new session verb lands in
+  `router.ts`, `agent-router.ts`, `sessions-ws.ts`, `min-scopes.ts` and
+  `device-local-routes.json` together.
 - Nothing but Uzavřít and the auto-archive sweep reaches `closed`. Every other
   end (disconnect, idle `PORTUNI_RUN_IDLE_MS`, provider limit or error,
-  boot sweep, orphaned pid) suspends with a server-written summary; the next
-  message resumes by writing. `interrupt()` cancels the current turn only.
+  boot sweep) suspends with a summary **the device** writes -- it holds the
+  transcript, so the central server never writes one; the next message
+  resumes by writing. An orphaned pid found by the device's boot sweep
+  suspends with no summary at all, and a thread whose device disappeared
+  mid-run stays `running` until that sweep runs. `interrupt()` cancels the
+  current turn only.
 - `@anthropic-ai/claude-agent-sdk` is pinned exact; never let `npm update`
   touch it. The adapter always uses streaming input, never starts a process
   to answer `models()`, and ends a run on a `result` that carries an error.
 - Migration 036 carries `draft`, `model`, `effort`; migration 039 the
   context counters; the 030 and 036 rebuilds, `DDL_SESSIONS` and
   `PG_BASELINE_DDL` carry the current full shape too. A new `sessions`
-  column goes into all of them.
+  column goes into all of them. `content.db` has its own DDL and version
+  row (`infra/device-content-db.ts`) and never a `MIGRATIONS` entry;
+  `sessions.brief`, `sessions.handoff_inline` and the graph db's
+  `session_events` are write-only leftovers for older sidecars until the
+  central migration drops them.
 
 ### MCP and scope (`mcp-scope-and-integrations.md`)
 

@@ -2065,7 +2065,7 @@ function syncCssVar(c: SyncClass): string {
 }
 
 // "Nový úkol" (#374, "Starting a task"): one click, no modal -- opens an
-// empty thread (POST /sessions with no brief, a draft) and hands it back
+// empty thread (POST /sessions with no first message, a draft) and hands it back
 // through onSessionStarted with run: null. The composer's first message is
 // what picks a runner/instance and starts the run (server-side,
 // session-runtime.ts's promoteDraftAndStart); there is nothing left to ask

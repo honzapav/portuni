@@ -18,7 +18,7 @@ The currently selected node lives in the URL as `?node=<id>`, so deep-linking an
 
 The default landing view: one aggregate, permission-filtered snapshot of the whole workspace (`GET /overview`), composed deterministically — no LLM involved. A strip of four counters on top — Čeká na mě, Běží, Vyžaduje pozornost, Nesynchronizováno — each a shortcut to the place it counts (Práce, Graf, the Nesynchronizováno dialog). Under it, four cards; each shows at most eight rows and a "Zobrazit všech N" link for the rest:
 
-- **Relace** — your own inbox: running/suspended threads you started, ordered "Čeká na mě" (an open question) first, then running, then suspended (`GET /overview` itself returns every session on a node you can see, workspace-wide; the card narrows that to yours — the team-wide view is a later, host-aware feature). Sessions opened by hand from a CLI are not rows here; the card's footer says how many there are and how many run, and the node's Relace tab lists them. Plus a headless review queue: nodes a `headless` session reached only via search with no edge path (`session_scope.added_via = 'disconnected'`) — see [Scope Enforcement](/concepts/scope-enforcement/).
+- **Relace** — your own inbox: running/suspended threads you started, ordered "Čeká na mě" (an open question) first, then running, then suspended. A thread is its owner's: `GET /overview` returns your threads and nobody else's, so the card and the counters above it never carry a teammate's work, whatever your scope. Sessions opened by hand from a CLI are not rows here; the card's footer says how many there are and how many run, and the node's Relace tab lists them. Plus a headless review queue: nodes a `headless` session reached only via search with no edge path (`session_scope.added_via = 'disconnected'`) — see [Scope Enforcement](/concepts/scope-enforcement/).
 - **Vyžaduje pozornost** — processes in `at_risk`/`broken`, areas in `needs_attention`, projects with `health != on_track` (see [Lifecycle States](/concepts/lifecycle-states/#project-health)), plus pending access requests (visible to `manage` scope and above only) and stuck sync operations (`pending_file_ops` rows with a recorded `last_error` — the closest server-visible signal to a sync issue; true file-conflict state is computed on-device and is not aggregated server-side).
 - **Poslední aktivita** — recent events and recent session writes (nodes added to a session's write scope), interleaved by timestamp.
 - **Nové nody** — recently created nodes, human- and agent-created alike.
@@ -72,7 +72,7 @@ The detail pane on the right is editable in both Graph and Workspace views:
 - **Edges** — outgoing and incoming, with a `→` / `←` indicator. Click an edge target to navigate to it (updates `?node=`).
 - **Files** — list of tracked files with `remote_path` and the derived `local_path` for this device, plus a sync button (team workspaces only — a personal workspace has no remote at all, see [Files: the two sync planes](/concepts/data-modes/)) that mounts as soon as the node has a mirror, even with nothing tracked yet. It's never disabled: with something to push/pull it reads "Synchronizovat (N…)"; once nothing is locally pending it reads "Zkontrolovat remote" instead of claiming the node is done — a run's remote sweep is the only way to notice a file that showed up on Drive out of band, so a freshly created, still-empty mirror needs the same button as a busy one. Open in Finder, copy path, or delete (confirm-first). The tree groups the files under three sections — `wip` („rozpracované“), `outputs` („výstupy“) and `resources` („podklady“). A section is a group heading, not a folder: it shows the count and its one-word description, carries the sync dot of everything inside it, collapses with its chevron and has no actions of its own — it cannot be renamed or moved. Folders under a section are ordinary rows in the same face and size as the file rows (chevron, folder icon, name, count, sync dot, and a hover action strip with „Přejmenovat" and „Nová podsložka" at the right), with a guide line down the left of their children; a top-level folder outside the three sections renders as such a row too. Opening a file swaps the editor into this same right column in place of the node detail — a "← zpět" button returns to it. Every file but a Showtime deck offers a Náhled | Editace toggle: Markdown and HTML open in Náhled (rendered preview) by default, anything else opens in Editace (source editor); switch either way any time. "Uložit" (Cmd/Ctrl+S) shows up only in Editace, and only once the file is dirty, sitting left of the toggle so its appearing/disappearing never shifts the other buttons. A ⤢ next to it expands the editor to a fullscreen overlay with the same controls (mode toggle, Uložit, plus ⤡ to collapse back and × to close). A `.showtime` deck (a [Showtime](https://github.com/honzapav/showtime) bundle) opens as the rendered preview the bundle carries once the Showtime integration is on (Settings → Integrace); the preview is read-only and offers „Otevřít v Showtime" when Showtime.app is installed. That button hands Showtime the deck **and** the node: the agent Showtime starts beside the deck connects to the Portuni MCP server with this node as its home (so it appears under the node's Relace like a task started from Portuni) and gets the node's mirror as a second working directory. The bearer never travels in the link; Portuni mints a one-time code and Showtime exchanges it over loopback. A refused handoff shows its reason in the preview bar and opens nothing; a Showtime without the `showtime://` deep link asks you to update Showtime. With the integration on and Showtime.app found, „+ Nový soubor" is a split button: the chevron offers „Nový soubor" and „Nová prezentace". The latter hands Showtime the node's `wip/` and a one-time code (`showtime://new`); Showtime's New Deck screen opens with that folder fixed and the node named, you pick the design system, template and name there, and the bundle it writes shows up under Files through the mirror watcher — the agent beside it is a session on this node, as for „Otevřít v Showtime". Disabled (with the reason) on a node without a mirror on this device: Showtime writes to disk, so there is nowhere to put the deck. Which agent runs beside the deck is Showtime's own setting, not Portuni's agent preset. A bundle saved by a Showtime older than the bundled preview says so instead of rendering.
 - **Events** — recent timeline; resolve / supersede inline.
-- **Relace (Sessions)** — persistent sessions anchored to this node (`GET /nodes/:id/sessions`), newest-active first: state (running/suspended/closed/archived, archived hidden behind a "Zobrazit archivované" filter), last activity, CLI + instance (CLI is read from the MCP handshake itself, not a header — populated for Claude Code, Codex and Mistral Vibe alike), the host that ran it (the machine whose sidecar started the latest run — its label on the machine you are asking from, its id when the task ran on a teammate's device; omitted when no run claimed one), the task `brief` and `runner` when the session was started as a task, `waiting_since` when its run is blocked on a question, and write count (size of the session's write scope, which always includes the session's own home node — a session that only ever wrote there still reports 1, not 0). Name defaults to `<node> · <date> <time>` (the time component keeps two same-day sessions on the same node distinguishable) and is enriched from the handoff's title at suspend, but is always renamable inline. A `sessions` row is only ever created once a connection completes its MCP handshake — a client's protocol probe, an aborted connection, or any other non-`initialize` first request never leaves a row behind. A `running` row is never simply dropped: a run that ends for any reason other than Uzavřít — a dropped MCP connection, `PORTUNI_RUN_IDLE_MS` (default 30 min) of inactivity, a provider limit (the runner's own spend/rate limit, whose message lands in the transcript as a provider error), an error, or a startup sweep finding a row from a process that no longer exists (crash, restart) — *suspends* it instead, with a mechanical summary the server writes itself from the session's own event log (last messages, files changed, any open question, the write set) — `closed` is reached only by explicitly clicking Uzavřít or by the auto-archive sweep of old closed sessions. Such a row shows "pozastaveno serverem" with the reason (odpojení, nečinnost, restart serveru, proces osiřel po restartu) so it reads differently from a handoff a hand-opened CLI's own agent wrote on purpose via `portuni_session_suspend`. A suspended row shows whether the underlying CLI conversation is still resumable or will fall back to the summary, and links to the handoff file when one exists (or, when this device has no local mirror for the node, the handoff text is still resumable from — it was simply never written to a file here) — this is informational only now: there is no separate resume action, sending the next message into the thread is what resumes it, `--resume` on the last run when still valid, from the summary otherwise. Each row's status dot doubles as a chip (Běží / Čeká na mě / Pozastaveno / Hotovo / Archiv, "Čeká na mě" overriding "Běží" while a question is open), shows the task `brief`'s first line when set, and — for a row you don't own — the owner's name (when resolvable; below `manage` scope it's silently omitted rather than showing a raw id). "Otevřít chat" jumps to [the task chat](#task-chat-práce); a closed row you can resume shows a single "Navázat" button — `POST /sessions/:id/continue`, which starts a fresh, running session on the same node seeded with this one's summary and switches Práce to it. Which of these appear at all follows #321's access table: only the owner ever sees Navázat; Uzavřít (asks first) needs the owner or `manage` scope; Otevřít chat and Zobrazit handoff need only to see the node (the client hides what would 403; the server is the actual gate).
+- **Relace (Sessions)** — persistent sessions anchored to this node (`GET /nodes/:id/sessions`), newest-active first: state (running/suspended/closed/archived, archived hidden behind a "Zobrazit archivované" filter), last activity, CLI + instance (CLI is read from the MCP handshake itself, not a header — populated for Claude Code, Codex and Mistral Vibe alike), the host that ran it (the machine whose sidecar started the latest run — its label on the machine you are asking from, its id when the task ran on a teammate's device; omitted when no run claimed one), the `runner` when the session was started as a task, `waiting_since` when its run is blocked on a question, and write count (size of the session's write scope, which always includes the session's own home node — a session that only ever wrote there still reports 1, not 0). Name defaults to `<node> · <date> <time>` (the time component keeps two same-day sessions on the same node distinguishable) and is enriched from the handoff's title at suspend, but is always renamable inline. A `sessions` row is only ever created once a connection completes its MCP handshake — a client's protocol probe, an aborted connection, or any other non-`initialize` first request never leaves a row behind. A `running` row is never simply dropped: a run that ends for any reason other than Uzavřít — a dropped MCP connection, `PORTUNI_RUN_IDLE_MS` (default 30 min) of inactivity, a provider limit (the runner's own spend/rate limit, whose message lands in the transcript as a provider error), an error, or a startup sweep finding a row from a process that no longer exists (crash, restart) — *suspends* it instead, with a mechanical summary **the device** writes from its own copy of the event log (last messages, files changed, any open question, the write set) — the transcript is on the machine that ran the thread, so that machine is the only one that can write the summary; the central server never writes one — `closed` is reached only by explicitly clicking Uzavřít or by the auto-archive sweep of old closed sessions. Such a row shows "pozastaveno serverem" with the reason (odpojení, nečinnost, restart serveru, proces osiřel po restartu) so it reads differently from a handoff a hand-opened CLI's own agent wrote on purpose via `portuni_session_suspend`. A suspended row shows whether the underlying CLI conversation is still resumable or will fall back to the summary, and links to the handoff file when one exists (or, when this device has no local mirror for the node, the handoff text is still resumable from — it was simply never written to a file here) — this is informational only now: there is no separate resume action, sending the next message into the thread is what resumes it, `--resume` on the last run when still valid, from the summary otherwise. Each row's status dot doubles as a chip (Běží / Čeká na mě / Pozastaveno / Hotovo / Archiv, "Čeká na mě" overriding "Běží" while a question is open). A row names the thread and never quotes it: what was said is content, and content is not on the central server to be listed. The tab lists **your** threads on this node and nobody else's — a thread is its owner's, so seeing the node (or holding `manage`) says nothing about the work other people started on it, and there is no owner column to show. "Otevřít chat" jumps to [the task chat](#task-chat-práce); a closed row shows a single "Navázat" button — `POST /sessions/:id/continue`, which starts a fresh, running session on the same node seeded with this one's summary and switches Práce to it. Every action here is offered on state alone, because every row is yours. Above the rows the tab lists the node's **předání k navázání**: every `wip/sessions/<id>-handoff.md` file tracked on the node, whoever wrote it — including one that arrived here by sync from another machine. Such a file names the thread it came from (the thread's name, its device and its last activity when that thread is one of yours; otherwise just the file name, because a thread is its owner's and a file says nothing about who may see the record), opens in the editor like any other file, and offers **Navázat na handoff**: `POST /sessions` with the file's path, which starts a new thread here from what the file says and switches Práce to it. The file has to be on this device already — a handoff that has not synced here yet is refused („Soubor handoffu ještě není na tomto zařízení") and nothing is created.
 
 **Uspořádání souborů v panelu Files.** Soubory se mezi složkami a sekcemi
 uzlu přetahují myší, ale žádný tah se neprovede hned: skládá se **plán**,
@@ -90,16 +90,16 @@ Naplánovaný soubor má u levého okraje řádku accentový proužek, přeškrt
 původní složku a štítek „PŘESUN"; nad stromem se objeví lišta „N změn čeká
 na použití" s tlačítky „Zahodit" a „Použít". Lišta je nahoře, kdykoli plán
 něco drží — mezi změny se počítá naplánovaný přesun i nová (virtuální)
-složka, takže i plán, ve kterém je jen nová složka, jde „Zahodit". „Použít"
-projde jen naplánované přesuny: v plánu bez jediného přesunu není co použít,
-a tlačítko je proto zakázané. „Zahodit" plán zahodí celý, i s novými
-složkami, a nikde se nic nestane. „Použít" projde naplánované soubory po jednom: soubor, který
-už je na remote, se na Disku jen přejmenuje (obsah se znovu nenahrává),
-soubor, který se ještě nikdy nepushoval, změní jen svůj záznam a kopii v
-mirroru a zůstává ve stavu `push` na nové cestě. Když některý přesun
-selže, dávka se zastaví — hotové zůstává hotové, chybný řádek ukáže důvod a
-zbytek změn zůstane v plánu pro „Použít znovu". Plán patří uzlu na tomhle
-počítači, přežije odchod z uzlu i restart aplikace a nikam se neodesílá.
+složka, takže i plán, ve kterém je jen nová složka, jde „Zahodit".
+„Zahodit" plán zahodí celý, i s novými složkami, a nikde se nic nestane.
+„Použít" projde naplánované přesuny po jednom — v plánu bez jediného
+přesunu není co použít a tlačítko je zakázané: soubor, který už je na
+remote, se na Disku jen přejmenuje (obsah se znovu nenahrává), soubor,
+který se ještě nikdy nepushoval, změní jen svůj záznam a kopii v mirroru
+a zůstává ve stavu `push` na nové cestě. Když některý přesun selže, dávka
+se zastaví — hotové zůstává hotové, chybný řádek ukáže důvod a zbytek změn
+zůstane v plánu pro „Použít znovu". Plán patří uzlu na tomhle počítači,
+přežije odchod z uzlu i restart aplikace a nikam se neodesílá.
 
 **Složky v panelu Files.** Vedle „Nový soubor" je „Nová složka": otevře
 formulář s cestou předvyplněnou sekcí (`wip/`), Enter nebo „Vytvořit"
@@ -165,14 +165,60 @@ in flight, and Esc does the same — both just call `interrupt()`, which
 cancels whatever the model is doing right now without ending the run, so
 you can keep typing straight after. Once the agent has answered, the run
 stays alive only to take your next message: the button is a plain send
-again and nothing is shown as working. The two remaining header actions are
-**Pokračovat v nové session** (offered any time there's an open thread —
-`POST /sessions/:id/continue`, which closes this session, seeds a new one
-with its summary, and switches Práce to it) and **Uzavřít**, which asks
-for confirmation first (the only irreversible action here) before doing
-the same close `interrupt` never does. Both follow the access table below;
-a refused action surfaces the server's own error, there is no client-side
-prediction of who may do what.
+again and nothing is shown as working. The remaining header actions are
+**Předat** (see below), **Pokračovat v nové session** (offered any time
+there's an open thread — `POST /sessions/:id/continue`, which closes this
+session, seeds a new one with its summary, and switches Práce to it) and
+**Uzavřít**, which asks for confirmation first (the only irreversible
+action here) before doing the same close `interrupt` never does. All
+follow the access table below; a refused action surfaces the server's own
+error, there is no client-side prediction of who may do what.
+
+Where a thread lives: the **central server holds the record** — that the
+thread exists, on which node, whose it is, its state, runner, model, its
+runs and its write scope — and the **device that ran it holds the
+content**: the first message, every event of the transcript, the inline
+handoff summary. Content is never sent to the central server, so nothing
+you say in a thread is stored outside the machine you said it on, and
+there is **no backup of transcripts**: losing a device's database loses
+its conversations, while the records on the central server and the handoff
+files synced into the nodes remain.
+
+The consequence you see: open one of your threads on a **second device**
+and the header, the state and the actions are all there, but the
+conversation is not. The chat says **„Transkript je na zařízení X"** with
+the name of the machine that has it, the composer is disabled, and the way
+to pick the work up here is the round trip below — **Předat** on X, then
+**Navázat na handoff** here. Předat itself is hidden on such a thread: the
+summary is written from the transcript, and this machine holds none of it.
+
+**Předat** hands the thread to another machine. It is offered on a running
+or a suspended thread, in the chat header and on the thread's row in the
+Práce sidebar. On a running thread it ends the turn and the run, and the
+device writes the thread's summary to `wip/sessions/<id>-handoff.md` in the
+node's mirror — a tracked file of the node like any other, so the next sync
+carries it — and the thread goes to "Pozastaveno"; the chat then names the
+file it wrote. Pressing it again on the same thread changes nothing and
+answers the same path. On a suspended thread that has no file yet (it was
+suspended while the node had no mirror here), Předat writes the file now
+from the summary this device holds. Předat refuses, and says why, before
+it touches anything: on a draft (nothing to summarise) or a closed thread,
+on a node that has no mirror on this device (there is nowhere to write the
+file; the running thread keeps running), on a thread whose run is live on
+another device, and on a thread whose transcript is on another device —
+those two name the device, and that is where to press it. The transcript
+never travels — only the summary file does — so the other machine
+continues from what the file says, not from the conversation.
+
+**Navázat na handoff** is how the other machine picks it up. The node's
+Relace tab there lists the node's handoff files as soon as the sync has
+carried them; choosing one starts a **new** thread on that machine — a new
+name (the summary's own title), this machine's runner and device, and a
+first run that reads the summary as its orientation. Nothing is imported
+from the old thread: its transcript stays on the machine that wrote it, its
+record keeps its own state, and the new thread's conversation starts empty.
+So the round trip is: **Předat** here, sync, **Navázat na handoff** there —
+and the same in reverse when the work comes back.
 
 The event list renders the session's canonical log, delivered entirely
 over the live WebSocket below (a subscribe replays the persisted log,

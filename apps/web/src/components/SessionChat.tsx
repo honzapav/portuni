@@ -19,7 +19,7 @@
 // suspend/resume, handoffs, access control -- stays ours.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hostDisplayName, sessionRowAccess } from "../lib/session-views";
+import { hostDisplayName } from "../lib/session-views";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
 import { useSessionStore } from "../lib/use-session-store";
@@ -29,7 +29,6 @@ import {
   runnerChoiceLabel,
   runnerPickerGroups,
 } from "../lib/runner-picker";
-import { useMe } from "../lib/use-me";
 import type { SessionsClient } from "../lib/sessions-client";
 import {
   toCanonicalEvent,
@@ -45,6 +44,7 @@ import {
   runIsLiveFor,
   turnInFlight,
   nextSentAt,
+  transcriptElsewhere,
   WORKING_LABEL,
   type ActivityItem,
   type ActivityRow,
@@ -55,6 +55,7 @@ import {
   type TranscriptRow,
   type WorkingPhase,
 } from "../lib/session-chat";
+import { HandoffRefusedError, handoffErrorText } from "../lib/handoff-refusal";
 import { useNowTick } from "../lib/use-now-tick";
 import { contextRingState, latestContextUsage } from "../lib/context-ring";
 import { Button } from "@/components/ui/button";
@@ -68,7 +69,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { BrainIcon, Check, CircleX, Pencil, Redo2, X } from "lucide-react";
+import { BrainIcon, Check, CircleX, Pencil, Redo2, Share2, X } from "lucide-react";
 import {
   Conversation,
   ConversationContent,
@@ -119,7 +120,13 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
-import { patchSessionModelEffort, patchSessionRunnerInstance, renamePersistentSession } from "../api";
+import {
+  fetchTranscriptHost,
+  handoffSession,
+  patchSessionModelEffort,
+  patchSessionRunnerInstance,
+  renamePersistentSession,
+} from "../api";
 import {
   fetchRunnerModels,
   listRunnerInstances,
@@ -169,6 +176,9 @@ export default function SessionChat({
   const [sentAt, setSentAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // #461: the label the events route answers with when the conversation is
+  // on another machine -- null while it is here, or not known yet.
+  const [transcriptHost, setTranscriptHost] = useState<string | null>(null);
   // The composer's draft belongs to the session, not to this component --
   // see lib/session-drafts.ts. Seeded once per mount (the caller keys this
   // component on the session id, so a different session is a different
@@ -180,7 +190,15 @@ export default function SessionChat({
     setComposerTextState(text);
   };
   const [sending, setSending] = useState(false);
-  const [actionPending, setActionPending] = useState<"interrupt" | "close" | "continue" | null>(null);
+  const [actionPending, setActionPending] = useState<"interrupt" | "close" | "continue" | "handoff" | null>(null);
+  // #459: the file Předat wrote, shown as a notice until the thread moves
+  // on -- the path is the whole point of the action (it is what the other
+  // machine opens), so it does not vanish with the request.
+  const [handoffPath, setHandoffPath] = useState<string | null>(null);
+  // Once the server said Předat cannot work from here (no mirror of the
+  // node, the run or the transcript on another device), the action is not
+  // offered again in this view; the reason stays on screen.
+  const [handoffUnavailable, setHandoffUnavailable] = useState(false);
   // #378: "Uzavřít" is the one irreversible action, so it's the only one
   // that asks -- confirmed via this dialog, not window.confirm (a no-op in
   // the Tauri webview).
@@ -195,7 +213,6 @@ export default function SessionChat({
   // #378: a new run starting is "the thread woken again" -- the notice bar
   // (below) is dismissible per-occurrence.
   const [noticeDismissed, setNoticeDismissed] = useState(false);
-  const { meId, canManage } = useMe();
 
   // Composer row 2 (v2 rule 5): the runner/instance choice, open while the
   // thread is a draft. The lists come from the device (both routes are
@@ -248,7 +265,18 @@ export default function SessionChat({
     setTextDeltaBuffers({});
     setReasoningDeltaBuffers({});
     setLiveRunId(null);
+    setTranscriptHost(null);
     setSentAt((current) => nextSentAt(current, { kind: "reset" }));
+
+    // #461: where the transcript is, asked of the device that would serve
+    // it. One row is enough -- the replay below comes over the live
+    // channel, this call is only here for the header. A failure says
+    // nothing (the replay is the thing that matters), so it is swallowed.
+    void fetchTranscriptHost(sessionId)
+      .then((host) => {
+        if (!cancelled) setTranscriptHost(host);
+      })
+      .catch(() => undefined);
 
     // Deltas are coalesced (spec, "Streaming"): a burst of frames becomes
     // one state update per animation frame. Flushed on run end so nothing
@@ -345,10 +373,11 @@ export default function SessionChat({
   // Every hook has run; from here the record is what the component reads.
   // It is missing only in the moment between its removal from the store (a
   // deleted draft) and the parent dropping this pane, so there is nothing
-  // to show and nothing to say.
-  if (!session) return null;
+  // to show and nothing to say. A record known only from a live frame
+  // (`partial`) is the same case: the parent never mounts a chat for one,
+  // and half a record would render a nameless header.
+  if (!session || session.partial) return null;
 
-  const access = sessionRowAccess(session.user_id, meId, canManage);
   const host = hostDisplayName(session);
   const startRename = () => {
     setNameDraft(session.name);
@@ -428,6 +457,10 @@ export default function SessionChat({
   const phase = runIsLive || sentAt !== null ? workingPhase(events, liveRunId, sentAt) : null;
   const showWorking = phase !== null && !streamingText && !streamingReasoning && !isWaiting;
   const chip = sessionStatusChip(session.state, session.waiting_since);
+  // #461: the conversation is on another machine and this one holds only
+  // the record. Nothing to replay, nothing to send -- the chat says where
+  // the transcript is and how to pick the thread up here (Předat there).
+  const elsewhere = transcriptElsewhere(transcriptHost, events.length);
   // #378: an open thread with a run that ended other than by Uzavřít --
   // the next message replays the whole conversation from the summary.
   const showNotice = session.state === "suspended" && !noticeDismissed;
@@ -439,6 +472,32 @@ export default function SessionChat({
       await sessionsClient[action](sessionId);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setActionPending(null);
+    }
+  };
+
+  // #459 "Předat": POST /sessions/:id/handoff ends the turn and the run and
+  // writes the thread's summary into the node's mirror; api.ts puts the
+  // suspended record into the store, so the header, the sidebar and Relace
+  // all follow. The answered path stays on screen as the notice below --
+  // it is what the other machine opens (Navázat na handoff there).
+  const handleHandoff = async () => {
+    setActionPending("handoff");
+    setError(null);
+    try {
+      const { handoff_path } = await handoffSession(sessionId);
+      setHandoffPath(handoff_path);
+      setNoticeDismissed(false);
+    } catch (e) {
+      setError(handoffErrorText(e));
+      // HANDOFF_NO_CONTENT passes once the content downloads; keep offering it.
+      if (
+        e instanceof HandoffRefusedError &&
+        e.code !== "HANDOFF_NOT_ALLOWED" &&
+        e.code !== "HANDOFF_NO_CONTENT"
+      )
+        setHandoffUnavailable(true);
     } finally {
       setActionPending(null);
     }
@@ -493,10 +552,10 @@ export default function SessionChat({
     }
   };
 
-  // Messages and answers are owner-only (#321's access table); a
-  // non-owner who can see the node reads the chat but cannot type into it.
+  // #457: every thread the app can show is the caller's own, so there is no
+  // access echo left here -- only the state decides.
   const composerDisabled =
-    session.state === "closed" || session.state === "archived" || isWaiting || !access.canResume;
+    session.state === "closed" || session.state === "archived" || isWaiting || elsewhere !== null;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -584,12 +643,25 @@ export default function SessionChat({
                   </ContextContent>
                 </Context>
               )}
-              {access.canResume && (
-                <HeaderIcon onClick={startRename} disabled={actionPending !== null} title="Přejmenovat">
-                  <Pencil />
+              <HeaderIcon onClick={startRename} disabled={actionPending !== null} title="Přejmenovat">
+                <Pencil />
+              </HeaderIcon>
+              {/* #459: Předat -- hands the thread to another machine
+                  through its handoff file. Running and suspended only:
+                  a draft has nothing to summarise, a closed thread is
+                  done. #461: and only where the conversation is -- the
+                  summary is written from the transcript, so a device that
+                  holds none of it cannot hand the thread anywhere. */}
+              {(session.state === "running" || session.state === "suspended") && !elsewhere && !handoffUnavailable && (
+                <HeaderIcon
+                  onClick={() => void handleHandoff()}
+                  disabled={actionPending !== null}
+                  title={actionPending === "handoff" ? "Předávám…" : "Předat na jiné zařízení"}
+                >
+                  <Share2 />
                 </HeaderIcon>
               )}
-              {(session.state === "running" || session.state === "suspended") && access.canResume && (
+              {(session.state === "running" || session.state === "suspended") && (
                 <HeaderIcon
                   onClick={() => void handleContinue()}
                   disabled={actionPending !== null}
@@ -601,7 +673,7 @@ export default function SessionChat({
                   <Redo2 />
                 </HeaderIcon>
               )}
-              {(session.state === "running" || session.state === "suspended") && access.canPauseOrClose && (
+              {(session.state === "running" || session.state === "suspended") && (
                 <>
                   <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
                   <HeaderIcon
@@ -622,8 +694,17 @@ export default function SessionChat({
       {showNotice && (
         <div className={`${THREAD_COLUMN} mt-2 flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] text-[var(--color-text-muted)]`}>
           <span className="flex-1 leading-[1.5]">
-            Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě
-            jednou.
+            {handoffPath ? (
+              <>
+                Vlákno je předané. Shrnutí je v souboru <code>{handoffPath}</code>; po synchronizaci na něj na druhém
+                zařízení navážeš v záložce Relace.
+              </>
+            ) : (
+              <>
+                Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě
+                jednou.
+              </>
+            )}
           </span>
           <button
             type="button"
@@ -673,6 +754,8 @@ export default function SessionChat({
         <ConversationContent className={`${THREAD_COLUMN} gap-5`}>
           {loading ? (
             <Shimmer duration={1.5}>Načítám konverzaci…</Shimmer>
+          ) : elsewhere ? (
+            <ConversationEmptyState title={elsewhere.title} description={elsewhere.hint} />
           ) : rows.length === 0 && !showWorking ? (
             <ConversationEmptyState title="Zatím žádné zprávy" description="Napiš první zprávu níže." />
           ) : (
@@ -700,7 +783,7 @@ export default function SessionChat({
         <ConversationScrollButton />
       </Conversation>
 
-      {openQuestion && isWaiting && access.canResume && (
+      {openQuestion && isWaiting && (
         <QuestionConfirmation question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
       )}
 
@@ -725,8 +808,8 @@ export default function SessionChat({
                 }
               }}
               placeholder={
-                !access.canResume
-                  ? "Zprávy může posílat jen vlastník relace."
+                elsewhere
+                  ? `Transkript je na zařízení ${elsewhere.host}; pokračuj tam, nebo si vlákno nech předat.`
                   : isWaiting
                     ? "Relace čeká na odpověď na otázku výše."
                     : session.state === "closed" || session.state === "archived"
@@ -740,38 +823,34 @@ export default function SessionChat({
           <PromptInputFooter className="flex-col items-stretch gap-1">
             <div className="flex items-center justify-between gap-2">
             <PromptInputTools>
-              {access.canResume && (
-                <>
-                  <PromptInputSelect value={session.model ?? ""} onValueChange={handleModelChange}>
-                    <PromptInputSelectTrigger className="w-auto min-w-0" title="Model">
-                      <PromptInputSelectValue placeholder="Model (výchozí)" />
-                    </PromptInputSelectTrigger>
-                    <PromptInputSelectContent>
-                      {models.map((m) => (
-                        <PromptInputSelectItem key={m.id} value={m.id} title={m.description}>
-                          {m.displayName}
-                        </PromptInputSelectItem>
-                      ))}
-                    </PromptInputSelectContent>
-                  </PromptInputSelect>
-                  {selectedModel?.supportsEffort && (
-                    <PromptInputSelect value={session.effort ?? ""} onValueChange={handleEffortChange}>
-                      <PromptInputSelectTrigger
-                        className="w-auto min-w-0"
-                        title="Úsilí uvažování — projeví se od příštího běhu"
-                      >
-                        <PromptInputSelectValue placeholder="Úsilí (výchozí)" />
-                      </PromptInputSelectTrigger>
-                      <PromptInputSelectContent>
-                        {selectedModel.effortLevels.map((e) => (
-                          <PromptInputSelectItem key={e} value={e}>
-                            {e}
-                          </PromptInputSelectItem>
-                        ))}
-                      </PromptInputSelectContent>
-                    </PromptInputSelect>
-                  )}
-                </>
+              <PromptInputSelect value={session.model ?? ""} onValueChange={handleModelChange}>
+                <PromptInputSelectTrigger className="w-auto min-w-0" title="Model">
+                  <PromptInputSelectValue placeholder="Model (výchozí)" />
+                </PromptInputSelectTrigger>
+                <PromptInputSelectContent>
+                  {models.map((m) => (
+                    <PromptInputSelectItem key={m.id} value={m.id} title={m.description}>
+                      {m.displayName}
+                    </PromptInputSelectItem>
+                  ))}
+                </PromptInputSelectContent>
+              </PromptInputSelect>
+              {selectedModel?.supportsEffort && (
+                <PromptInputSelect value={session.effort ?? ""} onValueChange={handleEffortChange}>
+                  <PromptInputSelectTrigger
+                    className="w-auto min-w-0"
+                    title="Úsilí uvažování — projeví se od příštího běhu"
+                  >
+                    <PromptInputSelectValue placeholder="Úsilí (výchozí)" />
+                  </PromptInputSelectTrigger>
+                  <PromptInputSelectContent>
+                    {selectedModel.effortLevels.map((e) => (
+                      <PromptInputSelectItem key={e} value={e}>
+                        {e}
+                      </PromptInputSelectItem>
+                    ))}
+                  </PromptInputSelectContent>
+                </PromptInputSelect>
               )}
             </PromptInputTools>
             <PromptInputSubmit
@@ -785,7 +864,7 @@ export default function SessionChat({
             />
             </div>
             <div className="flex min-h-6 items-center gap-1.5 px-1 text-[11.5px] text-[var(--color-text-dim)]">
-              {session.state === "draft" && access.canResume && session.runner ? (
+              {session.state === "draft" && session.runner ? (
                 <PromptInputSelect
                   value={encodeRunnerChoice(session.runner, session.instance_id)}
                   onValueChange={handleRunnerChange}

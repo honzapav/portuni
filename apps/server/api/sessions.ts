@@ -10,10 +10,13 @@
 //   POST  /sessions/:id/rename             write   -> rename through the runtime (owner only);
 //                                                      publishes the change to the live channel
 //   GET   /sessions/:id/resume-info        read    -> conversation-resumable? handoff changed?
+//                                                      device-local (#456): both inputs -- the
+//                                                      mirror's handoff file and the content
+//                                                      store's inline summary -- are the device's
 //   GET   /sessions/:id/signals            read    -> restart indicator (run age, read/write set)
 //   GET   /sessions/:id/scope              read    -> central record half (#427): the session's
 //                                                      read/write set by node id, for the sync
-//                                                      agent's own suspend fallback
+//                                                      agent's own server-side suspend
 //   POST  /sessions                        write   -> start a task (session + first run)
 //   POST  /sessions/record                 write   -> central record half (#323): create the row
 //                                                      only, no run -- the agent-mode sidecar's own
@@ -29,12 +32,24 @@
 //                                                      the same node seeded with its summary
 //                                                      (owner only; #378)
 //   POST  /sessions/:id/close              write   -> close the session (owner or manage)
-//   GET   /sessions/:id/events             read    -> canonical event log
-//   POST  /sessions/:id/events             write   -> central record half (#323): batch-append
-//                                                      events, returns the assigned seqs
+//   POST  /sessions/:id/handoff            write   -> "Předat" (#459): ends the turn and the run,
+//                                                      writes the summary into the node's mirror
+//                                                      and suspends -- device-local, the file and
+//                                                      the transcript it is built from are here
+//   GET   /sessions/:id/events             read    -> canonical event log, from the device's
+//                                                      content.db (#456); on the central server the
+//                                                      legacy rows an older sidecar wrote
+//   POST  /sessions/:id/events             write   -> legacy (#323, retired by #456): batch-append
+//                                                      into the graph db's own session_events,
+//                                                      kept only for a sidecar released before
+//                                                      #456; no current code path calls it
 //   POST  /sessions/:id/runs               write   -> central record half (#323): create a run record
 //   PATCH /sessions/:id/runs/:run_id       write   -> central record half (#323): patch a run record
 //   GET   /sessions/:id/runs               read    -> central record half (#323): list a session's runs
+//   GET   /sessions/legacy-content         read    -> central: the caller's own threads that ran on
+//                                                      ?host_id and still have legacy content
+//   GET   /sessions/:id/legacy-content     read    -> central, owner-only: one thread's legacy content,
+//                                                      read once by a sync agent at boot
 //
 // The "central record half" routes exist so the SAME SessionStore interface
 // (domain/runner/store.ts) that DbSessionStore implements over this
@@ -42,15 +57,19 @@
 // (domain/runner/store-central.ts) over these REST endpoints -- "one
 // implementation" (spec rule 1): the session runtime itself never changes
 // between local and central/agent mode, only which SessionStore backs it.
+// That interface is the RECORD half only (#456): a thread's content -- the
+// first message, the transcript, the inline handoff summary -- is written
+// to the device's own content.db by SessionContentStore and never sent
+// here. `brief` and `handoff_inline` on the create/patch routes, and the
+// event-append route above, are accepted only for an older sidecar.
 // They're served here unconditionally (also reachable in env/local mode,
 // harmless) rather than gated to google/central mode specifically.
 //
-// Who may do what beyond the list route is auth/session-access.ts's
-// sessionAccess table (docs/superpowers/specs/2026-09-12-remote-hosts-and-
-// task-queue-design.md, "Visibility and control"): read is anyone who can
-// see the anchor node, message/resume are owner-only, stop (interrupt/
-// suspend/close) is the owner or manage scope. The list route itself keeps
-// following the anchor node's own read gate (handleListNodeSessions).
+// Who may do what is auth/session-access.ts's sessionAccess table, one line
+// since #457 (docs/superpowers/specs/2026-09-22-local-sessions-design.md,
+// "Access"): a thread is its owner's, for every action, `manage` included.
+// The list routes below follow the same rule -- they return the caller's own
+// sessions only, so no thread of another user is ever named here.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DbClient } from "../infra/db.js";
@@ -79,13 +98,22 @@ import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { logAudit } from "../infra/audit.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
 import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
+import { respondHandoffRefusal } from "./session-handoff-errors.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
-import { resolveHostLabel } from "../domain/runner/hosts.js";
+import { resolveHostLabel, transcriptHostLabel } from "../domain/runner/hosts.js";
 import { DbSessionStore } from "../domain/runner/store.js";
+import { LegacyGraphContentStore, sessionContentStoreForProcess } from "../domain/runner/store-content.js";
+import { columnExistsSql, tableExistsSql } from "../infra/sql.js";
 import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
-import type { SessionResumeInfo, SessionScopeRecord, SessionSummary } from "../shared/api-types.js";
+import type {
+  LegacySessionContentPage,
+  SessionEventRow,
+  SessionResumeInfo,
+  SessionScopeRecord,
+  SessionSummary,
+} from "../shared/api-types.js";
 
 export async function toSummary(row: SessionRow): Promise<SessionSummary> {
   // #428: the host is the latest run's, not the session row's -- the row's
@@ -102,7 +130,6 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
     cli: row.cli,
     instance_id: row.instance_id,
     terminal_id: row.terminal_id,
-    brief: row.brief,
     runner: row.runner,
     host_id: hostId,
     host_label: resolveHostLabel(hostId),
@@ -122,15 +149,14 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
   };
 }
 
-// GET /sessions?state=running,suspended&limit=500 -- every session the
-// caller can see in the given states, raw rows (the consumer is
+// GET /sessions?state=running,suspended&limit=500 -- the caller's OWN
+// sessions in the given states, raw rows (the consumer is
 // CentralClient.listSessionRecords feeding the agent-mode live channel's
 // initial session_state burst, which needs state/waiting_since/node_id and
-// nothing curated). Visibility is the same rule sessionAccess("read")
-// applies: a node-anchored session iff its node is visible, a node-less
-// one only to its owner. `state=draft` is accepted and answers with the
-// caller's own drafts only (#463); another user's draft is never listed,
-// however visible its node is.
+// nothing curated). Visibility is the same one-line rule sessionAccess
+// applies (#457): a thread is its owner's, so another user's row is never
+// listed however visible its anchor node is. `state=draft` is accepted and
+// answers with the caller's own drafts like any other state.
 const ListSessionsQuery = z.object({
   state: z
     .string()
@@ -156,29 +182,11 @@ export async function handleListSessions(
     }
     const db = getDb();
     const rows: SessionRow[] = [];
-    for (const state of parsed.data.state) rows.push(...(await listSessions(db, { state })));
-    rows.sort((a, b) => (a.last_active_at < b.last_active_at ? 1 : a.last_active_at > b.last_active_at ? -1 : 0));
-    const sessions: SessionRow[] = [];
-    // One visibility answer per node, not per row.
-    const nodeVerdicts = new Map<string, Promise<boolean>>();
-    for (const row of rows) {
-      if (sessions.length >= parsed.data.limit) break;
-      if (row.user_id === identity.userId) {
-        sessions.push(row);
-        continue;
-      }
-      // #463: a draft belongs to its owner only. Node visibility opens
-      // every other state to a teammate, never an unsent draft.
-      if (row.state === "draft") continue;
-      if (row.node_id === null) continue;
-      let verdict = nodeVerdicts.get(row.node_id);
-      if (!verdict) {
-        verdict = nodeVisibleTo(db, identity, row.node_id);
-        nodeVerdicts.set(row.node_id, verdict);
-      }
-      if (await verdict) sessions.push(row);
+    for (const state of parsed.data.state) {
+      rows.push(...(await listSessions(db, { state, user_id: identity.userId })));
     }
-    respondJson(res, 200, { sessions });
+    rows.sort((a, b) => (a.last_active_at < b.last_active_at ? 1 : a.last_active_at > b.last_active_at ? -1 : 0));
+    respondJson(res, 200, { sessions: rows.slice(0, parsed.data.limit) });
   } catch (err) {
     respondError(res, `${req.method} /sessions`, err);
   }
@@ -200,16 +208,15 @@ export async function handleListNodeSessions(
     }
 
     const includeArchived = url.searchParams.get("include_archived") === "1";
-    let rows = await listSessions(db, { node_id: nodeId });
+    // The node's own read gate above decides whether the tab exists at all;
+    // which threads it carries is the session rule (#457): the caller's own,
+    // of every state, drafts (#374) included. Another user's thread on this
+    // node is never returned, so the Relace tab of a shared node shows each
+    // member their own work only.
+    let rows = await listSessions(db, { node_id: nodeId, user_id: identity.userId });
     if (!includeArchived) {
       rows = rows.filter((r) => r.state !== "archived");
     }
-    // A draft (#374) is a thread of the node like any other, so the list
-    // carries the caller's own (#463): a reload, a second window or any
-    // other surface of the same user sees it without a client-side draft
-    // map. Someone else's draft is never returned -- it is theirs until
-    // the first message promotes it.
-    rows = rows.filter((r) => r.state !== "draft" || r.user_id === identity.userId);
     const sessions = await Promise.all(rows.map(toSummary));
     respondJson(res, 200, { sessions });
   } catch (err) {
@@ -235,16 +242,6 @@ async function guardSessionAccess(
       return null;
     }
     throw err;
-  }
-}
-
-// Access-table stop actions (interrupt/suspend/close) performed by someone
-// other than the session's owner append a state_changed event naming the
-// actor -- "the chat shows who stopped it" (remote-hosts-and-task-queue-
-// design spec, "Visibility and control").
-async function noteIfNotOwner(existing: SessionRow, identity: RequestIdentity, sessionId: string): Promise<void> {
-  if (existing.user_id !== identity.userId) {
-    await getSessionRuntime().recordStoppedBy(sessionId, identity.userId);
   }
 }
 
@@ -285,7 +282,7 @@ const PatchSessionBody = z
     waiting_since: z.string().nullable().optional(),
     handoff_path: z.string().nullable().optional(),
     handoff_hash: z.string().nullable().optional(),
-    // #434: the suspend fallback's summary when this device had no mirror
+    // #434: a team-workspace suspend's summary when this device had no mirror
     // to write a handoff file into -- the same column the local half
     // (suspendSession) writes, so a team-workspace suspend without a
     // mirror resumes from the summary exactly as a personal one does.
@@ -306,6 +303,33 @@ const PatchSessionBody = z
     context_max_tokens: z.number().int().nullable().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, "at least one field is required");
+
+// #456 compatibility shim: `sessions.brief` and `sessions.handoff_inline`
+// are content, which the device now keeps in its own content.db and never
+// sends here. The two columns stay on the central record until the central
+// migration (#462), and these routes keep accepting them so a sidecar
+// released before #456 is not broken by the server deploying first
+// (spec, "Rollout", step 1). Written directly, because the record store no
+// longer models either field.
+async function writeLegacyContentColumns(
+  db: DbClient,
+  sessionId: string,
+  body: { brief?: string | null; handoff_inline?: string | null },
+): Promise<void> {
+  const sets: string[] = [];
+  const args: Array<string | null> = [];
+  if (body.brief !== undefined) {
+    sets.push("brief = ?");
+    args.push(body.brief);
+  }
+  if (body.handoff_inline !== undefined) {
+    sets.push("handoff_inline = ?");
+    args.push(body.handoff_inline);
+  }
+  if (sets.length === 0) return;
+  args.push(sessionId);
+  await db.execute({ sql: `UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, args });
+}
 
 export async function handlePatchSession(
   req: IncomingMessage,
@@ -343,14 +367,18 @@ export async function handlePatchSession(
     // Central record half (#323): raw SessionRow, same reasoning as
     // handleGetSession above -- the caller is CentralSessionStore, which
     // needs every column back, not the curated summary.
+    // #456: `brief` and `handoff_inline` are content and no longer reach
+    // the record store -- the device writes them to its own content.db.
+    // They are still accepted here, and written straight to the columns,
+    // so a sidecar released before #456 keeps working until the central
+    // migration (#462) drops both columns.
+    await writeLegacyContentColumns(db, sessionId, body);
     const updated = await new DbSessionStore(db).patchSession(sessionId, {
       name: body.name,
       state: body.state,
       waiting_since: body.waiting_since,
       handoff_path: body.handoff_path,
       handoff_hash: body.handoff_hash,
-      handoff_inline: body.handoff_inline,
-      brief: body.brief,
       runner: body.runner,
       instance_id: body.instance_id,
       name_is_custom: body.name_is_custom,
@@ -455,6 +483,33 @@ export async function handleTransitionSessionState(
   }
 }
 
+// The resume-info answer, built once for both routers: #456 made
+// GET /sessions/:id/resume-info device-local (the inline handoff summary is
+// content and lives in this device's content.db), so agent-router.ts serves
+// it in a team workspace from the very same code.
+export async function sessionResumeInfoPayload(
+  session: SessionRow,
+  mirrorRoot: string | null,
+  requestedConfigDir: string | null,
+): Promise<SessionResumeInfo> {
+  // The instance's CLAUDE_CONFIG_DIR unless the caller named one: the
+  // profile's CLI keeps its transcripts there (#469). The instance registry
+  // is this device's runners.json, which is why this route is device-local.
+  const instanceEnv = session.instance_id ? ((await getInstanceEnv(session.instance_id)) ?? {}) : {};
+  const configDir = requestedConfigDir || instanceEnv.CLAUDE_CONFIG_DIR || null;
+  const inline = (await sessionContentStoreForProcess().getContent(session.id))?.handoff_inline ?? null;
+  const info = await getResumeInfo(session, mirrorRoot, { configDir, handoffInline: inline });
+  return {
+    session_id: session.id,
+    handoff_path: info.handoffPath,
+    handoff_changed: info.handoffChanged,
+    handoff_checkable: info.handoffCheckable,
+    conversation_resumable: info.conversationResumable,
+    generated_by: info.generatedBy,
+    reason: info.reason,
+  };
+}
+
 export async function handleGetSessionResumeInfo(
   req: IncomingMessage,
   res: ServerResponse,
@@ -471,21 +526,10 @@ export async function handleGetSessionResumeInfo(
     // CLAUDE_CONFIG_DIR, so checkConversationResumable needs the profile
     // this session runs under instead of the default location. A caller may
     // still pass one (a desktop profile this process knows nothing about);
-    // otherwise it comes from the session's own provider instance, where
-    // that setting now lives server-side (domain/runner/instances.ts).
-    const instanceEnv = existing.instance_id ? ((await getInstanceEnv(existing.instance_id)) ?? {}) : {};
-    const configDir = url.searchParams.get("config_dir") || instanceEnv.CLAUDE_CONFIG_DIR || null;
-    const info = await getResumeInfo(existing, mirrorRoot, undefined, configDir);
-    const payload: SessionResumeInfo = {
-      session_id: existing.id,
-      handoff_path: info.handoffPath,
-      handoff_changed: info.handoffChanged,
-      handoff_checkable: info.handoffCheckable,
-      conversation_resumable: info.conversationResumable,
-      generated_by: info.generatedBy,
-      reason: info.reason,
-    };
-    respondJson(res, 200, payload);
+    // otherwise sessionResumeInfoPayload takes it from the session's own
+    // provider instance (domain/runner/instances.ts).
+    const configDir = url.searchParams.get("config_dir") || null;
+    respondJson(res, 200, await sessionResumeInfoPayload(existing, mirrorRoot, configDir));
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/resume-info`, err);
   }
@@ -515,9 +559,9 @@ export async function handleGetSessionSignals(
 // #427: the session's persisted scope, by node id, plus the anchor node's
 // name -- everything domain/session-handoff.ts's local suspend path reads
 // off the graph db to fill a summary's "Zápisový rozsah" / "Čtecí rozsah"
-// sections. A sync agent has neither table, so its suspend fallback
-// (domain/runner/suspend-fallback-central.ts) reads them here instead of
-// writing an empty-scope summary. A pure read of the record half, so it
+// sections. A sync agent has neither table, so the same suspend reads them
+// here instead of writing an empty-scope summary (#458: one implementation,
+// this route is its `scope` seam in a team workspace). A pure read of the record half, so it
 // follows the same read-tier gate resume-info and signals do.
 export async function handleGetSessionScope(
   req: IncomingMessage,
@@ -554,16 +598,29 @@ async function sessionNodeName(db: DbClient, nodeId: string): Promise<string | n
 // modal, no required field") -- omitting brief creates a draft instead of
 // starting a task; runner is validated as required only in that case
 // (a plain zod .optional() cannot express "required together").
-export const StartSessionBody = z.object({
-  node_id: z.string().min(1),
-  brief: z.string().trim().min(1).optional(),
-  runner: z.string().min(1).optional(),
-  instance_id: z.string().min(1).nullable().optional(),
-  policy: z.enum(["default", "auto"]).optional(),
-  // #375: the thread's own model/effort override.
-  model: z.string().nullable().optional(),
-  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
-});
+export const StartSessionBody = z
+  .object({
+    node_id: z.string().min(1),
+    brief: z.string().trim().min(1).optional(),
+    runner: z.string().min(1).optional(),
+    instance_id: z.string().min(1).nullable().optional(),
+    policy: z.enum(["default", "auto"]).optional(),
+    // #375: the thread's own model/effort override.
+    model: z.string().nullable().optional(),
+    effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+    // #460 "Navázat na handoff": a node-relative handoff path, i.e. exactly
+    // what domain/session-handoff.ts's handoffRelativePath writes. The new
+    // thread starts from that file's content -- no brief, and the runner is
+    // resolved here rather than sent, so neither is accepted alongside it.
+    handoff_path: z
+      .string()
+      .regex(/^wip\/sessions\/[A-Za-z0-9_-]+-handoff\.md$/, "handoff_path must be wip/sessions/<id>-handoff.md")
+      .optional(),
+  })
+  .refine((b) => !(b.handoff_path && b.brief), {
+    message: "handoff_path cannot be combined with brief",
+    path: ["handoff_path"],
+  });
 
 export async function handleStartSession(
   req: IncomingMessage,
@@ -578,6 +635,35 @@ export async function handleStartSession(
     const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
     if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
       respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+
+    // #460 "Navázat na handoff": a new thread from a handoff file of this
+    // node -- the runtime reads the file off this device's mirror, resolves
+    // the runner the way a draft's is resolved, and starts the first run
+    // with the summary as orientation.
+    if (body.handoff_path) {
+      try {
+        const { session, run } = await getSessionRuntime().startFromHandoff({
+          userId: identity.userId,
+          nodeId: body.node_id,
+          handoffPath: body.handoff_path,
+          policy: body.policy,
+        });
+        await logAudit(identity.userId, "session_start", "session", session.id, {
+          node_id: body.node_id,
+          handoff_path: body.handoff_path,
+        });
+        const updated = await getSession(db, session.id);
+        respondJson(res, 201, { session: await toSummary(updated ?? session), run });
+      } catch (err) {
+        if (respondHandoffRefusal(res, err)) return;
+        if (err instanceof NoRunnerAvailableError) {
+          respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
+          return;
+        }
+        throw err;
+      }
       return;
     }
 
@@ -742,7 +828,6 @@ export async function handleInterruptSession(
     if (!existing) return;
     await getSessionRuntime().interrupt(sessionId);
     await logAudit(identity.userId, "session_interrupt", "session", sessionId, {});
-    await noteIfNotOwner(existing, identity, sessionId);
     const updated = await getSession(db, sessionId);
     respondJson(res, 200, { session: await toSummary(updated ?? existing) });
   } catch (err) {
@@ -774,6 +859,35 @@ export async function handleContinueSession(
   }
 }
 
+// #459 "Předat": hands the thread to another machine through its handoff
+// file. Device-local -- the run, the transcript the summary is built from
+// and the node's mirror are all on this device; only the record patch
+// reaches the central server, through the runtime's own store. The whole
+// operation is the runtime's (agent-router.ts serves the same verb in
+// sync-agent mode, sessions-ws.ts the same frame).
+export async function handleHandoffSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
+    if (!existing) return;
+    try {
+      const { session, handoff_path } = await getSessionRuntime().handoff(sessionId);
+      await logAudit(identity.userId, "session_handoff", "session", sessionId, { handoff_path });
+      respondJson(res, 200, { session: await toSummary(session), handoff_path });
+    } catch (err) {
+      if (respondHandoffRefusal(res, err)) return;
+      throw err;
+    }
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}/handoff`, err);
+  }
+}
+
 export async function handleCloseSession(
   req: IncomingMessage,
   res: ServerResponse,
@@ -786,7 +900,6 @@ export async function handleCloseSession(
     if (!existing) return;
     const updated = await getSessionRuntime().closeSession(sessionId);
     await logAudit(identity.userId, "session_close", "session", sessionId, {});
-    await noteIfNotOwner(existing, identity, sessionId);
     respondJson(res, 200, { session: await toSummary(updated) });
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/close`, err);
@@ -816,7 +929,15 @@ export async function handleListSessionEvents(
     const rows = await getSessionRuntime().listEvents(sessionId, { after, limit });
     const events = rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
     const nextAfter = rows.length === limit ? rows[rows.length - 1].seq : null;
-    respondJson(res, 200, { events, next_after: nextAfter });
+    // #458: the transcript lives on the device that ran the thread. A
+    // device that did not run it has no rows to answer with and says where
+    // they are instead of showing an empty chat.
+    const transcriptHost = transcriptHostLabel(existing.host_id, rows.length);
+    respondJson(res, 200, {
+      events,
+      next_after: nextAfter,
+      ...(transcriptHost ? { transcript_host: transcriptHost } : {}),
+    });
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/events`, err);
   }
@@ -888,11 +1009,12 @@ export async function handleCreateSessionRecord(
         : await store.createSession({
             node_id: body.node_id,
             user_id: identity.userId,
-            brief: body.brief ?? null,
             runner: body.runner,
             instance_id: body.instance_id ?? null,
             host_id: body.host_id ?? null,
           });
+    // Same #456 compatibility as handlePatchSession's own legacy write.
+    if (body.draft !== true) await writeLegacyContentColumns(db, session.id, { brief: body.brief ?? null });
     await logAudit(identity.userId, "session_record", "session", session.id, {
       node_id: body.node_id,
       ...(body.draft === true ? { draft: true } : { runner: body.runner }),
@@ -1015,7 +1137,14 @@ export async function handleAppendSessionEvents(
     const body = await parseJsonBody(req, res, AppendEventsBody);
     if (!body) return;
 
-    const seqs = await new DbSessionStore(db).appendEvents(
+    // #456: the transcript is the device's, so the runtime writes it to
+    // content.db and never calls this route anymore. It stays for a
+    // sidecar released before #456, writing the graph db's own
+    // `session_events` -- the same rows the central server's
+    // GET /sessions/:id/events reads back to that sidecar
+    // (sessionContentStoreForProcess() is LegacyGraphContentStore there),
+    // until #462 drops them.
+    const seqs = await new LegacyGraphContentStore(db).appendEvents(
       sessionId,
       body.run_id,
       body.events as CanonicalEvent[],
@@ -1023,5 +1152,129 @@ export async function handleAppendSessionEvents(
     respondJson(res, 200, { seqs });
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/events`, err);
+  }
+}
+
+// --- Legacy session content (#456 follow-up) -------------------------------
+// A sidecar released before #456 sent each thread's content to the central
+// server: the transcript into the graph db's `session_events`, the first
+// message and the inline summary into `sessions.brief` /
+// `sessions.handoff_inline`. A sync agent downloads its own share of that
+// once, on its first boot (boot/content-import.ts), so the history of the
+// threads it ran stays readable on the device that ran them. Read-only: the
+// central copy stays until the central migration (#462) drops the table and
+// both columns, and after it these answer as if nothing were left.
+
+const LEGACY_EVENTS_PAGE = 500;
+
+async function legacyContentSources(
+  db: DbClient,
+): Promise<{ events: boolean; brief: boolean; inline: boolean }> {
+  const table = async (name: string) =>
+    (await db.execute({ sql: tableExistsSql(db.dialect), args: [name] })).rows.length > 0;
+  const column = async (name: string) =>
+    (await db.execute({ sql: columnExistsSql(db.dialect), args: ["sessions", name] })).rows.length > 0;
+  return { events: await table("session_events"), brief: await column("brief"), inline: await column("handoff_inline") };
+}
+
+// GET /sessions/legacy-content?host_id=<device> -- the ids of the CALLER's
+// own threads (the same owner rule as every session route, #457) that ran on
+// that device -- the record's own host or any of its runs' -- and still have
+// legacy content.
+export async function handleListLegacySessionContent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  url: URL,
+): Promise<void> {
+  try {
+    const hostId = url.searchParams.get("host_id")?.trim();
+    if (!hostId) {
+      respondJson(res, 400, { error: "host_id is required", code: "HOST_ID_REQUIRED" });
+      return;
+    }
+    const db = getDb();
+    const src = await legacyContentSources(db);
+    const has = [
+      ...(src.events ? ["EXISTS (SELECT 1 FROM session_events e WHERE e.session_id = s.id)"] : []),
+      ...(src.brief ? ["s.brief IS NOT NULL"] : []),
+      ...(src.inline ? ["s.handoff_inline IS NOT NULL"] : []),
+    ];
+    if (has.length === 0) {
+      respondJson(res, 200, { sessions: [] });
+      return;
+    }
+    const rows = await db.execute({
+      sql: `SELECT s.id FROM sessions s
+             WHERE s.user_id = ?
+               AND (s.host_id = ? OR EXISTS (SELECT 1 FROM session_runs r WHERE r.session_id = s.id AND r.host_id = ?))
+               AND (${has.join(" OR ")})
+             ORDER BY s.id`,
+      args: [identity.userId, hostId, hostId],
+    });
+    respondJson(res, 200, { sessions: rows.rows.map((r) => String(r.id)) });
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/legacy-content`, err);
+  }
+}
+
+// GET /sessions/:id/legacy-content?after=<seq> -- one thread's legacy
+// content, owner-only (sessionAccess "read": anyone else gets
+// SESSION_NOT_FOUND), its events a page at a time and raw, exactly as
+// stored.
+export async function handleGetLegacySessionContent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+  url: URL,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "read");
+    if (!existing) return;
+    const afterParam = url.searchParams.get("after");
+    const after = afterParam !== null && afterParam !== "" ? Number(afterParam) : null;
+    const src = await legacyContentSources(db);
+
+    const events: SessionEventRow[] = [];
+    if (src.events) {
+      const r = await db.execute({
+        sql: `SELECT id, session_id, run_id, seq, kind, payload, created_at FROM session_events
+               WHERE session_id = ?${after !== null ? " AND seq > ?" : ""}
+               ORDER BY seq LIMIT ?`,
+        args: after !== null ? [sessionId, after, LEGACY_EVENTS_PAGE] : [sessionId, LEGACY_EVENTS_PAGE],
+      });
+      for (const row of r.rows) {
+        events.push({
+          id: String(row.id),
+          session_id: String(row.session_id),
+          run_id: row.run_id === null ? null : String(row.run_id),
+          seq: Number(row.seq),
+          kind: String(row.kind),
+          payload: String(row.payload),
+          created_at: String(row.created_at),
+        });
+      }
+    }
+    let brief: string | null = null;
+    let inline: string | null = null;
+    const cols = [...(src.brief ? ["brief"] : []), ...(src.inline ? ["handoff_inline"] : [])];
+    if (cols.length > 0) {
+      const r = await db.execute({ sql: `SELECT ${cols.join(", ")} FROM sessions WHERE id = ?`, args: [sessionId] });
+      const row = r.rows[0];
+      if (row && src.brief && row.brief != null) brief = String(row.brief);
+      if (row && src.inline && row.handoff_inline != null) inline = String(row.handoff_inline);
+    }
+    const page: LegacySessionContentPage = {
+      session_id: sessionId,
+      brief,
+      handoff_inline: inline,
+      events,
+      next_after: events.length === LEGACY_EVENTS_PAGE ? events[events.length - 1].seq : null,
+    };
+    respondJson(res, 200, page);
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}/legacy-content`, err);
   }
 }

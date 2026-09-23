@@ -55,6 +55,15 @@ export function isLocalWorkspace(): boolean {
   return authMode() !== "google" && !agentMode;
 }
 
+// The central server (api.portuni.com): google auth and not a sync agent.
+// It holds the session RECORD only and never opens a device content db
+// (infra/device-content-db.ts); the content it still has is the legacy
+// graph-db rows an older sidecar wrote (#456 compatibility, dropped by the
+// central migration).
+export function isCentralServer(): boolean {
+  return authMode() === "google" && process.env.PORTUNI_AGENT_MODE !== "1";
+}
+
 // The server's auth mode, read live from the environment: "google" is the
 // central server, anything else is solo bearer-token mode.
 export function authMode(): "google" | "env" {

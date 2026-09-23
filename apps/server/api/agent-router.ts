@@ -50,7 +50,14 @@ import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob, withNodeSyncLock } from "../domain/sync/sync-jobs.js";
 import { createAgentSessionRuntime } from "../boot/session-runtime.js";
-import { RenameSessionBody, SetSessionModelBody, StartSessionBody } from "./sessions.js";
+import {
+  RenameSessionBody,
+  SetSessionModelBody,
+  StartSessionBody,
+  sessionResumeInfoPayload,
+} from "./sessions.js";
+import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
+import { respondHandoffRefusal } from "./session-handoff-errors.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -68,6 +75,7 @@ import {
 import { mimeFor, localHashFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { safeMirrorJoin, deriveLocalPath, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
+import { transcriptHostLabel } from "../domain/runner/hosts.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
 import { removeLocalCopyAndState } from "../domain/sync/local-cleanup.js";
 import { trackPendingPush, clearPendingPushIfCurrent, awaitPendingPush } from "../domain/sync/pending-pushes.js";
@@ -454,6 +462,30 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       // promoteDraftAndStart). The row itself is created through the
       // runtime's own store, which in this mode is CentralSessionStore,
       // i.e. central's POST /sessions/record draft shape.
+      // #460 "Navázat na handoff": the file lives in THIS device's mirror
+      // and the run starts here; only the new record is central's, through
+      // the runtime's CentralSessionStore. Same call as the local router.
+      if (body.handoff_path) {
+        try {
+          const { session, run } = await sessionRuntime.startFromHandoff({
+            userId: identity.userId,
+            nodeId: body.node_id,
+            handoffPath: body.handoff_path,
+            policy: body.policy,
+          });
+          const updated = await sessionRuntime.getSession(session.id);
+          respondJson(res, 201, { session: updated ?? session, run });
+        } catch (err) {
+          if (respondHandoffRefusal(res, err)) return true;
+          if (err instanceof NoRunnerAvailableError) {
+            respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
+            return true;
+          }
+          if (respondCentral404(res, err)) return true;
+          respondError(res, "POST /sessions", err);
+        }
+        return true;
+      }
       if (body.brief === undefined) {
         try {
           const session = await sessionRuntime.createDraft({
@@ -633,6 +665,25 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       return true;
     }
 
+    // #459: "Předat" -- device-local for the same reason interrupt/close
+    // are: the run, the transcript the summary is built from and the
+    // node's mirror are all here. Only the record patch reaches central,
+    // through the runtime's CentralSessionStore.
+    const sessionHandoffMatch = pathname.match(/^\/sessions\/([^/]+)\/handoff$/);
+    if (sessionHandoffMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionHandoffMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      try {
+        const { session, handoff_path } = await sessionRuntime.handoff(sessionId);
+        respondJson(res, 200, { session, handoff_path });
+      } catch (err) {
+        if (respondHandoffRefusal(res, err)) return true;
+        if (respondAgentSessionError(res, err)) return true;
+        respondError(res, `POST /sessions/${sessionId}/handoff`, err);
+      }
+      return true;
+    }
+
     const sessionSignalsMatch = pathname.match(/^\/sessions\/([^/]+)\/signals$/);
     if (sessionSignalsMatch && method === "GET") {
       const sessionId = decodeURIComponent(sessionSignalsMatch[1]);
@@ -641,6 +692,30 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         respondJson(res, 200, signals);
       } catch (err) {
         respondError(res, `GET /sessions/${sessionId}/signals`, err);
+      }
+      return true;
+    }
+
+    // #456: resume-info moved from the central list to the device-local
+    // one -- the inline handoff summary it reports is content, and content
+    // lives in this device's content.db. The mirror it hashes the handoff
+    // file against is this device's too, so central could never have
+    // answered it correctly for a team workspace anyway.
+    const sessionResumeInfoMatch = pathname.match(/^\/sessions\/([^/]+)\/resume-info$/);
+    if (sessionResumeInfoMatch && method === "GET") {
+      const sessionId = decodeURIComponent(sessionResumeInfoMatch[1]);
+      try {
+        const session = await sessionRuntime.getSession(sessionId);
+        if (!session) {
+          respondJson(res, 404, { error: "session not found", code: "SESSION_NOT_FOUND" });
+          return true;
+        }
+        const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
+        const configDir = url.searchParams.get("config_dir") || null;
+        respondJson(res, 200, await sessionResumeInfoPayload(session, mirrorRoot, configDir));
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `GET /sessions/${sessionId}/resume-info`, err);
       }
       return true;
     }
@@ -656,7 +731,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           limit: limit !== null ? Number(limit) : undefined,
         });
         const events = rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
-        respondJson(res, 200, { events });
+        // #458: the transcript is this device's content.db. A thread the
+        // record says ran on another device has none here, and the answer
+        // says so rather than looking like an empty chat.
+        const session = await sessionRuntime.getSession(sessionId);
+        const transcriptHost = transcriptHostLabel(session?.host_id ?? null, rows.length);
+        respondJson(res, 200, { events, ...(transcriptHost ? { transcript_host: transcriptHost } : {}) });
       } catch (err) {
         respondError(res, `GET /sessions/${sessionId}/events`, err);
       }

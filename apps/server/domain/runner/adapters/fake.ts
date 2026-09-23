@@ -57,6 +57,15 @@ export class FakeRunnerAdapter implements RunnerAdapter {
     return this.lastSetModel;
   }
 
+  // Test-only visibility for the RunStart the last start() was handed
+  // (#460): what a run was seeded with -- its orientation above all -- is
+  // otherwise invisible from outside the adapter.
+  private lastRunStart: RunStart | null = null;
+
+  getLastRunStart(): RunStart | null {
+    return this.lastRunStart;
+  }
+
   async models(): Promise<RunnerModel[]> {
     return [...this.modelsList];
   }
@@ -79,6 +88,7 @@ export class FakeRunnerAdapter implements RunnerAdapter {
   }
 
   async start(run: RunStart, sink: EventSink): Promise<RunHandle> {
+    this.lastRunStart = run;
     const agentSessionIdValue = this.agentSessionIdValue;
     let ended = false;
     let stopped = false;

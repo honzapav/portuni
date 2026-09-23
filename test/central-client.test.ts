@@ -415,32 +415,28 @@ describe("createHttpCentralClient", () => {
     assert.equal(calls[0].method, "GET");
   });
 
-  it("appendSessionEvents posts run_id + events and returns the assigned seqs", async () => {
-    const { fetchImpl, calls } = fakeFetch([{ status: 200, json: { seqs: [1, 2] } }]);
-    const c = createHttpCentralClient({ ...BASE, fetchImpl });
-    const events = [
-      { kind: "user_message", payload: { text: "hi", source: "chat" } },
-      { kind: "assistant_message", payload: { text: "hello" } },
-    ];
-    const seqs = await c.appendSessionEvents("S1", "R1", events as never);
-    assert.deepEqual(seqs, [1, 2]);
-    assert.equal(calls[0].url, "https://api.example.com/sessions/S1/events");
-    assert.deepEqual(JSON.parse(calls[0].body ?? ""), { run_id: "R1", events });
+  // #456: the client has no event methods at all -- a thread's transcript
+  // is content and never leaves the device
+  // (docs/superpowers/specs/2026-09-22-local-sessions-design.md).
+  it("exposes no session-event method", () => {
+    const c = createHttpCentralClient({ ...BASE, fetchImpl: fakeFetch([]).fetchImpl }) as unknown as Record<string, unknown>;
+    assert.equal(c.appendSessionEvents, undefined);
+    assert.equal(c.listSessionEvents, undefined);
   });
 
-  it("listSessionEvents GETs /sessions/:id/events with after/limit and re-stringifies the payload", async () => {
+  // The one-time legacy download (boot/content-import.ts): the list names
+  // the device, a page is one thread's content from `after`.
+  it("legacy content: lists by host and pages one thread's content", async () => {
+    const page = { session_id: "S1", brief: "b", handoff_inline: null, events: [], next_after: null };
     const { fetchImpl, calls } = fakeFetch([
-      {
-        status: 200,
-        json: { events: [{ id: "E1", session_id: "S1", run_id: "R1", seq: 3, kind: "assistant_message", payload: { text: "hi" }, created_at: "t" }] },
-      },
+      { status: 200, json: { sessions: ["S1"] } },
+      { status: 200, json: page },
     ]);
     const c = createHttpCentralClient({ ...BASE, fetchImpl });
-    const events = await c.listSessionEvents("S1", { after: 2, limit: 50 });
-    assert.equal(events.length, 1);
-    assert.equal(events[0].seq, 3);
-    assert.deepEqual(JSON.parse(events[0].payload), { text: "hi" });
-    assert.equal(calls[0].url, "https://api.example.com/sessions/S1/events?after=2&limit=50");
+    assert.deepEqual(await c.listLegacySessionContent("honzas mac"), ["S1"]);
+    assert.equal(calls[0].url, "https://api.example.com/sessions/legacy-content?host_id=honzas%20mac");
+    assert.deepEqual(await c.getLegacySessionContent("S1", { after: 500 }), page);
+    assert.equal(calls[1].url, "https://api.example.com/sessions/S1/legacy-content?after=500");
   });
 
   it("orientation GETs /nodes/:id/orientation and returns null on 404 or a null orientation", async () => {

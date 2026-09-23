@@ -7,23 +7,18 @@
 // pattern as DetailPane.access.tsx's AccessSection.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CircleX, FileText, MessageSquare, Pencil, Redo2, X } from "lucide-react";
-import type { SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
+import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, Redo2, X } from "lucide-react";
+import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
 import {
   continueSession,
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
-  fetchUsers,
   closePersistentSession,
   renamePersistentSession,
+  startSessionFromHandoff,
 } from "../api";
-import {
-  hostDisplayName,
-  mergeLiveSessionStates,
-  sessionRowAccess,
-  sessionRowChip,
-  type SessionRowAccess,
-} from "../lib/session-views";
+import { handoffFileEntries, type HandoffFileEntry } from "../lib/handoff-files";
+import { hostDisplayName, mergeLiveSessionStates, sessionRowChip } from "../lib/session-views";
 import type { SessionStateMessage } from "../lib/sessions-client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -48,6 +43,8 @@ const SERVER_SUSPEND_REASON_LABEL: Record<string, string> = {
   boot_sweep: "restart serveru",
   suspend_timeout: "agent nestihl předání",
   host_lost: "proces osiřel po restartu",
+  // #459: the owner asked for it -- Předat wrote this summary on purpose.
+  handoff: "předání na jiné zařízení",
 };
 
 export function fmtDateTime(value: string): string {
@@ -71,6 +68,10 @@ export function fmtDateTime(value: string): string {
 
 type Props = {
   nodeId: string;
+  // #460 "Navázat na handoff": the node's tracked files, the records the
+  // handoff list is built from (the node detail already has them, so the
+  // tab needs no fetch of its own). Absent where the caller has none.
+  files?: readonly DetailFile[];
   onOpenFile?: (nodeId: string, relPath: string) => void;
   // "Otevřít chat" (#343) -- jumps to Práce with this section's node
   // selected, with THIS row's session as the one Práce shows -- a node
@@ -83,9 +84,6 @@ type Props = {
   // sidebar gets the row at once instead of waiting for something else to
   // refetch the node.
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
-  // #321's access table, echoed client-side for sessionRowAccess (useMe).
-  canManage: boolean;
-  meId: string | null;
   // The window's live session_state map (App.tsx, from the socket) --
   // overlaid onto the REST rows so state and "Čeká na mě" update without
   // a reload, and a change on THIS node's sessions (one started, one
@@ -96,35 +94,16 @@ type Props = {
 
 export function SessionsSection({
   nodeId,
+  files,
   onOpenFile,
   onOpenChat,
   onSessionStarted,
-  canManage,
-  meId,
   liveStates,
 }: Props) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
-  // "owner name when not the caller" -- fetchUsers is manage-scope-gated
-  // and degrades to [] for anyone below that (see its own doc comment), so
-  // a plain teammate viewing this tab just never resolves a name; that's
-  // fine, the row still works without one.
-  const [userNames, setUserNames] = useState<Record<string, string>>({});
-  useEffect(() => {
-    let cancelled = false;
-    void fetchUsers()
-      .then((users) => {
-        if (cancelled) return;
-        setUserNames(Object.fromEntries(users.map((u) => [u.id, u.name])));
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -193,6 +172,26 @@ export function SessionsSection({
     }
   };
 
+  // #460 "Navázat na handoff": the handoff files of this node, whoever
+  // wrote them -- a file another machine's thread wrote arrives here as an
+  // ordinary tracked file, which is exactly the point.
+  const handoffs = useMemo(() => handoffFileEntries(files ?? [], sessions), [files, sessions]);
+  const [startingHandoff, setStartingHandoff] = useState<string | null>(null);
+  const handleStartFromHandoff = async (entry: HandoffFileEntry) => {
+    setStartingHandoff(entry.relative_path);
+    setError(null);
+    try {
+      const { session, run } = await startSessionFromHandoff(nodeId, entry.relative_path);
+      onSessionStarted?.({ session, run });
+      onOpenChat?.(session.id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStartingHandoff(null);
+      await load();
+    }
+  };
+
   if (loading && sessions.length === 0) {
     return (
       <div className="px-5 py-4 text-[14px] text-[var(--color-text-dim)]">
@@ -219,6 +218,43 @@ export function SessionsSection({
         </div>
       )}
 
+      {handoffs.length > 0 && (
+        <div className="mb-4">
+          <div className="mb-2 text-[12.5px] text-[var(--color-text-dim)]">Předání k navázání</div>
+          <div className="space-y-2">
+            {handoffs.map((entry) => (
+              <div
+                key={entry.file_id}
+                className="flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13.5px] text-[var(--color-text)]">{entry.title}</div>
+                  <div className="truncate text-[12px] text-[var(--color-text-dim)]">
+                    {[entry.host, entry.last_active_at ? fmtDateTime(entry.last_active_at) : null]
+                      .filter(Boolean)
+                      .join(" · ") || entry.relative_path}
+                  </div>
+                </div>
+                {onOpenFile && (
+                  <RowIcon onClick={() => onOpenFile(nodeId, entry.relative_path)} title="Zobrazit handoff">
+                    <FileText />
+                  </RowIcon>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={startingHandoff !== null}
+                  onClick={() => void handleStartFromHandoff(entry)}
+                >
+                  <GitPullRequestArrow />
+                  {startingHandoff === entry.relative_path ? "Navazuji..." : "Navázat na handoff"}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {sessions.length === 0 ? (
         <div className="text-[14px] text-[var(--color-text-dim)]">Zatím žádné relace.</div>
       ) : (
@@ -227,8 +263,6 @@ export function SessionsSection({
             <SessionRow
               key={s.id}
               session={s}
-              access={sessionRowAccess(s.user_id, meId, canManage)}
-              ownerName={s.user_id !== meId ? (userNames[s.user_id] ?? null) : null}
               onRenamed={updateOne}
               onClose={() => setCloseConfirm(s)}
               onOpenChat={onOpenChat}
@@ -276,8 +310,6 @@ export function SessionsSection({
 
 function SessionRow({
   session,
-  access,
-  ownerName,
   onRenamed,
   onClose,
   onOpenChat,
@@ -285,10 +317,6 @@ function SessionRow({
   onOpenHandoff,
 }: {
   session: SessionSummary;
-  access: SessionRowAccess;
-  // Resolved display name of the owner, only when it's NOT the caller
-  // (null either way otherwise) -- see SessionsSection's userNames map.
-  ownerName: string | null;
   onRenamed: (updated: SessionSummary) => void;
   onClose: () => void;
   onOpenChat?: (sessionId: string) => void;
@@ -345,8 +373,10 @@ function SessionRow({
   // hover or keyboard focus (the list stays quiet); rename is one of them.
   // Uzavřít, the one irreversible action, sits last behind a separator.
   const showChat = (session.state === "running" || session.state === "suspended") && !!onOpenChat;
-  const showContinue = session.state === "closed" && access.canResume;
-  const showClose = (session.state === "running" || session.state === "suspended") && access.canPauseOrClose;
+  // #457: the list carries the caller's own threads only, so every action
+  // here is the owner's and nothing is gated beyond the state.
+  const showContinue = session.state === "closed";
+  const showClose = session.state === "running" || session.state === "suspended";
 
   return (
     <div className="group rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">
@@ -434,12 +464,6 @@ function SessionRow({
         )}
       </div>
 
-      {session.brief && (
-        <div className="mt-1 truncate text-[12px] text-[var(--color-text-muted)]" title={session.brief}>
-          {session.brief.split("\n")[0]}
-        </div>
-      )}
-
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--color-text-dim)]">
         <span>{chip.label}</span>
         <span>{fmtDateTime(session.last_active_at)}</span>
@@ -450,7 +474,6 @@ function SessionRow({
               otherwise the host id. Hidden when neither exists. */}
           {host ? ` · ${host}` : ""}
         </span>
-        {ownerName && <span>Vlastník: {ownerName}</span>}
         <span title="Počet uzlů v zápisovém rozsahu této relace">
           Zápis: {session.write_count}
         </span>

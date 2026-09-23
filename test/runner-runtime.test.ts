@@ -4,23 +4,39 @@
 // setup (via test/helpers/shared-db.ts's makeSharedDb).
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
-import { createSessionRuntime, resolveModelAndEffort } from "../apps/server/domain/runner/session-runtime.js";
+import {
+  SessionHandoffError,
+  createSessionRuntime,
+  resolveModelAndEffort,
+} from "../apps/server/domain/runner/session-runtime.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
 import { createInstance, setOrgDefault } from "../apps/server/domain/runner/instances.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
 import type { RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
+import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 import { claudeProjectSlug } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
+import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 
 afterEach(() => {
   setDbForTesting(null);
+  clearTestContentDb();
 });
+
+// #456: the transcript, the brief and the inline handoff summary are the
+// device's content, in content.db -- a separate store from the record.
+// sharedDb() installs a fresh in-memory one per test and leaves it here, so
+// every createSessionRuntime call below hands the runtime the same pair the
+// production composition roots do.
+let content: SessionContentStore;
 
 // getSessionScope/getMirrorPath/writeHandoffAndSuspend all reach through
 // the global getDb() singleton (like the rest of the domain layer), not
@@ -29,6 +45,7 @@ afterEach(() => {
 async function sharedDb(): Promise<SharedDb> {
   const shared = await makeSharedDb();
   setDbForTesting(shared.db);
+  content = (await installTestContentDb()).content;
   return shared;
 }
 
@@ -52,7 +69,7 @@ describe("session runtime: startTask", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session, run } = await runtime.startTask({
       userId: "U1",
@@ -62,7 +79,7 @@ describe("session runtime: startTask", () => {
       policy: "default",
     });
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     assert.deepEqual(
       events.map((e) => [e.seq, e.kind]),
       [
@@ -83,6 +100,7 @@ describe("session runtime: startTask", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const runtime = createSessionRuntime({
+      content,
       store,
       registry: { getAdapter: () => null },
       provision: stubProvision(),
@@ -114,7 +132,7 @@ describe("session runtime: question / answer", () => {
       { kind: "assistant_message", payload: { text: "done" } },
     ];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
@@ -127,7 +145,7 @@ describe("session runtime: question / answer", () => {
     row = await store.getSession(session.id);
     assert.equal(row?.waiting_since, null, "waiting_since must be cleared after answer()");
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     const questionEvents = events.filter((e) => e.kind === "question");
     assert.equal(questionEvents.length, 2, "the question is re-appended with the decision filled in");
     const answered = JSON.parse(questionEvents[1].payload);
@@ -148,7 +166,7 @@ describe("session runtime: interrupt (#378)", () => {
     const store = new DbSessionStore(db);
     const script: FakeScriptStep[] = [{ wait: "message" }];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.interrupt(session.id);
@@ -164,7 +182,7 @@ describe("session runtime: interrupt (#378)", () => {
     // A message right after interrupt() is accepted as an ordinary one --
     // it does NOT throw "has no live run".
     await runtime.sendMessage(session.id, "still here?");
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     assert.ok(events.some((e) => e.kind === "user_message" && JSON.parse(e.payload).text === "still here?"));
   });
 });
@@ -176,15 +194,16 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     // An empty script auto-completes right away -- nobody called close(),
     // so this is exactly "a run ended other than by Uzavřít".
     const adapter = new FakeRunnerAdapter({ script: [] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    assert.ok(row?.handoff_inline, "a summary must exist after a non-close run end");
-    assert.match(row!.handoff_inline!, /Poslední zprávy/);
-    assert.match(row!.handoff_inline!, /Fix the bug|x/); // the brief shows up as the first message
+    const summary = (await content.getContent(session.id))?.handoff_inline;
+    assert.ok(summary, "a summary must exist after a non-close run end");
+    assert.match(summary!, /Poslední zprávy/);
+    assert.match(summary!, /Fix the bug|x/); // the brief shows up as the first message
 
     const runs = await store.listRuns(session.id);
     // The adapter itself reports "completed" (a graceful close it can't
@@ -192,7 +211,7 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     // explicit close.
     assert.equal(runs[0].end_reason, "suspended");
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     const handoffEvent = events.find((e) => e.kind === "handoff");
     assert.ok(handoffEvent, "a handoff/summary event must be appended");
   });
@@ -201,7 +220,7 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
@@ -214,9 +233,10 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    assert.ok(row?.handoff_inline);
+    const summary = (await content.getContent(session.id))?.handoff_inline ?? null;
+    assert.ok(summary);
     const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
-    assert.equal(parseServerHandoffReason(row!.handoff_inline), "idle");
+    assert.equal(parseServerHandoffReason(summary), "idle");
   });
 
   it("a run ending on a provider limit suspends the thread with the provider message in its events (#411)", async () => {
@@ -230,20 +250,20 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
         { end: "limit" },
       ],
     });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    assert.ok(row?.handoff_inline, "a server-written summary must exist");
+    assert.ok((await content.getContent(session.id))?.handoff_inline, "a server-written summary must exist");
 
     const runs = await store.listRuns(session.id);
     // withSuspendReason leaves an adapter-reported limit alone -- that IS
     // the informative reason.
     assert.equal(runs[0].end_reason, "limit");
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     const error = events.find((e) => e.kind === "error");
     assert.ok(error, "the provider message must be in the transcript");
     assert.equal(JSON.parse(error!.payload).class, "provider");
@@ -259,7 +279,7 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     const store = new DbSessionStore(db);
     const script: FakeScriptStep[] = [{ kind: "reasoning", payload: { summary: "thinking" } }, { wait: "message" }];
     const adapter = new FakeRunnerAdapter({ script, agentSessionId: "conv-live" });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
@@ -273,7 +293,7 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     const { db } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
     await runtime.checkIdleRunsOnce(1); // must not throw
   });
 });
@@ -291,7 +311,7 @@ describe("session runtime: resume by writing (#378)", () => {
     const store = new DbSessionStore(db);
     const script: FakeScriptStep[] = [{ wait: "message" }];
     const adapter = new FakeRunnerAdapter({ script, agentSessionId: "claude-conv-1" });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session, run: firstRun } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.checkIdleRunsOnce(0, Date.now() + 1); // ends the run -> suspended, summary written
@@ -309,7 +329,7 @@ describe("session runtime: resume by writing (#378)", () => {
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "running");
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     const secondRunStarted = events.find((e) => e.run_id === runs[1].id && e.kind === "run_started");
     assert.ok(secondRunStarted);
     assert.equal(JSON.parse(secondRunStarted!.payload).resume, "handoff");
@@ -339,6 +359,7 @@ describe("session runtime: resume by writing (#378)", () => {
       const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }], agentSessionId: "conv-1" });
       const runtime = createSessionRuntime({
         store,
+        content,
         registry: registryOf(adapter),
         provision: stubProvision({ cwd, mirrors: [cwd] }),
       });
@@ -357,7 +378,7 @@ describe("session runtime: resume by writing (#378)", () => {
       const runs = await store.listRuns(session.id);
       assert.equal(runs.length, 2);
       assert.equal(runs[1].agent_session_id, "conv-1", "the new run continues the same conversation");
-      const events = await store.listEvents(session.id);
+      const events = await content.listEvents(session.id);
       const started = events.find((e) => e.run_id === runs[1].id && e.kind === "run_started");
       assert.equal(JSON.parse(started!.payload).resume, "conversation");
     } finally {
@@ -375,11 +396,12 @@ describe("session runtime: resume by writing (#378)", () => {
     // can drive it through a normal suspend with a summary written.
     const firstAdapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
     const registry = { getAdapter: (id: string) => (id === "fake" ? firstAdapter : null) };
-    const runtime = createSessionRuntime({ store, registry, provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry, provision: stubProvision() });
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.checkIdleRunsOnce(0, Date.now() + 1);
     const suspended = await store.getSession(session.id);
-    assert.ok(suspended?.handoff_inline);
+    assert.equal(suspended?.state, "suspended");
+    assert.ok((await content.getContent(session.id))?.handoff_inline);
 
     // Swap in a capturing adapter for the resume run so the RunStart it
     // actually receives is observable.
@@ -443,12 +465,12 @@ describe("session runtime: event ordering", () => {
       { wait: "message" },
     ];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
     const row = await store.getSession(session.id);
     assert.equal(row?.waiting_since, null, "the closed question must not leave the session waiting");
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     const stateChanged = events.filter((e) => e.kind === "state_changed").map((e) => JSON.parse(e.payload));
     assert.deepEqual(
       stateChanged.map((s) => s.waiting),
@@ -477,12 +499,12 @@ describe("session runtime: event ordering", () => {
       { kind: "assistant_message", payload: { text: "ok, a" } },
     ];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.answer(session.id, "q1", { by: "U1", value: "a", at: new Date().toISOString() });
 
-    const kinds = (await store.listEvents(session.id)).map((e) => {
+    const kinds = (await content.listEvents(session.id)).map((e) => {
       const payload = JSON.parse(e.payload);
       if (e.kind === "question") return payload.decision ? "question:answered" : "question";
       if (e.kind === "state_changed") return `state_changed:${payload.waiting}`;
@@ -515,7 +537,7 @@ describe("session runtime: event ordering", () => {
         return inner.start(run, sink);
       },
     };
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     assert.deepEqual(seenHeaders, { "X-Portuni-Spawn-Id": session.id });
   });
@@ -526,7 +548,7 @@ describe("session runtime: close", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const closed = await runtime.closeSession(session.id);
@@ -538,7 +560,7 @@ describe("session runtime: close", () => {
     // handleAdapterEvent from rewriting/auto-summarizing this one -- the
     // adapter's own "completed" (a graceful close) stands.
     assert.equal(runs[0].end_reason, "completed");
-    assert.ok(!(await store.getSession(session.id))?.handoff_inline, "Uzavřít does not write a summary");
+    assert.ok(!(await content.getContent(session.id))?.handoff_inline, "Uzavřít does not write a summary");
   });
 
   // The Relace row, the Práce sidebar and Přehled all learn a state change
@@ -550,7 +572,7 @@ describe("session runtime: close", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.checkIdleRunsOnce(0, Date.now() + 1);
@@ -569,7 +591,7 @@ describe("session runtime: close", () => {
       transitions.map((e) => e.payload),
       [{ from: "suspended", to: "closed", waiting: false }],
     );
-    const persisted = (await store.listEvents(session.id)).filter((e) => e.kind === "state_changed");
+    const persisted = (await content.listEvents(session.id)).filter((e) => e.kind === "state_changed");
     assert.ok(
       persisted.some((e) => (JSON.parse(e.payload) as { to?: string }).to === "closed"),
       "the transition is in the event log too",
@@ -580,10 +602,10 @@ describe("session runtime: close", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
-    const before = (await store.listEvents(session.id)).length;
+    const before = (await content.listEvents(session.id)).length;
     const received: Array<{ type?: string; session_id?: string }> = [];
     const unsubscribe = runtime.subscribe("*", (_sessionId, event) => {
       received.push(event as { type?: string; session_id?: string });
@@ -597,7 +619,7 @@ describe("session runtime: close", () => {
       received.filter((e) => e.type === "session_changed"),
       [{ type: "session_changed", session_id: session.id }],
     );
-    assert.equal((await store.listEvents(session.id)).length, before, "a rename is not a conversation event");
+    assert.equal((await content.listEvents(session.id)).length, before, "a rename is not a conversation event");
     await assert.rejects(runtime.renameSession(session.id, "   "), /must not be empty/);
   });
 
@@ -605,7 +627,7 @@ describe("session runtime: close", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const received: Array<{ kind?: string; payload?: unknown }> = [];
@@ -623,14 +645,18 @@ describe("session runtime: close", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session: oldSession } = await runtime.startTask({ userId: "U1", nodeId, brief: "the old task", runner: "fake" });
     const { session: newSession, run: newRun } = await runtime.continueSession(oldSession.id);
 
     const oldRow = await store.getSession(oldSession.id);
     assert.equal(oldRow?.state, "closed");
-    assert.equal(oldRow?.handoff_inline, null, "continue does not write a summary onto the OLD session");
+    assert.equal(
+      (await content.getContent(oldSession.id))?.handoff_inline ?? null,
+      null,
+      "continue does not write a summary onto the OLD session",
+    );
 
     assert.notEqual(newSession.id, oldSession.id);
     assert.equal(newSession.node_id, oldSession.node_id);
@@ -638,7 +664,7 @@ describe("session runtime: close", () => {
     assert.equal(newSession.name, oldSession.name);
     assert.equal(newSession.state, "running");
 
-    const newEvents = await store.listEvents(newSession.id);
+    const newEvents = await content.listEvents(newSession.id);
     assert.ok(newEvents.some((e) => e.run_id === newRun.id && e.kind === "run_started"));
     assert.ok(!newEvents.some((e) => e.kind === "user_message"), "continue carries no brief of its own");
   });
@@ -653,7 +679,7 @@ describe("session runtime: subscribers vs. store", () => {
       { kind: "assistant_message", payload: { text: "final" } },
     ];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const received: Array<{ kind?: string; type?: string }> = [];
     const unsubscribe = runtime.subscribe("*", (_sessionId, event) => {
@@ -666,7 +692,7 @@ describe("session runtime: subscribers vs. store", () => {
     assert.ok(received.some((e) => e.type === "delta"));
     assert.ok(received.some((e) => e.kind === "assistant_message"));
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     assert.equal(
       events.some((e) => e.kind === ("delta" as unknown)),
       false,
@@ -683,7 +709,7 @@ describe("session runtime: sessionSignals", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const signals = await runtime.sessionSignals(session.id);
@@ -698,7 +724,7 @@ describe("session runtime: sessionSignals", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const signals = await runtime.sessionSignals(session.id);
@@ -791,7 +817,7 @@ describe("session runtime: model/effort resolution end-to-end (startTask)", () =
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const { adapter, getRunStart } = capturingAdapter();
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake", instanceId: instance.id });
 
@@ -811,7 +837,7 @@ describe("session runtime: model/effort resolution end-to-end (startTask)", () =
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const { adapter, getRunStart } = capturingAdapter();
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     await runtime.startTask({
       userId: "U1",
@@ -834,7 +860,7 @@ describe("session runtime: model/effort resolution end-to-end (startTask)", () =
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const { adapter, getRunStart } = capturingAdapter();
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
@@ -876,6 +902,7 @@ describe("session runtime: organization default instance on draft promotion", ()
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
     registerAdapter(adapter);
     const runtime = createSessionRuntime({
+      content,
       store: deps.store,
       registry: registryOf(adapter),
       provision: stubProvision(),
@@ -948,5 +975,362 @@ describe("session runtime: organization default instance on draft promotion", ()
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /central unreachable/);
     assert.match(warnings[0], new RegExp(nodeId));
+  });
+});
+
+// #459 "Předat": the owner hands the thread to another machine through its
+// handoff file. A personal workspace here (DbSessionStore + the graph db's
+// own mirror registry); test/agent-router-sessions.test.ts runs the same
+// verb against the fake central server for a team workspace.
+describe("session runtime: handoff (#459 Předat)", () => {
+  let workspace: string | null = null;
+
+  afterEach(async () => {
+    resetLocalDbForTests();
+    delete process.env.PORTUNI_WORKSPACE_ROOT;
+    if (workspace) await rm(workspace, { recursive: true, force: true });
+    workspace = null;
+  });
+
+  // A node with a real mirror on this device: what the handoff file needs
+  // to exist as a file at all (without one the summary stays inline and
+  // Předat has nothing to hand over -- the last test below).
+  async function withMirror(script: FakeScriptStep[]) {
+    const shared = await sharedDb();
+    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-handoff-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    const mirrorRoot = join(workspace, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", shared.nodeId, mirrorRoot);
+    const store = new DbSessionStore(shared.db);
+    const adapter = new FakeRunnerAdapter({ script });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    return { ...shared, store, runtime, mirrorRoot };
+  }
+
+  it("a running thread is drained, suspended, and its handoff file registered in the node", async () => {
+    const { db, nodeId, store, runtime, mirrorRoot } = await withMirror([{ wait: "message" }]);
+    const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    const result = await runtime.handoff(session.id);
+
+    assert.equal(result.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+    assert.equal(result.session.state, "suspended");
+    assert.equal(result.session.handoff_path, result.handoff_path);
+    // The run is drained and ended, not left open behind a suspended row.
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].id, run.id);
+    assert.ok(runs[0].ended_at, "the run must be ended, not left live");
+
+    const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
+    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
+    assert.equal(parseServerHandoffReason(onDisk), "handoff");
+    assert.match(onDisk, /Poslední zprávy/);
+
+    // Registered as a tracked file of the node, so the next sync carries it.
+    const files = await db.execute({
+      sql: "SELECT filename FROM files WHERE node_id = ?",
+      args: [nodeId],
+    });
+    assert.deepEqual(
+      files.rows.map((r) => String(r.filename)),
+      [`${session.id}-handoff.md`],
+    );
+  });
+
+  it("a second Předat on the suspended thread answers the same path and writes nothing new", async () => {
+    const { nodeId, store, runtime } = await withMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const first = await runtime.handoff(session.id);
+    const eventsAfterFirst = (await content.listEvents(session.id)).length;
+
+    const second = await runtime.handoff(session.id);
+
+    assert.equal(second.handoff_path, first.handoff_path);
+    assert.equal(second.session.state, "suspended");
+    assert.equal((await content.listEvents(session.id)).length, eventsAfterFirst);
+    assert.equal((await store.listRuns(session.id)).length, 1);
+  });
+
+  it("a draft and a closed thread are refused with a code and a Czech message", async () => {
+    const { nodeId, runtime } = await withMirror([{ wait: "message" }]);
+    const draft = await runtime.createDraft({ userId: "U1", nodeId });
+    await assert.rejects(
+      () => runtime.handoff(draft.id),
+      (err: unknown) =>
+        err instanceof SessionHandoffError &&
+        err.code === "HANDOFF_NOT_ALLOWED" &&
+        /Předat lze jen/.test(err.message),
+    );
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.closeSession(session.id);
+    await assert.rejects(
+      () => runtime.handoff(session.id),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NOT_ALLOWED",
+    );
+  });
+
+  // No mirror here: an empty mirror registry in a temp workspace.
+  async function withoutMirror(script: FakeScriptStep[]) {
+    const shared = await sharedDb();
+    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-handoff-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    const store = new DbSessionStore(shared.db);
+    const adapter = new FakeRunnerAdapter({ script });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    return { ...shared, store, runtime };
+  }
+
+  it("a node with no mirror on this device is refused before anything happens: the run stays live", async () => {
+    const { nodeId, store, runtime } = await withoutMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const eventsBefore = (await content.listEvents(session.id)).length;
+
+    await assert.rejects(
+      () => runtime.handoff(session.id),
+      (err: unknown) =>
+        err instanceof SessionHandoffError && err.code === "HANDOFF_NO_MIRROR" && /zrcadlo/.test(err.message),
+    );
+    // Refused before any side effect: not suspended, the run not ended, no
+    // summary written anywhere, nothing appended to the transcript.
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[0].ended_at, null);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+    assert.equal((await content.listEvents(session.id)).length, eventsBefore);
+    await runtime.closeSession(session.id);
+  });
+
+  it("a suspended thread with no file but its transcript here gets the file written from it", async () => {
+    const { nodeId, store, runtime } = await withoutMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    // Suspended while the node had no mirror here: the summary is inline.
+    await runtime.checkIdleRunsOnce(-1);
+    const suspended = await store.getSession(session.id);
+    assert.equal(suspended?.state, "suspended");
+    assert.equal(suspended?.handoff_path, null);
+    const inline = (await content.getContent(session.id))?.handoff_inline;
+    assert.ok(inline);
+
+    // The mirror arrives; Předat now writes the file instead of refusing.
+    const mirrorRoot = join(workspace!, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const result = await runtime.handoff(session.id);
+
+    assert.equal(result.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+    assert.equal(result.session.state, "suspended");
+    assert.equal((await store.getSession(session.id))?.handoff_path, result.handoff_path);
+    assert.equal(await readFile(join(mirrorRoot, result.handoff_path), "utf8"), inline);
+    // The file is the handoff now; the inline copy is gone.
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+  });
+
+  it("a suspended thread whose transcript is on another device is refused, naming the device", async () => {
+    const { db, nodeId, store, runtime } = await withoutMirror([]);
+    const mirrorRoot = join(workspace!, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: "druhy-mac",
+    });
+    await db.execute({ sql: "UPDATE sessions SET state = 'suspended' WHERE id = ?", args: [created.id] });
+
+    await assert.rejects(
+      () => runtime.handoff(created.id),
+      (err: unknown) =>
+        err instanceof SessionHandoffError &&
+        err.code === "HANDOFF_TRANSCRIPT_ELSEWHERE" &&
+        /druhy-mac/.test(err.message),
+    );
+    const after = await store.getSession(created.id);
+    assert.equal(after?.state, "suspended");
+    assert.equal(after?.handoff_path, null);
+  });
+
+  it("a suspended thread that ran here but whose content has not arrived is refused, writing nothing", async () => {
+    const { db, nodeId, store, runtime } = await withoutMirror([]);
+    const mirrorRoot = join(workspace!, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: null,
+    });
+    await db.execute({ sql: "UPDATE sessions SET state = 'suspended' WHERE id = ?", args: [created.id] });
+
+    await assert.rejects(
+      () => runtime.handoff(created.id),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NO_CONTENT",
+    );
+    const after = await store.getSession(created.id);
+    assert.equal(after?.state, "suspended");
+    assert.equal(after?.handoff_path, null);
+  });
+
+  it("a thread whose run is live on another device is refused and stays running", async () => {
+    const { nodeId, store, runtime } = await withoutMirror([]);
+    const mirrorRoot = join(workspace!, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: "druhy-mac",
+    });
+    const run = await store.createRun({ session_id: created.id, runner: "fake", instance_id: null, host_id: "druhy-mac" });
+    assert.equal((await store.getSession(created.id))?.state, "running");
+
+    await assert.rejects(
+      () => runtime.handoff(created.id),
+      (err: unknown) =>
+        err instanceof SessionHandoffError && err.code === "HANDOFF_RUN_ELSEWHERE" && /druhy-mac/.test(err.message),
+    );
+    assert.equal((await store.getSession(created.id))?.state, "running");
+    const runs = await store.listRuns(created.id);
+    assert.equal(runs.find((r) => r.id === run.id)?.ended_at, null);
+  });
+});
+
+// #460 "Navázat na handoff": the other end of Předat -- a handoff file
+// (written here or synced in from another machine) starts a NEW thread on
+// this device. A personal workspace here; test/agent-router-sessions.test.ts
+// runs the same body through the fake central server for a team workspace.
+describe("session runtime: startFromHandoff (#460 Navázat na handoff)", () => {
+  let workspace: string | null = null;
+
+  afterEach(async () => {
+    clearRegistryForTests();
+    resetLocalDbForTests();
+    delete process.env.PORTUNI_WORKSPACE_ROOT;
+    if (workspace) await rm(workspace, { recursive: true, force: true });
+    workspace = null;
+  });
+
+  // Thread A: started, then handed over, so its summary is a real file in
+  // the node's mirror -- exactly what a file synced in from another machine
+  // would look like here.
+  async function handedOverThread() {
+    const shared = await sharedDb();
+    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-navazat-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    const mirrorRoot = join(workspace, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", shared.nodeId, mirrorRoot);
+    const store = new DbSessionStore(shared.db);
+    const source = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(new FakeRunnerAdapter({ script: [{ wait: "message" }] })),
+      provision: stubProvision(),
+    });
+    const { session } = await source.startTask({ userId: "U1", nodeId: shared.nodeId, brief: "x", runner: "fake" });
+    const { handoff_path } = await source.handoff(session.id);
+    return { ...shared, store, mirrorRoot, sourceId: session.id, handoffPath: handoff_path };
+  }
+
+  // The continuing thread runs under its own adapter: resolveTaskDefaults
+  // reads the PROCESS registry (detectAll), so the adapter has to be
+  // registered globally too, not only handed to this runtime.
+  function continuingRuntime(store: DbSessionStore) {
+    const { adapter, getRunStart } = capturingAdapter();
+    registerAdapter(adapter);
+    const runtime = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+    });
+    return { runtime, getRunStart };
+  }
+
+  it("a file another thread wrote becomes a new thread's orientation; the source thread is untouched", async () => {
+    const { nodeId, store, mirrorRoot, sourceId, handoffPath } = await handedOverThread();
+    const fileContent = await readFile(join(mirrorRoot, handoffPath), "utf8");
+    const sourceBefore = await store.getSession(sourceId);
+    const sourceEventsBefore = await content.listEvents(sourceId);
+    const { runtime, getRunStart } = continuingRuntime(store);
+
+    const { session, run } = await runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath });
+
+    assert.notEqual(session.id, sourceId);
+    assert.equal(session.node_id, nodeId);
+    assert.equal(session.runner, "fake");
+    // The name is the summary's own H1 title, and stays enrichable (the
+    // user never typed it).
+    assert.equal(session.name, sourceBefore!.name);
+    assert.equal(session.name_is_custom, 0);
+
+    const started = getRunStart();
+    assert.equal(started?.runId, run.id);
+    assert.equal(started?.brief, null);
+    assert.ok(started!.orientation.includes(fileContent), "the file's content is the new run's orientation");
+    assert.match(started!.orientation, /Navázání na handoff/);
+
+    // No events are imported: the transcript starts here.
+    const newEvents = await content.listEvents(session.id);
+    assert.ok(newEvents.some((e) => e.kind === "run_started"));
+    assert.ok(!newEvents.some((e) => e.kind === "user_message"));
+    assert.equal(JSON.parse(newEvents[0].payload).resume, "handoff");
+
+    // The source thread is untouched: same record, same transcript.
+    const sourceAfter = await store.getSession(sourceId);
+    assert.deepEqual(sourceAfter, sourceBefore);
+    assert.deepEqual(await content.listEvents(sourceId), sourceEventsBefore);
+  });
+
+  it("a handoff file that is not on this device yet is refused and creates no record", async () => {
+    const { db, nodeId, store } = await handedOverThread();
+    const before = await db.execute("SELECT COUNT(*) AS n FROM sessions");
+    const { runtime } = continuingRuntime(store);
+
+    await assert.rejects(
+      () =>
+        runtime.startFromHandoff({
+          userId: "U1",
+          nodeId,
+          handoffPath: "wip/sessions/01JNOTHERE-handoff.md",
+        }),
+      (err: unknown) =>
+        err instanceof SessionHandoffError &&
+        err.code === "HANDOFF_FILE_NOT_HERE" &&
+        /ještě není na tomto zařízení/.test(err.message),
+    );
+
+    const after = await db.execute("SELECT COUNT(*) AS n FROM sessions");
+    assert.equal(Number(after.rows[0].n), Number(before.rows[0].n));
+  });
+
+  it("a node with no mirror on this device is refused the same way", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const { runtime } = continuingRuntime(store);
+    await assert.rejects(
+      () => runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath: "wip/sessions/01JX-handoff.md" }),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_FILE_NOT_HERE",
+    );
+  });
+
+  it("a path outside wip/sessions is refused before anything is read", async () => {
+    const { nodeId, store } = await handedOverThread();
+    const { runtime } = continuingRuntime(store);
+    await assert.rejects(
+      () => runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath: "wip/docs/secret.md" }),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_PATH_INVALID",
+    );
   });
 });

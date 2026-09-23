@@ -53,7 +53,7 @@ export async function provisionRun(input: ProvisionRunInput): Promise<ProvisionR
   const portuniRoot =
     resolvePortuniRoot({ envValue: process.env.PORTUNI_ROOT ?? null, knownMirrors: mirrorPaths }) ?? cwd;
 
-  const summary = await orientationForNode(input.nodeId);
+  const summary = await orientationForNode(input.nodeId, input.userId);
   const handoffResume = input.resume?.mode === "handoff" && !!input.resume.handoffPath;
   // orientationForNode points at the node's most recent suspended session's
   // handoff on its own; on a handoff resume the pointer below names THIS

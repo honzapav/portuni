@@ -16,6 +16,7 @@ import {
   startDraftThread,
   deletePersistentSession,
   renamePersistentSession,
+  handoffSession,
   bindSessionStore,
 } from "./api";
 import type { SessionSummary, SessionRunRow } from "./types";
@@ -25,6 +26,7 @@ import { createSessionStore } from "./lib/session-store";
 import {
   selectLiveStates,
   selectMountedThreads,
+  selectNodeRecordIds,
   selectRunningCount,
   selectShownThread,
   selectThreadsByNode,
@@ -58,6 +60,7 @@ import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import { loadOpenNodes, saveOpenNodes } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
+import { handoffErrorText } from "./lib/handoff-refusal";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
 // Náhled by default; everything else starts in the source editor.
@@ -877,15 +880,23 @@ export default function App() {
   // otherwise PATCH /sessions/:id.
   const workspaceRenameTask = useCallback(
     (session: SessionSummary, name: string) => {
-      if (session.state === "draft") {
-        const before = sessionStore.get(session.id);
-        if (before) sessionStore.put({ ...before, name, name_is_custom: true });
-        return;
-      }
-      // The answer is the renamed row and api.ts puts it, so every surface
-      // -- the sub-row, the chat header, Přehled -- shows it at once, with
-      // no refetch (spec scenario 4).
-      void renamePersistentSession(session.id, name).catch(() => undefined);
+      // Every state goes to the server, a draft included (#474): since #463
+      // the node's session list carries the caller's drafts, so a rename
+      // kept in memory is overwritten by the next refetch of that node.
+      // The optimistic put shows the new name at once; the answer is the
+      // renamed row and api.ts puts it, so every surface -- the sub-row,
+      // the chat header, Přehled -- ends on the server's row with no
+      // refetch (spec scenario 4). A refusal puts the previous record back
+      // and says why on the node surface.
+      const stored = sessionStore.get(session.id);
+      // A record known only from a live frame carries no name to restore,
+      // so the row the sidebar handed in is the one to fall back to.
+      const before: SessionSummary = stored && !stored.partial ? stored : session;
+      sessionStore.put({ ...before, name, name_is_custom: true });
+      void renamePersistentSession(session.id, name).catch((e) => {
+        sessionStore.put(before);
+        setWorkspaceDetailError(`Vlákno se nepodařilo přejmenovat: ${String(e)}`);
+      });
     },
     [sessionStore],
   );
@@ -909,11 +920,33 @@ export default function App() {
     [sessionStore],
   );
 
+  // #459 "Předat" on a thread's sub-row: ends the turn and the run and
+  // writes the thread's summary into the node's mirror, so another machine
+  // can pick the work up from the file. api.ts puts the suspended record
+  // into the store, so the row's own state follows without a refetch; a
+  // refusal (a draft, a closed thread, a node with no mirror here) says
+  // why on the node surface.
+  const workspaceHandoffTask = useCallback(
+    (session: SessionSummary) => {
+      void handoffSession(session.id).catch((e) => {
+        setWorkspaceDetailError(`Vlákno se nepodařilo předat: ${handoffErrorText(e)}`);
+      });
+    },
+    [],
+  );
+
   // Close a node: drop it from the open set. Its sessions keep running on
   // the sidecar. Moves the workspace selection to a neighbouring open node,
   // or clears it when nothing is left.
+  //
+  // Its records leave the store with it (#475, what pruneNodeSessions did
+  // before the store): nothing reads them anymore, and keeping them would
+  // grow the window's map for as long as the app runs. The thread on
+  // screen is the exception -- closing its node does not close it -- so its
+  // record stays until it is replaced by a list that carries it again.
   const closeNode = useCallback(
     (nodeId: string) => {
+      sessionStore.removeMany(selectNodeRecordIds(sessionStore, nodeId, shownThread?.id ?? null));
       setOpenNodeIds((prev) => prev.filter((id) => id !== nodeId));
       setSelectedWorkspaceNodeId((prev) => {
         if (prev !== nodeId) return prev;
@@ -921,7 +954,7 @@ export default function App() {
         return remaining.length > 0 ? remaining[remaining.length - 1].id : null;
       });
     },
-    [workspaceRows],
+    [workspaceRows, sessionStore, shownThread?.id],
   );
 
   return (
@@ -960,6 +993,7 @@ export default function App() {
           onWorkspaceOpenSessionChat={openSessionChat}
           onWorkspaceRenameTask={workspaceRenameTask}
           onWorkspaceCloseTask={workspaceCloseTask}
+          onWorkspaceHandoffTask={workspaceHandoffTask}
           onWorkspaceOpenNode={openNode}
           onWorkspaceCreateNode={workspaceCreateNode}
         />

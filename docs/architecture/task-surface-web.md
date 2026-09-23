@@ -143,18 +143,50 @@ otherwise `host_id`, and nothing at all when the summary carries neither.
 The summary is the only source; neither surface fetches a session's runs.
 See `sessions-and-runner.md`, "Runs, events, pid files and the boot sweep".
 
+**The two cross-device actions** (#459, #460). **Předat** is a header icon
+(`Share2`) on a running or suspended thread: `handoffSession` ->
+`POST /sessions/:id/handoff`, whose answered `handoff_path` stays on screen
+in the notice bar (it is what the other machine opens). `api.ts` puts the
+suspended record into the store, so the header, the sidebar and Relace
+follow without a refetch. A refusal (409) rejects with
+`HandoffRefusedError` (`lib/handoff-refusal.ts`, its own module so the main
+chunk does not pull in the chat's helpers); the chat and the sidebar show
+its Czech message through `handoffErrorText`, never the status line, and
+after a refusal that does not depend on the thread's state (no mirror, the
+run or the transcript on another device) the chat stops offering Předat
+for that view. **Navázat na handoff** is the Relace tab's, not
+the chat's: `startSessionFromHandoff(nodeId, relPath)`.
+
+**The transcript is on another machine** (#461). A thread's content lives
+in the `content.db` of the device that ran it, so a second device of the
+same person has the record and no conversation. On mount the chat asks
+`fetchTranscriptHost(sessionId)` -- `GET /sessions/:id/events?limit=1`, the
+device-local route, read for its `transcript_host` header alone (the
+replay itself comes over the live channel). `transcriptElsewhere(host,
+events.length)` (`lib/session-chat.ts`, tested in
+`test/session-chat-helpers.test.ts`) turns that into the state: the
+`ConversationEmptyState` reads "Transkript je na zařízení X" with the way
+across as its description, the composer is disabled with a matching
+placeholder, and Předat is hidden -- the summary is written from the
+transcript, which this device does not have. A non-empty log wins over the
+header, so a run that starts writing here clears the state on its own.
+
 ### Relace tab (`DetailPane.sessions.tsx`)
 
 REST-only list of the node's persistent sessions
 (`fetchNodePersistentSessions`), archived rows behind a filter. Each row
-shows `sessionRowChip`, the brief's first line, runner, instance and host,
-the owner's name when the row is not the caller's own (`fetchUsers()`, which returns `[]` below manage
-scope, so a plain teammate sees no name), and `resumeInfo` as information
-only. Actions: "Otevřít chat" (`onOpenChat`), "Uzavřít" behind a confirm
-`Dialog` (`closeConfirm`), and on a closed row "Navázat" (`continueSession`
-from `api.ts`, then `onSessionStarted` and `onOpenChat` with the new
-session). There is no live subscription in this tab; it reloads its list
-after an action.
+shows `sessionRowChip`, runner, instance and host, and `resumeInfo` as
+information only. It quotes nothing: the thread's first message is content
+and lives in the device's `content.db`, so `SessionSummary` has no `brief`
+to show (#461) and the row names the thread instead. There is no owner
+column either -- every row is the caller's own (#457). Actions: "Otevřít
+chat" (`onOpenChat`), "Uzavřít" behind a confirm `Dialog` (`closeConfirm`),
+and on a closed row "Navázat" (`continueSession` from `api.ts`, then
+`onSessionStarted` and `onOpenChat` with the new session). Above the rows
+the tab lists the node's handoff files (`lib/handoff-files.ts`), each with
+**Navázat na handoff** (#460): `startSessionFromHandoff`, which is
+`POST /sessions` with the file's node-relative path. There is no live
+subscription in this tab; it reloads its list after an action.
 
 ### Přehled (`OverviewView.tsx`)
 
@@ -169,9 +201,9 @@ The Relace card is the caller's own inbox: `sortInboxSessions(running,
 suspended, meId)` orders waiting first, then running, then suspended, and
 keeps only rows with `user_id === meId`; `splitThreadsAndCli` then keeps
 threads (`isThreadSession`) as rows and puts hand-opened CLI sessions into
-the footer line "K tomu N relací z CLI (N běží)". `GET /overview` itself
-returns every session on a node the caller can see; the restriction is
-the client's. Rows are overlaid with live state (`mergeLiveSessionStates`)
+the footer line "K tomu N relací z CLI (N běží)". `GET /overview` returns the caller's own
+threads only (#457), and its rows are record only -- no `brief` since
+#461, so a row shows `name`. Rows are overlaid with live state (`mergeLiveSessionStates`)
 and the card reloads whenever the live-state stamp changes. The unsynced
 counter is `useSyncPending().pending.total` passed down from `App.tsx`.
 
@@ -232,12 +264,28 @@ principles hold it together:
    (`test/session-store-scenarios.test.ts`), not by helper tests alone.
 
 The store itself is a plain module, no React and no library:
-`get`/`put`/`putMany`/`remove`/`applyFrame`/`subscribe`/`snapshot`. `put`
-keeps the existing reference when every field is equal and the map is
+`get`/`put`/`putMany`/`remove`/`removeMany`/`applyFrame`/`subscribe`/`snapshot`.
+`put` keeps the existing reference when every field is equal and the map is
 copied on write, so "the snapshot reference changed" means exactly
 "something changed". A frame for an id this window never fetched creates a
-record marked `partial` (unknown name and runner); the next `put` -- the
-refetch that frame triggers -- replaces it whole.
+record marked `partial` (no name -- absent, not `""`, so a frame from a
+server older than that field never blanks a name a list already shows --
+and no runner); the next `put`, the refetch that frame triggers, replaces
+it whole.
+
+**A partial record is not a thread.** `selectNodeThreads`,
+`selectShownThread` and `selectMountedThreads` skip it: the initial burst
+sends a `session_state` frame for every running session the caller can see,
+hand-opened CLI sessions included, and one of those is neither a sidebar
+sub-row nor a node's shown thread nor a mounted chat. `selectRunningCount`
+does count it -- the footer says how many runs are going, wherever they
+are. `SessionChat` renders nothing for one, and `api.ts`'s partial folds
+(`foldIntoSession`) leave it alone.
+
+**A closed node's records leave the store.** `closeNode` in `App.tsx`
+drops every record anchored on the node it closes -- `selectNodeRecordIds`
+picks them, `removeMany` drops them in one copy-on-write -- except the
+thread currently shown, which closing its node does not close.
 
 **Writing is the API's job, not the caller's** (`apps/web/src/api.ts`).
 `bindSessionStore(store)` is called once, in `App.tsx`; after that
@@ -262,6 +310,18 @@ selector building a fresh object or array loops until React throws
 "Maximum update depth exceeded". A new selector goes through `cached()` and
 gets a reference-stability test in `test/session-store.test.ts`.
 
+`cached()` is bounded: **one entry per selector key**, whatever the
+arguments. Arguments that vary at runtime -- the open-node set, the shown
+thread -- live in the entry's `variant`, not in the key, so switching
+threads all day replaces one entry instead of leaving one behind per
+switch; a variant miss recomputes and still hands back the previous array
+when it holds the same rows, so a switch between two threads of one node
+costs no remount. The one key that carries an argument is
+`nodeThreads:<node>`, which the per-node map and the mount set read side by
+side. An empty open-node set answers with the shared empty value and takes
+no entry at all. `selectorCacheSize(store)` exists for the tests that hold
+this bound.
+
 ## What `App.tsx` still owns
 
 - **One `SessionsClient` for the app's lifetime.** `useState(() =>
@@ -276,7 +336,9 @@ gets a reference-stability test in `test/session-store.test.ts`.
 - **Selection**, not facts: `openNodeIds` and
   `requestedChatSessionByNode`. `openSessionChat(nodeId, sessionId?)`
   records the requested id and opens the node; `selectShownThread` picks
-  the thread (requested id first, else the newest live one).
+  the thread (requested id first, else the newest row of the first
+  non-empty bucket `selectNodeThreads` orders). `closeNode` drops the
+  closed node's records from the store, keeping the shown thread's.
 - **`refreshNodeSessions(nodeId)`**, coalesced per node: a request while
   one is in flight sets a trailing flag instead of racing a second fetch.
   It runs whenever `openNodeIds` changes and on every `session_state` frame
@@ -440,14 +502,19 @@ deduplicates a replay against a frame that raced it.
 ## Thread actions
 
 - **New thread**: `NewTaskButton` (`DetailPane.files.tsx`) and the sidebar
-  `+` call `startDraftThread(nodeId)` (`POST /sessions` with no `brief`),
+  `+` call `startDraftThread(nodeId)` (`POST /sessions` with the node id and nothing else),
   which returns a draft. One click, no dialog, no required field. The
   draft's composer has focus; its first message is what starts a run.
 - **First message** names the thread server-side from its first line;
   `lib/session-chat.ts`'s `threadNameFromFirstMessage` is the web's copy of
-  the same function for optimistic display. Renaming a local draft is
-  in-memory only (`workspaceRenameTask`); anything else is `PATCH
-  /sessions/:id`.
+  the same function for optimistic display. A rename always goes to the
+  server (`workspaceRenameTask` in the sidebar, `saveRename` in the chat
+  header, both `POST /sessions/:id/rename`), a draft included: since #463
+  the node's session list carries the caller's drafts, so an in-memory
+  rename would be undone by the next refetch. The sidebar's rename writes
+  the new name optimistically and puts the previous record back when the
+  call is refused, with the reason on the node surface
+  (`workspaceDetailError`).
 - **Composer text** belongs to the session, not the component:
   `lib/session-drafts.ts`'s `sessionDrafts` keeps it per session id, in
   memory, for the life of the window.
@@ -499,15 +566,17 @@ calls `patchSessionRunnerInstance` (`PATCH /sessions/:id`, central in a
 team workspace; 409 `SESSION_NOT_DRAFT` once promoted). The host is
 `hostDisplayName(session)`, a label, hidden when unknown.
 
-## Access echo
+## No access echo
 
-`sessionRowAccess(ownerId, meId, canManage)` (`lib/session-views.ts`)
-mirrors the server's access table: `canResume` (message, answer, continue,
-picker) is owner-only; `canPauseOrClose` is owner or manage scope. It only
-decides which controls to offer, so a button that would always 403 is not
-shown. The server remains the gate; a refused action surfaces its own
-error. `meId` comes from `useMe()` (`fetchMe()` returns `id` and
-`global_scope`).
+There is none, since #457: a thread is its owner's, so every thread the app
+can list is the caller's own and the state alone decides which control is
+offered. `sessionRowAccess` and the `canManage`/`meId` props that fed it are
+gone from `lib/session-views.ts`, `SessionChat`, `DetailPane.sessions` and
+`OverviewView`; `sortInboxSessions(running, suspended)` and
+`overviewCounters(running, suspended, attention, unsynced)` take no identity
+either, because `GET /overview` already filtered by owner. `useMe()` is left
+for the node sharing UI. The server remains the gate; a refused action
+surfaces its own error.
 
 Two chip wordings exist on purpose: `sessionRowChip` (compact rows:
 Hotovo / Archiv) and `sessionStatusChip` (chat header: Uzavřeno /
@@ -521,9 +590,9 @@ buffers and the coalescer, `collapseToolCalls`, `deriveTranscriptRows`,
 `activitySummary`, `workingPhase`,
 `threadNameFromFirstMessage`), `lib/session-views.ts` (row chip, access
 echo, live overlay, inbox ordering, `pickOpenChatSession`,
-`requestChatSession`, `mountedChatSessions`, `isThreadSession`,
-`nodeRowActive`), `lib/session-store.ts` and `lib/session-selectors.ts`
-(the store and its selectors), `lib/workspace-list.ts` (the node dot, the Stav
+`requestChatSession`, `isThreadSession`, `nodeRowActive`),
+`lib/session-store.ts` and `lib/session-selectors.ts` (the store and its
+selectors), `lib/workspace-list.ts` (the node dot, the Stav
 grouping), `lib/runner-picker.ts` (composer row 2) and
 `lib/context-ring.ts` (the ring). All are dependency-free and run under
 the server's `node:test` runner (`test/session-chat-helpers.test.ts`,

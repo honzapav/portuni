@@ -1,27 +1,23 @@
-// Session access tiers (docs/superpowers/specs/2026-09-12-remote-hosts-and-
-// task-queue-design.md, "Visibility and control" -- the table step-1's own
-// API issue (#321) is told to follow instead of the terminal-era "a session
-// is a personal work record" rule). Local mode has no host yet, so the
-// table's "the host owner" column is vacuous here; it collapses to
-// "the owner, or manage scope" for stop actions.
+// Session access (docs/superpowers/specs/2026-09-22-local-sessions-design.md,
+// "Access"). The table is one line:
 //
-// | action    | who                                                    |
-// |-----------|---------------------------------------------------------|
-// | read      | anyone who can see the anchor node (nodeVisibleTo)       |
-// | message   | the owner                                                |
-// | stop      | the owner, or manage scope                               |
-// | resume    | the owner                                                |
+// | action                          | who       |
+// |---------------------------------|-----------|
+// | read, message, stop, resume     | the owner |
 //
-// A session with no anchor node (interactive_chat) is owner-only for every
-// action -- there is no node to check visibility against, so a non-owner is
-// SESSION_FORBIDDEN rather than hidden. A node-anchored session the caller
-// cannot see at all is SESSION_NOT_FOUND for every action instead, manage
-// scope included -- manage does not see past a node's own ACL.
+// A thread is its owner's. Nobody else reads the record: not a teammate who
+// can see the anchor node, not `manage`, not `admin`. Seeing the node says
+// nothing about its threads any more, so a non-owner gets SESSION_NOT_FOUND
+// for every action on every session -- node-anchored or not. There is no
+// SESSION_FORBIDDEN answer left: a caller who is not the owner is never
+// told the thread exists.
+//
+// This supersedes the "Visibility and control" table of
+// docs/superpowers/specs/2026-09-12-remote-hosts-and-task-queue-design.md,
+// where read followed the node's ACL and stop admitted manage scope.
 
 import type { DbClient } from "../infra/db.js";
 import { getSession } from "../domain/sessions.js";
-import { nodeVisibleTo } from "./node-access.js";
-import { scopeAtLeast } from "./roles.js";
 import type { RequestIdentity } from "./request-identity.js";
 import type { SessionRow } from "../shared/types.js";
 
@@ -36,45 +32,21 @@ export class SessionAccessError extends Error {
   }
 }
 
-// Returns the session row when `identity` may perform `action` on it, else
-// throws SessionAccessError. Node visibility gates existence itself
-// (SESSION_NOT_FOUND) -- same "non-members do not see it at all" rule
-// auth/node-access.ts applies to the node -- while a visible session with
-// an insufficient action tier is SESSION_FORBIDDEN: the caller already
-// knows it exists (it shows up in the node's Relace tab), it just can't do
-// this particular thing to it.
+// Returns the session row when `identity` owns it, else throws
+// SessionAccessError("SESSION_NOT_FOUND") -- the same "non-members do not
+// see it at all" posture auth/node-access.ts applies to a node, with the
+// owner as the only member. `action` is kept in the signature because every
+// call site names what it is about to do and the audit log records it.
 export async function sessionAccess(
   db: DbClient,
   identity: RequestIdentity,
   sessionId: string,
-  action: SessionAccessAction,
+  _action: SessionAccessAction,
 ): Promise<SessionRow> {
   const row = await getSession(db, sessionId);
   if (!row) throw new SessionAccessError("SESSION_NOT_FOUND", `session ${sessionId} not found`);
-
-  if (row.user_id === identity.userId) return row;
-
-  // interactive_chat (no anchor node): owner-only for every action, but
-  // still FORBIDDEN rather than hidden -- unlike a node-anchored session,
-  // there is no ACL to say whether a non-owner may even know it exists.
-  if (row.node_id === null) {
-    throw new SessionAccessError("SESSION_FORBIDDEN", "session has no anchor node; owner-only");
-  }
-
-  // A node-anchored session the caller cannot see at all is hidden
-  // entirely -- same "non-members do not see it AT ALL" rule
-  // auth/node-access.ts applies to the node itself.
-  if (!(await nodeVisibleTo(db, identity, row.node_id))) {
+  if (row.user_id !== identity.userId) {
     throw new SessionAccessError("SESSION_NOT_FOUND", `session ${sessionId} not found`);
   }
-
-  if (action === "read") return row;
-
-  if (action === "stop") {
-    if (scopeAtLeast(identity.globalScope, "manage")) return row;
-    throw new SessionAccessError("SESSION_FORBIDDEN", "stop requires ownership or manage scope");
-  }
-
-  // message / resume: owner-only, already returned above if identity owns it.
-  throw new SessionAccessError("SESSION_FORBIDDEN", `${action} requires session ownership`);
+  return row;
 }

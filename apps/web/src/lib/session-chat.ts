@@ -476,7 +476,7 @@ export function runIsLiveFor(liveRunId: string | null, state: SessionState): boo
 // Whether the live run is in the middle of a turn: the working row, the
 // stop button and Escape apply only then. A turn opens with a
 // user_message and closes with the run's turn_ended; the run start alone
-// opens none -- a promotion writes the brief as a user_message right
+// opens none -- a promotion writes the first message as a user_message right
 // after it, while Navázat and a resume start the process with no prompt
 // and wait for the first message. Walks back from the newest event;
 // bookkeeping events in between decide nothing.
@@ -618,5 +618,36 @@ export function createDeltaCoalescer(
         cancel = null;
       }
     },
+  };
+}
+
+// --- The transcript is on another machine (#461) ----------------------
+//
+// A thread's content lives on the device that ran it and is never copied
+// to the central server, so a thread opened from a second device of the
+// same person has a record here and no transcript. The events route says
+// so itself: `transcript_host` is set only when that device has no rows
+// for the thread and the record names a different machine
+// (`transcriptHostLabel`, apps/server/domain/runner/hosts.ts). This is the
+// pure form of what the chat then shows instead of an empty conversation.
+//
+// `eventCount` is the transcript the chat actually holds: the live channel
+// replays from the same content db, so a non-empty log means the content
+// is here after all and the header is stale (a race with a run that just
+// started writing here).
+export interface TranscriptElsewhere {
+  host: string;
+  title: string;
+  hint: string;
+}
+
+export function transcriptElsewhere(host: string | null, eventCount: number): TranscriptElsewhere | null {
+  if (!host || eventCount > 0) return null;
+  return {
+    host,
+    title: `Transkript je na zařízení ${host}`,
+    hint:
+      `Vlákno běželo na zařízení ${host} a jeho obsah zůstává tam — Portuni konverzace nikam nekopíruje. ` +
+      `Chceš-li v něm pokračovat tady, použij tam akci Předat a na vzniklý soubor handoffu navaž v záložce Relace.`,
   };
 }

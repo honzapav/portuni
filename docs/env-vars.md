@@ -46,7 +46,7 @@ rest are optional tunables with code defaults. Grep check:
 | Var | Default | Purpose |
 |---|---|---|
 | `PORTUNI_ROOT` | unset | Write-scope tier root for agent file writes (`apps/server/domain/write-scope.ts`) — **distinct from** `PORTUNI_WORKSPACE_ROOT` |
-| `PORTUNI_DATA_DIR` | app-data dir | DB location for sidecar/stdio mode. Also the device-local runner data dir (`runners.json`, run pid files, and `portuni_read_file`'s `read-file-spill/` scratch area); falls back to `process.cwd()` when unset. |
+| `PORTUNI_DATA_DIR` | app-data dir | DB location for sidecar/stdio mode. Also the device-local runner data dir (`runners.json`, run pid files, the device content db `content.db`, and `portuni_read_file`'s `read-file-spill/` scratch area); falls back to `process.cwd()` when unset. `content.db` (`apps/server/infra/device-content-db.ts`) holds session transcripts and briefs and is opened in **both** workspace kinds -- a team-workspace sync agent has no graph db but it does have content. |
 | `PORTUNI_HOST_ID` | machine name, slugified | The id this device stamps on the sessions and runs it starts (`domain/runner/hosts.ts`, #428), shown as "which host ran it" on Relace rows and in the chat header. Defaults to `os.hostname()` up to the first dot, lowercased to `[a-z0-9-]` (`Honzas-MacBook-Pro.local` -> `honzas-macbook-pro`), or `local` when the hostname is empty. Set it when several agents share one machine. |
 | `PORTUNI_HOST_LABEL` | machine name | Display name for this device's host id. Defaults to `os.hostname()` up to the first dot, case intact. Only the machine asking can resolve a label until the `hosts` registry exists; elsewhere the id is shown. |
 | `PORTUNI_TOKEN_STORE` | per-OS | Token store backend: `keychain` \| `varlock` \| `file` |

@@ -481,6 +481,11 @@ export type AccessRequest = {
 // exclude it). The first message promotes it to "running".
 export type SessionState = "running" | "suspended" | "closed" | "archived" | "draft";
 
+// The record half of a thread (#461): everything below is a column of
+// `sessions` on the central server. The content -- the first message, the
+// transcript, the inline handoff summary -- is the device's, served by
+// GET /sessions/:id/events from its own content.db, so no field here
+// quotes the conversation.
 export type SessionSummary = {
   id: string;
   node_id: string | null;
@@ -497,9 +502,6 @@ export type SessionSummary = {
   // writes a non-null value anymore since its removal (#345/#346); the
   // column stays for old rows until a later migration drops it.
   terminal_id: string | null;
-  // The task as given (runner batch) -- the first user message on a fresh
-  // run, null for a session predating it or with no task text.
-  brief: string | null;
   // Runner adapter id (e.g. "claude") this session's task runs under.
   runner: string | null;
   // The host whose sidecar is (or last was) running the task: the latest
@@ -568,13 +570,16 @@ export type SessionResumeInfo = {
     | "host_lost"
     | "run_ended"
     | "continue"
+    // #459: Předat -- the owner handed the thread to another machine.
+    | "handoff"
     | null;
 };
 
 // GET /sessions/:id/scope (#427): the session's persisted read/write scope
 // and the anchor node's name, as the record half holds them. Read by the
-// sync agent's suspend fallback (domain/runner/suspend-fallback-central.ts),
-// which has no local `session_scope` table to build the summary's
+// sync agent's server-side suspend (the `scope` seam of
+// domain/session-handoff.ts's createSuspendServerSide, #458), which has no
+// local `session_scope` table to build the summary's
 // write/read-set sections from; both sets are node ids, the write set a
 // subset of the read set.
 export type SessionScopeRecord = {
@@ -616,6 +621,24 @@ export type SessionEventRow = {
   created_at: string;
 };
 
+// GET /sessions/legacy-content?host_id=… and GET /sessions/:id/legacy-content
+// (central, #456 follow-up): the content an older sidecar sent to the
+// central server, which a sync agent downloads into its content.db once.
+// The list carries the ids of the caller's own threads that ran on the
+// given host and still have legacy content; a page carries one thread's
+// brief, inline summary and a page of its events, raw (payload as stored).
+export type LegacySessionContentList = {
+  sessions: string[];
+};
+
+export type LegacySessionContentPage = {
+  session_id: string;
+  brief: string | null;
+  handoff_inline: string | null;
+  events: SessionEventRow[];
+  next_after: number | null;
+};
+
 // GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the
 // scope/sessions redesign spec). One aggregate, permission-filtered
 // endpoint composing four deterministic sections. Every node reference is
@@ -629,6 +652,10 @@ export type SessionEventRow = {
 // context on this screen) and without write_count (an extra per-row query
 // this dashboard-scale list skips -- write_count remains available via
 // GET /nodes/:id/sessions for the node-detail view).
+//
+// Record only (#461): the thread's first message is content and lives in
+// the device's content.db, never here, so the row names the thread
+// (`name`) instead of quoting it.
 export type OverviewSessionRow = {
   id: string;
   node_id: string | null;
@@ -638,7 +665,6 @@ export type OverviewSessionRow = {
   session_type: "interactive_task" | "interactive_chat" | "headless" | "env";
   cli: string | null;
   instance_id: string | null;
-  brief: string | null;
   runner: string | null;
   waiting_since: string | null;
   state: SessionState;

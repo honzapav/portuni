@@ -38,6 +38,24 @@ Claude Code opens the same browser-based login + consent flow on a loopback redi
 
 Same "no local mirror" starting point as the [Claude Desktop](/clients/claude-desktop/) page, but scope behavior itself differs: an OAuth connector session is the `interactive_chat` [session type](/concepts/scope-enforcement/#session-types), which reads are permission-only for — any node visible to you is readable directly, with no `portuni_session_init`/`portuni_expand_scope` dance, no edge-reachability or disconnected-jump distinction. `portuni_list_events`/`portuni_list_files` called without a `node_id` likewise see every row on a visible node rather than an empty result. Only a hard floor (a scope-sensitive node, or a private node someone else created) or a write still needs confirmation.
 
+The session itself is yours alone. A connector session is a thread like any
+other: its record and its transcript are visible to you and to nobody else,
+`manage` scope included — see [A session belongs to its
+owner](/concepts/scope-enforcement/#a-session-belongs-to-its-owner). What
+the session reads is bounded by permissions; what it *is* never appears in a
+teammate's lists.
+
+And the two halves sit in different places: the central server holds the
+**record** (that the session exists, its node, its state, its scope grants
+— what the handshake and the write gate need), while the **content** — the
+messages themselves — belongs to whatever machine served the session and is
+never copied to the central server. For a connector session that machine is
+the one running the MCP endpoint you connected to. There is no backup of it
+anywhere, and `GET /sessions/:id/events` asked of any other machine answers
+an empty list plus `transcript_host`, the name of the one that has the log
+(see [The record is central, the content is the
+device's](/concepts/scope-enforcement/#the-record-is-central-the-content-is-the-devices)).
+
 Writes: a node you create from a connector session (`portuni_create_node`) is writable from that session and from every later connector session of yours – the grant is persisted, because a connector client reconnects all the time and claude.ai web/mobile cannot show the confirmation dialog that would otherwise re-grant it. So the "discuss a topic → create a node → attach the output to it" flow works end to end from web and mobile: create the node, put the file on the node's routed remote (e.g. via the Google Drive connector into the node's `wip/` folder), let `portuni_status(node_id)` surface it as `new_remote` (this works for a node with no mirror on the server), and `portuni_adopt_files` it. Writing to any *other* node from a connector session needs a confirmation dialog, which claude.ai web/mobile do not support – the error says so (`elicitation_supported: false`) instead of sending the agent to a `portuni_expand_scope` call that would be refused; do that write from Claude Code or the desktop app.
 
 ## Revoking access

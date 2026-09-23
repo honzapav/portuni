@@ -21,7 +21,7 @@
 // request proved it came from the desktop webview / dev proxy under the
 // hardened posture (PORTUNI_WEBVIEW_PROXY_SECRET, #213) -- a spawned
 // terminal holding the same loopback bearer can open the socket and
-// watch, but its message/answer/interrupt/close/continue frames are
+// watch, but its message/answer/interrupt/close/continue/handoff frames are
 // refused, exactly as its REST calls are.
 //
 // Everything that touches storage goes through `SessionsWsDeps`: local mode
@@ -38,8 +38,8 @@ import { getDb } from "../infra/db.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import { listSessions } from "../domain/sessions.js";
-import { nodeVisibleTo } from "../auth/node-access.js";
 import { scopeAtLeast } from "../auth/roles.js";
+import { handoffRefusal } from "./session-handoff-errors.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 import { logAudit } from "../infra/audit.js";
@@ -95,6 +95,13 @@ const ClientFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("continue"),
     payload: z.object({ session_id: z.string() }),
   }),
+  // #459: "Předat" -- ends the turn and the run and writes the thread's
+  // handoff file, so another machine can pick the work up from it.
+  z.object({
+    id: z.string().optional(),
+    type: z.literal("handoff"),
+    payload: z.object({ session_id: z.string() }),
+  }),
 ]);
 type ClientFrame = z.infer<typeof ClientFrameSchema>;
 
@@ -141,17 +148,12 @@ export function createLocalSessionsWsDeps(): SessionsWsDeps {
     async snapshot(identity) {
       const db = getDb();
       const [running, suspended] = await Promise.all([
-        listSessions(db, { state: "running" }),
-        listSessions(db, { state: "suspended" }),
+        listSessions(db, { state: "running", user_id: identity.userId }),
+        listSessions(db, { state: "suspended", user_id: identity.userId }),
       ]);
-      const visible: SessionRow[] = [];
-      for (const row of [...running, ...suspended]) {
-        if (visible.length >= SNAPSHOT_LIMIT) break;
-        if (await canSeeSession(identity, row)) visible.push(row);
-      }
-      return visible;
+      return [...running, ...suspended].slice(0, SNAPSHOT_LIMIT);
     },
-    canSee: (identity, row) => canSeeSession(identity, row),
+    canSee: async (identity, row) => canSeeSession(identity, row),
     audit: (identity, action, sessionId, detail) => logAudit(identity.userId, action, "session", sessionId, detail),
   };
 }
@@ -159,11 +161,10 @@ export function createLocalSessionsWsDeps(): SessionsWsDeps {
 // Central-mode counterpart: the sidecar has no graph db, so "may this
 // identity read/act on this session" is answered by central on every store
 // call the runtime makes (each is a device-token REST round trip that runs
-// sessionAccess there). Locally the only thing to establish is that the
-// session exists for this device's user -- a central 404 is
-// SESSION_NOT_FOUND, anything the store lets through is allowed; a
-// non-owner action the runtime then attempts fails on central's own
-// access check and surfaces as an error frame.
+// sessionAccess there -- owner-only since #457). Locally the only thing to
+// establish is that the session exists for this device's user: a central
+// 404 is SESSION_NOT_FOUND, and central hands this device its own user's
+// records only, so anything the store lets through is the owner's.
 export function createAgentSessionsWsDeps(client: CentralClient, runtime: SessionRuntime): SessionsWsDeps {
   return {
     runtime: () => runtime,
@@ -175,10 +176,11 @@ export function createAgentSessionsWsDeps(client: CentralClient, runtime: Sessio
     async snapshot() {
       return client.listSessionRecords({ states: ["running", "suspended"], limit: SNAPSHOT_LIMIT });
     },
-    // Central already filtered what it handed this device; a broadcast
-    // here is for a session this runtime itself is running or just
-    // touched, which it could only have done as the device's own user.
-    canSee: async () => true,
+    // Central lists this device's own user's records only (#457) and a
+    // broadcast here is for a session this runtime itself is running or
+    // just touched, so the owner check is the same one, re-stated on the
+    // row the frame carries.
+    canSee: async (identity, row) => row.user_id === identity.userId,
     audit: async () => undefined,
   };
 }
@@ -195,13 +197,11 @@ function sendErrorReply(ws: WebSocket, id: string | undefined, code: string, mes
   if (id) send(ws, { id, type: "error", payload: { code, message } });
 }
 
-// Same visibility rule api/overview.ts's filterSessions applies: a node-
-// anchored session is visible iff the node is; a node-less session
-// (interactive_chat) has nothing to check against, so only its own owner
-// sees it.
-async function canSeeSession(identity: RequestIdentity, row: Pick<SessionRow, "node_id" | "user_id">): Promise<boolean> {
-  if (row.node_id === null) return row.user_id === identity.userId;
-  return nodeVisibleTo(getDb(), identity, row.node_id);
+// The one-line session rule (#457, auth/session-access.ts): a thread is its
+// owner's, so a frame about it reaches that socket only. The anchor node's
+// own ACL says nothing about its threads any more.
+function canSeeSession(identity: RequestIdentity, row: Pick<SessionRow, "user_id">): boolean {
+  return row.user_id === identity.userId;
 }
 
 function sessionStateFrame(row: SessionRow): { type: "session_state"; payload: unknown } {
@@ -430,9 +430,8 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
   ): Promise<void> {
     const sessionId = frame.payload.session_id;
     if (!refuseUnlessMutationAllowed(conn, frame)) return;
-    let existing: SessionRow;
     try {
-      existing = await deps.access(conn.identity, sessionId, "stop");
+      await deps.access(conn.identity, sessionId, "stop");
     } catch (err) {
       if (err instanceof SessionAccessError) {
         sendErrorReply(conn.ws, frame.id, err.code, err.message);
@@ -444,9 +443,6 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     if (frame.type === "interrupt") await runtime.interrupt(sessionId);
     else await runtime.closeSession(sessionId);
     await deps.audit(conn.identity, `session_${frame.type}`, sessionId, {});
-    if (existing.user_id !== conn.identity.userId) {
-      await runtime.recordStoppedBy(sessionId, conn.identity.userId);
-    }
     sendReply(conn.ws, frame.id, { ok: true });
   }
 
@@ -469,6 +465,36 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     const { session, run } = await runtime.continueSession(sessionId);
     await deps.audit(conn.identity, "session_continue", sessionId, { new_session_id: session.id });
     sendReply(conn.ws, frame.id, { session: await toSummary(session), run });
+  }
+
+  // #459: "Předat" -- the same runtime operation and the same answer
+  // (`{ session, handoff_path }`) its REST twin gives, so a client with a
+  // live channel needs no second transport for it. The "stop" tier:
+  // this ends the run, exactly what interrupt/close do.
+  async function handleHandoff(conn: Connection, frame: Extract<ClientFrame, { type: "handoff" }>): Promise<void> {
+    const sessionId = frame.payload.session_id;
+    if (!refuseUnlessMutationAllowed(conn, frame)) return;
+    try {
+      await deps.access(conn.identity, sessionId, "stop");
+    } catch (err) {
+      if (err instanceof SessionAccessError) {
+        sendErrorReply(conn.ws, frame.id, err.code, err.message);
+        return;
+      }
+      throw err;
+    }
+    try {
+      const { session, handoff_path } = await deps.runtime().handoff(sessionId);
+      await deps.audit(conn.identity, "session_handoff", sessionId, { handoff_path });
+      sendReply(conn.ws, frame.id, { session: await toSummary(session), handoff_path });
+    } catch (err) {
+      const refusal = handoffRefusal(err);
+      if (refusal) {
+        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message);
+        return;
+      }
+      throw err;
+    }
   }
 
   async function dispatch(conn: Connection, raw: string): Promise<void> {
@@ -501,6 +527,9 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
           break;
         case "continue":
           await handleContinue(conn, frame);
+          break;
+        case "handoff":
+          await handleHandoff(conn, frame);
           break;
       }
     } catch (err) {

@@ -8,11 +8,13 @@
 
 import { getDb } from "../infra/db.js";
 import { DbSessionStore } from "../domain/runner/store.js";
+import { deviceSessionContentStore, sessionContentStoreForProcess } from "../domain/runner/store-content.js";
 import { CentralSessionStore } from "../domain/runner/store-central.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { provisionRun } from "../domain/runner/provision.js";
 import { createProvisionRunCentral } from "../domain/runner/provision-central.js";
-import { createSuspendFallbackCentral } from "../domain/runner/suspend-fallback-central.js";
+import { registerLocalFileCentral } from "../domain/sync/central/engine-central.js";
+import { createSuspendServerSide, handoffEnrichedName } from "../domain/session-handoff.js";
 import { createSessionRuntime, type SessionRuntime } from "../domain/runner/session-runtime.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
@@ -22,6 +24,10 @@ export function getSessionRuntime(): SessionRuntime {
   if (!runtime) {
     runtime = createSessionRuntime({
       store: new DbSessionStore(getDb()),
+      // content.db on a device; on the central server the legacy graph-db
+      // rows an older sidecar wrote and reads back (it never opens a
+      // content.db).
+      content: sessionContentStoreForProcess(),
       registry: { getAdapter },
       provision: provisionRun,
     });
@@ -47,11 +53,36 @@ export function setSessionRuntimeForTesting(rt: SessionRuntime | null): void {
 // adapters (Claude, the fake) are not mode-specific.
 export function createAgentSessionRuntime(client: CentralClient): SessionRuntime {
   const store = new CentralSessionStore(client);
+  const content = deviceSessionContentStore();
   return createSessionRuntime({
     store,
+    content,
     registry: { getAdapter },
     provision: createProvisionRunCentral(client),
-    suspendFallback: createSuspendFallbackCentral(store, client),
+    // #458: the same suspend the personal workspace runs, with the two
+    // graph-db reads it needs pointed at the central server -- the summary
+    // itself, the file in the mirror and the inline fallback are shared
+    // code (domain/session-handoff.ts). The team-workspace copy of that
+    // algorithm is gone; these four seams replaced it.
+    suspendFallback: createSuspendServerSide({
+      record: store,
+      content,
+      scope: (sessionId) => client.sessionScopeRecord(sessionId),
+      suspendRecord: (session, input) =>
+        store.patchSession(session.id, {
+          state: "suspended",
+          waiting_since: null,
+          handoff_path: input.handoffPath,
+          handoff_hash: input.handoffHash,
+          name: handoffEnrichedName(session, input.handoffTitle),
+        }),
+      // Record-only registration, exactly what the watcher does for a file
+      // that appeared in the mirror: the handoff shows up under Files at
+      // once, and the push is a later deliberate sync run (#427).
+      trackHandoff: async (input) => {
+        await registerLocalFileCentral(client, input);
+      },
+    }),
     // #407: the belongs_to edge lives on central's graph db, so the
     // organization default instance is resolved there too -- without this
     // the runtime's local query would throw here and every task in this
