@@ -41,7 +41,7 @@ type Props = {
   // plus (#374) any locally-opened draft not yet promoted -- every list the
   // server serves excludes a draft, so the caller merges its own in.
   // Status comes from state/waiting_since (session_state frames).
-  openSessionsByNode: Record<string, SessionSummary[]>;
+  threadsByNode: Record<string, SessionSummary[]>;
   // #412: the thread the canvas currently shows, marked in both
   // arrangements (the per-node tree and the grouped task list) the same way
   // a selected node row is -- otherwise nothing says which row is open.
@@ -133,7 +133,7 @@ function NodeTree({
   onSelectNode,
   onCloseNode,
   onNewTask,
-  openSessionsByNode,
+  threadsByNode,
   activeSessionId,
   onOpenSessionChat,
   onRenameTask,
@@ -150,7 +150,7 @@ function NodeTree({
   return (
     <ul className="flex flex-col gap-2 px-3 pb-4">
       {rows.map((r) => {
-        const tasks = openSessionsByNode[r.id] ?? [];
+        const tasks = threadsByNode[r.id] ?? [];
         const activity = summarizeNodeActivity(tasks);
         // v2 rule 6: the node row is marked only while the centre shows the
         // node itself; with a thread open, that thread's row is the one.
@@ -371,10 +371,10 @@ function TaskRow({
 
 // ---------------------------------------------------------------- Stav
 
-function TaskList({ rows, openSessionsByNode, activeSessionId, onOpenSessionChat }: Props) {
+function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat }: Props) {
   const byGroup = new Map<TaskGroupKey, { node: WorkspaceNodeRow; task: SessionSummary }[]>();
   for (const node of rows) {
-    for (const task of openSessionsByNode[node.id] ?? []) {
+    for (const task of threadsByNode[node.id] ?? []) {
       const key = taskGroupOf(task);
       const list = byGroup.get(key) ?? [];
       list.push({ node, task });

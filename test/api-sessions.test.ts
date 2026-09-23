@@ -159,6 +159,43 @@ describe("session REST endpoints", () => {
     assert.equal(bodyAll.sessions.length, 2);
   });
 
+  // #463: a draft is a thread, so the node list carries the caller's own
+  // (a reload or a second window of the same user shows it). Another
+  // user's draft never appears, however visible the node is.
+  test("GET /nodes/:id/sessions carries the caller's own drafts and nobody else's", async () => {
+    const mine = await createDraftSession(db, SOLO, nodeId);
+    const theirs = await createDraftSession(db, "U2", nodeId);
+
+    const asOwner = await call(makeIdentity(SOLO), "GET", `/nodes/${nodeId}/sessions`);
+    assert.equal(asOwner.statusCode, 200);
+    const ownerIds = (JSON.parse(asOwner.body) as { sessions: SessionSummary[] }).sessions.map((s) => s.id);
+    assert.ok(ownerIds.includes(mine.id), "own draft is listed");
+    assert.ok(!ownerIds.includes(theirs.id), "another user's draft is not");
+
+    const asOther = await call(makeIdentity("U2"), "GET", `/nodes/${nodeId}/sessions`);
+    const otherIds = (JSON.parse(asOther.body) as { sessions: SessionSummary[] }).sessions.map((s) => s.id);
+    assert.ok(otherIds.includes(theirs.id), "U2 sees its own draft");
+    assert.ok(!otherIds.includes(mine.id), "U2 never sees SOLO's draft");
+
+    await db.execute({ sql: "DELETE FROM sessions WHERE id IN (?, ?)", args: [mine.id, theirs.id] });
+  });
+
+  test("GET /sessions?state=draft returns the caller's drafts only", async () => {
+    const mine = await createDraftSession(db, SOLO, nodeId);
+    const theirs = await createDraftSession(db, "U2", nodeId);
+
+    const res = await call(makeIdentity(SOLO), "GET", "/sessions?state=draft");
+    assert.equal(res.statusCode, 200);
+    const ids = (JSON.parse(res.body) as { sessions: { id: string }[] }).sessions.map((s) => s.id);
+    assert.deepEqual(ids, [mine.id]);
+
+    const other = await call(makeIdentity("U2"), "GET", "/sessions?state=draft");
+    const otherIds = (JSON.parse(other.body) as { sessions: { id: string }[] }).sessions.map((s) => s.id);
+    assert.deepEqual(otherIds, [theirs.id]);
+
+    await db.execute({ sql: "DELETE FROM sessions WHERE id IN (?, ?)", args: [mine.id, theirs.id] });
+  });
+
   test("GET /nodes/:id/sessions includes terminal_id, null when the session carries none (#231)", async () => {
     const identity = makeIdentity(SOLO);
     const withTerminal = await createSession(db, SOLO, {

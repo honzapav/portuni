@@ -512,6 +512,37 @@ export function workingPhase(
   return "thinking";
 }
 
+// --- The send clock (`sentAt`) -------------------------------------------------
+// #466, spec docs/superpowers/specs/2026-09-22-web-session-state-design.md
+// ("`SessionChat`"): the composer sets the clock before the send is awaited
+// -- run_started, and a run_ended right behind it, can arrive while the
+// reply is still in flight -- and three things clear it: run_started (the
+// run it announced is here), run_ended (the run it announced is over,
+// an error at start included) and a send that failed. Pure, so the rule is
+// held by a test (scenario 7) and not by the order of setState calls.
+
+export type SendClockInput =
+  // The composer sent a message. A live run needs no clock: its
+  // run_started already happened, so nothing is "starting".
+  | { kind: "send"; liveRunId: string | null; now: number }
+  | { kind: "send_failed" }
+  | { kind: "event"; event: CanonicalEvent }
+  // A fresh subscribe (a different thread, a re-subscribe): nothing is in
+  // flight that this window knows of.
+  | { kind: "reset" };
+
+export function nextSentAt(current: number | null, input: SendClockInput): number | null {
+  switch (input.kind) {
+    case "send":
+      return input.liveRunId === null ? input.now : current;
+    case "send_failed":
+    case "reset":
+      return null;
+    case "event":
+      return input.event.kind === "run_started" || input.event.kind === "run_ended" ? null : current;
+  }
+}
+
 // --- Delta coalescing (v2 spec, "Streaming") ----------------------------------
 // A burst of delta frames costs one render: frames are buffered per
 // (run, channel) and delivered once per scheduler tick. The desktop bridge

@@ -68,7 +68,7 @@ type Props = {
   onWorkspaceNewTask: (nodeId: string) => void;
   // #343: each open node's own running/suspended persistent sessions, for
   // WorkspaceNodeList's sub-rows.
-  workspaceOpenSessionsByNode: Record<string, SessionSummary[]>;
+  workspaceThreadsByNode: Record<string, SessionSummary[]>;
   // #412: the thread the canvas is currently showing, highlighted in the
   // list the same way its node row is.
   workspaceActiveSessionId: string | null;
@@ -144,7 +144,7 @@ function Sidebar({
   onWorkspaceNewTask,
   onWorkspaceOpenNode,
   onWorkspaceCreateNode,
-  workspaceOpenSessionsByNode,
+  workspaceThreadsByNode,
   workspaceActiveSessionId,
   onWorkspaceOpenSessionChat,
   onWorkspaceRenameTask,
@@ -295,7 +295,7 @@ function Sidebar({
               onSelectNode={onWorkspaceSelectNode}
               onCloseNode={onWorkspaceCloseNode}
               onNewTask={onWorkspaceNewTask}
-              openSessionsByNode={workspaceOpenSessionsByNode}
+              threadsByNode={workspaceThreadsByNode}
               activeSessionId={workspaceActiveSessionId}
               onOpenSessionChat={onWorkspaceOpenSessionChat}
               onRenameTask={onWorkspaceRenameTask}

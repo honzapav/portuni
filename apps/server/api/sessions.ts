@@ -128,7 +128,9 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
 // initial session_state burst, which needs state/waiting_since/node_id and
 // nothing curated). Visibility is the same rule sessionAccess("read")
 // applies: a node-anchored session iff its node is visible, a node-less
-// one only to its owner.
+// one only to its owner. `state=draft` is accepted and answers with the
+// caller's own drafts only (#463); another user's draft is never listed,
+// however visible its node is.
 const ListSessionsQuery = z.object({
   state: z
     .string()
@@ -165,6 +167,9 @@ export async function handleListSessions(
         sessions.push(row);
         continue;
       }
+      // #463: a draft belongs to its owner only. Node visibility opens
+      // every other state to a teammate, never an unsent draft.
+      if (row.state === "draft") continue;
       if (row.node_id === null) continue;
       let verdict = nodeVerdicts.get(row.node_id);
       if (!verdict) {
@@ -199,12 +204,12 @@ export async function handleListNodeSessions(
     if (!includeArchived) {
       rows = rows.filter((r) => r.state !== "archived");
     }
-    // A draft (#374) is visible only as the open thread it is -- the window
-    // that created it already has the row from its own POST /sessions
-    // response and tracks it client-side; every list, this one included,
-    // excludes it so it never leaks into another window's sidebar or a
-    // reload of this same one.
-    rows = rows.filter((r) => r.state !== "draft");
+    // A draft (#374) is a thread of the node like any other, so the list
+    // carries the caller's own (#463): a reload, a second window or any
+    // other surface of the same user sees it without a client-side draft
+    // map. Someone else's draft is never returned -- it is theirs until
+    // the first message promotes it.
+    rows = rows.filter((r) => r.state !== "draft" || r.user_id === identity.userId);
     const sessions = await Promise.all(rows.map(toSummary));
     respondJson(res, 200, { sessions });
   } catch (err) {
