@@ -522,7 +522,7 @@ export default function App() {
   // (state, waiting, name) and nothing else: runner, instance and model
   // stay as the last REST answer left them (spec principle 3).
   useEffect(() => {
-    return sessionsClient.onSessionState(sessionStore.applyFrame);
+    return sessionsClient.onSessionStates(sessionStore.applyFrames);
   }, [sessionsClient, sessionStore]);
   const runningSessionCount = useSessionStore(sessionStore, selectRunningCount);
   // The surfaces that fetch their own lists (Přehled's Relace card, the node
@@ -600,8 +600,10 @@ export default function App() {
   // the node it belongs to -- without it the sidebar's map only ever
   // changed when the open-node set did.
   useEffect(() => {
-    return sessionsClient.onSessionState((s) => {
-      if (s.node_id && openNodeIdsRef.current.includes(s.node_id)) refreshNodeSessions(s.node_id);
+    return sessionsClient.onSessionStates((states) => {
+      const nodeIds = new Set<string>();
+      for (const s of states) if (s.node_id && openNodeIdsRef.current.includes(s.node_id)) nodeIds.add(s.node_id);
+      for (const nodeId of nodeIds) refreshNodeSessions(nodeId);
     });
   }, [sessionsClient, refreshNodeSessions]);
   // The Práce sidebar's sub-rows: each open node's threads, derived from

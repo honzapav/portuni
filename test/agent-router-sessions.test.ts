@@ -1096,7 +1096,12 @@ describe("agent-router: sessions/tasks", () => {
     ws.send(JSON.stringify({ id: "sub", type: "subscribe", payload: { session_id: session.id, after: 0 } }));
     await replyTo("sub");
     // run_started + the brief replayed from the fake central's own log.
-    assert.ok(frames.some((f) => f.type === "event" && (f.payload as { event: { kind: string } }).event.kind === "user_message"));
+    assert.ok(
+      frames.some(
+        (f) =>
+          f.type === "events" && (f.payload as { events: { kind: string }[] }).events.some((e) => e.kind === "user_message"),
+      ),
+    );
 
     ws.send(JSON.stringify({ id: "msg", type: "message", payload: { session_id: session.id, text: "go on" } }));
     await replyTo("msg");

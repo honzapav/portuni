@@ -264,7 +264,7 @@ principles hold it together:
    (`test/session-store-scenarios.test.ts`), not by helper tests alone.
 
 The store itself is a plain module, no React and no library:
-`get`/`put`/`putMany`/`remove`/`removeMany`/`applyFrame`/`subscribe`/`snapshot`.
+`get`/`put`/`putMany`/`remove`/`removeMany`/`applyFrame`/`applyFrames`/`subscribe`/`snapshot`.
 `put` keeps the existing reference when every field is equal and the map is
 copied on write, so "the snapshot reference changed" means exactly
 "something changed". A frame for an id this window never fetched creates a
@@ -274,8 +274,8 @@ and no runner); the next `put`, the refetch that frame triggers, replaces
 it whole.
 
 **A partial record is not a thread.** `selectNodeThreads`,
-`selectShownThread` and `selectMountedThreads` skip it: the initial burst
-sends a `session_state` frame for every running session the caller can see,
+`selectShownThread` and `selectMountedThreads` skip it: the snapshot on
+connect carries every running or suspended session the caller can see,
 hand-opened CLI sessions included, and one of those is neither a sidebar
 sub-row nor a node's shown thread nor a mounted chat. `selectRunningCount`
 does count it -- the footer says how many runs are going, wherever they
@@ -331,8 +331,12 @@ this bound.
   transport opened there has no cleanup, so the discarded client keeps a
   live socket delivering every frame twice.
 - **The store itself**, created once next to the client and bound to it
-  with `sessionsClient.onSessionState(store.applyFrame)` -- the only place
-  a frame is folded.
+  with `sessionsClient.onSessionStates(store.applyFrames)` -- the only
+  place a frame is folded. A batch is one store write: the snapshot on
+  connect arrives as one `session_states` frame and is folded in one
+  notification, never session by session (every store write re-renders
+  the app synchronously; one write per session made React throw #185
+  after 50).
 - **Selection**, not facts: `openNodeIds` and
   `requestedChatSessionByNode`. `openSessionChat(nodeId, sessionId?)`
   records the requested id and opens the node; `selectShownThread` picks
@@ -391,12 +395,14 @@ Client rules:
   client resubscribes every still-wanted session with `after: <last seq>`.
   The server's replay fills exactly that gap: nothing lost, nothing
   re-delivered.
-- `session_state` frames go to one global listener set (`onSessionState`,
-  `Set`-backed so several listeners coexist); the server fans them to every
+- `session_state` frames and the one `session_states` snapshot frame on
+  connect go to one global listener set (`onSessionStates`, `Set`-backed so
+  several listeners coexist), always as a batch: the snapshot is one call,
+  a later change a call with one entry. The server fans them to every
   connection that can see the session, subscription or not.
 - Surface: `subscribe` / `unsubscribe` / `message` / `answer` / `interrupt`
-  / `continueSession` / `close`, plus `onEvent` / `onDelta` /
-  `onSessionState` / `onConnectionStatus`.
+  / `continueSession` / `close`, plus `onEvents` / `onDelta` /
+  `onSessionStates` / `onConnectionStatus`.
 
 `test/sessions-client.test.ts` drives the direct transport against a fake
 `ws` server (reply correlation, ordering, resubscribe-with-`after` across a
@@ -407,8 +413,9 @@ to test against here.
 
 `SessionChat` gets the whole log over the socket: `subscribe(id, 0)` makes
 the server replay the persisted events and then stream. There is no REST
-backfill. Events are inserted by `seq` (`insertBySeq`), which also
-deduplicates a replay against a frame that raced it.
+backfill. `onEvents` hands over a batch (a replay page, or one live
+event) and the chat merges it by `seq` in one pass (`insertManyBySeq`),
+which also deduplicates a replay against a frame that raced it.
 
 - `lib/session-chat.ts` mirrors the server's `CanonicalEvent` union by hand.
   `domain/runner/types.ts` is server-only on purpose, the same boundary

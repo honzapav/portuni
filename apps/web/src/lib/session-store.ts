@@ -41,6 +41,10 @@ export interface SessionStore {
   // notification, not one per thread.
   removeMany(ids: readonly string[]): void;
   applyFrame(frame: SessionStateMessage): void;
+  // Folds a batch of frames in one copy-on-write, so the burst a fresh
+  // connection receives (one frame per running or suspended session, up to
+  // 500) is one notification, not one per session.
+  applyFrames(frames: readonly SessionStateMessage[]): void;
   subscribe(listener: () => void): () => void;
   snapshot(): ReadonlyMap<string, StoredSession>;
 }
@@ -125,6 +129,21 @@ export function createSessionStore(): SessionStore {
     return true;
   }
 
+  // The live channel updates a record, it never replaces one: runner,
+  // instance, model and everything else the frame does not carry stay as
+  // they were (spec principle 3).
+  function foldFrame(next: Map<string, StoredSession>, frame: SessionStateMessage): boolean {
+    const existing = next.get(frame.session_id);
+    if (!existing) return putInto(next, stubFromFrame(frame));
+    const folded: StoredSession = {
+      ...existing,
+      state: frame.state,
+      waiting_since: frame.waiting_since,
+      ...(frame.name !== undefined ? { name: frame.name } : {}),
+    };
+    return putInto(next, folded);
+  }
+
   return {
     get(id) {
       return records.get(id);
@@ -153,16 +172,13 @@ export function createSessionStore(): SessionStore {
     // instance, model and everything else the frame does not carry stay as
     // they were (spec principle 3).
     applyFrame(frame) {
+      write((next) => foldFrame(next, frame));
+    },
+    applyFrames(frames) {
       write((next) => {
-        const existing = next.get(frame.session_id);
-        if (!existing) return putInto(next, stubFromFrame(frame));
-        const folded: StoredSession = {
-          ...existing,
-          state: frame.state,
-          waiting_since: frame.waiting_since,
-          ...(frame.name !== undefined ? { name: frame.name } : {}),
-        };
-        return putInto(next, folded);
+        let changed = false;
+        for (const frame of frames) changed = foldFrame(next, frame) || changed;
+        return changed;
       });
     },
     subscribe(listener) {

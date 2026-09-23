@@ -674,11 +674,16 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   with the device user's own records; the local snapshot is the same query
   against the graph db, bounded by the same `SNAPSHOT_LIMIT`.
 - `subscribe` subscribes to the runtime first, replays
-  `store.listEvents(after)` in pages of 200, buffers live events meanwhile
+  `store.listEvents(after)` in pages of 200, each page one `events` frame
+  (never a frame per event: the client renders per frame), buffers live
+  events meanwhile
   and flushes them skipping any `seq` the replay covered. A published
   canonical event carries the `seq` the store assigned
   (`PublishedEvent = (CanonicalEvent & {seq}) | DeltaFrame`,
   `appendAndPublish`).
+- On connect the socket sends the caller's running and suspended sessions
+  as one `session_states { sessions: [...] }` frame, never a frame per
+  session: the client re-renders per frame.
 - `session_state` fans out to every connection whose identity owns the
   session (`canSee`, the same one-line rule) through one server-lifetime
   `subscribe("*", ...)` per `WebSocketServer`, created lazily on the first

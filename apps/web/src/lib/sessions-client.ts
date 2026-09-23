@@ -63,6 +63,11 @@ interface EventFrame {
   type: "event";
   payload: { session_id: string; event: CanonicalEventEnvelope };
 }
+// A page of the persisted log a subscribe replays, in seq order.
+interface EventsFrame {
+  type: "events";
+  payload: { session_id: string; events: CanonicalEventEnvelope[] };
+}
 interface DeltaFrame {
   type: "delta";
   payload: SessionDeltaMessage;
@@ -71,7 +76,20 @@ interface SessionStateFrame {
   type: "session_state";
   payload: SessionStateMessage;
 }
-type ServerFrame = ReplyFrame | ErrorFrame | EventFrame | DeltaFrame | SessionStateFrame;
+// The snapshot sent once on connect: every running or suspended session the
+// caller can see, in one frame.
+interface SessionStatesFrame {
+  type: "session_states";
+  payload: { sessions: SessionStateMessage[] };
+}
+type ServerFrame =
+  | ReplyFrame
+  | ErrorFrame
+  | EventFrame
+  | EventsFrame
+  | DeltaFrame
+  | SessionStateFrame
+  | SessionStatesFrame;
 
 type ClientFrame =
   | { id: string; type: "subscribe"; payload: { session_id: string; after?: number } }
@@ -344,9 +362,13 @@ export interface SessionsClient {
   // active thread to it without a second round trip.
   continueSession(sessionId: string): Promise<{ session: SessionSummary; run: SessionRunRow }>;
   close(sessionId: string): Promise<void>;
-  onEvent(sessionId: string, cb: (event: CanonicalEventEnvelope) => void): () => void;
+  // Persisted events, a batch per frame in seq order: a replay page arrives
+  // as one call, a live event as a call with one.
+  onEvents(sessionId: string, cb: (events: CanonicalEventEnvelope[]) => void): () => void;
   onDelta(sessionId: string, cb: (delta: SessionDeltaMessage) => void): () => void;
-  onSessionState(cb: (state: SessionStateMessage) => void): () => void;
+  // Live session states, a batch per frame: the snapshot on connect arrives
+  // as one call with every session, a later change as a call with one.
+  onSessionStates(cb: (states: SessionStateMessage[]) => void): () => void;
   onConnectionStatus(cb: (status: ConnectionStatus) => void): () => void;
   // Opens the transport (a no-op while already connected). Called for you
   // unless the client was created with `autoConnect: false`.
@@ -377,9 +399,9 @@ export interface CreateSessionsClientOptions {
 export function createSessionsClient(options: CreateSessionsClientOptions = {}): SessionsClient {
   const transport = options.transport ?? (isTauri() ? createTauriTransport() : createDirectWsTransport(defaultDevWsUrl()));
 
-  const eventListeners = new Map<string, Set<(event: CanonicalEventEnvelope) => void>>();
+  const eventListeners = new Map<string, Set<(events: CanonicalEventEnvelope[]) => void>>();
   const deltaListeners = new Map<string, Set<(delta: SessionDeltaMessage) => void>>();
-  const sessionStateListeners = new Set<(state: SessionStateMessage) => void>();
+  const sessionStateListeners = new Set<(states: SessionStateMessage[]) => void>();
   const connectionStatusListeners = new Set<(status: ConnectionStatus) => void>();
   const pendingReplies = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   // The subscribed set, and the highest seq observed per session -- what a
@@ -440,7 +462,14 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     if (frame.type === "event") {
       const { session_id, event } = frame.payload;
       lastSeq.set(session_id, event.seq);
-      for (const cb of eventListeners.get(session_id) ?? []) cb(event);
+      for (const cb of eventListeners.get(session_id) ?? []) cb([event]);
+      return;
+    }
+    if (frame.type === "events") {
+      const { session_id, events } = frame.payload;
+      if (events.length === 0) return;
+      lastSeq.set(session_id, events[events.length - 1].seq);
+      for (const cb of eventListeners.get(session_id) ?? []) cb(events);
       return;
     }
     if (frame.type === "delta") {
@@ -450,7 +479,11 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       return;
     }
     if (frame.type === "session_state") {
-      for (const cb of sessionStateListeners) cb(frame.payload);
+      for (const cb of sessionStateListeners) cb([frame.payload]);
+      return;
+    }
+    if (frame.type === "session_states") {
+      for (const cb of sessionStateListeners) cb(frame.payload.sessions);
     }
   });
 
@@ -523,7 +556,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     async close(sessionId) {
       await send({ type: "close", payload: { session_id: sessionId } });
     },
-    onEvent(sessionId, cb) {
+    onEvents(sessionId, cb) {
       let set = eventListeners.get(sessionId);
       if (!set) {
         set = new Set();
@@ -541,7 +574,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       set.add(cb);
       return () => set.delete(cb);
     },
-    onSessionState(cb) {
+    onSessionStates(cb) {
       sessionStateListeners.add(cb);
       return () => sessionStateListeners.delete(cb);
     },

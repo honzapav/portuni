@@ -232,9 +232,13 @@ describe("GET /sessions/ws", () => {
     ws.send(JSON.stringify({ id: "sub1", type: "subscribe", payload: { session_id: session.id, after: 1 } }));
     await collector.waitFor((f) => f.id === "sub1" && f.type === "reply");
 
-    const replayed = collector.frames.filter((f) => f.type === "event");
+    // The replay is one `events` frame per page, never a frame per event.
+    assert.ok(!collector.frames.some((f) => f.type === "event"));
+    const pages = collector.frames.filter((f) => f.type === "events");
+    assert.equal(pages.length, 1);
+    const replayed = (pages[0].payload as { events: { kind: string }[] }).events;
     assert.equal(replayed.length, 1, "after:1 must skip run_started and replay only the brief");
-    assert.equal((replayed[0].payload as { event: { kind: string } }).event.kind, "user_message");
+    assert.equal(replayed[0].kind, "user_message");
 
     // Unblocks the script -- its own assistant_message must arrive live,
     // on the same subscription, after the persisted replay.
@@ -318,11 +322,16 @@ describe("GET /sessions/ws", () => {
     const collector = new FrameCollector(ws);
     await waitOpen(ws);
 
-    const snapshot = await collector.waitFor(
-      (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
-    );
-    assert.equal((snapshot.payload as { state: string }).state, "running");
-    assert.equal((snapshot.payload as { waiting_since: string | null }).waiting_since, null);
+    // The whole snapshot is one frame, never a frame per session.
+    const snapshotFrame = await collector.waitFor((f) => f.type === "session_states");
+    const sessions = (snapshotFrame.payload as { sessions: { session_id: string; state: string; waiting_since: string | null }[] })
+      .sessions;
+    const snapshot = sessions.find((s) => s.session_id === session.id);
+    assert.ok(snapshot);
+    assert.equal(snapshot.state, "running");
+    assert.equal(snapshot.waiting_since, null);
+    assert.equal(collector.frames.filter((f) => f.type === "session_states").length, 1);
+    assert.ok(!collector.frames.some((f) => f.type === "session_state"));
 
     // Unblocks the script into the question step -- the resulting
     // state_changed event must fan out as a live session_state update to
@@ -348,9 +357,7 @@ describe("GET /sessions/ws", () => {
     const ws = openSocket(base, token);
     const collector = new FrameCollector(ws);
     await waitOpen(ws);
-    await collector.waitFor(
-      (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
-    );
+    await collector.waitFor((f) => f.type === "session_states");
 
     await runtime.renameSession(session.id, "Přejmenováno");
     const update = await collector.waitFor(
@@ -382,6 +389,13 @@ describe("GET /sessions/ws", () => {
     assert.ok(
       !collector.frames.some(
         (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
+      ),
+    );
+    assert.ok(
+      !collector.frames.some(
+        (f) =>
+          f.type === "session_states" &&
+          (f.payload as { sessions: { session_id: string }[] }).sessions.some((s) => s.session_id === session.id),
       ),
     );
 

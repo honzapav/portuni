@@ -153,16 +153,22 @@ export function toCanonicalEvent(kind: string, payload: unknown): CanonicalEvent
   return { kind, payload } as CanonicalEvent;
 }
 
-// Inserts an event into a seq-ordered list, ignoring a seq already present:
-// a subscribe replay and a live frame published during it can both carry
-// the same event, and a resubscribe after a reconnect replays from the
-// last seq seen, so an event never lands twice and never out of order.
-export function insertBySeq(list: readonly ChatEvent[], item: ChatEvent): ChatEvent[] {
-  if (list.some((p) => p.seq === item.seq)) return list as ChatEvent[];
-  const last = list[list.length - 1];
-  if (!last || last.seq < item.seq) return [...list, item];
-  const idx = list.findIndex((p) => p.seq > item.seq);
-  return [...list.slice(0, idx), item, ...list.slice(idx)];
+// Merges a batch of events into a seq-ordered list, ignoring a seq already
+// present: a subscribe replay and a live frame published during it can both
+// carry the same event, and a resubscribe after a reconnect replays from the
+// last seq seen, so an event never lands twice and never out of order. A
+// replay page lands in one pass, not one copy of the whole list per event.
+export function insertManyBySeq(list: readonly ChatEvent[], items: readonly ChatEvent[]): ChatEvent[] {
+  if (items.length === 0) return list as ChatEvent[];
+  const seen = new Set(list.map((p) => p.seq));
+  const fresh: ChatEvent[] = [];
+  for (const item of items) {
+    if (seen.has(item.seq)) continue;
+    seen.add(item.seq);
+    fresh.push(item);
+  }
+  if (fresh.length === 0) return list as ChatEvent[];
+  return [...list, ...fresh].sort((a, b) => a.seq - b.seq);
 }
 
 // --- Status chip -----------------------------------------------------------
