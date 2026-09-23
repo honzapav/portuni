@@ -443,7 +443,11 @@ human verification.
   `null`.
 - **`interrupt()` cancels the current turn only** (`Query.interrupt()`).
   Process, queue and run stay alive; the natural completion path reports
-  `"completed"`. `FakeRunnerAdapter.interrupt()` is a no-op.
+  `"completed"`. The SDK closes the stopped turn with an
+  `error_during_execution` result: after `interrupt()` the next such result
+  is `turn_ended`, not a provider failure, and the SDK's later throw on the
+  end of the prompt stream ("returned an error result") is a graceful close.
+  `FakeRunnerAdapter.interrupt()` is a no-op.
 - **`close()`** ends the prompt stream and bounds a child that ignores it
   (`shutdownProcess`): `closeGraceMs` 2 s, `SIGTERM`, `closeTermMs` 5 s,
   `SIGKILL`, each step skipped once the run ends or the pid is dead.
@@ -563,7 +567,9 @@ human verification.
 - **Idle is the server's.** `boot/session-sweep.ts` `startIdleRunSweep`
   (60 s, unref'd; `PORTUNI_RUN_IDLE_MS`, default 30 min) drives
   `checkIdleRunsOnce`; `endIdleRun` sets `pendingEndReason: "idle"` and
-  calls `close()` on the live handle. Wired in `index.ts` and in both
+  calls `close()` on the live handle. A run mid-turn (a `user_message`
+  with no `turn_ended` yet) is never idle, unless an open question waits
+  on the user; every adapter event counts as activity. Wired in `index.ts` and in both
   branches of `desktop.ts` against the runtime instance that actually runs
   tasks there.
 - **Resume is writing.** `resumeByWriting` uses `checkConversationResumable`
