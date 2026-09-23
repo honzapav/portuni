@@ -32,6 +32,10 @@
 //                                                      the same node seeded with its summary
 //                                                      (owner only; #378)
 //   POST  /sessions/:id/close              write   -> close the session (owner or manage)
+//   POST  /sessions/:id/handoff            write   -> "Předat" (#459): ends the turn and the run,
+//                                                      writes the summary into the node's mirror
+//                                                      and suspends -- device-local, the file and
+//                                                      the transcript it is built from are here
 //   GET   /sessions/:id/events             read    -> canonical event log, from the device's
 //                                                      content.db (#456)
 //   POST  /sessions/:id/events             write   -> legacy (#323, retired by #456): batch-append
@@ -88,7 +92,7 @@ import { getResumeInfo } from "../domain/session-handoff.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { logAudit } from "../infra/audit.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
-import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
+import { NoRunnerAvailableError, SessionHandoffError } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
 import { resolveHostLabel, transcriptHostLabel } from "../domain/runner/hosts.js";
@@ -792,6 +796,38 @@ export async function handleContinueSession(
     respondJson(res, 200, { session: await toSummary(session), run });
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/continue`, err);
+  }
+}
+
+// #459 "Předat": hands the thread to another machine through its handoff
+// file. Device-local -- the run, the transcript the summary is built from
+// and the node's mirror are all on this device; only the record patch
+// reaches the central server, through the runtime's own store. The whole
+// operation is the runtime's (agent-router.ts serves the same verb in
+// sync-agent mode, sessions-ws.ts the same frame).
+export async function handleHandoffSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
+    if (!existing) return;
+    try {
+      const { session, handoff_path } = await getSessionRuntime().handoff(sessionId);
+      await logAudit(identity.userId, "session_handoff", "session", sessionId, { handoff_path });
+      respondJson(res, 200, { session: await toSummary(session), handoff_path });
+    } catch (err) {
+      if (err instanceof SessionHandoffError) {
+        respondJson(res, 409, { error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}/handoff`, err);
   }
 }
 

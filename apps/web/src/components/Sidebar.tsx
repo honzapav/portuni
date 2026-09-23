@@ -76,6 +76,8 @@ type Props = {
   // Inline rename / close on a thread's own sub-row (#374).
   onWorkspaceRenameTask: (session: SessionSummary, name: string) => void;
   onWorkspaceCloseTask: (session: SessionSummary) => void;
+  // #459: "Předat" on a thread's sub-row.
+  onWorkspaceHandoffTask: (session: SessionSummary) => void;
   // Open an EXISTING node in the workspace (the primary workspace action). Driven by the inline search-first picker at
   // the top of the workspace column: type a node name, click it, it opens.
   onWorkspaceOpenNode: (nodeId: string) => void;
@@ -149,6 +151,7 @@ function Sidebar({
   onWorkspaceOpenSessionChat,
   onWorkspaceRenameTask,
   onWorkspaceCloseTask,
+  onWorkspaceHandoffTask,
 }: Props) {
   const isMac =
     typeof navigator !== "undefined" &&
@@ -300,6 +303,7 @@ function Sidebar({
               onOpenSessionChat={onWorkspaceOpenSessionChat}
               onRenameTask={onWorkspaceRenameTask}
               onCloseTask={onWorkspaceCloseTask}
+              onHandoffTask={onWorkspaceHandoffTask}
             />
           </div>
         </div>

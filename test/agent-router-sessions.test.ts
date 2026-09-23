@@ -608,6 +608,60 @@ describe("agent-router: sessions/tasks", () => {
     await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
   });
 
+  // #459 "Předat": the device ends the run, writes the summary into its own
+  // mirror and registers it; the central server only learns the record
+  // patch (suspended + handoff_path). The team-workspace half of the same
+  // operation test/runner-runtime.test.ts covers for a personal workspace.
+  it("POST /sessions/:id/handoff drains the run, writes the handoff file here and suspends the record on central", async () => {
+    stubScript([{ wait: "message" }]);
+    fake.registered = [];
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    assert.equal(fake.sessions.get(session.id)?.state, "running");
+
+    const res = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { session: SessionRow; handoff_path: string };
+    assert.equal(body.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+
+    const stored = fake.sessions.get(session.id);
+    assert.equal(stored?.state, "suspended");
+    assert.equal(stored?.handoff_path, body.handoff_path);
+    // Content stays here: the summary is a file in this device's mirror and
+    // the transcript is in this device's content.db, never on central.
+    assert.equal(stored?.handoff_inline ?? null, null);
+
+    const mirrorRoot = await getMirrorPath(stored!.user_id, NODE_ID);
+    const onDisk = await readFile(join(mirrorRoot!, body.handoff_path), "utf8");
+    assert.match(onDisk, /portuni:server-handoff reason=handoff/);
+    assert.deepEqual(fake.registered, [{ nodeId: NODE_ID, relPath: body.handoff_path }]);
+
+    // A second Předat is a no-op that answers the same path.
+    const again = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    assert.equal(again.status, 200);
+    assert.equal(((await again.json()) as { handoff_path: string }).handoff_path, body.handoff_path);
+  });
+
+  it("POST /sessions/:id/handoff 409s on a draft", async () => {
+    const created = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID }),
+    });
+    const { session } = (await created.json()) as { session: SessionRow };
+
+    const res = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string; code: string };
+    assert.equal(body.code, "HANDOFF_NOT_ALLOWED");
+    assert.match(body.error, /Předat lze jen/);
+    assert.equal(fake.sessions.get(session.id)?.state, "draft");
+  });
+
   // #426: the composer's model picker. The live half can only happen on
   // the device driving the run, so the route is device-local and the
   // record half rides along through CentralSessionStore.

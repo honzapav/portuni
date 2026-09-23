@@ -67,7 +67,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { BrainIcon, Check, CircleX, Pencil, Redo2, X } from "lucide-react";
+import { BrainIcon, Check, CircleX, Pencil, Redo2, Share2, X } from "lucide-react";
 import {
   Conversation,
   ConversationContent,
@@ -118,7 +118,7 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
-import { patchSessionModelEffort, patchSessionRunnerInstance, renamePersistentSession } from "../api";
+import { handoffSession, patchSessionModelEffort, patchSessionRunnerInstance, renamePersistentSession } from "../api";
 import {
   fetchRunnerModels,
   listRunnerInstances,
@@ -179,7 +179,11 @@ export default function SessionChat({
     setComposerTextState(text);
   };
   const [sending, setSending] = useState(false);
-  const [actionPending, setActionPending] = useState<"interrupt" | "close" | "continue" | null>(null);
+  const [actionPending, setActionPending] = useState<"interrupt" | "close" | "continue" | "handoff" | null>(null);
+  // #459: the file Předat wrote, shown as a notice until the thread moves
+  // on -- the path is the whole point of the action (it is what the other
+  // machine opens), so it does not vanish with the request.
+  const [handoffPath, setHandoffPath] = useState<string | null>(null);
   // #378: "Uzavřít" is the one irreversible action, so it's the only one
   // that asks -- confirmed via this dialog, not window.confirm (a no-op in
   // the Tauri webview).
@@ -431,6 +435,25 @@ export default function SessionChat({
     }
   };
 
+  // #459 "Předat": POST /sessions/:id/handoff ends the turn and the run and
+  // writes the thread's summary into the node's mirror; api.ts puts the
+  // suspended record into the store, so the header, the sidebar and Relace
+  // all follow. The answered path stays on screen as the notice below --
+  // it is what the other machine opens (Navázat na handoff there).
+  const handleHandoff = async () => {
+    setActionPending("handoff");
+    setError(null);
+    try {
+      const { handoff_path } = await handoffSession(sessionId);
+      setHandoffPath(handoff_path);
+      setNoticeDismissed(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setActionPending(null);
+    }
+  };
+
   // "Pokračovat v nové session" (offered any time) / "Navázat" (a closed
   // thread): POST /sessions/:id/continue closes this session (its summary
   // seeds the new one) and starts a fresh, running one on the same node --
@@ -573,6 +596,19 @@ export default function SessionChat({
               <HeaderIcon onClick={startRename} disabled={actionPending !== null} title="Přejmenovat">
                 <Pencil />
               </HeaderIcon>
+              {/* #459: Předat -- hands the thread to another machine
+                  through its handoff file. Running and suspended only:
+                  a draft has nothing to summarise, a closed thread is
+                  done. */}
+              {(session.state === "running" || session.state === "suspended") && (
+                <HeaderIcon
+                  onClick={() => void handleHandoff()}
+                  disabled={actionPending !== null}
+                  title={actionPending === "handoff" ? "Předávám…" : "Předat na jiné zařízení"}
+                >
+                  <Share2 />
+                </HeaderIcon>
+              )}
               {(session.state === "running" || session.state === "suspended") && (
                 <HeaderIcon
                   onClick={() => void handleContinue()}
@@ -606,8 +642,17 @@ export default function SessionChat({
       {showNotice && (
         <div className={`${THREAD_COLUMN} mt-2 flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] text-[var(--color-text-muted)]`}>
           <span className="flex-1 leading-[1.5]">
-            Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě
-            jednou.
+            {handoffPath ? (
+              <>
+                Vlákno je předané. Shrnutí je v souboru <code>{handoffPath}</code>; po synchronizaci na něj na druhém
+                zařízení navážeš v záložce Relace.
+              </>
+            ) : (
+              <>
+                Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě
+                jednou.
+              </>
+            )}
           </span>
           <button
             type="button"

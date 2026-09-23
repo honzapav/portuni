@@ -3995,6 +3995,9 @@ mod device_local_path_tests {
         // #378: closes this session and starts a new one on the same node.
         assert!(is_device_local_path("/sessions/abc123/continue"));
         assert!(is_device_local_path("/sessions/abc123/close"));
+        // #459: "Předat" -- ends the run and writes the handoff file into
+        // this device's mirror, so it can only run here.
+        assert!(is_device_local_path("/sessions/abc123/handoff"));
         assert!(is_device_local_path("/sessions/abc123/events"));
         assert!(is_device_local_path("/sessions/abc123/events?after=5"));
         // The restart indicator (#342) reads the local SessionRuntime's own

@@ -33,6 +33,7 @@
     { "method": "POST", "pattern": "/sessions/{id}/interrupt", "example": "/sessions/abc123/interrupt" },
     { "method": "POST", "pattern": "/sessions/{id}/continue", "example": "/sessions/abc123/continue" },
     { "method": "POST", "pattern": "/sessions/{id}/close", "example": "/sessions/abc123/close" },
+    { "method": "POST", "pattern": "/sessions/{id}/handoff", "example": "/sessions/abc123/handoff" },
     { "method": "GET", "pattern": "/sessions/{id}/events", "example": "/sessions/abc123/events?after=5" },
     { "method": "GET", "pattern": "/sessions/{id}/signals", "example": "/sessions/abc123/signals" },
     { "method": "GET", "pattern": "/sessions/{id}/resume-info", "example": "/sessions/abc123/resume-info" },

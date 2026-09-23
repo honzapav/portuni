@@ -52,6 +52,18 @@ import type {
 // instance for it, if one is set.
 export class NoRunnerAvailableError extends Error {}
 
+// #459 (Předat): the thread cannot be handed to another machine right now.
+// `code` is what the REST/live-channel layer answers with (409); `message`
+// is Czech, because it is shown to the user as-is.
+export class SessionHandoffError extends Error {
+  constructor(
+    readonly code: "HANDOFF_NOT_ALLOWED" | "HANDOFF_NO_MIRROR",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 // Resolves the node's organization -- the key the runner instance's
 // org_defaults are looked up under. Local mode reads the belongs_to edge
 // straight off the graph db; agent mode has no graph db at all, so
@@ -260,6 +272,16 @@ export interface SessionRuntime {
   // suspend never overwrites it) and publishes a session_changed frame.
   renameSession(sessionId: string, name: string): Promise<SessionRow>;
   closeSession(sessionId: string): Promise<SessionRow>;
+  // #459 "Předat": hands the thread to another machine through its handoff
+  // file. On a running thread the current turn is interrupted, the run is
+  // drained and ended, and the same summary path a limit or an idle end
+  // takes writes wip/sessions/<id>-handoff.md into the node's mirror,
+  // registers it and suspends the record -- only this time because the
+  // owner asked (reason "handoff"). On an already-suspended thread that
+  // has its file, a no-op answering the same path. A draft, a closed
+  // thread, or a node with no mirror on this device throws
+  // SessionHandoffError -- there is no file to hand over.
+  handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }>;
   // #378: closes THIS session (summary written from what's in the log,
   // used to seed the new one -- not from a fresh suspend, since Uzavřít-
   // shaped closes never go through the auto-summary path) and starts a new
@@ -888,12 +910,57 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // -- the resulting run_ended is meant to fall through to the auto-
   // summary/suspend path in handleAdapterEvent, tagged "idle" specifically
   // (via pendingEndReason) rather than the generic "run_ended".
-  async function endIdleRun(sessionId: string): Promise<void> {
+  async function endRunWithReason(sessionId: string, reason: ServerHandoffReason): Promise<boolean> {
     const live = liveRuns.get(sessionId);
-    if (!live) return;
-    pendingEndReason.set(sessionId, "idle");
+    if (!live) return false;
+    pendingEndReason.set(sessionId, reason);
     await live.handle.close();
     await drain(sessionId);
+    return true;
+  }
+
+  async function endIdleRun(sessionId: string): Promise<void> {
+    await endRunWithReason(sessionId, "idle");
+  }
+
+  // #459 "Předat". Running: cancel the turn in flight first (the summary
+  // should describe a finished thought, not one mid-sentence), let the
+  // queue drain, then end the run -- the run_ended that follows falls
+  // through handleAdapterEvent's auto-summary path, tagged "handoff", so
+  // the file, its registration and the record patch are the one suspend
+  // implementation, not a second copy. A running thread with no live run
+  // here (this device restarted under it) still gets its summary: the
+  // suspend path itself needs no adapter.
+  // The mirror check comes last on purpose: whether the summary could be
+  // written as a FILE is only known once it has been written (a node with
+  // no mirror on this device leaves handoff_path null and the summary in
+  // content.db), and the thread is genuinely suspended either way.
+  async function handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
+    const session = await mustGetSession(sessionId);
+    if (session.state === "suspended") {
+      if (!session.handoff_path) throw noMirrorHandoffError();
+      return { session, handoff_path: session.handoff_path };
+    }
+    if (session.state !== "running") {
+      throw new SessionHandoffError(
+        "HANDOFF_NOT_ALLOWED",
+        "Předat lze jen běžící nebo pozastavené vlákno.",
+      );
+    }
+    await interrupt(sessionId);
+    if (!(await endRunWithReason(sessionId, "handoff"))) {
+      await suspendFallback(sessionId, "handoff");
+    }
+    const after = await mustGetSession(sessionId);
+    if (!after.handoff_path) throw noMirrorHandoffError();
+    return { session: after, handoff_path: after.handoff_path };
+  }
+
+  function noMirrorHandoffError(): SessionHandoffError {
+    return new SessionHandoffError(
+      "HANDOFF_NO_MIRROR",
+      "Uzel nemá na tomto zařízení zrcadlo, soubor s předáním nelze zapsat.",
+    );
   }
 
   async function checkIdleRunsOnce(idleMs: number, now: number = Date.now()): Promise<void> {
@@ -1030,6 +1097,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     setModelAndEffort,
     renameSession,
     closeSession,
+    handoff,
     continueSession,
     pendingQuestion,
     subscriberCount,

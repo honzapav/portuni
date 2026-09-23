@@ -112,6 +112,7 @@ import {
   handleAppendSessionEvents,
   handleCloseSession,
   handleContinueSession,
+  handleHandoffSession,
   handleCreateSessionRecord,
   handleCreateSessionRun,
   handleDeleteSession,
@@ -839,6 +840,12 @@ async function routeSessions(
   const closeMatch = pathname.match(/^\/sessions\/([^/]+)\/close$/);
   if (closeMatch && method === "POST") {
     await handleCloseSession(req, res, identity, decodeURIComponent(closeMatch[1]));
+    return true;
+  }
+  // #459: "Předat" -- ends the turn and the run, writes the handoff file.
+  const handoffMatch = pathname.match(/^\/sessions\/([^/]+)\/handoff$/);
+  if (handoffMatch && method === "POST") {
+    await handleHandoffSession(req, res, identity, decodeURIComponent(handoffMatch[1]));
     return true;
   }
   const eventsMatch = pathname.match(/^\/sessions\/([^/]+)\/events$/);

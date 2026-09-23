@@ -16,6 +16,7 @@ import {
   startDraftThread,
   deletePersistentSession,
   renamePersistentSession,
+  handoffSession,
   bindSessionStore,
 } from "./api";
 import type { SessionSummary, SessionRunRow } from "./types";
@@ -918,6 +919,21 @@ export default function App() {
     [sessionStore],
   );
 
+  // #459 "Předat" on a thread's sub-row: ends the turn and the run and
+  // writes the thread's summary into the node's mirror, so another machine
+  // can pick the work up from the file. api.ts puts the suspended record
+  // into the store, so the row's own state follows without a refetch; a
+  // refusal (a draft, a closed thread, a node with no mirror here) says
+  // why on the node surface.
+  const workspaceHandoffTask = useCallback(
+    (session: SessionSummary) => {
+      void handoffSession(session.id).catch((e) => {
+        setWorkspaceDetailError(`Vlákno se nepodařilo předat: ${String(e)}`);
+      });
+    },
+    [],
+  );
+
   // Close a node: drop it from the open set. Its sessions keep running on
   // the sidecar. Moves the workspace selection to a neighbouring open node,
   // or clears it when nothing is left.
@@ -976,6 +992,7 @@ export default function App() {
           onWorkspaceOpenSessionChat={openSessionChat}
           onWorkspaceRenameTask={workspaceRenameTask}
           onWorkspaceCloseTask={workspaceCloseTask}
+          onWorkspaceHandoffTask={workspaceHandoffTask}
           onWorkspaceOpenNode={openNode}
           onWorkspaceCreateNode={workspaceCreateNode}
         />

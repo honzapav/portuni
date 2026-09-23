@@ -21,7 +21,7 @@
 // request proved it came from the desktop webview / dev proxy under the
 // hardened posture (PORTUNI_WEBVIEW_PROXY_SECRET, #213) -- a spawned
 // terminal holding the same loopback bearer can open the socket and
-// watch, but its message/answer/interrupt/close/continue frames are
+// watch, but its message/answer/interrupt/close/continue/handoff frames are
 // refused, exactly as its REST calls are.
 //
 // Everything that touches storage goes through `SessionsWsDeps`: local mode
@@ -39,6 +39,7 @@ import { getSessionRuntime } from "../boot/session-runtime.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import { listSessions } from "../domain/sessions.js";
 import { scopeAtLeast } from "../auth/roles.js";
+import { SessionHandoffError } from "../domain/runner/session-runtime.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 import { logAudit } from "../infra/audit.js";
@@ -92,6 +93,13 @@ const ClientFrameSchema = z.discriminatedUnion("type", [
   z.object({
     id: z.string().optional(),
     type: z.literal("continue"),
+    payload: z.object({ session_id: z.string() }),
+  }),
+  // #459: "Předat" -- ends the turn and the run and writes the thread's
+  // handoff file, so another machine can pick the work up from it.
+  z.object({
+    id: z.string().optional(),
+    type: z.literal("handoff"),
     payload: z.object({ session_id: z.string() }),
   }),
 ]);
@@ -459,6 +467,35 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     sendReply(conn.ws, frame.id, { session: await toSummary(session), run });
   }
 
+  // #459: "Předat" -- the same runtime operation and the same answer
+  // (`{ session, handoff_path }`) its REST twin gives, so a client with a
+  // live channel needs no second transport for it. The "stop" tier:
+  // this ends the run, exactly what interrupt/close do.
+  async function handleHandoff(conn: Connection, frame: Extract<ClientFrame, { type: "handoff" }>): Promise<void> {
+    const sessionId = frame.payload.session_id;
+    if (!refuseUnlessMutationAllowed(conn, frame)) return;
+    try {
+      await deps.access(conn.identity, sessionId, "stop");
+    } catch (err) {
+      if (err instanceof SessionAccessError) {
+        sendErrorReply(conn.ws, frame.id, err.code, err.message);
+        return;
+      }
+      throw err;
+    }
+    try {
+      const { session, handoff_path } = await deps.runtime().handoff(sessionId);
+      await deps.audit(conn.identity, "session_handoff", sessionId, { handoff_path });
+      sendReply(conn.ws, frame.id, { session: await toSummary(session), handoff_path });
+    } catch (err) {
+      if (err instanceof SessionHandoffError) {
+        sendErrorReply(conn.ws, frame.id, err.code, err.message);
+        return;
+      }
+      throw err;
+    }
+  }
+
   async function dispatch(conn: Connection, raw: string): Promise<void> {
     let parsed: unknown;
     try {
@@ -489,6 +526,9 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
           break;
         case "continue":
           await handleContinue(conn, frame);
+          break;
+        case "handoff":
+          await handleHandoff(conn, frame);
           break;
       }
     } catch (err) {

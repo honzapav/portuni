@@ -165,14 +165,28 @@ in flight, and Esc does the same — both just call `interrupt()`, which
 cancels whatever the model is doing right now without ending the run, so
 you can keep typing straight after. Once the agent has answered, the run
 stays alive only to take your next message: the button is a plain send
-again and nothing is shown as working. The two remaining header actions are
-**Pokračovat v nové session** (offered any time there's an open thread —
-`POST /sessions/:id/continue`, which closes this session, seeds a new one
-with its summary, and switches Práce to it) and **Uzavřít**, which asks
-for confirmation first (the only irreversible action here) before doing
-the same close `interrupt` never does. Both follow the access table below;
-a refused action surfaces the server's own error, there is no client-side
-prediction of who may do what.
+again and nothing is shown as working. The remaining header actions are
+**Předat** (see below), **Pokračovat v nové session** (offered any time
+there's an open thread — `POST /sessions/:id/continue`, which closes this
+session, seeds a new one with its summary, and switches Práce to it) and
+**Uzavřít**, which asks for confirmation first (the only irreversible
+action here) before doing the same close `interrupt` never does. All
+follow the access table below; a refused action surfaces the server's own
+error, there is no client-side prediction of who may do what.
+
+**Předat** hands the thread to another machine. It is offered on a running
+or a suspended thread, in the chat header and on the thread's row in the
+Práce sidebar. On a running thread it ends the turn and the run, and the
+device writes the thread's summary to `wip/sessions/<id>-handoff.md` in the
+node's mirror — a tracked file of the node like any other, so the next sync
+carries it — and the thread goes to "Pozastaveno"; the chat then names the
+file it wrote. Pressing it again on the same thread changes nothing and
+answers the same path. A draft (nothing to summarise) and a closed thread
+are refused, and so is a node that has no mirror on this device: there is
+nowhere to write the file, and the summary stays here as the thread's own
+inline handoff. The transcript never travels — only the summary file does
+— so the other machine continues from what the file says, not from the
+conversation.
 
 The event list renders the session's canonical log, delivered entirely
 over the live WebSocket below (a subscribe replays the persisted log,

@@ -56,6 +56,7 @@ import {
   StartSessionBody,
   sessionResumeInfoPayload,
 } from "./sessions.js";
+import { SessionHandoffError } from "../domain/runner/session-runtime.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -635,6 +636,28 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         respondJson(res, 200, { session });
       } catch (err) {
         respondError(res, `POST /sessions/${sessionId}/close`, err);
+      }
+      return true;
+    }
+
+    // #459: "Předat" -- device-local for the same reason interrupt/close
+    // are: the run, the transcript the summary is built from and the
+    // node's mirror are all here. Only the record patch reaches central,
+    // through the runtime's CentralSessionStore.
+    const sessionHandoffMatch = pathname.match(/^\/sessions\/([^/]+)\/handoff$/);
+    if (sessionHandoffMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionHandoffMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      try {
+        const { session, handoff_path } = await sessionRuntime.handoff(sessionId);
+        respondJson(res, 200, { session, handoff_path });
+      } catch (err) {
+        if (err instanceof SessionHandoffError) {
+          respondJson(res, 409, { error: err.message, code: err.code });
+          return true;
+        }
+        if (respondAgentSessionError(res, err)) return true;
+        respondError(res, `POST /sessions/${sessionId}/handoff`, err);
       }
       return true;
     }

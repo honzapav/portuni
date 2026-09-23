@@ -139,6 +139,9 @@ export function extractHandoffTitle(content: string): string | null {
 // terminal_exit along with the embedded terminal itself (#345/#346) -- no
 // runtime code produces either anymore, but both values stay in this union
 // so an old row's already-written reason marker still parses.
+// handoff (#459): the owner asked for it -- Předat ends the turn and the
+// run deliberately so the summary can travel to another machine, the one
+// reason in this union a person chose rather than the runtime noticing.
 export type ServerHandoffReason =
   | "disconnect"
   | "idle"
@@ -147,7 +150,8 @@ export type ServerHandoffReason =
   | "suspend_timeout"
   | "host_lost"
   | "run_ended"
-  | "continue";
+  | "continue"
+  | "handoff";
 
 const SERVER_HANDOFF_REASONS: readonly ServerHandoffReason[] = [
   "disconnect",
@@ -158,6 +162,7 @@ const SERVER_HANDOFF_REASONS: readonly ServerHandoffReason[] = [
   "host_lost",
   "run_ended",
   "continue",
+  "handoff",
 ];
 
 // A leading HTML-comment marker rather than a new column for `generated_by`/

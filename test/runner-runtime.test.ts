@@ -4,12 +4,18 @@
 // setup (via test/helpers/shared-db.ts's makeSharedDb).
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
-import { createSessionRuntime, resolveModelAndEffort } from "../apps/server/domain/runner/session-runtime.js";
+import {
+  SessionHandoffError,
+  createSessionRuntime,
+  resolveModelAndEffort,
+} from "../apps/server/domain/runner/session-runtime.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
 import { createInstance, setOrgDefault } from "../apps/server/domain/runner/instances.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
@@ -901,5 +907,118 @@ describe("session runtime: organization default instance on draft promotion", ()
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /central unreachable/);
     assert.match(warnings[0], new RegExp(nodeId));
+  });
+});
+
+// #459 "Předat": the owner hands the thread to another machine through its
+// handoff file. A personal workspace here (DbSessionStore + the graph db's
+// own mirror registry); test/agent-router-sessions.test.ts runs the same
+// verb against the fake central server for a team workspace.
+describe("session runtime: handoff (#459 Předat)", () => {
+  let workspace: string | null = null;
+
+  afterEach(async () => {
+    resetLocalDbForTests();
+    delete process.env.PORTUNI_WORKSPACE_ROOT;
+    if (workspace) await rm(workspace, { recursive: true, force: true });
+    workspace = null;
+  });
+
+  // A node with a real mirror on this device: what the handoff file needs
+  // to exist as a file at all (without one the summary stays inline and
+  // Předat has nothing to hand over -- the last test below).
+  async function withMirror(script: FakeScriptStep[]) {
+    const shared = await sharedDb();
+    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-handoff-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    const mirrorRoot = join(workspace, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", shared.nodeId, mirrorRoot);
+    const store = new DbSessionStore(shared.db);
+    const adapter = new FakeRunnerAdapter({ script });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    return { ...shared, store, runtime, mirrorRoot };
+  }
+
+  it("a running thread is drained, suspended, and its handoff file registered in the node", async () => {
+    const { db, nodeId, store, runtime, mirrorRoot } = await withMirror([{ wait: "message" }]);
+    const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    const result = await runtime.handoff(session.id);
+
+    assert.equal(result.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+    assert.equal(result.session.state, "suspended");
+    assert.equal(result.session.handoff_path, result.handoff_path);
+    // The run is drained and ended, not left open behind a suspended row.
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].id, run.id);
+    assert.ok(runs[0].ended_at, "the run must be ended, not left live");
+
+    const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
+    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
+    assert.equal(parseServerHandoffReason(onDisk), "handoff");
+    assert.match(onDisk, /Poslední zprávy/);
+
+    // Registered as a tracked file of the node, so the next sync carries it.
+    const files = await db.execute({
+      sql: "SELECT filename FROM files WHERE node_id = ?",
+      args: [nodeId],
+    });
+    assert.deepEqual(
+      files.rows.map((r) => String(r.filename)),
+      [`${session.id}-handoff.md`],
+    );
+  });
+
+  it("a second Předat on the suspended thread answers the same path and writes nothing new", async () => {
+    const { nodeId, store, runtime } = await withMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const first = await runtime.handoff(session.id);
+    const eventsAfterFirst = (await content.listEvents(session.id)).length;
+
+    const second = await runtime.handoff(session.id);
+
+    assert.equal(second.handoff_path, first.handoff_path);
+    assert.equal(second.session.state, "suspended");
+    assert.equal((await content.listEvents(session.id)).length, eventsAfterFirst);
+    assert.equal((await store.listRuns(session.id)).length, 1);
+  });
+
+  it("a draft and a closed thread are refused with a code and a Czech message", async () => {
+    const { nodeId, runtime } = await withMirror([{ wait: "message" }]);
+    const draft = await runtime.createDraft({ userId: "U1", nodeId });
+    await assert.rejects(
+      () => runtime.handoff(draft.id),
+      (err: unknown) =>
+        err instanceof SessionHandoffError &&
+        err.code === "HANDOFF_NOT_ALLOWED" &&
+        /Předat lze jen/.test(err.message),
+    );
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.closeSession(session.id);
+    await assert.rejects(
+      () => runtime.handoff(session.id),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NOT_ALLOWED",
+    );
+  });
+
+  it("a node with no mirror on this device is refused: there is no file to hand over", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    await assert.rejects(
+      () => runtime.handoff(session.id),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NO_MIRROR",
+    );
+    // The thread is still suspended with its summary -- the run ended, the
+    // content store holds it; only the FILE could not be written here.
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
+    assert.ok((await content.getContent(session.id))?.handoff_inline);
   });
 });

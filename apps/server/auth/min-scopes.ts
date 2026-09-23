@@ -246,6 +246,8 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // #378: closes this session and starts a new one on the same node.
   if (/^\/sessions\/[^/]+\/continue$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/close$/.test(pathname) && m === "POST") return "write";
+  // #459: "Předat" -- suspends the thread into its handoff file.
+  if (/^\/sessions\/[^/]+\/handoff$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/events$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/events$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/runs$/.test(pathname) && m === "GET") return "read";

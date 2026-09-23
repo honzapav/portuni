@@ -41,6 +41,8 @@ const SERVER_SUSPEND_REASON_LABEL: Record<string, string> = {
   boot_sweep: "restart serveru",
   suspend_timeout: "agent nestihl předání",
   host_lost: "proces osiřel po restartu",
+  // #459: the owner asked for it -- Předat wrote this summary on purpose.
+  handoff: "předání na jiné zařízení",
 };
 
 export function fmtDateTime(value: string): string {

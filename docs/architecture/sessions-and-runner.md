@@ -116,6 +116,23 @@ own suspend path appends nothing twice. The web never trusts the replayed
 log against the server's state: `runIsLiveFor(liveRunId, state)` is live
 only while the session is `running`.
 
+**Předat** (#459) is `SessionRuntime.handoff`, `POST /sessions/:id/handoff`
+(device-local, `write` tier, owner; the socket's `handoff` frame carries the
+same answer `{ session, handoff_path }`): the owner hands the thread to
+another machine through its handoff file. On a `running` thread it
+interrupts the current turn, waits for the queue to drain and then ends the
+run with `pendingEndReason` `handoff`, so the same auto-summary path a limit
+or an idle end takes writes `wip/sessions/<id>-handoff.md` into the node's
+mirror, registers the file and patches the record to `suspended` -- one
+suspend implementation, the reason marker being the only difference
+(`portuni:server-handoff reason=handoff`, the one reason a person chose).
+On an already `suspended` thread with its file, it is a no-op answering the
+same path. A `draft` or `closed` thread is `HANDOFF_NOT_ALLOWED` and a node
+with no mirror on this device `HANDOFF_NO_MIRROR` (`SessionHandoffError`,
+REST 409, Czech message): without a mirror the summary is content in
+`content.db` and there is no file to hand over. The other machine picks the
+work up from the file once it syncs.
+
 A rename is `POST /sessions/:id/rename`, device-local, through
 `SessionRuntime.renameSession`: it writes `name` (`name_is_custom`) and
 publishes a `session_changed` frame, which is never persisted or replayed
@@ -216,8 +233,8 @@ orientation, translates events, ends and suspends) is one implementation,
 
 `is_device_local_path` (`apps/desktop/src/lib.rs`) sends to the device's sync
 agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
-`messages`, `interrupt`, `continue`, `close`, `events`, `signals`,
-`resume-info`, `questions/:request_id`. The record half stays on the
+`messages`, `interrupt`, `continue`, `close`, `handoff`, `events`,
+`signals`, `resume-info`, `questions/:request_id`. The record half stays on the
 central server: bare `GET`/`PATCH /sessions/:id`, `/state`, `/scope`,
 `/runs...`, `/sessions/record`, plus `GET /nodes/:id/sessions` and
 `/overview`.
@@ -554,7 +571,7 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   response before the socket is destroyed. A plain GET without `Upgrade`
   gets 426 from the normal request path. The upgrade applies
   `minScopeForRoute` (`read`).
-- `message`, `answer`, `interrupt`, `close`, `continue` frames need `write`
+- `message`, `answer`, `interrupt`, `close`, `continue`, `handoff` frames need `write`
   scope (`FORBIDDEN`) and, with `PORTUNI_WEBVIEW_PROXY_SECRET` set, an
   upgrade that carried the proven `X-Portuni-Webview-Proxy` header
   (`UpgradeContext.webviewProven`, else `WEBVIEW_PROXY_REQUIRED`). The same

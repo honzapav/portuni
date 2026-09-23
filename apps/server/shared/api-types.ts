@@ -568,6 +568,8 @@ export type SessionResumeInfo = {
     | "host_lost"
     | "run_ended"
     | "continue"
+    // #459: Předat -- the owner handed the thread to another machine.
+    | "handoff"
     | null;
 };
 

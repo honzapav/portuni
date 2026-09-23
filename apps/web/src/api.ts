@@ -243,6 +243,24 @@ export function closePersistentSession(id: string): Promise<SessionSummary> {
   );
 }
 
+// POST /sessions/:id/handoff (#459) -- "Předat": ends the turn and the run
+// and writes the thread's summary to wip/sessions/<id>-handoff.md in the
+// node's mirror, so another machine can pick the work up from the file
+// (Navázat na handoff there). The answer carries the suspended record and
+// the file's node-relative path; the record goes into the session store,
+// which is what makes the sidebar, the chat header and Relace agree.
+// A plain REST wrapper (not sessionsClient) for the same reason
+// continueSession is one: the Relace tab has no live-channel client.
+export function handoffSession(id: string): Promise<{ session: SessionSummary; handoff_path: string }> {
+  return jsonRequest<{ session: SessionSummary; handoff_path: string }>(
+    "POST",
+    `/sessions/${encodeURIComponent(id)}/handoff`,
+  ).then((r) => {
+    sessionStore?.put(r.session);
+    return r;
+  });
+}
+
 // #375/#376/#426: sets the thread's own model/effort override. Its own
 // device-local route rather than a PATCH /sessions/:id field, because a
 // model change reaches the live run's Query immediately and that run only
