@@ -432,7 +432,12 @@ human verification.
   field or an IME Enter sends nothing, and a second submit of the same
   question is dropped in the web (`createAnswerGate`). A question still
   open when the run ends is denied; one raised after the end is denied
-  outright.
+  outright. When the SDK aborts `canUseTool`'s `signal` (Stop or Esc
+  cancels the turn, #493) the open question is denied, the question line
+  is freed and the question is emitted again with a `system` decision,
+  the same "closed without the user" path as an abandoned dialog, so the
+  runtime clears `waiting_since` and the next turn's question shows at
+  once; an ask cancelled while it waits in line is never shown.
 - **MCP elicitation** (`onElicitation`): a dialog whose form is exactly one
   boolean field (Portuni's scope and write confirmations) emits an
   `approval` question and waits on `RunHandle.answer()`: `true` accepts

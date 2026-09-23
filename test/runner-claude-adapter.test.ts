@@ -62,6 +62,9 @@ function makeFakeQuery(
     collectPrompt?: boolean;
     supportedModels?: () => ReturnType<Query["supportedModels"]>;
     mcpServerStatus?: () => ReturnType<Query["mcpServerStatus"]>;
+    // What the CLI does on a Stop besides ending the turn (#493: it
+    // cancels the pending permission request, aborting canUseTool's signal).
+    onInterrupt?: () => void;
   } = {},
 ) {
   let capturedOptions: Options | undefined;
@@ -108,6 +111,7 @@ function makeFakeQuery(
     const iterator = gen() as unknown as Query;
     (iterator as unknown as { interrupt: () => Promise<undefined> }).interrupt = async () => {
       interruptCalls.push(1);
+      opts.onInterrupt?.();
       return undefined;
     };
     (iterator as unknown as { setModel: (model?: string) => Promise<undefined> }).setModel = async (
@@ -1137,6 +1141,88 @@ describe("Claude adapter: MCP elicitation", () => {
     );
     assert.deepEqual(result, { action: "decline" });
     assert.equal(events.filter((e) => "kind" in e && e.kind === "question").length, 0);
+    release();
+    await handle.close();
+  });
+
+  // #493: a Stop cancels the turn, and the SDK aborts the signal of the
+  // permission request that turn was waiting on. The question must close
+  // (a decided question event the runtime reads as "stop waiting") and
+  // free the line, so the next turn's question shows at once.
+  it("Stop while a permission question is open closes it and the next question shows at once", async () => {
+    const aborts: AbortController[] = [];
+    const { query, options, release } = makeFakeQuery([], {
+      hold: true,
+      onInterrupt: () => {
+        for (const controller of aborts.splice(0)) controller.abort();
+      },
+    });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const questions = () =>
+      events.filter((e) => "kind" in e && e.kind === "question") as Extract<CanonicalEvent, { kind: "question" }>[];
+    const ask = (requestId: string) => {
+      const controller = new AbortController();
+      aborts.push(controller);
+      return options()!.canUseTool!("ExitPlanMode", { plan: "the plan" }, {
+        requestId,
+        signal: controller.signal,
+      } as never);
+    };
+
+    const first = ask("perm-stop");
+    await flushMicrotasks();
+    assert.equal(questions().length, 1);
+
+    await handle.interrupt();
+    const result = (await first) as PermissionResult;
+    assert.equal(result.behavior, "deny");
+    assert.equal(questions().length, 2, "the chat learns the question closed");
+    assert.equal(questions()[1].payload.request_id, "perm-stop");
+    assert.deepEqual(
+      { by: questions()[1].payload.decision?.by, value: questions()[1].payload.decision?.value },
+      { by: "system", value: false },
+    );
+    assert.equal(questions()[1].payload.tool, "ExitPlanMode");
+
+    // The next turn's question is not stuck behind the dead one.
+    const second = ask("perm-next");
+    await flushMicrotasks();
+    assert.equal(questions().length, 3, "the next question is shown at once");
+    assert.equal(questions()[2].payload.request_id, "perm-next");
+    assert.equal(questions()[2].payload.decision, null);
+    await handle.answer("perm-next", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.equal(((await second) as PermissionResult).behavior, "allow");
+
+    // A late click on the closed question changes nothing.
+    await handle.answer("perm-stop", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.equal(questions().length, 3);
+    release();
+    await handle.close();
+  });
+
+  it("a permission ask cancelled while waiting in line is never shown", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const questions = () => events.filter((e) => "kind" in e && e.kind === "question");
+    const open = options()!.canUseTool!("ExitPlanMode", { plan: "a" }, {
+      requestId: "perm-open",
+      signal: new AbortController().signal,
+    } as never);
+    const controller = new AbortController();
+    const queued = options()!.canUseTool!("ExitPlanMode", { plan: "b" }, {
+      requestId: "perm-queued",
+      signal: controller.signal,
+    } as never);
+    await flushMicrotasks();
+    controller.abort();
+    await handle.answer("perm-open", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.equal(((await open) as PermissionResult).behavior, "allow");
+    assert.equal(((await queued) as PermissionResult).behavior, "deny");
+    assert.equal(questions().length, 1, "the cancelled ask never reached the chat");
     release();
     await handle.close();
   });

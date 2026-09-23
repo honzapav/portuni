@@ -836,7 +836,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     async function canUseTool(
       toolName: string,
       input: Record<string, unknown>,
-      options: { requestId: string },
+      options: { requestId: string; signal: AbortSignal },
     ): Promise<PermissionResult> {
       if (state.disabledToolPrefixes.some((prefix) => toolName.startsWith(prefix))) {
         return {
@@ -860,24 +860,46 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       // that was in flight when the iterator finished): nobody is left to
       // answer, so deny instead of parking a promise nothing will resolve.
       if (state.ended) return ended;
+      // #493: the SDK aborts the signal when the turn is cancelled (Stop,
+      // Esc): the tool call is gone, so nobody will use an answer.
+      const cancelled: PermissionResult = { behavior: "deny", message: "Tah byl zastaven dřív, než přišla odpověď." };
+      if (options.signal.aborted) return cancelled;
       const requestId = options.requestId;
+      const payload = {
+        request_id: requestId,
+        type: decision.question.type,
+        tool: toolName,
+        title: decision.question.title,
+        detail: decision.question.detail,
+        options: decision.question.options,
+        ...(decision.question.questions ? { questions: decision.question.questions } : {}),
+      };
       return askInTurn(
         () => {
-          sink({
-            kind: "question",
-            payload: {
-              request_id: requestId,
-              type: decision.question.type,
-              tool: toolName,
-              title: decision.question.title,
-              detail: decision.question.detail,
-              options: decision.question.options,
-              ...(decision.question.questions ? { questions: decision.question.questions } : {}),
-              decision: null,
-            },
-          });
+          // Cancelled while waiting in line behind another question: never
+          // shown, so there is nothing to close in the chat either.
+          if (options.signal.aborted) return Promise.resolve(cancelled);
+          sink({ kind: "question", payload: { ...payload, decision: null } });
           return new Promise<PermissionResult>((resolve) => {
             state.pendingPermissions.set(requestId, { resolve, input, type: decision.question.type });
+            // Settling the ask frees the question line (askInTurn), and the
+            // question event carrying a decision tells the runtime the
+            // question closed without the user, the way an abandoned
+            // dialog does in onElicitation.
+            options.signal.addEventListener(
+              "abort",
+              () => {
+                const pending = state.pendingPermissions.get(requestId);
+                if (!pending) return;
+                state.pendingPermissions.delete(requestId);
+                pending.resolve(cancelled);
+                sink({
+                  kind: "question",
+                  payload: { ...payload, decision: { by: "system", value: false, at: new Date(now()).toISOString() } },
+                });
+              },
+              { once: true },
+            );
           });
         },
         () => ended,

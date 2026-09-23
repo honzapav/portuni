@@ -188,7 +188,9 @@ Stopping a turn is not a header action any more: the composer's own
 submit button doubles as a stop control (a stop square) while a turn is
 in flight, and Esc does the same — both just call `interrupt()`, which
 cancels whatever the model is doing right now without ending the run, so
-you can keep typing straight after. A message you write while the agent
+you can keep typing straight after. A stop while the agent waits on your
+approval closes that question too: the thread stops waiting on you and the
+agent's next question shows straight away. A message you write while the agent
 is still working queues behind the turn in flight and counts as work of
 its own: the stop control, the working row and the idle countdown all go
 by how many of the messages you sent are still unanswered, not by the

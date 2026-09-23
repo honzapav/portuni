@@ -45,6 +45,8 @@ import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { installTestContentDb } from "./helpers/content-db.js";
 import { TeardownAdapter } from "./helpers/teardown-adapter.js";
 import { GatedAdapter } from "./helpers/gated-adapter.js";
+import { createClaudeAdapter, type CreateClaudeAdapterDeps } from "../apps/server/domain/runner/adapters/claude.js";
+import type { Options, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 
 const NODE_ID = "N1";
@@ -1166,6 +1168,79 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(answerRes.status, 202);
     assert.equal(fake.sessions.get(session.id)?.waiting_since, null);
   });
+  // #493, team workspace: the real Claude adapter over a fake SDK query that
+  // does what the CLI does on a Stop -- it cancels the pending permission
+  // request, aborting canUseTool's signal. The record on central stops
+  // waiting, and the next turn's question sets it waiting again at once.
+  it("Stop while a permission question is open clears waiting on central and frees the next question (#493)", async () => {
+    let captured: Options | undefined;
+    const aborts: AbortController[] = [];
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const query = ((params: { prompt: unknown; options?: Options }) => {
+      captured = params.options;
+      // Holds the run live (a turn in flight) until release(); yields
+      // nothing -- the test drives canUseTool itself.
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        await held;
+        yield* [];
+      }
+      const iterator = gen() as unknown as Query;
+      (iterator as unknown as { interrupt: () => Promise<undefined> }).interrupt = async () => {
+        for (const controller of aborts.splice(0)) controller.abort();
+        return undefined;
+      };
+      return iterator;
+    }) as CreateClaudeAdapterDeps["query"];
+    clearRegistryForTests();
+    const claude = createClaudeAdapter({ query, resolveExecutable: async () => null, portuniOrigins: () => [] });
+    registerAdapter({ ...claude, id: "fake" });
+
+    const ask = (requestId: string) => {
+      const controller = new AbortController();
+      aborts.push(controller);
+      return captured!.canUseTool!("ExitPlanMode", { plan: "p" }, { requestId, signal: controller.signal } as never);
+    };
+    // The runtime records a question on its own serial dispatch; yield to
+    // it until the record changes (a condition, not a sleep).
+    const until = async (pred: () => boolean): Promise<void> => {
+      for (let i = 0; i < 1000 && !pred(); i++) await new Promise<void>((r) => setImmediate(r));
+      assert.ok(pred(), "condition never held");
+    };
+
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    await until(() => captured !== undefined);
+
+    const first = ask("perm-1");
+    await until(() => Boolean(fake.sessions.get(session.id)?.waiting_since));
+
+    const res = await fetch(`${base}/sessions/${session.id}/interrupt`, { method: "POST" });
+    assert.equal(res.status, 200);
+    assert.equal((await first).behavior, "deny");
+    assert.equal(fake.sessions.get(session.id)?.waiting_since, null, "Stop closed the question on central");
+    assert.equal(fake.sessions.get(session.id)?.state, "running");
+
+    const second = ask("perm-2");
+    await until(() => Boolean(fake.sessions.get(session.id)?.waiting_since));
+    const answerRes = await fetch(`${base}/sessions/${session.id}/questions/perm-2`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: { value: true } }),
+    });
+    assert.equal(answerRes.status, 202);
+    assert.equal((await second).behavior, "allow");
+
+    release();
+    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+  });
+
   // #492: a multi-question AskUserQuestion is answered question by question;
   // the sync agent's route takes the map and the answered row keeps it.
   it("an AskUserQuestion with several questions is answered with a map over POST /sessions/:id/questions/:request_id", async () => {
