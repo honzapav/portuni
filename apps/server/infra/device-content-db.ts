@@ -9,7 +9,10 @@
 // This file is where that content lives on the device -- a second libsql
 // file next to `runners.json` in the runner data dir, opened by the
 // sidecar in a personal workspace and by the sync agent in a team
-// workspace alike. The central server never opens one.
+// workspace alike. The central server never opens one: getDeviceContentDb()
+// refuses there (isCentralServer()), and the central server's own session
+// content is only the legacy graph-db rows an older sidecar wrote
+// (domain/runner/store-content.ts, LegacyGraphContentStore).
 //
 // It deliberately does NOT go through `getDb()`, `schema.ts` or
 // `MIGRATIONS`:
@@ -24,10 +27,17 @@
 // Version history (a bump adds a numbered step here and raises
 // DEVICE_CONTENT_SCHEMA_VERSION; every step must be safe to re-run):
 //   1. session_content, session_events, device_schema (the DDL below).
-//   2. The one-time import of a personal workspace's existing session
-//      content out of its graph db (boot/content-import.ts) -- no DDL
-//      change, so a db created fresh still starts at version 1 and the
-//      import raises it to 2 on the next boot.
+//   2. The one-time import of the session content that predates this db
+//      (boot/content-import.ts): a personal workspace copies it out of its
+//      own graph db, a sync agent downloads its own threads' legacy rows
+//      from the central server. No DDL change, so a db created fresh still
+//      starts at version 1 and a complete import raises it to 2; a failed
+//      one leaves it at 1 and runs again on the next boot.
+//
+// Timestamps are written by the store (infra/sql.ts dbTimestamp, the
+// "YYYY-MM-DD HH:MM:SS" UTC shape every driver reads back); the DDL has no
+// default for them. A file created before that keeps its old default,
+// which nothing reaches because every insert supplies the value.
 
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -35,6 +45,7 @@ import { createClient } from "@libsql/client";
 import { createLibsqlDbClient } from "./db-libsql.js";
 import type { DbClient } from "./db.js";
 import { resolveRunnerDataDir } from "../domain/runner/data-dir.js";
+import { isCentralServer } from "./server-config.js";
 
 export const DEVICE_CONTENT_DB_FILENAME = "content.db";
 
@@ -59,7 +70,7 @@ export const DDL_SESSION_EVENTS_CONTENT = `CREATE TABLE IF NOT EXISTS session_ev
     seq INTEGER NOT NULL,
     kind TEXT NOT NULL,
     payload TEXT NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL,
     UNIQUE(session_id, seq)
   )`;
 
@@ -121,6 +132,9 @@ let opening: Promise<DbClient> | null = null;
 
 export async function getDeviceContentDb(): Promise<DbClient> {
   if (contentDb) return contentDb;
+  if (isCentralServer()) {
+    throw new Error("content.db is a device's; the central server never opens one");
+  }
   if (!opening) {
     opening = openDeviceContentDb()
       .then((db) => {

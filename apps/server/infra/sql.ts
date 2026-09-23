@@ -57,6 +57,31 @@ export function tableExistsSql(dialect: DbDialect): string {
     : "SELECT name FROM sqlite_master WHERE type='table' AND name = ?";
 }
 
+// Whether `table` has `column`: SQLite's table-valued pragma_table_info vs
+// Postgres's information_schema. Both project a single `name` column, so
+// the caller only checks `rows.length`. Args: [table, column].
+export function columnExistsSql(dialect: DbDialect): string {
+  return dialect === "postgres"
+    ? "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?"
+    : "SELECT name FROM pragma_table_info(?) WHERE name = ?";
+}
+
+// A timestamp written by application code, in the shape every driver reads
+// back (database-and-dialects.md, "Timestamps"): "YYYY-MM-DD HH:MM:SS", UTC,
+// second precision, no zone suffix -- what SQLite's datetime('now') gives.
+export function dbTimestamp(date: Date = new Date()): string {
+  return date.toISOString().replace("T", " ").slice(0, 19);
+}
+
+// Normalises a stored timestamp to dbTimestamp()'s shape: an ISO string
+// (what the session event log wrote before #456) is converted, a value
+// already in the shape (or one that does not parse) is returned as is.
+export function normalizeDbTimestamp(value: string): string {
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) return value;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? value : dbTimestamp(new Date(ms));
+}
+
 // A recursive CTE's seed, expanding a JSON array parameter (`args: [JSON
 // .stringify(ids)]`) into one row per string element -- SQLite's
 // `json_each(?)` (a table-valued function; its `value` column is what the

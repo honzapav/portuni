@@ -118,3 +118,16 @@ test("deleteContent drops the thread's content row and its transcript", async ()
     assert.equal((await store.listEvents("s2")).length, 1);
   });
 });
+
+// database-and-dialects.md, "Timestamps": every driver reads a timestamp
+// back as "YYYY-MM-DD HH:MM:SS" UTC; the content db is no exception, and
+// its DDL carries no datetime('now') default -- the store writes the value.
+test("appendEvents writes created_at as YYYY-MM-DD HH:MM:SS, and the DDL has no datetime('now')", async () => {
+  const { DEVICE_CONTENT_DDL } = await import("../apps/server/infra/device-content-db.js");
+  assert.ok(DEVICE_CONTENT_DDL.every((ddl) => !ddl.includes("datetime('now')")));
+  await withStore(async (store) => {
+    await store.appendEvents("S1", null, [userMessage("ahoj")]);
+    const [event] = await store.listEvents("S1");
+    assert.match(event.created_at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+});

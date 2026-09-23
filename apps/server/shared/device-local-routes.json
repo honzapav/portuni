@@ -56,6 +56,8 @@
     { "method": "GET", "pattern": "/sessions/{id}/runs", "example": "/sessions/abc123/runs" },
     { "method": "PATCH", "pattern": "/sessions/{id}/runs/{runId}", "example": "/sessions/abc123/runs/run1" },
     { "method": "POST", "pattern": "/sessions/record", "example": "/sessions/record" },
+    { "method": "GET", "pattern": "/sessions/legacy-content", "example": "/sessions/legacy-content?host_id=honzas-macbook-pro" },
+    { "method": "GET", "pattern": "/sessions/{id}/legacy-content", "example": "/sessions/abc123/legacy-content?after=500" },
     { "method": "GET", "pattern": "/runnersx", "example": "/runnersx" }
   ],
   "sidecar_direct": {

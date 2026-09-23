@@ -229,6 +229,10 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // frames on it are gated per frame at the write tier (api/sessions-ws.ts).
   if (pathname === "/sessions/ws" && m === "GET") return "read";
   if (pathname === "/sessions/record" && m === "POST") return "write";
+  // Central only: a sync agent's one-time download of its own legacy
+  // session content (boot/content-import.ts).
+  if (pathname === "/sessions/legacy-content" && m === "GET") return "read";
+  if (/^\/sessions\/[^/]+\/legacy-content$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   // Removes a draft only (#374) -- sessionAccess's "message" tier further

@@ -23,7 +23,7 @@
 import { execFile as nodeExecFile } from "node:child_process";
 import type { DbClient } from "../../infra/db.js";
 import { DbSessionStore, type SessionStore } from "./store.js";
-import { deviceSessionContentStore, type SessionContentStore } from "./store-content.js";
+import { sessionContentStoreForProcess, type SessionContentStore } from "./store-content.js";
 import { isProcessAlive } from "./process-liveness.js";
 import { listPidFiles, readPidFile, removePidFileAt, type PidFileEntry } from "./pid-file.js";
 
@@ -221,7 +221,7 @@ export async function sweepOrphanedRunsOn(
 export function localRunSweepBackend(db: DbClient, content?: SessionContentStore): RunSweepBackend {
   return {
     store: new DbSessionStore(db),
-    content: content ?? deviceSessionContentStore(),
+    content: content ?? sessionContentStoreForProcess(),
     resolveRun: (runId) => loadRun(db, runId),
   };
 }

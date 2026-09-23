@@ -621,6 +621,24 @@ export type SessionEventRow = {
   created_at: string;
 };
 
+// GET /sessions/legacy-content?host_id=… and GET /sessions/:id/legacy-content
+// (central, #456 follow-up): the content an older sidecar sent to the
+// central server, which a sync agent downloads into its content.db once.
+// The list carries the ids of the caller's own threads that ran on the
+// given host and still have legacy content; a page carries one thread's
+// brief, inline summary and a page of its events, raw (payload as stored).
+export type LegacySessionContentList = {
+  sessions: string[];
+};
+
+export type LegacySessionContentPage = {
+  session_id: string;
+  brief: string | null;
+  handoff_inline: string | null;
+  events: SessionEventRow[];
+  next_after: number | null;
+};
+
 // GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the
 // scope/sessions redesign spec). One aggregate, permission-filtered
 // endpoint composing four deterministic sections. Every node reference is

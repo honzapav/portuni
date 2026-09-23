@@ -132,6 +132,8 @@ import {
   handleStartSession,
   handleListSessions,
   handleTransitionSessionState,
+  handleListLegacySessionContent,
+  handleGetLegacySessionContent,
 } from "./sessions.js";
 import {
   handleCreateRunnerInstance,
@@ -769,6 +771,19 @@ async function routeSessions(
   // /sessions/:id with no further segment, or use a different sub-path).
   if (pathname === "/sessions/record" && method === "POST") {
     await handleCreateSessionRecord(req, res, identity);
+    return true;
+  }
+  // Central, read once by a sync agent on its first boot (#456 follow-up):
+  // the legacy content of the caller's own threads that ran on that device.
+  // Before the bare /sessions/:id match, which would read the literal
+  // segment as a session id.
+  if (pathname === "/sessions/legacy-content" && method === "GET") {
+    await handleListLegacySessionContent(req, res, identity, url);
+    return true;
+  }
+  const legacyContentMatch = pathname.match(/^\/sessions\/([^/]+)\/legacy-content$/);
+  if (legacyContentMatch && method === "GET") {
+    await handleGetLegacySessionContent(req, res, identity, decodeURIComponent(legacyContentMatch[1]), url);
     return true;
   }
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);

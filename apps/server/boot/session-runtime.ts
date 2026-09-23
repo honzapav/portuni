@@ -8,7 +8,7 @@
 
 import { getDb } from "../infra/db.js";
 import { DbSessionStore } from "../domain/runner/store.js";
-import { deviceSessionContentStore } from "../domain/runner/store-content.js";
+import { deviceSessionContentStore, sessionContentStoreForProcess } from "../domain/runner/store-content.js";
 import { CentralSessionStore } from "../domain/runner/store-central.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { provisionRun } from "../domain/runner/provision.js";
@@ -24,7 +24,10 @@ export function getSessionRuntime(): SessionRuntime {
   if (!runtime) {
     runtime = createSessionRuntime({
       store: new DbSessionStore(getDb()),
-      content: deviceSessionContentStore(),
+      // content.db on a device; on the central server the legacy graph-db
+      // rows an older sidecar wrote and reads back (it never opens a
+      // content.db).
+      content: sessionContentStoreForProcess(),
       registry: { getAdapter },
       provision: provisionRun,
     });

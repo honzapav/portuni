@@ -16,7 +16,8 @@ import {
 } from "../shared/types.js";
 import { writeAudit } from "../infra/audit.js";
 import { handoffEnrichedName, suspendSessionServerSide, type ServerHandoffReason } from "./session-handoff.js";
-import { deviceSessionContentStore } from "./runner/store-content.js";
+import { sessionContentStoreForProcess } from "./runner/store-content.js";
+import { isCentralServer } from "../infra/server-config.js";
 
 const SESSION_TYPES = ["interactive_task", "interactive_chat", "headless", "env"] as const;
 
@@ -396,20 +397,59 @@ export async function transitionSessionState(
   return row;
 }
 
+// Where the two suspends below run. On the central server (#458) there is
+// no content to summarise and no run to end: a task thread's run lives on
+// the device that drives it, and only that device's own run end or boot
+// sweep suspends it. Overridable for tests; defaults to the process's role.
+export interface ServerSideSuspendOptions {
+  central?: boolean;
+}
+
+// A thread some device drives: a runner task (runner set) or one with a run
+// still open. The central server leaves it alone -- its MCP connection
+// dropping, or the central server restarting, says nothing about the run on
+// the device. What is left is a hand-opened CLI or a connector session whose
+// only life was its MCP connection to this process.
+async function isDeviceDrivenSession(db: DbClient, row: { id: string; runner: string | null }): Promise<boolean> {
+  if (row.runner !== null) return true;
+  const open = await db.execute({
+    sql: "SELECT 1 FROM session_runs WHERE session_id = ? AND ended_at IS NULL LIMIT 1",
+    args: [row.id],
+  });
+  return open.rows.length > 0;
+}
+
+// The central server's suspend: record only, no summary (#458: it holds no
+// transcript to build one from, and never opens a content.db), and never
+// for a thread a device drives. Returns whether the row was suspended.
+async function suspendRecordOnCentral(db: DbClient, sessionId: string): Promise<boolean> {
+  const row = await loadSession(db, sessionId);
+  if (row?.state !== "running") return false;
+  if (await isDeviceDrivenSession(db, row)) return false;
+  await transitionSessionState(db, row.user_id, sessionId, "suspended");
+  return true;
+}
+
 // GC backstop (#218): called from mcp/transport.ts's onclose, for a crash
 // that never reaches a graceful close, a genuine client disconnect, or the
 // transport's own 30-minute idle GC force-closing it. Suspends (#329;
 // previously closed) the session iff it is still 'running' -- an
 // already-suspended session (the agent's own portuni_session_suspend
 // already ran) is untouched either way, since suspendSessionServerSide only
-// acts on 'running'. Thin wrapper around suspendSessionServerSide
-// (domain/session-handoff.ts).
+// acts on 'running'. On a device a thin wrapper around
+// suspendSessionServerSide (domain/session-handoff.ts); on the central
+// server suspendRecordOnCentral above.
 export async function closeSessionIfRunning(
   db: DbClient,
   sessionId: string,
   reason: ServerHandoffReason,
+  opts: ServerSideSuspendOptions = {},
 ): Promise<void> {
-  await suspendSessionServerSide(db, deviceSessionContentStore(), sessionId, reason);
+  if (opts.central ?? isCentralServer()) {
+    await suspendRecordOnCentral(db, sessionId);
+    return;
+  }
+  await suspendSessionServerSide(db, sessionContentStoreForProcess(), sessionId, reason);
 }
 
 // Boot sweep (#272): a 'running' row can survive a process restart (app
@@ -421,10 +461,24 @@ export async function closeSessionIfRunning(
 // with a server-generated handoff instead, so a session interrupted only by
 // a restart stays resumable. Not scoped to a single user: this is a
 // process-wide maintenance sweep, same as autoArchiveClosedSessions above.
-export async function closeStaleRunningSessionsOnBoot(db: DbClient): Promise<number> {
+// On the central server (#458) it is record maintenance only: the rows it
+// suspends are the MCP-connection sessions that died with the process, with
+// no summary, and a thread a device drives stays `running` until that
+// device's own boot sweep ends it.
+export async function closeStaleRunningSessionsOnBoot(
+  db: DbClient,
+  opts: ServerSideSuspendOptions = {},
+): Promise<number> {
   const res = await db.execute({ sql: "SELECT id, user_id FROM sessions WHERE state = 'running'" });
+  if (opts.central ?? isCentralServer()) {
+    let suspended = 0;
+    for (const row of res.rows) {
+      if (await suspendRecordOnCentral(db, String(row.id))) suspended++;
+    }
+    return suspended;
+  }
   for (const row of res.rows) {
-    await suspendSessionServerSide(db, deviceSessionContentStore(), String(row.id), "boot_sweep");
+    await suspendSessionServerSide(db, sessionContentStoreForProcess(), String(row.id), "boot_sweep");
   }
   return res.rows.length;
 }

@@ -19,6 +19,9 @@
 import { ulid } from "ulid";
 import { z } from "zod";
 import { getDeviceContentDb } from "../../infra/device-content-db.js";
+import { getDb } from "../../infra/db.js";
+import { dbTimestamp } from "../../infra/sql.js";
+import { isCentralServer } from "../../infra/server-config.js";
 import type { DbClient, InStatement, InValue } from "../../infra/db.js";
 import type { SessionEventRow } from "../../shared/api-types.js";
 import type { CanonicalEvent } from "./types.js";
@@ -115,7 +118,7 @@ export class SessionContentStore {
     this.resolve = typeof db === "function" ? db : () => db;
   }
 
-  private db(): DbClient | Promise<DbClient> {
+  protected db(): DbClient | Promise<DbClient> {
     return this.resolve();
   }
 
@@ -132,7 +135,7 @@ export class SessionContentStore {
     events: CanonicalEvent[],
   ): Promise<number[]> {
     if (events.length === 0) return [];
-    const now = new Date().toISOString();
+    const now = dbTimestamp();
     const ids = events.map(() => ulid());
     const stmts: InStatement[] = events.map((event, i) => {
       const capped = capEventPayload(event);
@@ -218,15 +221,77 @@ export class SessionContentStore {
   }
 }
 
-// The process's own content store over content.db -- what every composition
-// root (boot/session-runtime.ts, boot/run-sweep.ts, boot/session-sweep.ts,
-// mcp/transport.ts) binds to, in both workspaces. getDeviceContentDb() is
-// async and opens the file lazily while those roots are synchronous, so the
-// resolver is what is handed over; a test swapping the db through
-// setDeviceContentDbForTesting() is picked up by the next call either way.
+// The central server's content: the legacy graph-db rows only. A sidecar
+// released before #456 still sends its transcript (POST /sessions/:id/events)
+// and its brief/inline summary (the record routes) to the central server and
+// reads them back from there (GET /sessions/:id/events, resume-info), so on
+// the central server those reads and writes go to the SAME rows: the graph
+// db's `session_events` (same shape as content.db's, so the event methods
+// are inherited unchanged) and the `sessions.brief` / `sessions.handoff_inline`
+// columns. It is also what a sync agent downloads on its first boot
+// (boot/content-import.ts). The central migration (#462) drops all three.
+export class LegacyGraphContentStore extends SessionContentStore {
+  override async getContent(sessionId: string): Promise<SessionContentRow | null> {
+    const res = await (await this.db()).execute({
+      sql: "SELECT id AS session_id, brief, handoff_inline FROM sessions WHERE id = ?",
+      args: [sessionId],
+    });
+    if (res.rows.length === 0) return null;
+    const row = SessionContentRowSchema.parse(res.rows[0]);
+    return row.brief === null && row.handoff_inline === null ? null : row;
+  }
+
+  override async setContent(sessionId: string, input: SetSessionContentInput): Promise<SessionContentRow> {
+    const sets: string[] = [];
+    const args: InValue[] = [];
+    if (input.brief !== undefined) {
+      sets.push("brief = ?");
+      args.push(input.brief);
+    }
+    if (input.handoff_inline !== undefined) {
+      sets.push("handoff_inline = ?");
+      args.push(input.handoff_inline);
+    }
+    if (sets.length > 0) {
+      await (await this.db()).execute({ sql: `UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, args: [...args, sessionId] });
+    }
+    return (await this.getContent(sessionId)) ?? { session_id: sessionId, brief: null, handoff_inline: null };
+  }
+
+  override async deleteContent(sessionId: string): Promise<void> {
+    await (await this.db()).batch(
+      [
+        { sql: "DELETE FROM session_events WHERE session_id = ?", args: [sessionId] },
+        { sql: "UPDATE sessions SET brief = NULL, handoff_inline = NULL WHERE id = ?", args: [sessionId] },
+      ],
+      "write",
+    );
+  }
+}
+
+// The device's own content store over content.db -- what the device-only
+// composition roots (the sync agent's runtime and run sweep) bind to.
+// getDeviceContentDb() is async and opens the file lazily while those roots
+// are synchronous, so the resolver is what is handed over; a test swapping
+// the db through setDeviceContentDbForTesting() is picked up by the next
+// call either way.
 let deviceStore: SessionContentStore | null = null;
 
 export function deviceSessionContentStore(): SessionContentStore {
   if (!deviceStore) deviceStore = new SessionContentStore(() => getDeviceContentDb());
   return deviceStore;
+}
+
+// The content store of THIS process, for code that runs in the standalone
+// server as well as on a device (the local runtime, resume-info, the
+// transport's and the boot sweep's suspend): content.db on a device, the
+// legacy graph-db rows on the central server, which never opens a
+// content.db. Decided per call, so a test flipping PORTUNI_AUTH_MODE is
+// honoured.
+let legacyStore: LegacyGraphContentStore | null = null;
+
+export function sessionContentStoreForProcess(): SessionContentStore {
+  if (!isCentralServer()) return deviceSessionContentStore();
+  if (!legacyStore) legacyStore = new LegacyGraphContentStore(() => getDb());
+  return legacyStore;
 }

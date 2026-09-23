@@ -37,7 +37,8 @@
 //                                                      and suspends -- device-local, the file and
 //                                                      the transcript it is built from are here
 //   GET   /sessions/:id/events             read    -> canonical event log, from the device's
-//                                                      content.db (#456)
+//                                                      content.db (#456); on the central server the
+//                                                      legacy rows an older sidecar wrote
 //   POST  /sessions/:id/events             write   -> legacy (#323, retired by #456): batch-append
 //                                                      into the graph db's own session_events,
 //                                                      kept only for a sidecar released before
@@ -45,6 +46,10 @@
 //   POST  /sessions/:id/runs               write   -> central record half (#323): create a run record
 //   PATCH /sessions/:id/runs/:run_id       write   -> central record half (#323): patch a run record
 //   GET   /sessions/:id/runs               read    -> central record half (#323): list a session's runs
+//   GET   /sessions/legacy-content         read    -> central: the caller's own threads that ran on
+//                                                      ?host_id and still have legacy content
+//   GET   /sessions/:id/legacy-content     read    -> central, owner-only: one thread's legacy content,
+//                                                      read once by a sync agent at boot
 //
 // The "central record half" routes exist so the SAME SessionStore interface
 // (domain/runner/store.ts) that DbSessionStore implements over this
@@ -92,15 +97,23 @@ import { getResumeInfo } from "../domain/session-handoff.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { logAudit } from "../infra/audit.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
-import { NoRunnerAvailableError, SessionHandoffError } from "../domain/runner/session-runtime.js";
+import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
+import { respondHandoffRefusal } from "./session-handoff-errors.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
 import { resolveHostLabel, transcriptHostLabel } from "../domain/runner/hosts.js";
 import { DbSessionStore } from "../domain/runner/store.js";
-import { SessionContentStore, deviceSessionContentStore } from "../domain/runner/store-content.js";
+import { LegacyGraphContentStore, sessionContentStoreForProcess } from "../domain/runner/store-content.js";
+import { columnExistsSql, tableExistsSql } from "../infra/sql.js";
 import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
-import type { SessionResumeInfo, SessionScopeRecord, SessionSummary } from "../shared/api-types.js";
+import type {
+  LegacySessionContentPage,
+  SessionEventRow,
+  SessionResumeInfo,
+  SessionScopeRecord,
+  SessionSummary,
+} from "../shared/api-types.js";
 
 export async function toSummary(row: SessionRow): Promise<SessionSummary> {
   // #428: the host is the latest run's, not the session row's -- the row's
@@ -479,7 +492,7 @@ export async function sessionResumeInfoPayload(
   mirrorRoot: string | null,
   configDir: string | null,
 ): Promise<SessionResumeInfo> {
-  const inline = (await deviceSessionContentStore().getContent(session.id))?.handoff_inline ?? null;
+  const inline = (await sessionContentStoreForProcess().getContent(session.id))?.handoff_inline ?? null;
   const info = await getResumeInfo(session, mirrorRoot, { configDir, handoffInline: inline });
   return {
     session_id: session.id,
@@ -638,10 +651,7 @@ export async function handleStartSession(
         const updated = await getSession(db, session.id);
         respondJson(res, 201, { session: await toSummary(updated ?? session), run });
       } catch (err) {
-        if (err instanceof SessionHandoffError) {
-          respondJson(res, 409, { error: err.message, code: err.code });
-          return;
-        }
+        if (respondHandoffRefusal(res, err)) return;
         if (err instanceof NoRunnerAvailableError) {
           respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
           return;
@@ -864,10 +874,7 @@ export async function handleHandoffSession(
       await logAudit(identity.userId, "session_handoff", "session", sessionId, { handoff_path });
       respondJson(res, 200, { session: await toSummary(session), handoff_path });
     } catch (err) {
-      if (err instanceof SessionHandoffError) {
-        respondJson(res, 409, { error: err.message, code: err.code });
-        return;
-      }
+      if (respondHandoffRefusal(res, err)) return;
       throw err;
     }
   } catch (err) {
@@ -1127,9 +1134,11 @@ export async function handleAppendSessionEvents(
     // #456: the transcript is the device's, so the runtime writes it to
     // content.db and never calls this route anymore. It stays for a
     // sidecar released before #456, writing the graph db's own
-    // `session_events` -- the table the content store's DDL mirrors, which
-    // is why the very same store can serve it here until #462 drops it.
-    const seqs = await new SessionContentStore(db).appendEvents(
+    // `session_events` -- the same rows the central server's
+    // GET /sessions/:id/events reads back to that sidecar
+    // (sessionContentStoreForProcess() is LegacyGraphContentStore there),
+    // until #462 drops them.
+    const seqs = await new LegacyGraphContentStore(db).appendEvents(
       sessionId,
       body.run_id,
       body.events as CanonicalEvent[],
@@ -1137,5 +1146,129 @@ export async function handleAppendSessionEvents(
     respondJson(res, 200, { seqs });
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/events`, err);
+  }
+}
+
+// --- Legacy session content (#456 follow-up) -------------------------------
+// A sidecar released before #456 sent each thread's content to the central
+// server: the transcript into the graph db's `session_events`, the first
+// message and the inline summary into `sessions.brief` /
+// `sessions.handoff_inline`. A sync agent downloads its own share of that
+// once, on its first boot (boot/content-import.ts), so the history of the
+// threads it ran stays readable on the device that ran them. Read-only: the
+// central copy stays until the central migration (#462) drops the table and
+// both columns, and after it these answer as if nothing were left.
+
+const LEGACY_EVENTS_PAGE = 500;
+
+async function legacyContentSources(
+  db: DbClient,
+): Promise<{ events: boolean; brief: boolean; inline: boolean }> {
+  const table = async (name: string) =>
+    (await db.execute({ sql: tableExistsSql(db.dialect), args: [name] })).rows.length > 0;
+  const column = async (name: string) =>
+    (await db.execute({ sql: columnExistsSql(db.dialect), args: ["sessions", name] })).rows.length > 0;
+  return { events: await table("session_events"), brief: await column("brief"), inline: await column("handoff_inline") };
+}
+
+// GET /sessions/legacy-content?host_id=<device> -- the ids of the CALLER's
+// own threads (the same owner rule as every session route, #457) that ran on
+// that device -- the record's own host or any of its runs' -- and still have
+// legacy content.
+export async function handleListLegacySessionContent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  url: URL,
+): Promise<void> {
+  try {
+    const hostId = url.searchParams.get("host_id")?.trim();
+    if (!hostId) {
+      respondJson(res, 400, { error: "host_id is required", code: "HOST_ID_REQUIRED" });
+      return;
+    }
+    const db = getDb();
+    const src = await legacyContentSources(db);
+    const has = [
+      ...(src.events ? ["EXISTS (SELECT 1 FROM session_events e WHERE e.session_id = s.id)"] : []),
+      ...(src.brief ? ["s.brief IS NOT NULL"] : []),
+      ...(src.inline ? ["s.handoff_inline IS NOT NULL"] : []),
+    ];
+    if (has.length === 0) {
+      respondJson(res, 200, { sessions: [] });
+      return;
+    }
+    const rows = await db.execute({
+      sql: `SELECT s.id FROM sessions s
+             WHERE s.user_id = ?
+               AND (s.host_id = ? OR EXISTS (SELECT 1 FROM session_runs r WHERE r.session_id = s.id AND r.host_id = ?))
+               AND (${has.join(" OR ")})
+             ORDER BY s.id`,
+      args: [identity.userId, hostId, hostId],
+    });
+    respondJson(res, 200, { sessions: rows.rows.map((r) => String(r.id)) });
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/legacy-content`, err);
+  }
+}
+
+// GET /sessions/:id/legacy-content?after=<seq> -- one thread's legacy
+// content, owner-only (sessionAccess "read": anyone else gets
+// SESSION_NOT_FOUND), its events a page at a time and raw, exactly as
+// stored.
+export async function handleGetLegacySessionContent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+  url: URL,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "read");
+    if (!existing) return;
+    const afterParam = url.searchParams.get("after");
+    const after = afterParam !== null && afterParam !== "" ? Number(afterParam) : null;
+    const src = await legacyContentSources(db);
+
+    const events: SessionEventRow[] = [];
+    if (src.events) {
+      const r = await db.execute({
+        sql: `SELECT id, session_id, run_id, seq, kind, payload, created_at FROM session_events
+               WHERE session_id = ?${after !== null ? " AND seq > ?" : ""}
+               ORDER BY seq LIMIT ?`,
+        args: after !== null ? [sessionId, after, LEGACY_EVENTS_PAGE] : [sessionId, LEGACY_EVENTS_PAGE],
+      });
+      for (const row of r.rows) {
+        events.push({
+          id: String(row.id),
+          session_id: String(row.session_id),
+          run_id: row.run_id === null ? null : String(row.run_id),
+          seq: Number(row.seq),
+          kind: String(row.kind),
+          payload: String(row.payload),
+          created_at: String(row.created_at),
+        });
+      }
+    }
+    let brief: string | null = null;
+    let inline: string | null = null;
+    const cols = [...(src.brief ? ["brief"] : []), ...(src.inline ? ["handoff_inline"] : [])];
+    if (cols.length > 0) {
+      const r = await db.execute({ sql: `SELECT ${cols.join(", ")} FROM sessions WHERE id = ?`, args: [sessionId] });
+      const row = r.rows[0];
+      if (row && src.brief && row.brief != null) brief = String(row.brief);
+      if (row && src.inline && row.handoff_inline != null) inline = String(row.handoff_inline);
+    }
+    const page: LegacySessionContentPage = {
+      session_id: sessionId,
+      brief,
+      handoff_inline: inline,
+      events,
+      next_after: events.length === LEGACY_EVENTS_PAGE ? events[events.length - 1].seq : null,
+    };
+    respondJson(res, 200, page);
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}/legacy-content`, err);
   }
 }
