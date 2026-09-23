@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.1](https://github.com/honzapav/portuni/compare/v0.23.0...v0.23.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **server,web:** live channel sends snapshots and replays in batches, not one frame per item ([#481](https://github.com/honzapav/portuni/issues/481)) ([80663c5](https://github.com/honzapav/portuni/commit/80663c5f70f22edf7b29590277b2eca6fc4fe18a))
+
 ## [0.23.0](https://github.com/honzapav/portuni/compare/v0.22.0...v0.23.0) (2026-09-23)
 
 
