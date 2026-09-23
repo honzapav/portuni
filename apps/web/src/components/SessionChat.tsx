@@ -34,6 +34,7 @@ import {
   toCanonicalEvent,
   sessionStatusChip,
   latestQuestionEvent,
+  approvalChoices,
   appendDelta,
   clearDeltaBuffer,
   createDeltaCoalescer,
@@ -1013,9 +1014,9 @@ function QuestionConfirmation({
         <ConfirmationRequest>
           {question.payload.type === "approval" ? (
             <ConfirmationActions>
-              {(question.payload.options ?? ["Ano", "Ne"]).map((opt) => (
-                <ConfirmationAction key={opt} onClick={() => onAnswer(opt)}>
-                  {opt}
+              {approvalChoices(question.payload.options).map((choice) => (
+                <ConfirmationAction key={choice.label} onClick={() => onAnswer(choice.value)}>
+                  {choice.label}
                 </ConfirmationAction>
               ))}
             </ConfirmationActions>

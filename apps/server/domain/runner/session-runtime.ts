@@ -426,6 +426,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
 
     if (canonical.kind === "question") {
+      // A decision already on the event means the adapter closed the
+      // question itself (the SDK abandoned a dialog): stop waiting, the
+      // way answer() does for a decision the user made.
+      if (canonical.payload.decision !== null) {
+        if (pendingQuestions.get(sessionId)?.request_id === canonical.payload.request_id) {
+          await clearWaitingIfPending(sessionId, runId);
+        }
+        return;
+      }
       pendingQuestions.set(sessionId, canonical.payload);
       await store.patchSession(sessionId, { waiting_since: new Date().toISOString() });
       await appendAndPublish(sessionId, runId, [
