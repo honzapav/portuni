@@ -3123,6 +3123,7 @@ pub fn run() {
             sessions_ws::sessions_connect,
             sessions_ws::sessions_disconnect,
             sessions_ws::sessions_send,
+            sessions_ws::sessions_cancel,
             auth::auth_status,
             auth::google_login,
             auth::auth_refresh,

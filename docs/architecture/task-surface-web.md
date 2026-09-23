@@ -386,13 +386,28 @@ One typed client, two transports behind one `Transport` interface:
 Client rules:
 
 - Every request frame carries an id the server echoes; the caller awaits
-  the reply, and an unanswered request rejects on `REQUEST_TIMEOUT_MS`.
-  `disconnect()` rejects every pending request at once.
+  the reply. A request is delivered once, or reported as failed and never
+  sent afterwards (#496):
+  - an unanswered request rejects on `REQUEST_TIMEOUT_MS` (30 s) and its
+    frame is cancelled out of the transport's queue (`Transport.cancel`,
+    in Tauri `sessions_cancel` on the Rust outbox), so a message that
+    waited out a reconnect never reaches the agent after the chat showed
+    the error, and sending it again delivers it once;
+  - when an open connection drops, every request already sent rejects at
+    once (`disconnected: ...`), since its reply cannot come on the next
+    connection; a request sent while the connection is down stays queued
+    until the next open or its timeout. A request that was on the wire at
+    the drop may or may not have reached the server; it is never resent;
+  - a subscribe never goes out while the connection is down, has no
+    timeout while it waits for it and survives a drop: each open sends one
+    subscribe per wanted session and settles every caller waiting on it,
+    so a first load that completes after a reconnect shows no load error;
+  - `disconnect()` rejects everything still outstanding.
 - The client tracks the highest `seq` seen **per session** from `event`
   frames only. `delta` frames carry no `seq` and are never persisted, so
   they never move it.
-- When the transport reports `open` after having been open before, the
-  client resubscribes every still-wanted session with `after: <last seq>`.
+- Every time the transport reports `open`, the client subscribes every
+  still-wanted session once, after a drop with `after: <last seq>`.
   The server's replay fills exactly that gap: nothing lost, nothing
   re-delivered.
 - `session_state` frames and the one `session_states` snapshot frame on
@@ -406,7 +421,9 @@ Client rules:
 
 `test/sessions-client.test.ts` drives the direct transport against a fake
 `ws` server (reply correlation, ordering, resubscribe-with-`after` across a
-forced drop, deltas not moving the seq). The Tauri transport has no runtime
+forced drop, deltas not moving the seq), and over an in-memory socket with
+mocked timers the #496 rules (timeout during an outage, drop in flight,
+subscribe across a long outage). The Tauri transport has no runtime
 to test against here.
 
 ## Event rendering

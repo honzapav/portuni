@@ -330,6 +330,13 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   workspace id and carries a `generation` counter bumped on every connect
   and disconnect, so a background task from a superseded connect exits
   instead of resurrecting a connection.
+- Frames wait in a per-connection `Outbox` (a queue, not a channel) until
+  the socket is open, across a reconnect too. `sessions_cancel(id)` takes
+  a still-queued frame back out by its request id; the web client cancels
+  every request it reports as failed (timeout, drop), so a failed request
+  is never delivered afterwards (#496). A frame already written is out of
+  reach. Closing the outbox (`sessions_disconnect`, a superseding
+  connect) is what tells the background task to close its socket and exit.
 - `disconnect_for_ws` runs from `sessions_disconnect` and from
   `on_window_event`'s `Destroyed` arm, because a force-closed window never
   calls the command itself.
@@ -341,8 +348,9 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   injects the bearer (`ws: true` + `proxyReqWs`). The direct transport
   queues frames until `onopen`, reimplements the backoff in TS, tracks the
   highest `seq` per session (never moved by `delta` frames) and
-  resubscribes every wanted session with `after: <seq>` when the
-  transport reopens, so the server's replay fills exactly the gap.
+  subscribes every wanted session (with `after: <seq>` after a drop) on
+  each open, so the server's replay fills exactly the gap. `cancel(id)`
+  drops a still-queued frame, the same contract as `sessions_cancel`.
   `session_state` and `session_states` frames go to one global listener
   set.
   `test/sessions-client.test.ts` covers the direct transport against a
