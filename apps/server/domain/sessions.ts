@@ -458,14 +458,14 @@ export async function closeSessionIfRunning(
 // there is no live transport that could possibly own any of these
 // connections anymore, so every 'running' row left over from a previous
 // life is stale by definition. Suspends (#329; previously closed) each one
-// with a server-generated handoff instead, so a session interrupted only by
-// a restart stays resumable. Not scoped to a single user: this is a
+// with a server-generated handoff, so a session interrupted only by a
+// restart stays resumable. Not scoped to a single user: this is a
 // process-wide maintenance sweep, same as autoArchiveClosedSessions above.
 // On the central server (#458) it is record maintenance only: the rows it
 // suspends are the MCP-connection sessions that died with the process, with
 // no summary, and a thread a device drives stays `running` until that
 // device's own boot sweep ends it.
-export async function closeStaleRunningSessionsOnBoot(
+export async function suspendStaleRunningSessionsOnBoot(
   db: DbClient,
   opts: ServerSideSuspendOptions = {},
 ): Promise<number> {

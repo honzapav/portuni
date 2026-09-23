@@ -4,7 +4,7 @@
 // setup (via test/helpers/shared-db.ts's makeSharedDb).
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setDbForTesting } from "../apps/server/infra/db.js";
@@ -22,6 +22,7 @@ import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/ru
 import type { RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
+import { claudeProjectSlug } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 
@@ -270,6 +271,24 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
   });
 
+  it("the run's conversation id is recorded while it runs, not only when it ends", async () => {
+    // A run the host loses (a crash, a restart) never reaches its own
+    // run_ended, where the id used to be read: such a run left no pointer
+    // to its conversation and could only be resumed from a summary.
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const script: FakeScriptStep[] = [{ kind: "reasoning", payload: { summary: "thinking" } }, { wait: "message" }];
+    const adapter = new FakeRunnerAdapter({ script, agentSessionId: "conv-live" });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[0].id, run.id);
+    assert.equal(runs[0].ended_at, null, "the run is still live");
+    assert.equal(runs[0].agent_session_id, "conv-live");
+  });
+
   it("checkIdleRunsOnce is a no-op when nothing is live", async () => {
     const { db } = await sharedDb();
     const store = new DbSessionStore(db);
@@ -280,13 +299,12 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
 });
 
 // checkConversationResumable (domain/session-handoff.ts) is cli === "claude"
-// only, and reads the real OS home directory when no configDir override is
-// given -- resumeByWriting doesn't thread one through, so "still resumable"
-// is not safely fabricatable at this level without touching the real
-// filesystem HOME. That branch is covered by session-handoff.test.ts's own
-// checkConversationResumable suite; here, the fake adapter's session never
-// has cli: "claude" set, so every one of these exercises the (also
-// real-world-common) "falls back to the summary" path.
+// only and reads the real OS home directory unless the session's instance
+// names a CLAUDE_CONFIG_DIR, which resumeByWriting now threads through: the
+// profile test below builds a transcript under a temp one and gets the
+// conversation-resume branch. The rest leave cli unset on the fake
+// adapter's session and so take the (also real-world-common) "falls back to
+// the summary" path.
 describe("session runtime: resume by writing (#378)", () => {
   it("sending into a suspended thread starts a new, linked run from the summary", async () => {
     const { db, nodeId } = await sharedDb();
@@ -318,6 +336,56 @@ describe("session runtime: resume by writing (#378)", () => {
     assert.ok(
       events.some((e) => e.run_id === runs[1].id && e.kind === "user_message" && JSON.parse(e.payload).text === "keep going"),
     );
+  });
+
+  it("a resume under a profile looks for that profile's transcript, not the default one", async () => {
+    // The CLI keeps its transcripts under CLAUDE_CONFIG_DIR, so a session
+    // run under a profile (a second account) has none where the default
+    // location is looked at: every resume fell back to the summary and the
+    // fresh agent never saw the start of the thread.
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const dir = await mkdtemp(join(tmpdir(), "portuni-profile-resume-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      const configDir = join(dir, "claude-profile");
+      const cwd = join(dir, "mirror");
+      const instance = await createInstance({ name: "JRD", runner: "fake", env: { CLAUDE_CONFIG_DIR: configDir } });
+      // The transcript that profile's CLI would have left behind.
+      await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+      await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-1.jsonl"), "{}\n", "utf8");
+
+      const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }], agentSessionId: "conv-1" });
+      const runtime = createSessionRuntime({
+        store,
+        content,
+        registry: registryOf(adapter),
+        provision: stubProvision({ cwd, mirrors: [cwd] }),
+      });
+      const { session } = await runtime.startTask({
+        userId: "U1",
+        nodeId,
+        brief: "x",
+        runner: "fake",
+        instanceId: instance.id,
+      });
+      await db.execute({ sql: "UPDATE sessions SET cli = 'claude' WHERE id = ?", args: [session.id] });
+      await runtime.checkIdleRunsOnce(0, Date.now() + 1); // idle -> run ends, session suspends
+
+      await runtime.sendMessage(session.id, "pokračuj");
+
+      const runs = await store.listRuns(session.id);
+      assert.equal(runs.length, 2);
+      assert.equal(runs[1].agent_session_id, "conv-1", "the new run continues the same conversation");
+      const events = await content.listEvents(session.id);
+      const started = events.find((e) => e.run_id === runs[1].id && e.kind === "run_started");
+      assert.equal(JSON.parse(started!.payload).resume, "conversation");
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("the new run's orientation carries the previous summary", async () => {

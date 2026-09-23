@@ -490,8 +490,13 @@ export async function handleTransitionSessionState(
 export async function sessionResumeInfoPayload(
   session: SessionRow,
   mirrorRoot: string | null,
-  configDir: string | null,
+  requestedConfigDir: string | null,
 ): Promise<SessionResumeInfo> {
+  // The instance's CLAUDE_CONFIG_DIR unless the caller named one: the
+  // profile's CLI keeps its transcripts there (#469). The instance registry
+  // is this device's runners.json, which is why this route is device-local.
+  const instanceEnv = session.instance_id ? ((await getInstanceEnv(session.instance_id)) ?? {}) : {};
+  const configDir = requestedConfigDir || instanceEnv.CLAUDE_CONFIG_DIR || null;
   const inline = (await sessionContentStoreForProcess().getContent(session.id))?.handoff_inline ?? null;
   const info = await getResumeInfo(session, mirrorRoot, { configDir, handoffInline: inline });
   return {
@@ -517,11 +522,12 @@ export async function handleGetSessionResumeInfo(
     const existing = await guardSessionAccess(res, db, identity, sessionId, "read");
     if (!existing) return;
     const mirrorRoot = existing.node_id ? await getMirrorPath(identity.userId, existing.node_id) : null;
-    // config_dir (#204): the profiles registry lives in the desktop app's
-    // config.json (Rust), unreachable from this server process -- the
-    // caller resolves the session's instance_id to a CLAUDE_CONFIG_DIR (when
-    // one applies) and passes it through so checkConversationResumable
-    // checks the right transcript location instead of always the default.
+    // config_dir (#204): the CLI keeps its transcripts under
+    // CLAUDE_CONFIG_DIR, so checkConversationResumable needs the profile
+    // this session runs under instead of the default location. A caller may
+    // still pass one (a desktop profile this process knows nothing about);
+    // otherwise sessionResumeInfoPayload takes it from the session's own
+    // provider instance (domain/runner/instances.ts).
     const configDir = url.searchParams.get("config_dir") || null;
     respondJson(res, 200, await sessionResumeInfoPayload(existing, mirrorRoot, configDir));
   } catch (err) {

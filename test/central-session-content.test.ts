@@ -13,7 +13,7 @@ import { setDbForTesting } from "../apps/server/infra/db.js";
 import { getDeviceContentDb, setDeviceContentDbForTesting } from "../apps/server/infra/device-content-db.js";
 import {
   closeSessionIfRunning,
-  closeStaleRunningSessionsOnBoot,
+  suspendStaleRunningSessionsOnBoot,
   createSession,
   getSession,
 } from "../apps/server/domain/sessions.js";
@@ -103,7 +103,7 @@ describe("central server: no content.db, no summary, no suspending a device's th
     await openRun(db, withRun.id, "honzas-mac");
     const cli = await createSession(db, "U1", { node_id: NODE, session_type: "interactive_task", cli: "claude" });
 
-    const suspended = await closeStaleRunningSessionsOnBoot(db);
+    const suspended = await suspendStaleRunningSessionsOnBoot(db);
 
     assert.ok(suspended >= 1);
     assert.equal((await getSession(db, task.id))?.state, "running");

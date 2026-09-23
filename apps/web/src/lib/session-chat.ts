@@ -569,7 +569,14 @@ export interface DeltaCoalescer {
   push(delta: StreamDelta): void;
   // Deliver what is buffered now (a run_ended, an unmount) and cancel the tick.
   flush(): void;
-  // Drop what is buffered without delivering.
+  // Drop what is buffered for one run's channel without delivering: the
+  // finalized assistant_message/reasoning event carries that whole block,
+  // so a frame still waiting for the tick is a stale preview. Delivering
+  // it after the event cleared the buffer would re-create the buffer from
+  // the block's tail -- a phantom streaming bubble holding the last token,
+  // stuck on screen until the run ends.
+  drop(runId: string, channel: StreamDelta["channel"]): void;
+  // Drop everything buffered without delivering.
   clear(): void;
 }
 
@@ -578,6 +585,7 @@ export function createDeltaCoalescer(
   schedule: (cb: () => void) => () => void,
 ): DeltaCoalescer {
   const buffer = new Map<string, StreamDelta>();
+  const keyOf = (runId: string, channel: StreamDelta["channel"]): string => `${runId}\u0000${channel}`;
   let cancel: (() => void) | null = null;
   const drain = (): void => {
     cancel = null;
@@ -588,7 +596,7 @@ export function createDeltaCoalescer(
   };
   return {
     push(delta) {
-      const key = `${delta.run_id}\u0000${delta.channel}`;
+      const key = keyOf(delta.run_id, delta.channel);
       const prev = buffer.get(key);
       buffer.set(key, prev ? { ...prev, text: prev.text + delta.text } : { ...delta });
       if (!cancel) cancel = schedule(drain);
@@ -599,6 +607,9 @@ export function createDeltaCoalescer(
         cancel = null;
       }
       drain();
+    },
+    drop(runId, channel) {
+      buffer.delete(keyOf(runId, channel));
     },
     clear() {
       buffer.clear();

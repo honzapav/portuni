@@ -347,6 +347,9 @@ export interface SessionRuntime {
 interface LiveRun {
   handle: RunHandle;
   runId: string;
+  // Set once the run's agent_session_id has been written to its row, so
+  // the capture below costs one write per run, not one per event.
+  agentSessionIdSaved: boolean;
 }
 
 export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRuntime {
@@ -460,6 +463,28 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     ]);
   }
 
+  // The CLI's own conversation id is the pointer a later resume continues
+  // from. An adapter learns it from an early protocol message, so the first
+  // event of the run is soon enough to write it down -- and it has to be
+  // written this early, because a run whose host dies (a crash, a restart,
+  // anything the boot sweep later marks host_lost) never reaches the
+  // run_ended where this used to be read, and left no pointer at all.
+  async function captureAgentSessionId(sessionId: string, runId: string): Promise<void> {
+    const live = liveRuns.get(sessionId);
+    if (!live || live.runId !== runId || live.agentSessionIdSaved) return;
+    const agentSessionId = live.handle.agentSessionId();
+    if (!agentSessionId) return;
+    // Set before the await so concurrent events don't write it twice;
+    // cleared on failure so the next event retries.
+    live.agentSessionIdSaved = true;
+    try {
+      await store.patchRun(runId, { agent_session_id: agentSessionId });
+    } catch (e) {
+      live.agentSessionIdSaved = false;
+      throw e;
+    }
+  }
+
   async function handleAdapterEvent(
     sessionId: string,
     runId: string,
@@ -471,6 +496,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
     const canonical = event as CanonicalEvent;
     await appendAndPublish(sessionId, runId, [canonical]);
+    if (canonical.kind !== "run_ended") await captureAgentSessionId(sessionId, runId);
 
     if (canonical.kind === "context_usage") {
       // The ring's counters on the row (v2 spec): lists and the header
@@ -625,7 +651,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     };
 
     const handle = await adapter.start(runStart, makeSink(session.id, run.id));
-    liveRuns.set(session.id, { handle, runId: run.id });
+    liveRuns.set(session.id, { handle, runId: run.id, agentSessionIdSaved: false });
     touchActivity(session.id);
     // Written before drain() lets any already-queued run_ended handler
     // remove it, so write-then-remove ordering always holds even for a
@@ -802,9 +828,21 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
     const provisioned = await provision({ userId: session.user_id, nodeId: session.node_id, sessionId, resume: null });
 
+    // The instance's CLAUDE_CONFIG_DIR is where that profile's CLI keeps
+    // its transcripts; without it the check reads the default location,
+    // finds nothing for a session run under any other profile, and every
+    // resume silently becomes a fresh agent holding only the summary.
+    const instanceId = session.instance_id;
+    const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
     const canResumeConversation =
       lastRun?.agent_session_id != null &&
-      (await checkConversationResumable(session.cli, lastRun.agent_session_id, provisioned.cwd));
+      (await checkConversationResumable(
+        session.cli,
+        lastRun.agent_session_id,
+        provisioned.cwd,
+        undefined,
+        instanceEnv.CLAUDE_CONFIG_DIR ?? null,
+      ));
 
     let runStartResume: RunStart["resume"] = null;
     let runProvisioned = provisioned;
@@ -822,7 +860,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       }
     }
 
-    const instanceId = session.instance_id;
     const run = await store.createRun({
       session_id: sessionId,
       runner,
@@ -831,7 +868,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       resumed_from_run_id: lastRun?.id ?? null,
       agent_session_id: runStartResume?.agentSessionId ?? null,
     });
-    const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
     const updated = await store.patchSession(sessionId, { state: "running" });
 
     // Same reason as promoteDraftAndStart's own state_changed: a window

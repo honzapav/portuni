@@ -21,6 +21,14 @@ describe("contextRingState", () => {
     assert.equal(contextRingState(80_000, 100_000)?.warn, true);
     assert.equal(contextRingState(500, 200_000)?.label, "<1 %");
   });
+  it("a count past the window still reads 100 %, never more", () => {
+    // The ring is a share of the window; a number above it is a runner
+    // that counted something else, and "103 %" only puzzles the reader.
+    const s = contextRingState(1_032_223, 1_000_000);
+    assert.ok(s);
+    assert.equal(s.label, "100 %");
+    assert.equal(s.warn, true);
+  });
   it("without a max it shows the count", () => {
     const s = contextRingState(12_345, null);
     assert.ok(s);

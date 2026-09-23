@@ -296,7 +296,11 @@ export default function SessionChat({
 
     // Live run detection rides on the replayed/streamed events themselves
     // (run_started without a later run_ended), so one code path covers
-    // both the backfill and everything after it.
+    // both the backfill and everything after it. `runId` mirrors the
+    // liveRunId state for the handler's own synchronous use: an
+    // assistant_message/reasoning event carries no run id of its own, and
+    // the state value is a render value this closure never sees updated.
+    let runId: string | null = null;
     const offEvent = sessionsClient.onEvent(sessionId, (envelope) => {
       const event = toCanonicalEvent(envelope.kind, envelope.payload);
       setEvents((prev) => insertBySeq(prev, { seq: envelope.seq, event }));
@@ -304,22 +308,30 @@ export default function SessionChat({
       // the send clock; every other event leaves it alone.
       setSentAt((current) => nextSentAt(current, { kind: "event", event }));
       if (event.kind === "run_started") {
+        runId = event.payload.run_id;
         setLiveRunId(event.payload.run_id);
       } else if (event.kind === "run_ended") {
+        runId = null;
         coalescer.flush();
         setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setLiveRunId(null);
       } else if (event.kind === "assistant_message") {
-        setLiveRunId((current) => {
-          if (current) setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, current));
-          return current;
-        });
+        // The finalized block supersedes what streamed: drop its still
+        // buffered frames before clearing, or the tick delivers the
+        // block's tail into the buffer the clear just emptied and that
+        // fragment renders as a streaming bubble until the run ends.
+        const id = runId;
+        if (id) {
+          coalescer.drop(id, "text");
+          setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, id));
+        }
       } else if (event.kind === "reasoning") {
-        setLiveRunId((current) => {
-          if (current) setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, current));
-          return current;
-        });
+        const id = runId;
+        if (id) {
+          coalescer.drop(id, "reasoning");
+          setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, id));
+        }
       }
     });
     const offDelta = sessionsClient.onDelta(sessionId, (delta) => coalescer.push(delta));
