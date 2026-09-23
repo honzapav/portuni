@@ -10,7 +10,7 @@
       "jrd": "skill.sandcastle-jrd.claude-oauth-token"
     }
   },
-  "model": "claude-opus-5",
+  "model": "opus",
   "branchPrefix": "ralph/backlog",
   "maxIterations": 10,
   "maxRuns": 24,
@@ -54,7 +54,7 @@
   "requireMain": true,
   "review": {
     "profile": "osobni",
-    "model": "claude-opus-5",
+    "model": "opus",
     "when": "run"
   },
   "telemetry": {
