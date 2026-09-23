@@ -17,7 +17,7 @@ import {
   computeDefaultSessionName,
   loadResumableSession,
   closeSessionIfRunning,
-  closeStaleRunningSessionsOnBoot,
+  suspendStaleRunningSessionsOnBoot,
 } from "../apps/server/domain/sessions.js";
 import { parseServerHandoffReason } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
@@ -250,7 +250,7 @@ describe("closeSessionIfRunning (#218, GC backstop; #329 suspends)", () => {
   });
 });
 
-describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
+describe("suspendStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
   // A restart never reaches the runtime's own run_ended, so the run row
   // stays open and the log ends on run_started -- which every client
   // replays as a live run (working row, stop button) on a session the
@@ -264,7 +264,7 @@ describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
       { kind: "run_started", payload: { run_id: run.id, runner: "fake", instance_id: null, resume: null } },
     ]);
 
-    await closeStaleRunningSessionsOnBoot(db);
+    await suspendStaleRunningSessionsOnBoot(db);
 
     const [runRow] = await store.listRuns(session.id);
     assert.ok(runRow.ended_at, "the run row is ended");
@@ -281,7 +281,7 @@ describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
     const run = await store.createRun({ session_id: session.id, runner: "fake", instance_id: null, host_id: null });
     await store.patchRun(run.id, { ended_at: new Date().toISOString(), end_reason: "completed" });
     const before = (await store.listEvents(session.id)).length;
-    await closeStaleRunningSessionsOnBoot(db);
+    await suspendStaleRunningSessionsOnBoot(db);
     assert.equal((await store.listEvents(session.id)).length, before);
     assert.equal((await store.listRuns(session.id))[0].end_reason, "completed", "an ended run is left alone");
   });
@@ -294,8 +294,8 @@ describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
     const suspended = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     await transitionSessionState(db, "U1", suspended.id, "suspended");
 
-    const closed = await closeStaleRunningSessionsOnBoot(db);
-    assert.equal(closed, 2);
+    const swept = await suspendStaleRunningSessionsOnBoot(db);
+    assert.equal(swept, 2);
 
     const row1 = await getSession(db, running1.id);
     const row2 = await getSession(db, running2.id);
@@ -308,7 +308,7 @@ describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
 
   it("is a no-op when nothing is running", async () => {
     const { db } = await makeSharedDb();
-    assert.equal(await closeStaleRunningSessionsOnBoot(db), 0);
+    assert.equal(await suspendStaleRunningSessionsOnBoot(db), 0);
   });
 });
 

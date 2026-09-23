@@ -239,9 +239,9 @@ live action, `sessions-ws.ts` in the same change.
   connection or the transport's idle GC (`mcp/transport.ts` decides
   `disconnect` vs `idle` in the same `onclose`) and by
   `boot/session-sweep.ts` finding a `running` row from a dead process.
-  `closeSessionIfRunning`/`closeStaleRunningSessionsOnBoot` keep their names
-  but delegate to `suspendSessionServerSide`. `portuni_session_suspend` is
-  the only channel such a CLI has to write its own handoff.
+  Both delegate to `suspendSessionServerSide`; `closeSessionIfRunning` still
+  carries its pre-#329 name. `portuni_session_suspend` is the only channel
+  such a CLI has to write its own handoff.
 
 ## The Claude adapter
 
@@ -419,6 +419,15 @@ human verification.
   orientation (`resume: "handoff"` on `run_started`, `resumed_from_run_id`
   linking the runs). There is no `POST /sessions/:id/resume`,
   `/suspend`, no mode picker and no `SUSPEND_INSTRUCTION` handshake.
+- **A conversation is looked for where its profile keeps it.** The
+  transcript lives under the instance's `CLAUDE_CONFIG_DIR`, so
+  `resumeByWriting` and `GET /sessions/:id/resume-info` both resolve it
+  from `session.instance_id` (`getInstanceEnv`) before checking; the
+  default location answers only for a session with no instance.
+- **The conversation id is recorded while the run runs**, from the first
+  event the adapter reports (`captureAgentSessionId`, one write per run) --
+  a run the host loses never reaches its own `run_ended`, and reading the
+  id only there left every such run resumable from the summary alone.
 - **`POST /sessions/:id/continue`** (`continueSession`; `resume` access
   tier; also a `continue` WS frame) closes this session with its own
   log-derived summary and starts a fresh running one on the same node,
