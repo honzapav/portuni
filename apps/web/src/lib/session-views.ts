@@ -173,3 +173,18 @@ export function shownChatSessionId(
   if (openSession.node_id !== selectedNodeId) return null;
   return openSession.id;
 }
+
+// ---------------------------------------------------------------- #506
+
+// What the close control on a thread does, the same on every surface that
+// offers it (the sidebar's Uzly and Stav rows, the chat header, the Relace
+// row): a draft is deleted outright (api.ts's deleteDraftSession, no
+// dialog), a running or suspended thread is Uzavřít behind its
+// confirmation, and a closed or archived one has no close control at all.
+export type ThreadCloseAction = "delete" | "confirm" | null;
+
+export function threadCloseAction(state: SessionState): ThreadCloseAction {
+  if (state === "draft") return "delete";
+  if (state === "running" || state === "suspended") return "confirm";
+  return null;
+}

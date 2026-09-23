@@ -19,7 +19,7 @@
 // suspend/resume, handoffs, access control -- stays ours.
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hostDisplayName } from "../lib/session-views";
+import { hostDisplayName, threadCloseAction } from "../lib/session-views";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
 import { useSessionStore } from "../lib/use-session-store";
@@ -128,6 +128,7 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
 import {
+  deleteDraftSession,
   fetchTranscriptHost,
   handoffSession,
   patchSessionModelEffort,
@@ -693,11 +694,17 @@ export default function SessionChat({
                   <Redo2 />
                 </HeaderIcon>
               )}
-              {(session.state === "running" || session.state === "suspended") && (
+              {/* #506: a draft gets the same Uzavřít, which deletes it
+                  without asking; removing the record closes this chat the
+                  way the sidebar's × does. */}
+              {threadCloseAction(session.state) !== null && (
                 <>
                   <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
                   <HeaderIcon
-                    onClick={() => setCloseConfirmOpen(true)}
+                    onClick={() => {
+                      if (threadCloseAction(session.state) === "delete") deleteDraftSession(session.id);
+                      else setCloseConfirmOpen(true);
+                    }}
                     disabled={actionPending !== null}
                     title={actionPending === "close" ? "Zavírám…" : "Uzavřít"}
                     className="hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"

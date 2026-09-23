@@ -14,14 +14,14 @@ import {
   fetchMe,
   fetchNodePersistentSessions,
   startDraftThread,
-  deletePersistentSession,
+  deleteDraftSession,
   renamePersistentSession,
   handoffSession,
   bindSessionStore,
 } from "./api";
 import type { SessionSummary, SessionRunRow } from "./types";
 import { createSessionsClient } from "./lib/sessions-client";
-import { requestChatSession } from "./lib/session-views";
+import { requestChatSession, threadCloseAction } from "./lib/session-views";
 import { createSessionStore } from "./lib/session-store";
 import {
   selectLiveStates,
@@ -907,16 +907,16 @@ export default function App() {
   const [closeTaskConfirm, setCloseTaskConfirm] = useState<SessionSummary | null>(null);
   const workspaceCloseTask = useCallback(
     (session: SessionSummary) => {
-      if (session.state === "draft") {
-        // Optimistic: the row leaves every selector now, and the DELETE
-        // removes it again when it lands (spec scenario 6).
-        sessionStore.remove(session.id);
-        void deletePersistentSession(session.id).catch(() => undefined);
+      // #506: the same deletion the chat header and the Relace row use --
+      // optimistic, the row leaves every selector now (spec scenario 6).
+      const action = threadCloseAction(session.state);
+      if (action === "delete") {
+        deleteDraftSession(session.id);
         return;
       }
-      setCloseTaskConfirm(session);
+      if (action === "confirm") setCloseTaskConfirm(session);
     },
-    [sessionStore],
+    [],
   );
 
   // #459 "Předat" on a thread's sub-row: ends the turn and the run and

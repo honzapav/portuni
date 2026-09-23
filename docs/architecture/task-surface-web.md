@@ -553,11 +553,19 @@ which also deduplicates a replay against a frame that raced it.
 - **Question**: the latest `question` event renders as
   `QuestionConfirmation` above the composer while `isWaiting`; answers go
   through `sessionsClient.answer`.
-- **Close**: "Uzavřít" always asks first through a real `Dialog`
-  (`closeConfirmOpen` in `SessionChat`, `closeTaskConfirm` in `App.tsx` for
-  the sidebar `×`, `closeConfirm` in the Relace tab). `window.confirm` is a
-  no-op in the Tauri webview; never use it. A draft's `×` deletes outright
-  and is forgotten locally.
+- **Close**: every surface that closes a thread -- the sidebar's `×` in
+  Uzly (`TaskRow`) and in Stav (`TaskList`), Uzavřít in the chat header
+  (`SessionChat`) and on the Relace row (`DetailPane.sessions.tsx`) -- asks
+  `lib/session-views.ts`'s `threadCloseAction(state)` what it does (#506):
+  `delete` for a draft, `confirm` for running and suspended, nothing (no
+  control) for closed and archived. `confirm` is Uzavřít behind a real
+  `Dialog` (`closeConfirmOpen` in `SessionChat`, `closeTaskConfirm` in
+  `App.tsx` for the sidebar `×`, `closeConfirm` in the Relace tab);
+  `window.confirm` is a no-op in the Tauri webview, never use it. `delete`
+  has one implementation, `api.ts`'s `deleteDraftSession`: no dialog, the
+  record leaves the store at once (so the row leaves every selector and a
+  chat showing the draft closes), then `DELETE /sessions/:id`. The Relace
+  tab also drops the row from its own fetched list.
 - **Continue**: "Pokračovat v nové session" (open thread) and "Navázat"
   (closed row) both call `continueSession`; the caller switches to the
   returned session.

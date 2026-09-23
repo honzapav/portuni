@@ -14,11 +14,12 @@ import {
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
   closePersistentSession,
+  deleteDraftSession,
   renamePersistentSession,
   startSessionFromHandoff,
 } from "../api";
 import { handoffFileEntries, type HandoffFileEntry } from "../lib/handoff-files";
-import { hostDisplayName, mergeLiveSessionStates, sessionRowChip } from "../lib/session-views";
+import { hostDisplayName, mergeLiveSessionStates, sessionRowChip, threadCloseAction } from "../lib/session-views";
 import type { SessionStateMessage } from "../lib/sessions-client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -264,7 +265,17 @@ export function SessionsSection({
               key={s.id}
               session={s}
               onRenamed={updateOne}
-              onClose={() => setCloseConfirm(s)}
+              onClose={() => {
+                // #506: a draft is deleted outright, the same deletion as
+                // the sidebar's ×; this list is its own copy, so the row
+                // leaves it here too.
+                if (threadCloseAction(s.state) === "delete") {
+                  deleteDraftSession(s.id);
+                  setSessions((prev) => prev.filter((x) => x.id !== s.id));
+                } else {
+                  setCloseConfirm(s);
+                }
+              }}
               onOpenChat={onOpenChat}
               onContinue={() => void handleContinue(s.id)}
               onOpenHandoff={
@@ -376,7 +387,8 @@ function SessionRow({
   // #457: the list carries the caller's own threads only, so every action
   // here is the owner's and nothing is gated beyond the state.
   const showContinue = session.state === "closed";
-  const showClose = session.state === "running" || session.state === "suspended";
+  // #506: a draft gets the same Uzavřít, which deletes it without asking.
+  const showClose = threadCloseAction(session.state) !== null;
 
   return (
     <div className="group rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">

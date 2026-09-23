@@ -14,7 +14,7 @@
 import { useState } from "react";
 import { Plus, Share2, X } from "lucide-react";
 import type { WorkspaceNodeRow } from "../lib/sessions";
-import { nodeRowActive } from "../lib/session-views";
+import { nodeRowActive, threadCloseAction } from "../lib/session-views";
 import { scopedKey } from "../lib/workspace-storage";
 import {
   type NodeActivity,
@@ -396,7 +396,7 @@ function TaskRow({
 
 // ---------------------------------------------------------------- Stav
 
-function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat }: Props) {
+function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat, onCloseTask }: Props) {
   const byGroup = new Map<TaskGroupKey, { node: WorkspaceNodeRow; task: SessionSummary }[]>();
   for (const node of rows) {
     for (const task of threadsByNode[node.id] ?? []) {
@@ -426,14 +426,14 @@ function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat }: P
             <GroupHeader label={label} count={items.length} />
             <ul className="flex flex-col gap-1">
               {items.map(({ node, task }) => (
-                <li key={task.id}>
+                <li key={task.id} className="group/task relative flex items-center">
                   <Button
                     variant="ghost"
                     onClick={() => onOpenSessionChat(node.id, task.id)}
                     aria-current={task.id === activeSessionId ? "true" : undefined}
                     className={`h-auto w-full min-w-0 flex-col items-stretch gap-0.5 px-2.5 py-1.5 text-left font-normal hover:bg-[var(--color-surface-2)] ${
                       task.id === activeSessionId ? "bg-[var(--color-surface-2)]" : ""
-                    }`}
+                    } ${threadCloseAction(task.state) !== null ? "pr-7" : ""}`}
                   >
                     <span className="truncate text-[13px] font-medium text-[var(--color-text)]">{task.name}</span>
                     <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-[var(--color-text-dim)]">
@@ -445,6 +445,24 @@ function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat }: P
                       <span className="truncate">{node.name}</span>
                     </span>
                   </Button>
+                  {/* #506: the same × as a thread's row under its node --
+                      a draft is deleted, a running or suspended thread goes
+                      to Uzavřít; a finished one has nothing to close. */}
+                  {threadCloseAction(task.state) !== null && (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCloseTask(task);
+                      }}
+                      title="Uzavřít vlákno"
+                      aria-label="Uzavřít vlákno"
+                      className="absolute right-1 hidden text-muted-foreground group-hover/task:inline-flex group-focus-within/task:inline-flex"
+                    >
+                      <X />
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>
