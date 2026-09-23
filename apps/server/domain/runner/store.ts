@@ -136,6 +136,13 @@ export interface PatchSessionInput {
   name?: string;
   handoff_path?: string | null;
   handoff_hash?: string | null;
+  // #434: the summary itself, for a suspend that had nowhere to write a
+  // handoff file (no mirror for the node on this device). The local half
+  // (suspendSession) has always written this column; it is on the patch
+  // shape so the central half -- CentralSessionStore -> PATCH
+  // /sessions/:id -> DbSessionStore -- can write the very same thing, and
+  // getResumeInfo reads whichever of the two is populated.
+  handoff_inline?: string | null;
   // Set together with state: "running" when promoting a draft (#374) --
   // the draft had none of these chosen up front.
   brief?: string;
@@ -245,6 +252,10 @@ export class DbSessionStore implements SessionStore {
     if (patch.handoff_hash !== undefined) {
       sets.push("handoff_hash = ?");
       args.push(patch.handoff_hash);
+    }
+    if (patch.handoff_inline !== undefined) {
+      sets.push("handoff_inline = ?");
+      args.push(patch.handoff_inline);
     }
     if (patch.brief !== undefined) {
       sets.push("brief = ?");

@@ -18,9 +18,11 @@
 // stick-to-bottom scrolling); everything about sessions -- subscribe,
 // suspend/resume, handoffs, access control -- stays ours.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { SessionState, SessionSummary } from "../types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hostDisplayName, sessionRowAccess } from "../lib/session-views";
+import type { SessionStore } from "../lib/session-store";
+import { selectSession } from "../lib/session-selectors";
+import { useSessionStore } from "../lib/use-session-store";
 import {
   decodeRunnerChoice,
   encodeRunnerChoice,
@@ -33,6 +35,7 @@ import {
   toCanonicalEvent,
   sessionStatusChip,
   latestQuestionEvent,
+  approvalChoices,
   appendDelta,
   clearDeltaBuffer,
   createDeltaCoalescer,
@@ -41,6 +44,7 @@ import {
   workingPhase,
   runIsLiveFor,
   turnInFlight,
+  nextSentAt,
   WORKING_LABEL,
   type ActivityItem,
   type ActivityRow,
@@ -130,39 +134,49 @@ import {
 // column -- 10 % gutters each side, never wider than 768 px. The scroll
 // container stays full-width so the scrollbar keeps its edge.
 const THREAD_COLUMN = "mx-auto w-[min(80%,768px)]";
+// #466 (spec docs/superpowers/specs/2026-09-22-web-session-state-design.md,
+// "`SessionChat`"): this component takes the thread's id, never a row. The
+// row comes from the store -- the window's only copy -- and every change to
+// it is written there, so no callback hands a spread-together session
+// object back to App and there is no local copy of state and waiting for a
+// frame to keep in step. What the component does own is its
+// transcript: the events, the delta buffers, the live run, the send clock,
+// the composer and its dialogs.
 export default function SessionChat({
-  session,
-  onSessionUpdated,
+  sessionId,
+  sessionStore,
   sessionsClient,
   onOpenFile,
 }: {
-  session: SessionSummary;
-  onSessionUpdated: (updated: SessionSummary) => void;
+  sessionId: string;
+  sessionStore: SessionStore;
   sessionsClient: SessionsClient;
   onOpenFile?: (relPath: string) => void;
 }) {
+  const session = useSessionStore(
+    sessionStore,
+    useCallback((store: SessionStore) => selectSession(store, sessionId), [sessionId]),
+  );
   const [events, setEvents] = useState<ChatEvent[]>([]);
   const [textDeltaBuffers, setTextDeltaBuffers] = useState<DeltaBuffers>({});
   const [reasoningDeltaBuffers, setReasoningDeltaBuffers] = useState<DeltaBuffers>({});
   const [liveRunId, setLiveRunId] = useState<string | null>(null);
   // When the last message was sent, until its run_started arrives -- what
   // the working row shows as "Spouštím…" (rule 2: something is always on
-  // screen while a run is live, and the run is live from the send).
+  // screen while a run is live, and the run is live from the send). The
+  // rule for when it is set and cleared is lib/session-chat.ts's pure
+  // `nextSentAt`; every write below goes through it.
   const [sentAt, setSentAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [live, setLive] = useState<{ state: SessionState; waiting_since: string | null }>({
-    state: session.state,
-    waiting_since: session.waiting_since,
-  });
   // The composer's draft belongs to the session, not to this component --
   // see lib/session-drafts.ts. Seeded once per mount (the caller keys this
-  // component on session.id, so a different session is a different instance)
-  // and written through on every keystroke, so it survives switching
-  // sessions and the surface being unmounted.
-  const [composerText, setComposerTextState] = useState(() => sessionDrafts.get(session.id));
+  // component on the session id, so a different session is a different
+  // instance) and written through on every keystroke, so it survives
+  // switching sessions and the surface being unmounted.
+  const [composerText, setComposerTextState] = useState(() => sessionDrafts.get(sessionId));
   const setComposerText = (text: string) => {
-    sessionDrafts.set(session.id, text);
+    sessionDrafts.set(sessionId, text);
     setComposerTextState(text);
   };
   const [sending, setSending] = useState(false);
@@ -172,44 +186,16 @@ export default function SessionChat({
   // the Tauri webview).
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   // Inline rename in the header (same affordance as the Relace row): the
-  // rename goes through POST /sessions/:id/rename, whose live frame is what
-  // updates the sidebar and the Relace tab; onSessionUpdated only refreshes
-  // the shown thread's own object.
+  // rename goes through POST /sessions/:id/rename, and api.ts writes the
+  // row it answers with into the store -- the sidebar, this header and the
+  // Relace tab then read the same record.
   const [renaming, setRenaming] = useState(false);
-  const [nameDraft, setNameDraft] = useState(session.name);
+  const [nameDraft, setNameDraft] = useState(session?.name ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
-  const startRename = () => {
-    setNameDraft(session.name);
-    setRenaming(true);
-  };
-  const cancelRename = () => {
-    setNameDraft(session.name);
-    setRenaming(false);
-  };
-  const saveRename = async () => {
-    const trimmed = nameDraft.trim();
-    if (!trimmed || trimmed === session.name) {
-      cancelRename();
-      return;
-    }
-    setRenameSaving(true);
-    try {
-      const updated = await renamePersistentSession(session.id, trimmed);
-      onSessionUpdated(updated);
-      setRenaming(false);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRenameSaving(false);
-    }
-  };
-  // The notice bar (#378, "the process was ended, the next message
-  // replays the conversation") is dismissible per-occurrence: dismissing
-  // hides THIS bar, but the next run that ends up here (liveRunId flips
-  // non-null again, meaning a new run started) shows a fresh one.
+  // #378: a new run starting is "the thread woken again" -- the notice bar
+  // (below) is dismissible per-occurrence.
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const { meId, canManage } = useMe();
-  const access = sessionRowAccess(session.user_id, meId, canManage);
 
   // Composer row 2 (v2 rule 5): the runner/instance choice, open while the
   // thread is a draft. The lists come from the device (both routes are
@@ -217,13 +203,7 @@ export default function SessionChat({
   // default resolved to, so it is what the picker marks as "(výchozí)".
   const [runners, setRunners] = useState<RunnerInfo[]>([]);
   const [instances, setInstances] = useState<RunnerInstanceSummary[]>([]);
-  const initialChoiceRef = useRef({ runner: session.runner, instanceId: session.instance_id });
-  // The latest session prop for callbacks created in an effect keyed on
-  // session.id (the live state handler): spreading a stale closure's copy
-  // into onSessionUpdated would hand the runner/instance/model the thread
-  // had at mount back to the app.
-  const sessionRef = useRef(session);
-  sessionRef.current = session;
+  const initialChoiceRef = useRef({ runner: session?.runner ?? null, instanceId: session?.instance_id ?? null });
   useEffect(() => {
     let cancelled = false;
     void Promise.all([listRunners(), listRunnerInstances()])
@@ -237,29 +217,15 @@ export default function SessionChat({
       cancelled = true;
     };
   }, []);
-  const handleRunnerChange = (value: string) => {
-    const { runner, instanceId } = decodeRunnerChoice(value);
-    const before = { runner: session.runner, instance_id: session.instance_id };
-    onSessionUpdated({ ...session, runner, instance_id: instanceId });
-    // What the row actually holds is what the picker shows: the server's
-    // answer replaces the optimistic value, a refusal puts the previous
-    // choice back and says why.
-    void patchSessionRunnerInstance(session.id, { runner, instance_id: instanceId })
-      .then((saved) => onSessionUpdated({ ...sessionRef.current, runner: saved.runner, instance_id: saved.instance_id }))
-      .catch((e) => {
-        onSessionUpdated({ ...sessionRef.current, ...before });
-        setError(`Runner a instanci se nepodařilo uložit: ${String(e)}`);
-      });
-  };
-  const host = hostDisplayName(session);
 
   // #376: the model picker's list, for the thread's runner. A draft on a
   // device with no logged-in runner falls back to "claude", the only
   // runner this codebase registers today.
   const [models, setModels] = useState<RunnerModel[]>([]);
+  const runner = session?.runner ?? null;
   useEffect(() => {
     let cancelled = false;
-    fetchRunnerModels(session.runner ?? "claude")
+    fetchRunnerModels(runner ?? "claude")
       .then((list) => {
         if (!cancelled) setModels(list);
       })
@@ -269,23 +235,11 @@ export default function SessionChat({
     return () => {
       cancelled = true;
     };
-  }, [session.runner]);
-  const selectedModel = models.find((m) => m.id === session.model) ?? null;
+  }, [runner]);
 
-  const handleModelChange = (value: string) => {
-    const model = value === "" ? null : value;
-    onSessionUpdated({ ...session, model });
-    void patchSessionModelEffort(session.id, { model }).catch(() => undefined);
-  };
-  const handleEffortChange = (value: string) => {
-    const effort = value === "" ? null : value;
-    onSessionUpdated({ ...session, effort });
-    void patchSessionModelEffort(session.id, { effort }).catch(() => undefined);
-  };
-
-  // Backfill + subscribe. Re-runs whenever the selected session itself
-  // changes (switching nodes in Práce mounts the same component fresh with
-  // a new session id).
+  // Backfill + subscribe. Keyed on the thread id alone: state and waiting
+  // come from the store's record now, so nothing in here reads a session
+  // field and the effect never re-runs for one changing.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -294,8 +248,7 @@ export default function SessionChat({
     setTextDeltaBuffers({});
     setReasoningDeltaBuffers({});
     setLiveRunId(null);
-    setSentAt(null);
-    setLive({ state: session.state, waiting_since: session.waiting_since });
+    setSentAt((current) => nextSentAt(current, { kind: "reset" }));
 
     // Deltas are coalesced (spec, "Streaming"): a burst of frames becomes
     // one state update per animation frame. Flushed on run end so nothing
@@ -320,21 +273,21 @@ export default function SessionChat({
     // assistant_message/reasoning event carries no run id of its own, and
     // the state value is a render value this closure never sees updated.
     let runId: string | null = null;
-    const offEvent = sessionsClient.onEvent(session.id, (envelope) => {
+    const offEvent = sessionsClient.onEvent(sessionId, (envelope) => {
       const event = toCanonicalEvent(envelope.kind, envelope.payload);
       setEvents((prev) => insertBySeq(prev, { seq: envelope.seq, event }));
+      // run_started and run_ended (an error at start included) both stop
+      // the send clock; every other event leaves it alone.
+      setSentAt((current) => nextSentAt(current, { kind: "event", event }));
       if (event.kind === "run_started") {
         runId = event.payload.run_id;
         setLiveRunId(event.payload.run_id);
-        setSentAt(null);
       } else if (event.kind === "run_ended") {
         runId = null;
         coalescer.flush();
         setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setLiveRunId(null);
-        // A run that ended (an error at start included) is not starting.
-        setSentAt(null);
       } else if (event.kind === "assistant_message") {
         // The finalized block supersedes what streamed: drop its still
         // buffered frames before clearing, or the tick delivers the
@@ -353,15 +306,13 @@ export default function SessionChat({
         }
       }
     });
-    const offDelta = sessionsClient.onDelta(session.id, (delta) => coalescer.push(delta));
-    const offState = sessionsClient.onSessionState((s) => {
-      if (s.session_id !== session.id) return;
-      setLive({ state: s.state, waiting_since: s.waiting_since });
-      onSessionUpdated({ ...sessionRef.current, state: s.state, waiting_since: s.waiting_since });
-    });
+    const offDelta = sessionsClient.onDelta(sessionId, (delta) => coalescer.push(delta));
+    // No onSessionState handler here: App binds the live channel to the
+    // store once (#465), so a frame folds into the record this component
+    // already reads (spec principle 3).
 
     void sessionsClient
-      .subscribe(session.id, 0)
+      .subscribe(sessionId, 0)
       .catch((e) => {
         if (!cancelled) setError(String(e));
       })
@@ -374,13 +325,9 @@ export default function SessionChat({
       coalescer.clear();
       offEvent();
       offDelta();
-      offState();
-      sessionsClient.unsubscribe(session.id);
+      sessionsClient.unsubscribe(sessionId);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- session.state/
-    // waiting_since intentionally excluded: they're seeded once at mount,
-    // then owned by `live` (updated via onSessionState) from here on.
-  }, [session.id, sessionsClient]);
+  }, [sessionId, sessionsClient]);
 
   // #378: a new run starting is "the thread woken again" -- clear a
   // previous dismissal so the NEXT time this run ends up with nothing
@@ -394,13 +341,83 @@ export default function SessionChat({
   // is here, else the summary's counters (a list row, a reload before the
   // replay). Absent entirely for a draft or a session that never reported.
   const liveUsage = useMemo(() => latestContextUsage(events), [events]);
+
+  // Every hook has run; from here the record is what the component reads.
+  // It is missing only in the moment between its removal from the store (a
+  // deleted draft) and the parent dropping this pane, so there is nothing
+  // to show and nothing to say.
+  if (!session) return null;
+
+  const access = sessionRowAccess(session.user_id, meId, canManage);
+  const host = hostDisplayName(session);
+  const startRename = () => {
+    setNameDraft(session.name);
+    setRenaming(true);
+  };
+  const cancelRename = () => {
+    setNameDraft(session.name);
+    setRenaming(false);
+  };
+  const saveRename = async () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === session.name) {
+      cancelRename();
+      return;
+    }
+    setRenameSaving(true);
+    try {
+      // api.ts puts the answered row into the store; nothing to hand on.
+      await renamePersistentSession(sessionId, trimmed);
+      setRenaming(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRenameSaving(false);
+    }
+  };
+
+  // Spec "Writing": an optimistic put, the server's answer replaces the
+  // record (api.ts folds what it answers with), a refusal puts the previous
+  // record back and the composer says why. No object is ever handed to a
+  // parent.
+  const handleRunnerChange = (value: string) => {
+    const { runner: picked, instanceId } = decodeRunnerChoice(value);
+    const before = session;
+    sessionStore.put({ ...before, runner: picked, instance_id: instanceId });
+    void patchSessionRunnerInstance(sessionId, { runner: picked, instance_id: instanceId }).catch((e) => {
+      sessionStore.put(before);
+      setError(`Runner a instanci se nepodařilo uložit: ${String(e)}`);
+    });
+  };
+
+  const selectedModel = models.find((m) => m.id === session.model) ?? null;
+
+  const handleModelChange = (value: string) => {
+    const model = value === "" ? null : value;
+    const before = session;
+    sessionStore.put({ ...before, model });
+    void patchSessionModelEffort(sessionId, { model }).catch((e) => {
+      sessionStore.put(before);
+      setError(`Model se nepodařilo uložit: ${String(e)}`);
+    });
+  };
+  const handleEffortChange = (value: string) => {
+    const effort = value === "" ? null : value;
+    const before = session;
+    sessionStore.put({ ...before, effort });
+    void patchSessionModelEffort(sessionId, { effort }).catch((e) => {
+      sessionStore.put(before);
+      setError(`Úsilí se nepodařilo uložit: ${String(e)}`);
+    });
+  };
+
   const ring = contextRingState(
     liveUsage?.used ?? session.context_used_tokens,
     liveUsage?.max ?? session.context_max_tokens,
   );
   const openQuestion = latestQuestionEvent(events);
-  const isWaiting = live.state === "running" && live.waiting_since !== null;
-  const runIsLive = runIsLiveFor(liveRunId, live.state);
+  const isWaiting = session.state === "running" && session.waiting_since !== null;
+  const runIsLive = runIsLiveFor(liveRunId, session.state);
   // A live run between turns only waits for the next message: the composer
   // sends, nothing to stop, nothing "working".
   const turnActive = runIsLive && turnInFlight(events, liveRunId);
@@ -410,16 +427,16 @@ export default function SessionChat({
   // flight) and nothing else at the transcript end says what is happening.
   const phase = runIsLive || sentAt !== null ? workingPhase(events, liveRunId, sentAt) : null;
   const showWorking = phase !== null && !streamingText && !streamingReasoning && !isWaiting;
-  const chip = sessionStatusChip(live.state, live.waiting_since);
+  const chip = sessionStatusChip(session.state, session.waiting_since);
   // #378: an open thread with a run that ended other than by Uzavřít --
   // the next message replays the whole conversation from the summary.
-  const showNotice = live.state === "suspended" && !noticeDismissed;
+  const showNotice = session.state === "suspended" && !noticeDismissed;
 
   const runAction = async (action: "interrupt" | "close") => {
     setActionPending(action);
     setError(null);
     try {
-      await sessionsClient[action](session.id);
+      await sessionsClient[action](sessionId);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -430,14 +447,14 @@ export default function SessionChat({
   // "Pokračovat v nové session" (offered any time) / "Navázat" (a closed
   // thread): POST /sessions/:id/continue closes this session (its summary
   // seeds the new one) and starts a fresh, running one on the same node --
-  // the new row becomes the active thread (WorkspaceView keys SessionChat
-  // on the session id, so this swap remounts it).
+  // the new row goes into the store, which is what makes it this node's
+  // shown thread (the old one is closed, so it leaves the selectors).
   const handleContinue = async () => {
     setActionPending("continue");
     setError(null);
     try {
-      const { session: newSession } = await sessionsClient.continueSession(session.id);
-      onSessionUpdated(newSession);
+      const { session: newSession } = await sessionsClient.continueSession(sessionId);
+      sessionStore.put(newSession);
     } catch (e) {
       setError(String(e));
       setActionPending(null);
@@ -451,17 +468,16 @@ export default function SessionChat({
     setError(null);
     // Until run_started lands (a promotion or a resume starts a process
     // first), the working row says "Spouštím…". A live run's own message
-    // needs none: its run_started already happened. Set before the send
-    // is awaited: run_started (and a run_ended right behind it) can arrive
+    // needs none: its run_started already happened. Set before the send is
+    // awaited: run_started (and a run_ended right behind it) can arrive
     // while the reply is still in flight, and each clears this -- set
     // afterwards it would outlive the run it was announcing.
-    const startsRun = liveRunId === null;
-    if (startsRun) setSentAt(Date.now());
+    setSentAt((current) => nextSentAt(current, { kind: "send", liveRunId, now: Date.now() }));
     try {
-      await sessionsClient.message(session.id, text);
+      await sessionsClient.message(sessionId, text);
       setComposerText("");
     } catch (e) {
-      if (startsRun) setSentAt(null);
+      setSentAt((current) => nextSentAt(current, { kind: "send_failed" }));
       setError(String(e));
     } finally {
       setSending(false);
@@ -471,7 +487,7 @@ export default function SessionChat({
   const handleAnswer = async (value: string | boolean) => {
     if (!openQuestion) return;
     try {
-      await sessionsClient.answer(session.id, openQuestion.payload.request_id, value);
+      await sessionsClient.answer(sessionId, openQuestion.payload.request_id, value);
     } catch (e) {
       setError(String(e));
     }
@@ -479,7 +495,8 @@ export default function SessionChat({
 
   // Messages and answers are owner-only (#321's access table); a
   // non-owner who can see the node reads the chat but cannot type into it.
-  const composerDisabled = live.state === "closed" || live.state === "archived" || isWaiting || !access.canResume;
+  const composerDisabled =
+    session.state === "closed" || session.state === "archived" || isWaiting || !access.canResume;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -572,7 +589,7 @@ export default function SessionChat({
                   <Pencil />
                 </HeaderIcon>
               )}
-              {(live.state === "running" || live.state === "suspended") && access.canResume && (
+              {(session.state === "running" || session.state === "suspended") && access.canResume && (
                 <HeaderIcon
                   onClick={() => void handleContinue()}
                   disabled={actionPending !== null}
@@ -584,7 +601,7 @@ export default function SessionChat({
                   <Redo2 />
                 </HeaderIcon>
               )}
-              {(live.state === "running" || live.state === "suspended") && access.canPauseOrClose && (
+              {(session.state === "running" || session.state === "suspended") && access.canPauseOrClose && (
                 <>
                   <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
                   <HeaderIcon
@@ -712,7 +729,7 @@ export default function SessionChat({
                   ? "Zprávy může posílat jen vlastník relace."
                   : isWaiting
                     ? "Relace čeká na odpověď na otázku výše."
-                    : live.state === "closed" || live.state === "archived"
+                    : session.state === "closed" || session.state === "archived"
                       ? "Relace je uzavřená."
                       : "Napiš zprávu…"
               }
@@ -768,7 +785,7 @@ export default function SessionChat({
             />
             </div>
             <div className="flex min-h-6 items-center gap-1.5 px-1 text-[11.5px] text-[var(--color-text-dim)]">
-              {live.state === "draft" && access.canResume && session.runner ? (
+              {session.state === "draft" && access.canResume && session.runner ? (
                 <PromptInputSelect
                   value={encodeRunnerChoice(session.runner, session.instance_id)}
                   onValueChange={handleRunnerChange}
@@ -1019,9 +1036,9 @@ function QuestionConfirmation({
         <ConfirmationRequest>
           {question.payload.type === "approval" ? (
             <ConfirmationActions>
-              {(question.payload.options ?? ["Ano", "Ne"]).map((opt) => (
-                <ConfirmationAction key={opt} onClick={() => onAnswer(opt)}>
-                  {opt}
+              {approvalChoices(question.payload.options).map((choice) => (
+                <ConfirmationAction key={choice.label} onClick={() => onAnswer(choice.value)}>
+                  {choice.label}
                 </ConfirmationAction>
               ))}
             </ConfirmationActions>

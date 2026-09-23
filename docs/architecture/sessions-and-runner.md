@@ -133,7 +133,7 @@ orientation, translates events, ends and suspends) is one implementation,
 |---|---|---|
 | `store` | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
 | provisioning | `provision.ts`: `createMirrorForNode`, `orientationForNode` (direct db read) | `provision-central.ts`: `createMirrorForNodeCentral`, `CentralClient.orientation` (`GET /nodes/:id/orientation`) |
-| `suspendFallback` | `suspendSessionServerSide(db, id, reason)` | `domain/runner/suspend-fallback-central.ts`: writes the same handoff into the device mirror (scope sections from `CentralClient.sessionScopeRecord`), registers it record-only and patches the record over REST. Without a mirror for the node it patches the record with `handoff_path: null` and no content: `PatchSessionInput` has no `handoff_inline`, so the inline fallback of the local half does not exist here (#434) |
+| `suspendFallback` | `suspendSessionServerSide(db, id, reason)` | `domain/runner/suspend-fallback-central.ts`: writes the same handoff into the device mirror (scope sections from `CentralClient.sessionScopeRecord`), registers it record-only and patches the record over REST. Without a mirror for the node it patches the record with `handoff_path: null` and the summary itself in `handoff_inline` (#434), exactly as the local half does, so `getResumeInfo` on the central server hands the next run that text |
 | `resolveNodeOrgId` | `belongs_to` graph query (a failed lookup is distinguishable from "no organization") | `CentralClient.nodeOrganizationId` (`GET /nodes/:id`, the outgoing `belongs_to` peer that is an organization) |
 | `session_scope` reads (`getSessionScope` in `startRun`/`sessionSignals`) | real | degrade to an empty scope, never throw |
 
@@ -257,11 +257,35 @@ human verification.
 - **Permissions** delegate to `permissions.ts` `decidePermission`, which
   needs `RunStart.portuniRoot`/`.mirrors` (threaded from the provisioned
   mirror by `startRun`). An "ask" decision emits a `question` event and
-  leaves the `canUseTool` promise open until `RunHandle.answer()`:
-  `true`/`false` are allow/deny, any other value becomes
+  leaves the `canUseTool` promise open until `RunHandle.answer()`: an
+  approval allows on `true` only (`false` or text denies); an input
+  question (AskUserQuestion) takes a string as
   `{behavior: "allow", updatedInput: {...originalInput, answer}}`. A
   question still open when the run ends is denied; one raised after the
   end is denied outright.
+- **MCP elicitation** (`onElicitation`): a dialog whose form is exactly one
+  boolean field (Portuni's scope and write confirmations) emits an
+  `approval` question and waits on `RunHandle.answer()`: `true` accepts
+  with that field `true`, anything else declines. A form with more fields,
+  any non-boolean field or a `url` dialog is declined without a question:
+  the chat shows only the dialog's message, so a second field would be
+  granted unseen. An open dialog is cancelled when the run ends; when the
+  SDK abandons it (its timeout, an interrupted turn) the adapter also
+  emits the question again with a `system` decision, which the runtime
+  reads as "closed without the user" and clears `waiting_since`.
+- **One question at a time** (`askInTurn`): the runtime keeps a single
+  pending question per session, so a permission ask or a dialog raised
+  while another question is open waits in line and is emitted once that
+  one is answered; the first ask in an empty line is emitted
+  synchronously. The web sends `true`/`false` for the default Ano/Ne
+  buttons (`approvalChoices`), never the label.
+- **Inherited claude.ai Portuni connectors** are switched off with
+  `toggleMcpServer` after init: `mcpServerStatus()` entries with scope
+  `claudeai` whose upstream URL origin is `PORTUNI_CENTRAL_URL` or
+  `PORTUNI_PUBLIC_URL`, matched by URL, never by the user's connector name.
+  Until the toggle lands, `canUseTool` denies their tools by prefix
+  (`mcpToolPrefix`). The run has its own `portuni` server, and a
+  connector Portuni sends its dialogs to claude.ai.
 - A write tool's `file_change` (`op: "create" | "edit"`) is decided from an
   `fs.stat` taken at `tool_call started` time and carried on the
   pending-tool-call snapshot; the tool result never carries the arguments.
@@ -362,8 +386,14 @@ human verification.
 - Promotion appends `state_changed {from: "draft", to: "running"}` so the
   live channel's `session_state` broadcast fires (`sessions-ws.ts` reacts
   only to `state_changed`, `question`, `run_ended`).
-- **Every list excludes drafts** (`GET /nodes/:id/sessions`, `GET /overview`,
-  the WS snapshot). A draft is visible only in the window that created it.
+- **A list carries the caller's own drafts, nobody else's** (#463).
+  `GET /nodes/:id/sessions` returns the node's drafts whose `user_id` is the
+  caller's, and `GET /sessions?state=draft` answers with the caller's drafts
+  only -- node visibility opens every other state to a teammate, never an
+  unsent draft. So a reload, a second window or any other surface of the
+  same user shows a draft without a client-side draft map. `GET /overview`
+  and the WS snapshot still list running and suspended threads only, by the
+  states they ask for.
 - **Prune.** `sweepStaleDraftSessionsOnBoot` deletes drafts older than 24 h
   at boot of the process that owns the graph db (`index.ts`, `desktop.ts`
   local branch; on the central server for team-workspace rows). A thread's `×` deletes

@@ -198,6 +198,21 @@ export function latestQuestionEvent(events: readonly ChatEvent[]): QuestionEvent
   return null;
 }
 
+// The buttons of an approval question. Without explicit options it is a
+// yes/no decision: the runner reads true as allow and false as a refusal,
+// while any string is an answer and therefore allows.
+export function approvalChoices(
+  options: readonly string[] | null,
+): { label: string; value: string | boolean }[] {
+  if (options === null) {
+    return [
+      { label: "Ano", value: true },
+      { label: "Ne", value: false },
+    ];
+  }
+  return options.map((label) => ({ label, value: label }));
+}
+
 // --- Streamed delta buffering ------------------------------------------------
 
 export type DeltaBuffers = Readonly<Record<string, string>>;
@@ -510,6 +525,37 @@ export function workingPhase(
     if (e.kind === "assistant_message" || e.kind === "reasoning") return "continuing";
   }
   return "thinking";
+}
+
+// --- The send clock (`sentAt`) -------------------------------------------------
+// #466, spec docs/superpowers/specs/2026-09-22-web-session-state-design.md
+// ("`SessionChat`"): the composer sets the clock before the send is awaited
+// -- run_started, and a run_ended right behind it, can arrive while the
+// reply is still in flight -- and three things clear it: run_started (the
+// run it announced is here), run_ended (the run it announced is over,
+// an error at start included) and a send that failed. Pure, so the rule is
+// held by a test (scenario 7) and not by the order of setState calls.
+
+export type SendClockInput =
+  // The composer sent a message. A live run needs no clock: its
+  // run_started already happened, so nothing is "starting".
+  | { kind: "send"; liveRunId: string | null; now: number }
+  | { kind: "send_failed" }
+  | { kind: "event"; event: CanonicalEvent }
+  // A fresh subscribe (a different thread, a re-subscribe): nothing is in
+  // flight that this window knows of.
+  | { kind: "reset" };
+
+export function nextSentAt(current: number | null, input: SendClockInput): number | null {
+  switch (input.kind) {
+    case "send":
+      return input.liveRunId === null ? input.now : current;
+    case "send_failed":
+    case "reset":
+      return null;
+    case "event":
+      return input.event.kind === "run_started" || input.event.kind === "run_ended" ? null : current;
+  }
 }
 
 // --- Delta coalescing (v2 spec, "Streaming") ----------------------------------

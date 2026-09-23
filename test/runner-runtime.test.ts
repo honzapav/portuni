@@ -426,6 +426,37 @@ describe("session runtime: resume by writing (#378)", () => {
 });
 
 describe("session runtime: event ordering", () => {
+  it("a question the adapter closes itself (a decided question event) clears waiting_since", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const payload = {
+      request_id: "req-closed",
+      type: "approval" as const,
+      tool: "mcp__portuni",
+      title: "Potvrzení: portuni",
+      detail: "Allow writing?",
+      options: null,
+    };
+    const script: FakeScriptStep[] = [
+      { kind: "question", payload: { ...payload, decision: null } },
+      { kind: "question", payload: { ...payload, decision: { by: "system", value: false, at: new Date().toISOString() } } },
+      { wait: "message" },
+    ];
+    const adapter = new FakeRunnerAdapter({ script });
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    const row = await store.getSession(session.id);
+    assert.equal(row?.waiting_since, null, "the closed question must not leave the session waiting");
+    const events = await store.listEvents(session.id);
+    const stateChanged = events.filter((e) => e.kind === "state_changed").map((e) => JSON.parse(e.payload));
+    assert.deepEqual(
+      stateChanged.map((s) => s.waiting),
+      [true, false],
+    );
+    await runtime.closeSession(session.id);
+  });
+
   it("records the answered question before anything the adapter emits in reaction to the answer", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);

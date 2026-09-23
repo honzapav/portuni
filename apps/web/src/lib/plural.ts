@@ -15,3 +15,10 @@ export function pluralNodes(n: number): string {
   if (n >= 2 && n <= 4) return "uzly";
   return "uzlů";
 }
+
+/** Czech noun form for a count of plan changes: 1 → "změna", 2–4 → "změny", 5+ → "změn". */
+export function pluralChanges(n: number): string {
+  if (n === 1) return "změna";
+  if (n >= 2 && n <= 4) return "změny";
+  return "změn";
+}
