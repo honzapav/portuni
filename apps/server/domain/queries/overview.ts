@@ -45,7 +45,6 @@ export async function loadOverviewSessions(
     session_type: row.session_type as OverviewSessionRow["session_type"],
     cli: row.cli as string | null,
     instance_id: row.instance_id as string | null,
-    brief: row.brief as string | null,
     runner: row.runner as string | null,
     waiting_since: row.waiting_since as string | null,
     state: row.state as OverviewSessionRow["state"],

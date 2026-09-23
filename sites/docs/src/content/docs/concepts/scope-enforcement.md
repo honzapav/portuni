@@ -214,6 +214,31 @@ even on a node the whole organisation can see. What people share on a node
 is its **files** — including the handoff file a suspended thread writes —
 not the conversations that produced them.
 
+### The record is central, the content is the device's
+
+Owner-only is the access half. The storage half is the same principle made
+physical: a thread has a **record** — that it exists, on which node, whose
+it is, its state, runner, model, its runs and its scope — and **content** —
+the first message, every event of the transcript, the inline handoff
+summary. The central server holds the record, because the MCP handshake,
+scope enforcement and the write gate key on it. The content is written to
+the **device that ran the thread**, in the sidecar's own database, and is
+never sent to the central server.
+
+So `GET /sessions/:id/events` is a device-local route: it answers from the
+machine you are asking, which is the machine that has the log. Asked on a
+device that did not run the thread it answers 200 with an empty list and
+`transcript_host` — the label of the machine that does — which the app
+shows as „Transkript je na zařízení X" instead of an empty chat. The way
+across is the handoff file, not a copy of the conversation (see
+[Předat / Navázat na handoff](/guides/working-in-the-app/#task-chat-práce)).
+
+There is **no backup of transcripts**. Losing a device's database loses the
+conversations it ran; the records on the central server and the handoff
+files tracked in the nodes are what survive. Portuni owns no content — what
+a team shares on a node is its files, including a suspended thread's
+handoff summary, never the conversation that produced them.
+
 ## Why this is its own page (and not a permission system)
 
 Scope is **orthogonal** to permissions. Permissions (visibility, including group-based access via Google Groups) are enforced server-side in `apps/server/auth/` — every tool call and HTTP route passes through identity resolution, global scope gates (TOOL_MIN_SCOPE), and node-level access checks before scope is consulted. Scope decides what an in-progress session is currently focused on — a second, intentionality-shaped filter applied on top of permissions.

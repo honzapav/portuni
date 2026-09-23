@@ -143,18 +143,44 @@ otherwise `host_id`, and nothing at all when the summary carries neither.
 The summary is the only source; neither surface fetches a session's runs.
 See `sessions-and-runner.md`, "Runs, events, pid files and the boot sweep".
 
+**The two cross-device actions** (#459, #460). **Předat** is a header icon
+(`Share2`) on a running or suspended thread: `handoffSession` ->
+`POST /sessions/:id/handoff`, whose answered `handoff_path` stays on screen
+in the notice bar (it is what the other machine opens). `api.ts` puts the
+suspended record into the store, so the header, the sidebar and Relace
+follow without a refetch. **Navázat na handoff** is the Relace tab's, not
+the chat's: `startSessionFromHandoff(nodeId, relPath)`.
+
+**The transcript is on another machine** (#461). A thread's content lives
+in the `content.db` of the device that ran it, so a second device of the
+same person has the record and no conversation. On mount the chat asks
+`fetchTranscriptHost(sessionId)` -- `GET /sessions/:id/events?limit=1`, the
+device-local route, read for its `transcript_host` header alone (the
+replay itself comes over the live channel). `transcriptElsewhere(host,
+events.length)` (`lib/session-chat.ts`, tested in
+`test/session-chat-helpers.test.ts`) turns that into the state: the
+`ConversationEmptyState` reads "Transkript je na zařízení X" with the way
+across as its description, the composer is disabled with a matching
+placeholder, and Předat is hidden -- the summary is written from the
+transcript, which this device does not have. A non-empty log wins over the
+header, so a run that starts writing here clears the state on its own.
+
 ### Relace tab (`DetailPane.sessions.tsx`)
 
 REST-only list of the node's persistent sessions
 (`fetchNodePersistentSessions`), archived rows behind a filter. Each row
-shows `sessionRowChip`, the brief's first line, runner, instance and host,
-the owner's name when the row is not the caller's own (`fetchUsers()`, which returns `[]` below manage
-scope, so a plain teammate sees no name), and `resumeInfo` as information
-only. Actions: "Otevřít chat" (`onOpenChat`), "Uzavřít" behind a confirm
-`Dialog` (`closeConfirm`), and on a closed row "Navázat" (`continueSession`
-from `api.ts`, then `onSessionStarted` and `onOpenChat` with the new
-session). There is no live subscription in this tab; it reloads its list
-after an action.
+shows `sessionRowChip`, runner, instance and host, and `resumeInfo` as
+information only. It quotes nothing: the thread's first message is content
+and lives in the device's `content.db`, so `SessionSummary` has no `brief`
+to show (#461) and the row names the thread instead. There is no owner
+column either -- every row is the caller's own (#457). Actions: "Otevřít
+chat" (`onOpenChat`), "Uzavřít" behind a confirm `Dialog` (`closeConfirm`),
+and on a closed row "Navázat" (`continueSession` from `api.ts`, then
+`onSessionStarted` and `onOpenChat` with the new session). Above the rows
+the tab lists the node's handoff files (`lib/handoff-files.ts`), each with
+**Navázat na handoff** (#460): `startSessionFromHandoff`, which is
+`POST /sessions` with the file's node-relative path. There is no live
+subscription in this tab; it reloads its list after an action.
 
 ### Přehled (`OverviewView.tsx`)
 
@@ -169,9 +195,9 @@ The Relace card is the caller's own inbox: `sortInboxSessions(running,
 suspended, meId)` orders waiting first, then running, then suspended, and
 keeps only rows with `user_id === meId`; `splitThreadsAndCli` then keeps
 threads (`isThreadSession`) as rows and puts hand-opened CLI sessions into
-the footer line "K tomu N relací z CLI (N běží)". `GET /overview` itself
-returns every session on a node the caller can see; the restriction is
-the client's. Rows are overlaid with live state (`mergeLiveSessionStates`)
+the footer line "K tomu N relací z CLI (N běží)". `GET /overview` returns the caller's own
+threads only (#457), and its rows are record only -- no `brief` since
+#461, so a row shows `name`. Rows are overlaid with live state (`mergeLiveSessionStates`)
 and the card reloads whenever the live-state stamp changes. The unsynced
 counter is `useSyncPending().pending.total` passed down from `App.tsx`.
 
@@ -470,7 +496,7 @@ deduplicates a replay against a frame that raced it.
 ## Thread actions
 
 - **New thread**: `NewTaskButton` (`DetailPane.files.tsx`) and the sidebar
-  `+` call `startDraftThread(nodeId)` (`POST /sessions` with no `brief`),
+  `+` call `startDraftThread(nodeId)` (`POST /sessions` with the node id and nothing else),
   which returns a draft. One click, no dialog, no required field. The
   draft's composer has focus; its first message is what starts a run.
 - **First message** names the thread server-side from its first line;

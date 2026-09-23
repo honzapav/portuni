@@ -48,7 +48,6 @@ function row(overrides: Partial<SessionSummary> & { id: string }): SessionSummar
     cli: null,
     instance_id: null,
     terminal_id: null,
-    brief: null,
     runner: "claude",
     host_id: null,
     host_label: null,

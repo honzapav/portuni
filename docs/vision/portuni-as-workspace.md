@@ -134,13 +134,15 @@ Nová funkce se staví jednou, jako kód serverové domény, který běží na c
 |---|---|---|
 | Graf, mirrory, editor, sledování souborů | ano | ano, stejný kód |
 | Relace jako úkol, chat, handoff, runner rozhraní, adaptéry | ano | ano, stejný kód, host = tentýž sidecar |
+| Záznam vlákna (existence, uzel, vlastník, stav, runner, běhy, rozsah) | ano, centrála ho drží | ano, tentýž proces |
+| Obsah vlákna (první zpráva, transkript, inline handoff) | ne — zůstává na zařízení, které vlákno spustilo, v jeho `content.db`; na centrálu se neposílá a nikde se nezálohuje | ano, tentýž stroj drží obojí |
 | Host přes central, fronta úkolů, token na jméno zadavatele | ano | ne, úkol se spustí přímo na tomto stroji |
 | Asana adaptér | ano | ne |
 | Rutiny, agent nadhledu, generování skills | ano, plánovač na centralu | ne; rutinu jde spustit ručně jako úkol |
 | Tým, práva, sdílené hosty | ano | ne |
 | Drive sync | ano | ne |
 
-Dnešní dvojice engine / engine-central, router / agent-router, transport / agent-transport jsou to, čemu se nová práce vyhýbá; další pár nesmí vzniknout. Runner a chat se staví v sidecaru tak, aby v central módu byl sidecar host a central držel záznam relace, a v lokálním módu obojí dělal jeden proces.
+Dnešní dvojice engine / engine-central, router / agent-router, transport / agent-transport jsou to, čemu se nová práce vyhýbá; další pár nesmí vzniknout. Runner a chat se staví v sidecaru tak, aby v central módu byl sidecar host a central držel záznam relace, a v lokálním módu obojí dělal jeden proces. Obsah konverzace přitom nepřekročí zařízení: vlákno otevřené na druhém stroji ukáže záznam a místo transkriptu větu „Transkript je na zařízení X“; přes stroje se předává soubor handoffu, ne konverzace.
 
 ## Proč agent-native matters
 

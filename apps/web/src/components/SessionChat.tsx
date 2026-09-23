@@ -44,6 +44,7 @@ import {
   runIsLiveFor,
   turnInFlight,
   nextSentAt,
+  transcriptElsewhere,
   WORKING_LABEL,
   type ActivityItem,
   type ActivityRow,
@@ -118,7 +119,13 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
-import { handoffSession, patchSessionModelEffort, patchSessionRunnerInstance, renamePersistentSession } from "../api";
+import {
+  fetchTranscriptHost,
+  handoffSession,
+  patchSessionModelEffort,
+  patchSessionRunnerInstance,
+  renamePersistentSession,
+} from "../api";
 import {
   fetchRunnerModels,
   listRunnerInstances,
@@ -168,6 +175,9 @@ export default function SessionChat({
   const [sentAt, setSentAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // #461: the label the events route answers with when the conversation is
+  // on another machine -- null while it is here, or not known yet.
+  const [transcriptHost, setTranscriptHost] = useState<string | null>(null);
   // The composer's draft belongs to the session, not to this component --
   // see lib/session-drafts.ts. Seeded once per mount (the caller keys this
   // component on the session id, so a different session is a different
@@ -250,7 +260,18 @@ export default function SessionChat({
     setTextDeltaBuffers({});
     setReasoningDeltaBuffers({});
     setLiveRunId(null);
+    setTranscriptHost(null);
     setSentAt((current) => nextSentAt(current, { kind: "reset" }));
+
+    // #461: where the transcript is, asked of the device that would serve
+    // it. One row is enough -- the replay below comes over the live
+    // channel, this call is only here for the header. A failure says
+    // nothing (the replay is the thing that matters), so it is swallowed.
+    void fetchTranscriptHost(sessionId)
+      .then((host) => {
+        if (!cancelled) setTranscriptHost(host);
+      })
+      .catch(() => undefined);
 
     // Deltas are coalesced (spec, "Streaming"): a burst of frames becomes
     // one state update per animation frame. Flushed on run end so nothing
@@ -419,6 +440,10 @@ export default function SessionChat({
   const phase = runIsLive || sentAt !== null ? workingPhase(events, liveRunId, sentAt) : null;
   const showWorking = phase !== null && !streamingText && !streamingReasoning && !isWaiting;
   const chip = sessionStatusChip(session.state, session.waiting_since);
+  // #461: the conversation is on another machine and this one holds only
+  // the record. Nothing to replay, nothing to send -- the chat says where
+  // the transcript is and how to pick the thread up here (Předat there).
+  const elsewhere = transcriptElsewhere(transcriptHost, events.length);
   // #378: an open thread with a run that ended other than by Uzavřít --
   // the next message replays the whole conversation from the summary.
   const showNotice = session.state === "suspended" && !noticeDismissed;
@@ -505,7 +530,8 @@ export default function SessionChat({
 
   // #457: every thread the app can show is the caller's own, so there is no
   // access echo left here -- only the state decides.
-  const composerDisabled = session.state === "closed" || session.state === "archived" || isWaiting;
+  const composerDisabled =
+    session.state === "closed" || session.state === "archived" || isWaiting || elsewhere !== null;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -599,8 +625,10 @@ export default function SessionChat({
               {/* #459: Předat -- hands the thread to another machine
                   through its handoff file. Running and suspended only:
                   a draft has nothing to summarise, a closed thread is
-                  done. */}
-              {(session.state === "running" || session.state === "suspended") && (
+                  done. #461: and only where the conversation is -- the
+                  summary is written from the transcript, so a device that
+                  holds none of it cannot hand the thread anywhere. */}
+              {(session.state === "running" || session.state === "suspended") && !elsewhere && (
                 <HeaderIcon
                   onClick={() => void handleHandoff()}
                   disabled={actionPending !== null}
@@ -702,6 +730,8 @@ export default function SessionChat({
         <ConversationContent className={`${THREAD_COLUMN} gap-5`}>
           {loading ? (
             <Shimmer duration={1.5}>Načítám konverzaci…</Shimmer>
+          ) : elsewhere ? (
+            <ConversationEmptyState title={elsewhere.title} description={elsewhere.hint} />
           ) : rows.length === 0 && !showWorking ? (
             <ConversationEmptyState title="Zatím žádné zprávy" description="Napiš první zprávu níže." />
           ) : (
@@ -754,11 +784,13 @@ export default function SessionChat({
                 }
               }}
               placeholder={
-                isWaiting
-                  ? "Relace čeká na odpověď na otázku výše."
-                  : session.state === "closed" || session.state === "archived"
-                    ? "Relace je uzavřená."
-                    : "Napiš zprávu…"
+                elsewhere
+                  ? `Transkript je na zařízení ${elsewhere.host}; pokračuj tam, nebo si vlákno nech předat.`
+                  : isWaiting
+                    ? "Relace čeká na odpověď na otázku výše."
+                    : session.state === "closed" || session.state === "archived"
+                      ? "Relace je uzavřená."
+                      : "Napiš zprávu…"
               }
             />
           </PromptInputBody>

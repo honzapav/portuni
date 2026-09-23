@@ -72,7 +72,6 @@ function stubFromFrame(frame: SessionStateMessage): PartialSession {
     cli: null,
     instance_id: null,
     terminal_id: null,
-    brief: null,
     runner: null,
     host_id: null,
     host_label: null,

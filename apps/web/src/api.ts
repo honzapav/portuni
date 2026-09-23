@@ -312,6 +312,20 @@ export function fetchPersistentSessionResumeInfo(
   return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
 }
 
+// GET /sessions/:id/events -- a device-local route (#458): the transcript
+// is the running device's own content.db, so the machine that answers is
+// the one that has it. The chat replays the log over the live channel, so
+// this asks for a single row and reads the header only: `transcript_host`
+// is the label of the machine holding the conversation, set only when this
+// device has none of it. Null means "the transcript is here (or there is
+// none yet)".
+export function fetchTranscriptHost(id: string): Promise<string | null> {
+  return jsonRequest<{ events: unknown[]; transcript_host?: string }>(
+    "GET",
+    `/sessions/${encodeURIComponent(id)}/events?limit=1`,
+  ).then((r) => r.transcript_host ?? null);
+}
+
 // GET /sessions/:id -- the raw session record (apps/server/shared/types.ts's
 // SessionRow, a zod schema server-side, deliberately not imported here so
 // this stays web-safe). Every SessionSummary field except the two the server
@@ -336,19 +350,20 @@ export function fetchSession(id: string): Promise<Omit<SessionSummary, "write_co
   });
 }
 
-// POST /sessions -- starts a task (session + first run) as a server-driven
-// run. `brief` omitted creates a draft instead (#374, "a thread opens
-// empty"): no run, `run` comes back null; the first message
-// (sessionsClient.message) is what promotes it and starts the run.
+// POST /sessions -- opens a thread. The web never sends a first message
+// here (#374, "a thread opens empty", and #461: the first message is
+// content, so it travels over the live channel to the device that runs the
+// thread, not through this record route): no run, `run` comes back null,
+// and `sessionsClient.message` is what promotes the draft and starts the
+// run.
 export function startSession(input: {
   node_id: string;
-  brief?: string;
   runner?: string;
   instance_id?: string | null;
   policy?: "default" | "auto";
   // #460 "Navázat na handoff": a node-relative wip/sessions/<id>-handoff.md
   // path. The new thread starts from that file's content on this device --
-  // no brief and no runner go with it, the server resolves both.
+  // no runner goes with it, the server resolves it.
   handoff_path?: string;
 }): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
   return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", input).then(

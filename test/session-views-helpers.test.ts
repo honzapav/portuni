@@ -26,7 +26,6 @@ function overviewRow(overrides: Partial<OverviewSessionRow> & { id: string; user
     session_type: "interactive_task",
     cli: "claude",
     instance_id: null,
-    brief: "do the thing",
     runner: "claude",
     waiting_since: null,
     state: "running",

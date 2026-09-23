@@ -168,8 +168,9 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal(body.session.node_id, dbFixture.nodeId);
     // #456: the brief is content -- the record carries none of it; the
     // device's content store does, and the transcript shows it as the
-    // first user_message (asserted just below).
-    assert.equal(body.session.brief, null);
+    // first user_message (asserted just below). #461: the record's wire
+    // shape does not even have the field.
+    assert.ok(!("brief" in body.session));
     assert.equal((await content.getContent(body.session.id))?.brief, "Fix the bug");
     assert.equal(body.session.runner, "fake");
     assert.equal(body.run.session_id, body.session.id);
@@ -295,7 +296,7 @@ describe("task REST endpoints under /sessions", () => {
     const body = JSON.parse(res.body) as { session: SessionSummary; run: SessionRunRow | null };
     assert.equal(body.session.state, "draft");
     assert.equal(body.session.name, "Nový úkol");
-    assert.equal(body.session.brief, null);
+    assert.ok(!("brief" in body.session));
     assert.equal(body.session.runner, "fake");
     assert.equal(body.session.instance_id, null);
     assert.equal(body.run, null);

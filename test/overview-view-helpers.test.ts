@@ -13,7 +13,6 @@ function row(id: string, over: Partial<OverviewSessionRow> = {}): OverviewSessio
     session_type: "interactive_task",
     cli: null,
     instance_id: null,
-    brief: null,
     runner: "claude",
     waiting_since: null,
     state: "running",

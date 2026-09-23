@@ -464,12 +464,6 @@ function SessionRow({
         )}
       </div>
 
-      {session.brief && (
-        <div className="mt-1 truncate text-[12px] text-[var(--color-text-muted)]" title={session.brief}>
-          {session.brief.split("\n")[0]}
-        </div>
-      )}
-
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--color-text-dim)]">
         <span>{chip.label}</span>
         <span>{fmtDateTime(session.last_active_at)}</span>

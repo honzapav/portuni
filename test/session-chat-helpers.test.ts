@@ -15,6 +15,7 @@ import {
   turnInFlight,
   runIsLiveFor,
   createDeltaCoalescer,
+  transcriptElsewhere,
   type ActivityItem,
   type ActivityRow,
   type ChatEvent,
@@ -403,5 +404,30 @@ describe("turnInFlight", () => {
   it("workingPhase shows nothing once the turn ended", () => {
     assert.equal(workingPhase([started, said, ended], "r1", null), null);
     assert.equal(workingPhase([started, said, ended, asked], "r1", null), "thinking");
+  });
+});
+
+// #461: the conversation lives on the device that ran it, so a second
+// device holds the record and nothing else. `transcriptElsewhere` is what
+// the chat asks before it decides to show an empty transcript.
+describe("transcriptElsewhere", () => {
+  it("is nothing when the events route named no other host", () => {
+    assert.equal(transcriptElsewhere(null, 0), null);
+    assert.equal(transcriptElsewhere(null, 12), null);
+  });
+
+  it("names the machine holding the transcript when this one has none of it", () => {
+    const state = transcriptElsewhere("MacBook Pro", 0);
+    assert.ok(state);
+    assert.equal(state.host, "MacBook Pro");
+    assert.equal(state.title, "Transkript je na zařízení MacBook Pro");
+    assert.match(state.hint, /Předat/);
+    assert.match(state.hint, /MacBook Pro/);
+  });
+
+  it("stands down as soon as the transcript is here after all", () => {
+    // A run that started writing on this device between the header call
+    // and the replay: the log wins, the notice goes.
+    assert.equal(transcriptElsewhere("MacBook Pro", 1), null);
   });
 });

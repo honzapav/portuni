@@ -117,7 +117,6 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
     cli: row.cli,
     instance_id: row.instance_id,
     terminal_id: row.terminal_id,
-    brief: row.brief,
     runner: row.runner,
     host_id: hostId,
     host_label: resolveHostLabel(hostId),

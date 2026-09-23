@@ -481,6 +481,11 @@ export type AccessRequest = {
 // exclude it). The first message promotes it to "running".
 export type SessionState = "running" | "suspended" | "closed" | "archived" | "draft";
 
+// The record half of a thread (#461): everything below is a column of
+// `sessions` on the central server. The content -- the first message, the
+// transcript, the inline handoff summary -- is the device's, served by
+// GET /sessions/:id/events from its own content.db, so no field here
+// quotes the conversation.
 export type SessionSummary = {
   id: string;
   node_id: string | null;
@@ -497,9 +502,6 @@ export type SessionSummary = {
   // writes a non-null value anymore since its removal (#345/#346); the
   // column stays for old rows until a later migration drops it.
   terminal_id: string | null;
-  // The task as given (runner batch) -- the first user message on a fresh
-  // run, null for a session predating it or with no task text.
-  brief: string | null;
   // Runner adapter id (e.g. "claude") this session's task runs under.
   runner: string | null;
   // The host whose sidecar is (or last was) running the task: the latest
@@ -632,6 +634,10 @@ export type SessionEventRow = {
 // context on this screen) and without write_count (an extra per-row query
 // this dashboard-scale list skips -- write_count remains available via
 // GET /nodes/:id/sessions for the node-detail view).
+//
+// Record only (#461): the thread's first message is content and lives in
+// the device's content.db, never here, so the row names the thread
+// (`name`) instead of quoting it.
 export type OverviewSessionRow = {
   id: string;
   node_id: string | null;
@@ -641,7 +647,6 @@ export type OverviewSessionRow = {
   session_type: "interactive_task" | "interactive_chat" | "headless" | "env";
   cli: string | null;
   instance_id: string | null;
-  brief: string | null;
   runner: string | null;
   waiting_since: string | null;
   state: SessionState;
