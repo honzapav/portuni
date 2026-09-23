@@ -36,11 +36,11 @@ type Props = {
   // "+" on a node row: start a new task there (opens a thread directly,
   // #374 -- no dialog, no required field).
   onNewTask: (id: string) => void;
-  // #343: each open node's own running/suspended persistent (runner)
-  // sessions, already live-overlaid by the caller (mergeLiveSessionStates),
-  // plus (#374) any locally-opened draft not yet promoted -- every list the
-  // server serves excludes a draft, so the caller merges its own in.
-  // Status comes from state/waiting_since (session_state frames).
+  // #343: each open node's own steerable threads -- running, waiting,
+  // suspended and (#374) draft alike, drafts included because since #463
+  // the node's session list carries the caller's own. The caller derives
+  // the map from the session store (#465), so the status shown here is the
+  // record's own state/waiting_since, kept current by session_state frames.
   threadsByNode: Record<string, SessionSummary[]>;
   // #412: the thread the canvas currently shows, marked in both
   // arrangements (the per-node tree and the grouped task list) the same way

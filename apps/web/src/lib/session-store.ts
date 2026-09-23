@@ -16,16 +16,30 @@
 import type { SessionSummary } from "../types";
 import type { SessionStateMessage } from "./sessions-client";
 
+// A complete record: the row a REST answer carried, verbatim.
+export type CompleteSession = SessionSummary & { partial?: undefined };
+
 // A record known only from a live frame (a session this window never
-// fetched) is marked `partial`: its name and runner are unknown, and the
-// next `put` -- the list refetch the frame triggers -- replaces it whole.
-export type StoredSession = SessionSummary & { partial?: true };
+// fetched) is marked `partial`: its name and runner are unknown -- the name
+// is absent rather than `""`, so nothing overlays a blank over a name a
+// list already has -- and the next `put` (the list refetch the frame
+// triggers) replaces it whole. A partial record is not a thread: the
+// selectors that list threads skip it, because the initial burst of frames
+// carries every running session the caller can see, CLI sessions included,
+// and one of those is neither a sidebar sub-row nor a node's shown thread.
+export type PartialSession = Omit<SessionSummary, "name"> & { name?: string; partial: true };
+
+export type StoredSession = CompleteSession | PartialSession;
 
 export interface SessionStore {
   get(id: string): StoredSession | undefined;
   put(row: SessionSummary): void;
   putMany(rows: readonly SessionSummary[]): void;
   remove(id: string): void;
+  // Drops several records in one copy-on-write, so closing a node -- which
+  // drops every record of that node it is not showing -- is one
+  // notification, not one per thread.
+  removeMany(ids: readonly string[]): void;
   applyFrame(frame: SessionStateMessage): void;
   subscribe(listener: () => void): () => void;
   snapshot(): ReadonlyMap<string, StoredSession>;
@@ -43,10 +57,12 @@ function shallowEqualSession(a: StoredSession, b: StoredSession): boolean {
 }
 
 // The stub a frame for an unknown id creates. Everything the frame does not
-// carry is the zero value, never a guess: `session_type`/`cli` say "a thread
-// of this app" so the row is visible in its node the moment it is heard of,
-// which is what the partial record is for.
-function stubFromFrame(frame: SessionStateMessage): StoredSession {
+// carry is the zero value, never a guess -- the name is left absent rather
+// than blanked, because a frame from a server older than the name field
+// must not erase the name the next list carries. `session_type`/`cli` say
+// "a thread of this app" only so the record has a shape; until a `put`
+// completes it, no thread list shows it.
+function stubFromFrame(frame: SessionStateMessage): PartialSession {
   return {
     partial: true,
     id: frame.session_id,
@@ -62,7 +78,7 @@ function stubFromFrame(frame: SessionStateMessage): StoredSession {
     host_label: null,
     waiting_since: frame.waiting_since,
     state: frame.state,
-    name: frame.name ?? "",
+    ...(frame.name !== undefined ? { name: frame.name } : {}),
     name_is_custom: false,
     handoff_path: null,
     write_count: 0,
@@ -94,6 +110,15 @@ export function createSessionStore(): SessionStore {
     notify();
   }
 
+  // A row from the server completes whatever was there: a caller that
+  // spread a partial record into the row it puts (the optimistic rename)
+  // must not carry the flag back in.
+  function complete(row: SessionSummary): CompleteSession {
+    if (!("partial" in row)) return row;
+    const { partial: _partial, ...rest } = row as SessionSummary & { partial?: true };
+    return rest;
+  }
+
   function putInto(next: Map<string, StoredSession>, row: StoredSession): boolean {
     const existing = next.get(row.id);
     if (existing && shallowEqualSession(existing, row)) return false;
@@ -106,17 +131,24 @@ export function createSessionStore(): SessionStore {
       return records.get(id);
     },
     put(row) {
-      write((next) => putInto(next, row));
+      write((next) => putInto(next, complete(row)));
     },
     putMany(rows) {
       write((next) => {
         let changed = false;
-        for (const row of rows) changed = putInto(next, row) || changed;
+        for (const row of rows) changed = putInto(next, complete(row)) || changed;
         return changed;
       });
     },
     remove(id) {
       write((next) => next.delete(id));
+    },
+    removeMany(ids) {
+      write((next) => {
+        let changed = false;
+        for (const id of ids) changed = next.delete(id) || changed;
+        return changed;
+      });
     },
     // The live channel updates a record, it never replaces one: runner,
     // instance, model and everything else the frame does not carry stay as

@@ -245,10 +245,11 @@ describe("scenario 5: a frame for an unknown thread is a partial record the list
     assert.equal(partial?.partial, true);
     assert.equal(partial?.runner, null);
     assert.equal(selectRunningCount(store), 1);
-    assert.deepEqual(
-      selectNodeThreads(store, "n1").map((s) => s.id),
-      ["x9"],
-    );
+    // Heard of, but not a thread yet (#475): the burst of frames carries
+    // every running session the caller can see, a hand-opened CLI session
+    // included, so the list is what says whether this one belongs in the
+    // node's sub-rows at all.
+    assert.deepEqual(selectNodeThreads(store, "n1"), []);
 
     answer("GET /nodes/n1/sessions", {
       sessions: [row({ id: "x9", name: "Běží jinde", runner: "claude", instance_id: "tempo" })],
@@ -259,6 +260,10 @@ describe("scenario 5: a frame for an unknown thread is a partial record the list
     assert.equal(complete?.runner, "claude");
     assert.equal(complete?.instance_id, "tempo");
     assert.equal(store.snapshot().size, 1);
+    assert.deepEqual(
+      selectNodeThreads(store, "n1").map((s) => s.id),
+      ["x9"],
+    );
   });
 });
 

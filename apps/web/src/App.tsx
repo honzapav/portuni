@@ -25,6 +25,7 @@ import { createSessionStore } from "./lib/session-store";
 import {
   selectLiveStates,
   selectMountedThreads,
+  selectNodeRecordIds,
   selectRunningCount,
   selectShownThread,
   selectThreadsByNode,
@@ -885,10 +886,13 @@ export default function App() {
       // the chat header, Přehled -- ends on the server's row with no
       // refetch (spec scenario 4). A refusal puts the previous record back
       // and says why on the node surface.
-      const before = sessionStore.get(session.id);
-      sessionStore.put({ ...(before ?? session), name, name_is_custom: true });
+      const stored = sessionStore.get(session.id);
+      // A record known only from a live frame carries no name to restore,
+      // so the row the sidebar handed in is the one to fall back to.
+      const before: SessionSummary = stored && !stored.partial ? stored : session;
+      sessionStore.put({ ...before, name, name_is_custom: true });
       void renamePersistentSession(session.id, name).catch((e) => {
-        if (before) sessionStore.put(before);
+        sessionStore.put(before);
         setWorkspaceDetailError(`Vlákno se nepodařilo přejmenovat: ${String(e)}`);
       });
     },
@@ -917,8 +921,15 @@ export default function App() {
   // Close a node: drop it from the open set. Its sessions keep running on
   // the sidecar. Moves the workspace selection to a neighbouring open node,
   // or clears it when nothing is left.
+  //
+  // Its records leave the store with it (#475, what pruneNodeSessions did
+  // before the store): nothing reads them anymore, and keeping them would
+  // grow the window's map for as long as the app runs. The thread on
+  // screen is the exception -- closing its node does not close it -- so its
+  // record stays until it is replaced by a list that carries it again.
   const closeNode = useCallback(
     (nodeId: string) => {
+      sessionStore.removeMany(selectNodeRecordIds(sessionStore, nodeId, shownThread?.id ?? null));
       setOpenNodeIds((prev) => prev.filter((id) => id !== nodeId));
       setSelectedWorkspaceNodeId((prev) => {
         if (prev !== nodeId) return prev;
@@ -926,7 +937,7 @@ export default function App() {
         return remaining.length > 0 ? remaining[remaining.length - 1].id : null;
       });
     },
-    [workspaceRows],
+    [workspaceRows, sessionStore, shownThread?.id],
   );
 
   return (

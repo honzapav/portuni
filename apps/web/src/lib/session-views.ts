@@ -102,20 +102,12 @@ export function sortInboxSessions(
   return [...waiting, ...active, ...paused];
 }
 
-// SessionsSection's `sessions?.length` count of running rows, live
-// (StatusFooter's running count) -- counts distinct
-// session ids currently reporting `running` via session_state, regardless
-// of whether this device has ever fetched their full SessionSummary.
-export function countRunningSessions(liveStates: Readonly<Record<string, SessionStateMessage>>): number {
-  return Object.values(liveStates).filter((s) => s.state === "running").length;
-}
-
-// The persistent session Práce shows for a node: the requested one when
-// it is still live, else the newest live one, else nothing. "draft" counts
-// as live too (#374: "a thread opens empty") -- a draft is never in the
-// server-fetched list on its own (every list excludes it), so it only ever
-// surfaces here when the caller merges in the one it just created locally
-// and asks for it by id.
+// The persistent session Práce shows for a node: the requested one when it
+// is still live, else the newest row of the first non-empty bucket (what
+// selectNodeThreads orders), else nothing. "draft" counts as live too
+// (#374: "a thread opens empty") -- since #463 the node's session list
+// carries the caller's own drafts, so a draft reaches this pick like every
+// other thread, from the store.
 export function pickOpenChatSession<T extends { id: string; state: SessionState }>(
   sessions: readonly T[],
   requestedId: string | null,
@@ -142,15 +134,6 @@ export function requestChatSession(
   if (!session.node_id) return { ...prev };
   return { ...prev, [session.node_id]: session.id };
 }
-
-// ---------------------------------------------------------------- #412
-
-// The Práce sidebar's per-node thread map (App.tsx's openSessionsByNode).
-// A thread only ever reached it through the per-node refetch keyed on the
-// open-node set, so a thread started from the node detail (the Relace
-// tab's "Navázat", the detail's "Nový úkol") never showed up under its
-// node -- nothing changed that set. These are the three folds that keep
-// the map current without a refetch-everything pass.
 
 // ---------------------------------------------------------------- v2
 
@@ -208,43 +191,3 @@ export function shownChatSessionId(
   if (openSession.node_id !== selectedNodeId) return null;
   return openSession.id;
 }
-
-// The threads that keep a mounted SessionChat in this window (#429, the
-// task-surface spec's "mounted for every open thread and toggled"): every
-// chat-eligible thread of an open node, plus the shown one, which the
-// per-node map can still be missing (its own fetch resolved first, or it
-// is a local draft of a node whose list has not come back yet).
-//
-// Order is the open-node order, then each node's own list order, so the
-// rendered keys are stable across a switch -- React keeps a keyed child
-// mounted when only its position or props change, and that is what makes
-// switching threads free of a re-subscribe. The shown thread's own object
-// wins over the map's copy of it: it carries whatever the chat has since
-// updated (model, effort, live state), the map's copy is whatever the
-// last refetch returned -- except the name, which the map's copy carries
-// from the live channel (a rename in the Relace tab or another window
-// reaches this window only that way), so it is overlaid onto the shown one.
-type NodeSession = { id: string; node_id: string | null; state: SessionState; name?: string };
-
-export function mountedChatSessions<T extends NodeSession>(
-  byNode: Readonly<Record<string, T[]>>,
-  openNodeIds: readonly string[],
-  shown: T | null,
-): T[] {
-  const mounted: T[] = [];
-  const seen = new Set<string>();
-  for (const nodeId of openNodeIds) {
-    for (const session of byNode[nodeId] ?? []) {
-      if (!isChatSessionState(session.state) || seen.has(session.id)) continue;
-      seen.add(session.id);
-      if (shown && shown.id === session.id) {
-        mounted.push(session.name !== undefined && session.name !== shown.name ? { ...shown, name: session.name } : shown);
-      } else {
-        mounted.push(session);
-      }
-    }
-  }
-  if (shown && isChatSessionState(shown.state) && !seen.has(shown.id)) mounted.push(shown);
-  return mounted;
-}
-

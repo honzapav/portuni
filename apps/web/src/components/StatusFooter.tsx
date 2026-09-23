@@ -11,9 +11,10 @@ import { Button } from "@/components/ui/button";
 
 type Props = {
   onOpenSettings: () => void;
-  // #343: the live running-session count from session_state frames
-  // (countRunningSessions) -- a session can be running without being open
-  // anywhere in this window.
+  // #343: how many threads are running right now (the session store's
+  // selectRunningCount) -- a session can be running without being open
+  // anywhere in this window, and a record heard of through a frame alone
+  // counts too.
   sessionCount: number;
   onOpenWorkspace: () => void;
   pendingCount: number;

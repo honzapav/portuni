@@ -50,7 +50,10 @@ export function bindSessionStore(store: SessionStore | null): void {
 // state would be the copy going stale in one step.
 function foldIntoSession(id: string, patch: Record<string, unknown>): void {
   const existing = sessionStore?.get(id);
-  if (!existing) return;
+  // A record known only from a live frame is not a row to fold into: it has
+  // no name and no runner, and the refetch that frame triggered replaces it
+  // whole in a moment.
+  if (!existing || existing.partial) return;
   sessionStore?.put({ ...existing, ...patch });
 }
 

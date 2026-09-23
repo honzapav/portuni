@@ -332,8 +332,10 @@ export default function SessionChat({
   // Every hook has run; from here the record is what the component reads.
   // It is missing only in the moment between its removal from the store (a
   // deleted draft) and the parent dropping this pane, so there is nothing
-  // to show and nothing to say.
-  if (!session) return null;
+  // to show and nothing to say. A record known only from a live frame
+  // (`partial`) is the same case: the parent never mounts a chat for one,
+  // and half a record would render a nameless header.
+  if (!session || session.partial) return null;
 
   const access = sessionRowAccess(session.user_id, meId, canManage);
   const host = hostDisplayName(session);

@@ -232,12 +232,28 @@ principles hold it together:
    (`test/session-store-scenarios.test.ts`), not by helper tests alone.
 
 The store itself is a plain module, no React and no library:
-`get`/`put`/`putMany`/`remove`/`applyFrame`/`subscribe`/`snapshot`. `put`
-keeps the existing reference when every field is equal and the map is
+`get`/`put`/`putMany`/`remove`/`removeMany`/`applyFrame`/`subscribe`/`snapshot`.
+`put` keeps the existing reference when every field is equal and the map is
 copied on write, so "the snapshot reference changed" means exactly
 "something changed". A frame for an id this window never fetched creates a
-record marked `partial` (unknown name and runner); the next `put` -- the
-refetch that frame triggers -- replaces it whole.
+record marked `partial` (no name -- absent, not `""`, so a frame from a
+server older than that field never blanks a name a list already shows --
+and no runner); the next `put`, the refetch that frame triggers, replaces
+it whole.
+
+**A partial record is not a thread.** `selectNodeThreads`,
+`selectShownThread` and `selectMountedThreads` skip it: the initial burst
+sends a `session_state` frame for every running session the caller can see,
+hand-opened CLI sessions included, and one of those is neither a sidebar
+sub-row nor a node's shown thread nor a mounted chat. `selectRunningCount`
+does count it -- the footer says how many runs are going, wherever they
+are. `SessionChat` renders nothing for one, and `api.ts`'s partial folds
+(`foldIntoSession`) leave it alone.
+
+**A closed node's records leave the store.** `closeNode` in `App.tsx`
+drops every record anchored on the node it closes -- `selectNodeRecordIds`
+picks them, `removeMany` drops them in one copy-on-write -- except the
+thread currently shown, which closing its node does not close.
 
 **Writing is the API's job, not the caller's** (`apps/web/src/api.ts`).
 `bindSessionStore(store)` is called once, in `App.tsx`; after that
@@ -262,6 +278,18 @@ selector building a fresh object or array loops until React throws
 "Maximum update depth exceeded". A new selector goes through `cached()` and
 gets a reference-stability test in `test/session-store.test.ts`.
 
+`cached()` is bounded: **one entry per selector key**, whatever the
+arguments. Arguments that vary at runtime -- the open-node set, the shown
+thread -- live in the entry's `variant`, not in the key, so switching
+threads all day replaces one entry instead of leaving one behind per
+switch; a variant miss recomputes and still hands back the previous array
+when it holds the same rows, so a switch between two threads of one node
+costs no remount. The one key that carries an argument is
+`nodeThreads:<node>`, which the per-node map and the mount set read side by
+side. An empty open-node set answers with the shared empty value and takes
+no entry at all. `selectorCacheSize(store)` exists for the tests that hold
+this bound.
+
 ## What `App.tsx` still owns
 
 - **One `SessionsClient` for the app's lifetime.** `useState(() =>
@@ -276,7 +304,9 @@ gets a reference-stability test in `test/session-store.test.ts`.
 - **Selection**, not facts: `openNodeIds` and
   `requestedChatSessionByNode`. `openSessionChat(nodeId, sessionId?)`
   records the requested id and opens the node; `selectShownThread` picks
-  the thread (requested id first, else the newest live one).
+  the thread (requested id first, else the newest row of the first
+  non-empty bucket `selectNodeThreads` orders). `closeNode` drops the
+  closed node's records from the store, keeping the shown thread's.
 - **`refreshNodeSessions(nodeId)`**, coalesced per node: a request while
   one is in flight sets a trailing flag instead of racing a second fetch.
   It runs whenever `openNodeIds` changes and on every `session_state` frame
@@ -526,9 +556,9 @@ buffers and the coalescer, `collapseToolCalls`, `deriveTranscriptRows`,
 `activitySummary`, `workingPhase`,
 `threadNameFromFirstMessage`), `lib/session-views.ts` (row chip, access
 echo, live overlay, inbox ordering, `pickOpenChatSession`,
-`requestChatSession`, `mountedChatSessions`, `isThreadSession`,
-`nodeRowActive`), `lib/session-store.ts` and `lib/session-selectors.ts`
-(the store and its selectors), `lib/workspace-list.ts` (the node dot, the Stav
+`requestChatSession`, `isThreadSession`, `nodeRowActive`),
+`lib/session-store.ts` and `lib/session-selectors.ts` (the store and its
+selectors), `lib/workspace-list.ts` (the node dot, the Stav
 grouping), `lib/runner-picker.ts` (composer row 2) and
 `lib/context-ring.ts` (the ring). All are dependency-free and run under
 the server's `node:test` runner (`test/session-chat-helpers.test.ts`,
