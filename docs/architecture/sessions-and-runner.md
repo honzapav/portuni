@@ -257,11 +257,35 @@ human verification.
 - **Permissions** delegate to `permissions.ts` `decidePermission`, which
   needs `RunStart.portuniRoot`/`.mirrors` (threaded from the provisioned
   mirror by `startRun`). An "ask" decision emits a `question` event and
-  leaves the `canUseTool` promise open until `RunHandle.answer()`:
-  `true`/`false` are allow/deny, any other value becomes
+  leaves the `canUseTool` promise open until `RunHandle.answer()`: an
+  approval allows on `true` only (`false` or text denies); an input
+  question (AskUserQuestion) takes a string as
   `{behavior: "allow", updatedInput: {...originalInput, answer}}`. A
   question still open when the run ends is denied; one raised after the
   end is denied outright.
+- **MCP elicitation** (`onElicitation`): a dialog whose form is exactly one
+  boolean field (Portuni's scope and write confirmations) emits an
+  `approval` question and waits on `RunHandle.answer()`: `true` accepts
+  with that field `true`, anything else declines. A form with more fields,
+  any non-boolean field or a `url` dialog is declined without a question:
+  the chat shows only the dialog's message, so a second field would be
+  granted unseen. An open dialog is cancelled when the run ends; when the
+  SDK abandons it (its timeout, an interrupted turn) the adapter also
+  emits the question again with a `system` decision, which the runtime
+  reads as "closed without the user" and clears `waiting_since`.
+- **One question at a time** (`askInTurn`): the runtime keeps a single
+  pending question per session, so a permission ask or a dialog raised
+  while another question is open waits in line and is emitted once that
+  one is answered; the first ask in an empty line is emitted
+  synchronously. The web sends `true`/`false` for the default Ano/Ne
+  buttons (`approvalChoices`), never the label.
+- **Inherited claude.ai Portuni connectors** are switched off with
+  `toggleMcpServer` after init: `mcpServerStatus()` entries with scope
+  `claudeai` whose upstream URL origin is `PORTUNI_CENTRAL_URL` or
+  `PORTUNI_PUBLIC_URL`, matched by URL, never by the user's connector name.
+  Until the toggle lands, `canUseTool` denies their tools by prefix
+  (`mcpToolPrefix`). The run has its own `portuni` server, and a
+  connector Portuni sends its dialogs to claude.ai.
 - A write tool's `file_change` (`op: "create" | "edit"`) is decided from an
   `fs.stat` taken at `tool_call started` time and carried on the
   pending-tool-call snapshot; the tool result never carries the arguments.

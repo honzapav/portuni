@@ -16,6 +16,8 @@ import { constants as fsConstants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
+  ElicitationRequest,
+  ElicitationResult,
   HookInput,
   HookJSONOutput,
   Options,
@@ -80,6 +82,9 @@ export interface CreateClaudeAdapterDeps {
   closeTermMs?: number;
   // Clock for the reasoning duration; tests inject a fake.
   now?: () => number;
+  // Origins of this Portuni, for switching off inherited claude.ai
+  // connectors to it; defaults to PORTUNI_CENTRAL_URL / PORTUNI_PUBLIC_URL.
+  portuniOrigins?: () => string[];
 }
 
 // `signal` lets a caller cancel a still-pending sleep the instant it no
@@ -325,6 +330,71 @@ interface PendingToolCall {
 interface PendingPermission {
   resolve: (result: PermissionResult) => void;
   input: Record<string, unknown>;
+  // What the chat was asked: an approval allows only on `true`; an input
+  // question (AskUserQuestion) carries the typed answer back as input.
+  type: "approval" | "input";
+}
+
+// A connector dialog (MCP elicitation) waiting on the chat's answer.
+type PendingElicitation = (result: ElicitationResult) => void;
+
+// The chat renders a dialog as one yes/no question showing only the
+// dialog's message, so it can answer a form only when the form is exactly
+// one boolean field (Portuni's scope and write confirmations are one
+// `confirm: boolean`). A second field would be granted unseen; any other
+// form, or a URL dialog, needs input the chat cannot collect. null means
+// the dialog is declined without asking.
+export function confirmationField(request: ElicitationRequest): string | null {
+  if (request.mode === "url") return null;
+  const properties = (request.requestedSchema?.properties ?? {}) as Record<string, { type?: unknown }>;
+  const names = Object.keys(properties);
+  if (names.length !== 1) return null;
+  return properties[names[0]]?.type === "boolean" ? names[0] : null;
+}
+
+// The tool-name prefix Claude Code gives an MCP server's tools:
+// `mcp__<server>__<tool>`, the server name with every character outside
+// [A-Za-z0-9] replaced by an underscore ("claude.ai Portuni Tempo" ->
+// "mcp__claude_ai_Portuni_Tempo__").
+export function mcpToolPrefix(serverName: string): string {
+  return `mcp__${serverName.replace(/[^A-Za-z0-9]/g, "_")}__`;
+}
+
+// A run inherits the claude.ai connectors of its profile's account. One
+// pointing at this Portuni is a second Portuni: a connector session whose
+// confirmation dialogs go to claude.ai, where nobody sees them. The run has
+// its own Portuni connection, so those are switched off. Recognised by the
+// upstream URL the SDK reports, never by the name the user gave it.
+export function inheritedPortuniConnectors(
+  statuses: readonly { name: string; scope?: string; config?: { type?: string; url?: string } }[],
+  portuniOrigins: readonly string[],
+): string[] {
+  const origins = new Set(portuniOrigins);
+  return statuses
+    .filter((s) => s.scope === "claudeai" || s.config?.type === "claudeai-proxy")
+    .filter((s) => {
+      try {
+        return s.config?.url !== undefined && origins.has(new URL(s.config.url).origin);
+      } catch {
+        return false;
+      }
+    })
+    .map((s) => s.name);
+}
+
+// The origins this Portuni is reachable at from outside: the central
+// server a team workspace's sync agent talks to, and the public URL the
+// central server itself serves connectors on.
+function defaultPortuniOrigins(): string[] {
+  const origins: string[] = [];
+  for (const raw of [process.env.PORTUNI_CENTRAL_URL, process.env.PORTUNI_PUBLIC_URL]) {
+    try {
+      if (raw?.trim()) origins.push(new URL(raw.trim()).origin);
+    } catch {
+      // Not a URL: nothing to match against.
+    }
+  }
+  return origins;
 }
 
 interface RunTranslationState {
@@ -339,6 +409,15 @@ interface RunTranslationState {
   reasoningStartedAt: number | null;
   pendingToolCalls: Map<string, PendingToolCall>;
   pendingPermissions: Map<string, PendingPermission>;
+  pendingElicitations: Map<string, PendingElicitation>;
+  // The chat shows one open question at a time (the runtime keeps a single
+  // pending question per session): a permission ask or a dialog raised
+  // while another is open waits in line for its turn.
+  questionOpen: boolean;
+  questionQueue: (() => void)[];
+  // Inherited claude.ai connectors switched off at init, by tool prefix:
+  // the backstop for a call the model issues before the toggle lands.
+  disabledToolPrefixes: string[];
   ended: boolean;
   endedResolve: () => void;
   endedPromise: Promise<void>;
@@ -366,6 +445,10 @@ function createState(): RunTranslationState {
     reasoningStartedAt: null,
     pendingToolCalls: new Map(),
     pendingPermissions: new Map(),
+    pendingElicitations: new Map(),
+    questionOpen: false,
+    questionQueue: [],
+    disabledToolPrefixes: [],
     ended: false,
     endedResolve,
     endedPromise,
@@ -593,6 +676,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
   const closeTermMs = deps.closeTermMs ?? DEFAULT_CLOSE_TERM_MS;
   const now = deps.now ?? Date.now;
+  const portuniOrigins = deps.portuniOrigins ?? defaultPortuniOrigins;
   // #376: filled from the first live run's own Query.supportedModels() --
   // null until then (and re-attempted on the next run if that call itself
   // failed), never re-fetched once it holds a real list.
@@ -637,6 +721,12 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       input: Record<string, unknown>,
       options: { requestId: string },
     ): Promise<PermissionResult> {
+      if (state.disabledToolPrefixes.some((prefix) => toolName.startsWith(prefix))) {
+        return {
+          behavior: "deny",
+          message: "Tento konektor je pro běh vypnutý: použij server portuni (mcp__portuni__*).",
+        };
+      }
       const decision = decidePermission({
         tool: toolName,
         input,
@@ -648,26 +738,105 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       if (decision.kind === "allow") return { behavior: "allow", updatedInput: input };
       if (decision.kind === "deny") return { behavior: "deny", message: decision.message };
 
+      const ended: PermissionResult = { behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." };
       // The run is already over (the SDK can still call this from a turn
       // that was in flight when the iterator finished): nobody is left to
       // answer, so deny instead of parking a promise nothing will resolve.
-      if (state.ended) return { behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." };
+      if (state.ended) return ended;
       const requestId = options.requestId;
-      sink({
-        kind: "question",
-        payload: {
-          request_id: requestId,
-          type: decision.question.type,
-          tool: toolName,
-          title: decision.question.title,
-          detail: decision.question.detail,
-          options: decision.question.options,
-          decision: null,
+      return askInTurn(
+        () => {
+          sink({
+            kind: "question",
+            payload: {
+              request_id: requestId,
+              type: decision.question.type,
+              tool: toolName,
+              title: decision.question.title,
+              detail: decision.question.detail,
+              options: decision.question.options,
+              decision: null,
+            },
+          });
+          return new Promise<PermissionResult>((resolve) => {
+            state.pendingPermissions.set(requestId, { resolve, input, type: decision.question.type });
+          });
         },
+        () => ended,
+      );
+    }
+
+    // Runs `ask` once no other question is open in the chat, so two asks
+    // never race for the runtime's single pending question. With no
+    // question open it asks synchronously, so the pending entry exists
+    // before the caller's promise is even returned (an answer can arrive
+    // right away). A run that ends while an ask waits in line answers with
+    // `ifEnded` instead of asking.
+    function askInTurn<T>(ask: () => Promise<T>, ifEnded: () => T): Promise<T> {
+      const run = (): Promise<T> => {
+        state.questionOpen = true;
+        const settled = state.ended ? Promise.resolve(ifEnded()) : ask();
+        return settled.finally(() => {
+          state.questionOpen = false;
+          state.questionQueue.shift()?.();
+        });
+      };
+      if (!state.questionOpen) return run();
+      return new Promise<T>((resolve, reject) => {
+        state.questionQueue.push(() => void run().then(resolve, reject));
       });
-      return new Promise<PermissionResult>((resolve) => {
-        state.pendingPermissions.set(requestId, { resolve, input });
-      });
+    }
+
+    // An MCP server's confirmation dialog (Portuni's scope expansion and
+    // write access) is asked in the chat like any other question; the
+    // answer comes back through handle.answer().
+    async function onElicitation(
+      request: ElicitationRequest,
+      options: { signal: AbortSignal; requestId: string },
+    ): Promise<ElicitationResult> {
+      const field = confirmationField(request);
+      if (field === null) return { action: "decline" };
+      if (state.ended || options.signal.aborted) return { action: "cancel" };
+      const requestId = options.requestId;
+      const payload = {
+        request_id: requestId,
+        type: "approval" as const,
+        tool: `mcp__${request.serverName}`,
+        title: request.title ?? `Potvrzení: ${request.displayName ?? request.serverName}`,
+        detail: request.message,
+        options: null,
+      };
+      return askInTurn(
+        () => {
+          sink({ kind: "question", payload: { ...payload, decision: null } });
+          return new Promise<ElicitationResult>((resolve) => {
+            const settle = (result: ElicitationResult) => {
+              if (!state.pendingElicitations.delete(requestId)) return;
+              resolve(result);
+            };
+            state.pendingElicitations.set(requestId, (result) =>
+              settle(result.action === "accept" ? { action: "accept", content: { [field]: true } } : result),
+            );
+            // The SDK gave up on the dialog (its own timeout, or the turn
+            // was interrupted): the chat must stop waiting for an answer
+            // nobody will use. A question event carrying a decision is how
+            // the runtime learns a question closed without the user.
+            options.signal.addEventListener(
+              "abort",
+              () => {
+                if (!state.pendingElicitations.has(requestId)) return;
+                settle({ action: "cancel" });
+                sink({
+                  kind: "question",
+                  payload: { ...payload, decision: { by: "system", value: false, at: new Date(now()).toISOString() } },
+                });
+              },
+              { once: true },
+            );
+          });
+        },
+        () => ({ action: "cancel" }),
+      );
     }
 
     async function preCompactHook(input: HookInput): Promise<HookJSONOutput> {
@@ -709,6 +878,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       includePartialMessages: true,
       permissionMode: "default",
       canUseTool,
+      onElicitation,
       env: buildEnv(run.instance.env),
       hooks: { PreCompact: [{ hooks: [preCompactHook] }] },
       spawnClaudeCodeProcess,
@@ -749,6 +919,17 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     async function translateMessage(msg: SDKMessage): Promise<void> {
       if (msg.type === "system" && msg.subtype === "init") {
         state.agentSessionId = msg.session_id;
+        const origins = portuniOrigins();
+        if (origins.length > 0) {
+          void Promise.resolve()
+            .then(() => q.mcpServerStatus())
+            .then((statuses) => {
+              const names = inheritedPortuniConnectors(statuses, origins);
+              state.disabledToolPrefixes = names.map(mcpToolPrefix);
+              return Promise.all(names.map((name) => q.toggleMcpServer(name, false)));
+            })
+            .catch(() => undefined);
+        }
         return;
       }
       if (msg.type === "system" && msg.subtype === "compact_boundary") {
@@ -810,6 +991,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         state.pendingPermissions.delete(requestId);
         pending.resolve({ behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." });
       }
+      for (const settle of [...state.pendingElicitations.values()]) settle({ action: "cancel" });
+      // Asks still waiting in line: each runs, sees the run ended and
+      // answers with its own refusal without asking.
+      for (const next of state.questionQueue.splice(0)) next();
       state.endedResolve();
     }
 
@@ -904,17 +1089,23 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         promptQueue.push(userMessage(text));
       },
       async answer(requestId: string, decision: QuestionDecision): Promise<void> {
+        const elicitation = state.pendingElicitations.get(requestId);
+        if (elicitation) {
+          elicitation(decision.value === true ? { action: "accept" } : { action: "decline" });
+          return;
+        }
         const pending = state.pendingPermissions.get(requestId);
         if (!pending) return;
         state.pendingPermissions.delete(requestId);
-        if (decision.value === false) {
-          pending.resolve({ behavior: "deny", message: "Zamítnuto uživatelem." });
-        } else if (decision.value === true) {
+        if (decision.value === true) {
           pending.resolve({ behavior: "allow", updatedInput: pending.input });
-        } else {
+        } else if (pending.type === "input" && typeof decision.value === "string") {
           // AskUserQuestion (input-type ask): the typed answer becomes part
           // of the tool's own input rather than a plain allow/deny.
           pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answer: decision.value } });
+        } else {
+          // `false`, or text where an approval was asked: never an allow.
+          pending.resolve({ behavior: "deny", message: "Zamítnuto uživatelem." });
         }
       },
       // #378 ("Stop, not Přerušit"): cancels the CURRENT TURN only

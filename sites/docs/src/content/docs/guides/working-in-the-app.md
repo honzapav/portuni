@@ -189,7 +189,13 @@ matching event lands; the reasoning aside stays open while its deltas are
 still arriving and collapses once the batched event replaces it. A
 question panel appears above the composer while
 `waiting_since` is set — option buttons for an approval, a text field for
-free-form input — and the composer itself disables while closed or
+free-form input — also for a confirmation dialog an MCP server raises
+mid-tool-call, such as Portuni's scope expansion or write access (Ano
+accepts, Ne declines; a dialog asking for more than a yes/no is declined).
+The run uses only its own Portuni connection: a claude.ai connector its
+profile inherits that points at this Portuni's server (recognised by its
+URL, whatever it is named) is switched off for the run, because that
+one's dialogs would go to claude.ai. The composer itself disables while closed or
 archived, or when you are not the session's owner (messages and answers
 are owner-only; anyone who can see the node can read along). Unlike
 before, it does **not** disable while suspended: a suspended thread shows
