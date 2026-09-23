@@ -544,6 +544,17 @@ human verification.
   `PatchSessionInput`, central `PatchSessionBody`), so a list row and the
   chat header render the ring without reading the log. `run_ended.usage`
   stays as it was.
+- **A subagent's frames are not the thread's (#499).** An assistant,
+  user or stream_event message with `parent_tool_use_id` set was produced
+  inside a subagent the main agent started (Agent/Task tool);
+  `isSubagentFrame` drops it before translation. None of it becomes an
+  `assistant_message`, `reasoning`, `tool_call`, `file_change`,
+  `context_usage` or a delta, and it never sets `state.model`, so the ring
+  and the window lookup in `modelUsage` follow the main agent only. The
+  main agent's own Task `tool_use` and its `tool_result` are top-level
+  frames and translate as any tool. What the subagent does in the
+  background stays the agent's business; Portuni neither shows nor
+  watches it.
 - **`models()` never starts a process.** A module-wide `modelsCache`
   starts `null` and is filled from the first live run's
   `Query.supportedModels()` (called inside the promise chain so a missing

@@ -639,6 +639,120 @@ describe("Claude adapter: message translation", () => {
     });
   });
 
+  // #499: frames with parent_tool_use_id come from a subagent the main
+  // agent started; none of them is the thread's reply, activity or context.
+  it("a subagent's frames stay out of the transcript, the model and the context ring", async () => {
+    const sub = { parent_tool_use_id: "task-1", session_id: "s1" };
+    const script: SDKMessage[] = [
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [{ type: "tool_use", id: "task-1", name: "Task", input: { description: "prozkoumej", prompt: "..." } }],
+          usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 40_000, output_tokens: 5 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "sub hmm" } },
+        uuid: "se1",
+        ...sub,
+      } as unknown as SDKMessage,
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "sub te" } },
+        uuid: "se2",
+        ...sub,
+      } as unknown as SDKMessage,
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-haiku-4-5",
+          content: [
+            { type: "thinking", thinking: "sub hmm" },
+            { type: "text", text: "subagent text" },
+            { type: "tool_use", id: "sub-w", name: "Write", input: { file_path: "/tmp/sub.txt", content: "x" } },
+          ],
+          usage: { input_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 150_000, output_tokens: 9 },
+        },
+        uuid: "a2",
+        ...sub,
+      } as unknown as SDKMessage,
+      {
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "sub-w", content: "ok" }] },
+        uuid: "u2",
+        ...sub,
+      } as unknown as SDKMessage,
+      {
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "task-1", content: "hotovo" }] },
+        parent_tool_use_id: null,
+        uuid: "u3",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [{ type: "text", text: "main reply" }],
+          usage: { input_tokens: 20, cache_creation_input_tokens: 100, cache_read_input_tokens: 40_000, output_tokens: 6 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a3",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 2,
+        result: "done",
+        stop_reason: null,
+        total_cost_usd: 0.1,
+        usage: { input_tokens: 33, output_tokens: 20, cache_creation_input_tokens: 100, cache_read_input_tokens: 230_000 },
+        modelUsage: {
+          "claude-haiku-4-5": { contextWindow: 200_000, inputTokens: 3, outputTokens: 9 },
+          "claude-opus-5": { contextWindow: 1_000_000, inputTokens: 30, outputTokens: 11 },
+        },
+        permission_denials: [],
+        duration_ms: 1,
+        duration_api_ms: 1,
+        uuid: "r1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+    ];
+    const { query } = makeFakeQuery(script);
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await createClaudeAdapter({ query }).start(makeRunStart(), (e) => events.push(e));
+    await handle.close();
+    const canonical = events.filter((e): e is CanonicalEvent => "kind" in e);
+    const texts = canonical.flatMap((e) => (e.kind === "assistant_message" ? [e.payload.text] : []));
+    assert.deepEqual(texts, ["main reply"]);
+    assert.equal(canonical.filter((e) => e.kind === "reasoning").length, 0);
+    assert.equal(canonical.filter((e) => e.kind === "file_change").length, 0);
+    const tools = canonical.flatMap((e) => (e.kind === "tool_call" ? [`${e.payload.tool_use_id}:${e.payload.status}`] : []));
+    assert.deepEqual(tools, ["task-1:started", "task-1:completed"]);
+    assert.equal(events.filter((e) => !("kind" in e)).length, 0, "no subagent delta reaches the chat");
+    const usages = canonical.filter(
+      (e): e is Extract<CanonicalEvent, { kind: "context_usage" }> => e.kind === "context_usage",
+    );
+    assert.deepEqual(
+      usages.map((u) => [u.payload.model, u.payload.used_tokens, u.payload.max_tokens]),
+      [
+        ["claude-opus-5", 40_010, null],
+        ["claude-opus-5", 40_120, null],
+        ["claude-opus-5", 40_120, 1_000_000],
+      ],
+    );
+  });
+
   it("a result message's usage/cost folds into the run_ended event", async () => {
     const script: SDKMessage[] = [
       {

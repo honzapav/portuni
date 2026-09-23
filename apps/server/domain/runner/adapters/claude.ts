@@ -634,6 +634,15 @@ function contextUsageAtTurnEnd(
   };
 }
 
+// A frame produced inside a subagent started by a tool_use of the main
+// agent (sdk.d.ts: "parent_tool_use_id is non-null when the message was
+// produced inside a subagent started by that tool_use").
+function isSubagentFrame(msg: SDKMessage): boolean {
+  if (msg.type !== "assistant" && msg.type !== "user" && msg.type !== "stream_event") return false;
+  const parent = (msg as { parent_tool_use_id?: unknown }).parent_tool_use_id;
+  return typeof parent === "string" && parent !== "";
+}
+
 async function translateAssistantMessage(
   msg: Extract<SDKMessage, { type: "assistant" }>,
   state: RunTranslationState,
@@ -1076,6 +1085,13 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         sink({ kind: "compaction", payload: { trigger: "auto" } });
         return;
       }
+      // #499: a subagent's own frames (Agent/Task tool; parent_tool_use_id
+      // set) are not the main agent's: its text is no reply, its tools no
+      // activity of this thread, and its model and usage describe another
+      // context -- translating them overwrote state.model and drove the
+      // ring to the subagent's window. The main agent's Task tool_use and
+      // its tool_result are top-level frames and still translate.
+      if (isSubagentFrame(msg)) return;
       if (msg.type === "assistant") {
         await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);
         return;

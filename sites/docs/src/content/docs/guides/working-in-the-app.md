@@ -317,11 +317,14 @@ runner and its instances while the thread is still new (the organisation's
 default is preselected and marked "(výchozí)"; the choice is fixed once
 the first message goes out), and the host. The header shows the name, the
 state and, once the run has reported, a context ring with the share of the
-model's window in use; from 80 % it turns amber and "Pokračovat v nové
+model's window in use (the main agent's context only: a subagent the
+agent starts has a window of its own and never moves the ring); from 80 % it turns amber and "Pokračovat v nové
 session" becomes the primary button. While the agent works on a turn,
 the transcript always shows what is happening: streaming text, the tool
 that is running, or a "Spouštím… / Přemýšlím… / Pokračuji…" line with a
-counter; between turns it shows nothing. Tool calls and reasoning fold into one line per turn ("Přečteno
+counter; between turns it shows nothing. A subagent's own messages and
+tools stay out of the transcript; the agent's call that started it shows as
+one tool call. Tool calls and reasoning fold into one line per turn ("Přečteno
 3 soubory · 2 příkazy"); expand it to see each call. While a run
 is live the header also shows the restart indicator (run age, write/read-set
 size, scope expansions since the run started) as plain information — no
