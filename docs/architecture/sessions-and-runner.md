@@ -164,8 +164,11 @@ effect -- nothing is interrupted, ended or suspended:
 `HANDOFF_RUN_ELSEWHERE` (running, with no live run here and the open run's
 host another device: only that device can end it) and
 `HANDOFF_TRANSCRIPT_ELSEWHERE` (suspended without a file and no content
-here while the thread last ran on another device). The last two name the
-device the way `transcript_host` does. The web shows the message as-is
+here while the thread last ran on another device) and `HANDOFF_NO_CONTENT`
+(suspended without a file and no content here although it ran here: the
+first-boot download has not finished, and an empty summary would stand in
+for the real one). `HANDOFF_RUN_ELSEWHERE` and `HANDOFF_TRANSCRIPT_ELSEWHERE`
+name the device the way `transcript_host` does. The web shows the message as-is
 (`apps/web/src/lib/handoff-refusal.ts`) and does not offer Předat in the
 chat where the transcript is on another device. The other machine picks
 the work up from the file once it syncs.

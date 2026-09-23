@@ -69,6 +69,7 @@ export class SessionHandoffError extends Error {
       | "HANDOFF_NO_MIRROR"
       | "HANDOFF_RUN_ELSEWHERE"
       | "HANDOFF_TRANSCRIPT_ELSEWHERE"
+      | "HANDOFF_NO_CONTENT"
       | "HANDOFF_FILE_NOT_HERE"
       | "HANDOFF_PATH_INVALID",
     message: string,
@@ -1050,6 +1051,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
             `Transkript vlákna je na zařízení ${resolveHostLabel(host) ?? host}; předat ho lze jen tam.`,
           );
         }
+        // Ran here (or nowhere recorded) but nothing is here: the first-boot
+        // download from the central server has not finished or failed. A
+        // summary built now would be empty and would stand in for the real
+        // one, so refuse until the content arrives.
+        throw new SessionHandoffError(
+          "HANDOFF_NO_CONTENT",
+          "Obsah vlákna na tomto zařízení zatím není; zkus to znovu, až se stáhne.",
+        );
       }
       await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true });
     }

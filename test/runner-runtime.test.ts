@@ -1156,6 +1156,29 @@ describe("session runtime: handoff (#459 Předat)", () => {
     assert.equal(after?.handoff_path, null);
   });
 
+  it("a suspended thread that ran here but whose content has not arrived is refused, writing nothing", async () => {
+    const { db, nodeId, store, runtime } = await withoutMirror([]);
+    const mirrorRoot = join(workspace!, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: null,
+    });
+    await db.execute({ sql: "UPDATE sessions SET state = 'suspended' WHERE id = ?", args: [created.id] });
+
+    await assert.rejects(
+      () => runtime.handoff(created.id),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NO_CONTENT",
+    );
+    const after = await store.getSession(created.id);
+    assert.equal(after?.state, "suspended");
+    assert.equal(after?.handoff_path, null);
+  });
+
   it("a thread whose run is live on another device is refused and stays running", async () => {
     const { nodeId, store, runtime } = await withoutMirror([]);
     const mirrorRoot = join(workspace!, "mirror");

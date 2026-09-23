@@ -491,7 +491,13 @@ export default function SessionChat({
       setNoticeDismissed(false);
     } catch (e) {
       setError(handoffErrorText(e));
-      if (e instanceof HandoffRefusedError && e.code !== "HANDOFF_NOT_ALLOWED") setHandoffUnavailable(true);
+      // HANDOFF_NO_CONTENT passes once the content downloads; keep offering it.
+      if (
+        e instanceof HandoffRefusedError &&
+        e.code !== "HANDOFF_NOT_ALLOWED" &&
+        e.code !== "HANDOFF_NO_CONTENT"
+      )
+        setHandoffUnavailable(true);
     } finally {
       setActionPending(null);
     }
