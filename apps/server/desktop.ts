@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { startHttpServer, type HttpServerHandle } from "./http/server.js";
 import { getDb } from "./infra/db.js";
+import { getDeviceContentDb } from "./infra/device-content-db.js";
 import { ensureSchema } from "./infra/schema.js";
 import { SOLO_USER } from "./infra/schema.js";
 import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
@@ -338,6 +339,12 @@ async function main(): Promise<void> {
   }
   mkdirSync(dataDir, { recursive: true });
   registerRunnerAdapters();
+
+  // The device content db (content.db next to runners.json): a thread's
+  // transcript and its first message live on the device that ran it, in
+  // both workspaces, so this is opened before the central-mode branch --
+  // a sync agent has no graph db but it does have content.
+  await getDeviceContentDb();
 
   // Central-mode sync agent: PORTUNI_AGENT_MODE=1 (plus central URL+token)
   // branches before any Turso/graph-db wiring.

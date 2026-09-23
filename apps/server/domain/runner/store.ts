@@ -24,49 +24,22 @@ import {
 import type { SessionRow, SessionState } from "../../shared/types.js";
 import type { SessionRunRow, SessionEventRow } from "../../shared/api-types.js";
 import type { CanonicalEvent, RunEndReason } from "./types.js";
+// The transcript's own encoding rules (payload caps, the row shape) live
+// with the content store, which #456 makes their only user; the record
+// store borrows them until then.
+import {
+  capEventPayload,
+  SessionEventRowSchema,
+  type ListEventsOptions,
+} from "./store-content.js";
+
+export type { ListEventsOptions } from "./store-content.js";
 
 // SessionRunRow/SessionEventRow are defined in shared/api-types.ts (so the
 // web can type the REST responses without importing server domain code);
 // re-exported here so existing call sites importing them from this module
 // keep working unchanged.
 export type { SessionRunRow, SessionEventRow } from "../../shared/api-types.js";
-
-// --- Payload caps (spec: "Payload caps") ---------------------------------
-
-const MAX_ASSISTANT_TEXT_BYTES = 64 * 1024;
-const MAX_OUTPUT_EXCERPT_BYTES = 8 * 1024;
-const MAX_INPUT_SUMMARY_BYTES = 1024;
-
-function truncateUtf8(text: string, maxBytes: number): { text: string; truncated: boolean } {
-  if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
-  return { text: Buffer.from(text, "utf8").subarray(0, maxBytes).toString("utf8"), truncated: true };
-}
-
-// Applies the caps from the spec's Events table. Returns a new event; never
-// mutates the input. Only assistant_message.text and tool_call's
-// output_excerpt/input_summary carry a cap -- every other kind's payload is
-// already bounded by what produces it (a title, a path, a short reason).
-function capEventPayload(event: CanonicalEvent): CanonicalEvent {
-  if (event.kind === "assistant_message") {
-    return { kind: "assistant_message", payload: { text: truncateUtf8(event.payload.text, MAX_ASSISTANT_TEXT_BYTES).text } };
-  }
-  if (event.kind === "tool_call") {
-    const p = event.payload;
-    let truncated = p.truncated;
-    let outputExcerpt = p.output_excerpt;
-    if (outputExcerpt !== null) {
-      const capped = truncateUtf8(outputExcerpt, MAX_OUTPUT_EXCERPT_BYTES);
-      outputExcerpt = capped.text;
-      truncated = truncated || capped.truncated;
-    }
-    const cappedInput = truncateUtf8(p.input_summary, MAX_INPUT_SUMMARY_BYTES);
-    return {
-      kind: "tool_call",
-      payload: { ...p, output_excerpt: outputExcerpt, input_summary: cappedInput.text, truncated },
-    };
-  }
-  return event;
-}
 
 // --- Row validators (runtime shape check for what comes back off the DB;
 // the TS types themselves live in shared/api-types.ts, re-exported above) --
@@ -87,16 +60,6 @@ const SessionRunRowSchema = z.object({
   ]),
   usage: z.union([z.string(), z.null()]),
 }) satisfies z.ZodType<SessionRunRow>;
-
-const SessionEventRowSchema = z.object({
-  id: z.string(),
-  session_id: z.string(),
-  run_id: z.union([z.string(), z.null()]),
-  seq: z.number(),
-  kind: z.string(),
-  payload: z.string(),
-  created_at: z.string(),
-}) satisfies z.ZodType<SessionEventRow>;
 
 // --- SessionStore interface -----------------------------------------------
 
@@ -179,10 +142,6 @@ export interface PatchRunInput {
   usage?: unknown;
 }
 
-export interface ListEventsOptions {
-  after?: number;
-  limit?: number;
-}
 
 export interface SessionStore {
   createSession(input: CreateRunnerSessionInput): Promise<SessionRow>;

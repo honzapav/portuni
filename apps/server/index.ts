@@ -4,6 +4,7 @@
 
 import "varlock/auto-load";
 import { ensureSchema } from "./infra/schema.js";
+import { getDeviceContentDb } from "./infra/device-content-db.js";
 import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { startRemoteWatcher } from "./boot/remote-watch.js";
@@ -21,6 +22,10 @@ import { getSessionRuntime } from "./boot/session-runtime.js";
 
 async function main() {
   await ensureSchema();
+  // The device content db (content.db in PORTUNI_DATA_DIR, else cwd, next
+  // to runners.json): session transcripts and briefs never leave the
+  // device that ran them.
+  await getDeviceContentDb();
   registerRunnerAdapters();
   startHttpServer();
   // Standalone server: opt in with PORTUNI_WATCH_MIRRORS=1. Default off so it

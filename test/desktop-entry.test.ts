@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -47,6 +47,10 @@ test("desktop entry boots and reports listening port to stdout", async () => {
     });
 
     assert.ok(port > 0, "expected a positive bound port");
+    // #455: the device content db is opened at boot in both modes, so by
+    // the time the port is announced content.db is on disk next to
+    // portuni.db and runners.json.
+    assert.equal(existsSync(join(tmp, "content.db")), true, "boot creates content.db");
   } finally {
     child.kill("SIGTERM");
     await new Promise<void>((resolve) => {
