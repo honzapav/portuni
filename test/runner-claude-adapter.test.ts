@@ -448,42 +448,104 @@ describe("Claude adapter: message translation", () => {
     assert.equal(reasoningEvents[0].payload.duration_ms, 1_500, "first delta to the batched block");
   });
 
-  it("system/compact_boundary translates to a compaction event", async () => {
-    const script: SDKMessage[] = [
+  // #501: the PreCompact hook and compact_boundary describe the same
+  // compaction; only the boundary emits, with the real trigger, and the ring
+  // shows the size after compaction.
+  function compactScript(trigger: "manual" | "auto", postTokens: number | undefined): SDKMessage[] {
+    return [
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [{ type: "text", text: "hi" }],
+          usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 150_000, output_tokens: 5 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
       {
         type: "system",
         subtype: "compact_boundary",
-        compact_metadata: { trigger: "auto", pre_tokens: 100 },
+        compact_metadata: { trigger, pre_tokens: 150_010, ...(postTokens !== undefined ? { post_tokens: postTokens } : {}) },
         uuid: "u1",
         session_id: "s1",
       } as unknown as SDKMessage,
+      {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        result: "",
+        stop_reason: null,
+        total_cost_usd: 0.05,
+        usage: { input_tokens: 10, output_tokens: 7, cache_creation_input_tokens: 0, cache_read_input_tokens: 150_000 },
+        modelUsage: { "claude-opus-5": { contextWindow: 200_000, inputTokens: 10, outputTokens: 7 } },
+        permission_denials: [],
+        duration_ms: 1,
+        duration_api_ms: 1,
+        uuid: "u2",
+        session_id: "s1",
+      } as unknown as SDKMessage,
     ];
-    const { query } = makeFakeQuery(script);
+  }
+
+  async function runCompaction(
+    trigger: "manual" | "auto",
+    postTokens: number | undefined,
+    hookTrigger: "manual" | "auto" | null,
+  ): Promise<(CanonicalEvent | DeltaFrame)[]> {
+    const fake = makeFakeQuery([], { hold: true });
     const events: (CanonicalEvent | DeltaFrame)[] = [];
-    const adapter = createClaudeAdapter({ query });
-    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const handle = await createClaudeAdapter({ query: fake.query }).start(makeRunStart(), (e) => events.push(e));
+    if (hookTrigger !== null) {
+      const hook = fake.options()?.hooks?.PreCompact?.[0]?.hooks?.[0];
+      assert.ok(hook, "PreCompact hook must be registered");
+      await hook!(
+        { hook_event_name: "PreCompact", trigger: hookTrigger, custom_instructions: null, session_id: "s1", transcript_path: "", cwd: "/tmp" } as never,
+        undefined,
+        { signal: new AbortController().signal },
+      );
+    }
+    for (const m of compactScript(trigger, postTokens)) fake.inject(m);
+    fake.release();
     await handle.close();
-    const compactions = events.filter((e) => "kind" in e && e.kind === "compaction");
-    assert.equal(compactions.length, 1);
-    assert.deepEqual((compactions[0] as Extract<CanonicalEvent, { kind: "compaction" }>).payload, { trigger: "auto" });
+    return events;
+  }
+
+  function compactionsOf(events: (CanonicalEvent | DeltaFrame)[]) {
+    return events.filter((e): e is Extract<CanonicalEvent, { kind: "compaction" }> => "kind" in e && e.kind === "compaction");
+  }
+
+  function ringsOf(events: (CanonicalEvent | DeltaFrame)[]) {
+    return events.filter((e): e is Extract<CanonicalEvent, { kind: "context_usage" }> => "kind" in e && e.kind === "context_usage");
+  }
+
+  it("/compact (manual): one compaction marker with trigger manual, the ring shows the size after compaction", async () => {
+    const events = await runCompaction("manual", 12_000, "manual");
+    assert.deepEqual(compactionsOf(events).map((e) => e.payload), [{ trigger: "manual" }]);
+    assert.deepEqual(ringsOf(events).map((e) => e.payload.used_tokens), [150_010, 12_000, 12_000]);
+    const atTurnEnd = ringsOf(events)[2].payload;
+    assert.equal(atTurnEnd.max_tokens, 200_000);
+    assert.equal(atTurnEnd.cached_tokens, 0);
   });
 
-  it("the PreCompact hook emits a compaction event with the real trigger", async () => {
-    const { query, options } = makeFakeQuery([]);
-    const events: (CanonicalEvent | DeltaFrame)[] = [];
-    const adapter = createClaudeAdapter({ query });
-    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
-    const hook = options()?.hooks?.PreCompact?.[0]?.hooks?.[0];
-    assert.ok(hook, "PreCompact hook must be registered");
-    await hook!(
-      { hook_event_name: "PreCompact", trigger: "manual", custom_instructions: null, session_id: "s1", transcript_path: "", cwd: "/tmp" } as never,
-      undefined,
-      { signal: new AbortController().signal },
-    );
-    await handle.close();
-    const compactions = events.filter((e) => "kind" in e && e.kind === "compaction");
-    assert.equal(compactions.length, 1);
-    assert.deepEqual((compactions[0] as Extract<CanonicalEvent, { kind: "compaction" }>).payload, { trigger: "manual" });
+  it("automatic compaction: one compaction marker with trigger auto, the ring shows the size after compaction", async () => {
+    const events = await runCompaction("auto", 30_000, "auto");
+    assert.deepEqual(compactionsOf(events).map((e) => e.payload), [{ trigger: "auto" }]);
+    assert.deepEqual(ringsOf(events).map((e) => e.payload.used_tokens), [150_010, 30_000, 30_000]);
+  });
+
+  it("compact_boundary alone still emits one marker with its own trigger", async () => {
+    const events = await runCompaction("manual", 12_000, null);
+    assert.deepEqual(compactionsOf(events).map((e) => e.payload), [{ trigger: "manual" }]);
+  });
+
+  it("a boundary without post_tokens never lets the turn's end report the size before compaction", async () => {
+    const events = await runCompaction("auto", undefined, "auto");
+    assert.deepEqual(compactionsOf(events).map((e) => e.payload), [{ trigger: "auto" }]);
+    assert.deepEqual(ringsOf(events).map((e) => e.payload.used_tokens), [150_010]);
   });
 
   // A successful result is the turn-complete signal: the CLI stays alive

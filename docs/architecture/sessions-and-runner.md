@@ -500,9 +500,14 @@ human verification.
   (`emitRunEnded`, idempotent). `endAfterProviderFailure` reuses
   `shutdownProcess` as the bound. The runtime then suspends the thread as
   for any other non-close end.
-- `hooks.PreCompact` and `system/compact_boundary` both translate to a
-  `compaction` event (possible double emission of a cosmetic marker,
-  accepted).
+- One compaction is one `compaction` event (#501): `system/compact_boundary`
+  emits it with `compact_metadata.trigger` (`manual` for `/compact`,
+  `auto`), the `hooks.PreCompact` hook only records its trigger as the
+  fallback. The boundary is followed by a `context_usage` carrying
+  `compact_metadata.post_tokens`, and that value replaces the prompt kept
+  for the turn's end, so the result closing the turn never reports the size
+  from before compaction; a boundary without `post_tokens` drops the kept
+  prompt and the next assistant message sets the ring.
 - `translateStreamEvent` streams both channels: `text_delta` and
   `thinking_delta` become `DeltaFrame`s with `channel: "text"` /
   `"reasoning"` (`domain/runner/types.ts`). The persisted record stays the

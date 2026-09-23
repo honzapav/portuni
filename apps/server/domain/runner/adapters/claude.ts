@@ -465,6 +465,10 @@ interface RunTranslationState {
   // What the latest assistant message's prompt held, so the result that
   // ends the turn can report the window's content without its own usage.
   promptTokens: { input: number; cached: number } | null;
+  // #501: the trigger the PreCompact hook reported for the compaction in
+  // progress. The hook only records it; compact_boundary, which arrives
+  // once the compaction is done, emits the single marker.
+  compactionTrigger: "manual" | "auto" | null;
   // When the first thinking delta of the current block arrived; the
   // batched thinking block reads it as duration_ms and clears it.
   reasoningStartedAt: number | null;
@@ -517,6 +521,7 @@ function createState(): RunTranslationState {
     model: null,
     contextMaxTokens: null,
     promptTokens: null,
+    compactionTrigger: null,
     reasoningStartedAt: null,
     pendingToolCalls: new Map(),
     pendingPermissions: new Map(),
@@ -632,6 +637,44 @@ function contextUsageAtTurnEnd(
       output_tokens: usageNumber(usage, "output_tokens"),
     },
   };
+}
+
+// #501: one compaction, one marker. The boundary's own metadata names the
+// trigger; the PreCompact hook's record is the fallback. The ring then
+// shows the context's size after compaction (post_tokens) at once, and the
+// prompt kept for the turn's end is replaced, so the result that closes a
+// `/compact` turn never reports the size from before. Without post_tokens
+// there is no honest reading: the kept prompt is dropped and the next
+// assistant message sets the ring.
+function translateCompactBoundary(
+  msg: SDKMessage,
+  state: RunTranslationState,
+  runId: string,
+): CanonicalEvent[] {
+  const meta = (msg as { compact_metadata?: { trigger?: unknown; post_tokens?: unknown } }).compact_metadata;
+  const trigger =
+    meta?.trigger === "manual" || meta?.trigger === "auto" ? meta.trigger : (state.compactionTrigger ?? "auto");
+  state.compactionTrigger = null;
+  const events: CanonicalEvent[] = [{ kind: "compaction", payload: { trigger } }];
+  const post = meta?.post_tokens;
+  if (typeof post === "number" && Number.isFinite(post)) {
+    state.promptTokens = { input: post, cached: 0 };
+    events.push({
+      kind: "context_usage",
+      payload: {
+        run_id: runId,
+        model: state.model,
+        used_tokens: post,
+        max_tokens: state.contextMaxTokens,
+        input_tokens: post,
+        cached_tokens: 0,
+        output_tokens: 0,
+      },
+    });
+  } else {
+    state.promptTokens = null;
+  }
+  return events;
 }
 
 // A frame produced inside a subagent started by a tool_use of the main
@@ -1002,7 +1045,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
     async function preCompactHook(input: HookInput): Promise<HookJSONOutput> {
       if (input.hook_event_name === "PreCompact") {
-        sink({ kind: "compaction", payload: { trigger: input.trigger === "manual" ? "manual" : "auto" } });
+        state.compactionTrigger = input.trigger === "manual" ? "manual" : "auto";
       }
       return {};
     }
@@ -1094,7 +1137,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       if (msg.type === "system" && msg.subtype === "compact_boundary") {
-        sink({ kind: "compaction", payload: { trigger: "auto" } });
+        for (const e of translateCompactBoundary(msg, state, run.runId)) sink(e);
         return;
       }
       // #499: a subagent's own frames (Agent/Task tool; parent_tool_use_id
