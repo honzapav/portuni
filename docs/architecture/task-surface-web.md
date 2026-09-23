@@ -401,7 +401,7 @@ Client rules:
   a later change a call with one entry. The server fans them to every
   connection that can see the session, subscription or not.
 - Surface: `subscribe` / `unsubscribe` / `message` / `answer` / `interrupt`
-  / `continueSession` / `close`, plus `onEvent` / `onDelta` /
+  / `continueSession` / `close`, plus `onEvents` / `onDelta` /
   `onSessionStates` / `onConnectionStatus`.
 
 `test/sessions-client.test.ts` drives the direct transport against a fake
@@ -413,8 +413,9 @@ to test against here.
 
 `SessionChat` gets the whole log over the socket: `subscribe(id, 0)` makes
 the server replay the persisted events and then stream. There is no REST
-backfill. Events are inserted by `seq` (`insertBySeq`), which also
-deduplicates a replay against a frame that raced it.
+backfill. `onEvents` hands over a batch (a replay page, or one live
+event) and the chat merges it by `seq` in one pass (`insertManyBySeq`),
+which also deduplicates a replay against a frame that raced it.
 
 - `lib/session-chat.ts` mirrors the server's `CanonicalEvent` union by hand.
   `domain/runner/types.ts` is server-only on purpose, the same boundary

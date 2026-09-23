@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   toCanonicalEvent,
   sessionStatusChip,
-  insertBySeq,
+  insertManyBySeq,
   latestQuestionEvent,
   approvalChoices,
   appendDelta,
@@ -143,14 +143,24 @@ describe("collapseToolCalls", () => {
   });
 });
 
-describe("insertBySeq", () => {
+describe("insertManyBySeq", () => {
   const ev = (seq: number) => ({ seq, event: { kind: "run_started", payload: { run_id: `r${seq}`, runner: "fake", instance_id: null, resume: null } } }) as ChatEvent;
   it("appends in order, ignores a duplicate seq, and slots a late-arriving lower seq into place", () => {
-    let list = insertBySeq([], ev(1));
-    list = insertBySeq(list, ev(3));
-    list = insertBySeq(list, ev(3));
-    list = insertBySeq(list, ev(2));
+    let list = insertManyBySeq([], [ev(1)]);
+    list = insertManyBySeq(list, [ev(3)]);
+    list = insertManyBySeq(list, [ev(3)]);
+    list = insertManyBySeq(list, [ev(2)]);
     assert.deepEqual(list.map((e) => e.seq), [1, 2, 3]);
+  });
+  it("merges a page in one pass, dropping seqs already present or repeated in the page", () => {
+    const before = insertManyBySeq([], [ev(1), ev(4)]);
+    const after = insertManyBySeq(before, [ev(2), ev(4), ev(3), ev(3), ev(5)]);
+    assert.deepEqual(after.map((e) => e.seq), [1, 2, 3, 4, 5]);
+  });
+  it("returns the same list when a page brings nothing new", () => {
+    const list = insertManyBySeq([], [ev(1), ev(2)]);
+    assert.equal(insertManyBySeq(list, [ev(2), ev(1)]), list);
+    assert.equal(insertManyBySeq(list, []), list);
   });
 });
 

@@ -49,7 +49,7 @@ import {
   type ActivityItem,
   type ActivityRow,
   type ChatEvent,
-  insertBySeq,
+  insertManyBySeq,
   type CanonicalEvent,
   type DeltaBuffers,
   type TranscriptRow,
@@ -301,9 +301,15 @@ export default function SessionChat({
     // assistant_message/reasoning event carries no run id of its own, and
     // the state value is a render value this closure never sees updated.
     let runId: string | null = null;
-    const offEvent = sessionsClient.onEvent(sessionId, (envelope) => {
-      const event = toCanonicalEvent(envelope.kind, envelope.payload);
-      setEvents((prev) => insertBySeq(prev, { seq: envelope.seq, event }));
+    // A batch (a replay page, or one live event) is one pass: the list is
+    // extended once, and the per-event bookkeeping below runs in the same
+    // handler, so React renders it once.
+    const offEvent = sessionsClient.onEvents(sessionId, (envelopes) => {
+      const batch = envelopes.map((envelope) => ({ seq: envelope.seq, event: toCanonicalEvent(envelope.kind, envelope.payload) }));
+      setEvents((prev) => insertManyBySeq(prev, batch));
+      for (const { event } of batch) handleEvent(event);
+    });
+    function handleEvent(event: CanonicalEvent): void {
       // run_started and run_ended (an error at start included) both stop
       // the send clock; every other event leaves it alone.
       setSentAt((current) => nextSentAt(current, { kind: "event", event }));
@@ -333,7 +339,7 @@ export default function SessionChat({
           setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, id));
         }
       }
-    });
+    }
     const offDelta = sessionsClient.onDelta(sessionId, (delta) => coalescer.push(delta));
     // No onSessionStates handler here: App binds the live channel to the
     // store once (#465), so a frame folds into the record this component

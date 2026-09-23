@@ -348,13 +348,16 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     });
     conn.subscriptions.set(sessionId, unsubscribe);
 
+    // One `events` frame per page, never a frame per event: the client
+    // renders per frame, and a long thread's history is thousands of events.
     let cursor = after;
     let lastReplayedSeq = after ?? 0;
     for (;;) {
       const page = await runtime.listEvents(sessionId, { after: cursor, limit: REPLAY_PAGE_SIZE });
-      for (const row of page) {
-        send(conn.ws, { type: "event", payload: { session_id: sessionId, event: { kind: row.kind, payload: JSON.parse(row.payload) as unknown, seq: row.seq } } });
-        lastReplayedSeq = row.seq;
+      if (page.length > 0) {
+        const events = page.map((row) => ({ kind: row.kind, payload: JSON.parse(row.payload) as unknown, seq: row.seq }));
+        send(conn.ws, { type: "events", payload: { session_id: sessionId, events } });
+        lastReplayedSeq = page[page.length - 1].seq;
       }
       if (page.length < REPLAY_PAGE_SIZE) break;
       cursor = lastReplayedSeq;

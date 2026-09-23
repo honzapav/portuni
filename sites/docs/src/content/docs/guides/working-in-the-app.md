@@ -340,7 +340,9 @@ without a second round trip) — each mapped to the same runtime call and
 access tier the REST route uses.
 
 Server → client: `event { session_id, event }` — a persisted canonical
-event, carrying the `seq` the store assigned it; `delta { session_id,
+event, carrying the `seq` the store assigned it; `events { session_id,
+events }` — a page of up to 200 of them, in `seq` order, which is how a
+subscribe replays the log; `delta { session_id,
 run_id, channel, text }` — streamed text, never persisted, never replayed,
 `channel` one of `"text" | "reasoning"` saying which persisted event this
 delta is a live preview of; and

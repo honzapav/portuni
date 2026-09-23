@@ -120,7 +120,7 @@ describe("sessions-client: direct-WS transport", () => {
     const client = createSessionsClient({ transport });
     clients.push(client);
     const received: number[] = [];
-    client.onEvent("S1", (event) => received.push(event.seq));
+    client.onEvents("S1", (batch) => received.push(...batch.map((e) => e.seq)));
 
     await client.subscribe("S1");
     await waitUntil(() => server.subscribeCalls.length === 1);
@@ -216,6 +216,33 @@ describe("sessions-client: direct-WS transport", () => {
     server.dropAllConnections();
     await waitUntil(() => server.subscribeCalls.length === 2, 5000);
     assert.deepEqual(server.subscribeCalls[1], { session_id: "S1", after: 10 });
+
+    client.disconnect();
+  });
+
+  it("hands a replay page to event listeners as one batch and resubscribes after its last seq", async () => {
+    const server = await fakeServer();
+    const transport = testTransport(server);
+    const client = createSessionsClient({ transport });
+    clients.push(client);
+    const batches: number[][] = [];
+    client.onEvents("S1", (batch) => batches.push(batch.map((e) => e.seq)));
+
+    await client.subscribe("S1");
+    await waitUntil(() => server.subscribeCalls.length === 1);
+    server.broadcast({
+      type: "events",
+      payload: {
+        session_id: "S1",
+        events: Array.from({ length: 150 }, (_, i) => ({ kind: "assistant_message", payload: { text: `m${i}` }, seq: i + 1 })),
+      },
+    });
+    await waitUntil(() => batches.length === 1);
+    assert.equal(batches[0].length, 150);
+
+    server.dropAllConnections();
+    await waitUntil(() => server.subscribeCalls.length === 2, 5000);
+    assert.deepEqual(server.subscribeCalls[1], { session_id: "S1", after: 150 });
 
     client.disconnect();
   });

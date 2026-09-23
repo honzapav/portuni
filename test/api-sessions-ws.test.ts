@@ -232,9 +232,13 @@ describe("GET /sessions/ws", () => {
     ws.send(JSON.stringify({ id: "sub1", type: "subscribe", payload: { session_id: session.id, after: 1 } }));
     await collector.waitFor((f) => f.id === "sub1" && f.type === "reply");
 
-    const replayed = collector.frames.filter((f) => f.type === "event");
+    // The replay is one `events` frame per page, never a frame per event.
+    assert.ok(!collector.frames.some((f) => f.type === "event"));
+    const pages = collector.frames.filter((f) => f.type === "events");
+    assert.equal(pages.length, 1);
+    const replayed = (pages[0].payload as { events: { kind: string }[] }).events;
     assert.equal(replayed.length, 1, "after:1 must skip run_started and replay only the brief");
-    assert.equal((replayed[0].payload as { event: { kind: string } }).event.kind, "user_message");
+    assert.equal(replayed[0].kind, "user_message");
 
     // Unblocks the script -- its own assistant_message must arrive live,
     // on the same subscription, after the persisted replay.
