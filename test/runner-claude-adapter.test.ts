@@ -762,6 +762,99 @@ describe("Claude adapter: a provider limit/error ends the run (#411)", () => {
   });
 });
 
+describe("Claude adapter: Stop (Esc) ends the turn, not the run", () => {
+  // A fake whose turn only ends when interrupt() is called, the way the
+  // real CLI answers a Stop: a synthetic "[Request interrupted by user]"
+  // user message and an error_during_execution result. `release(err)`
+  // then ends the prompt stream; the real SDK throws there when the last
+  // result was that Stop.
+  function interruptibleQuery() {
+    let interrupted: () => void = () => undefined;
+    const stopped = new Promise<void>((resolve) => {
+      interrupted = resolve;
+    });
+    let release: (err?: Error) => void = () => undefined;
+    const held = new Promise<Error | undefined>((resolve) => {
+      release = resolve;
+    });
+    const query = ((_params: { prompt: unknown; options?: Options }) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        await stopped;
+        yield {
+          type: "user",
+          message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] },
+          parent_tool_use_id: null,
+          session_id: "s1",
+        } as unknown as SDKMessage;
+        yield {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],
+          num_turns: 1,
+          stop_reason: null,
+          total_cost_usd: 0.01,
+          usage: { input_tokens: 1, output_tokens: 2 },
+          modelUsage: {},
+          permission_denials: [],
+          duration_ms: 1,
+          duration_api_ms: 1,
+          uuid: "u1",
+          session_id: "s1",
+        } as unknown as SDKMessage;
+        const err = await held;
+        if (err) throw err;
+      }
+      const iterator = gen() as unknown as Query;
+      (iterator as unknown as { interrupt: () => Promise<undefined> }).interrupt = async () => {
+        interrupted();
+        return undefined;
+      };
+      return iterator;
+    }) as CreateClaudeAdapterDeps["query"];
+    return { query, release: (err?: Error) => release(err) };
+  }
+
+  function kinds(events: (CanonicalEvent | DeltaFrame)[], kind: string) {
+    return events.filter((e) => "kind" in e && e.kind === kind) as CanonicalEvent[];
+  }
+
+  it("the Stop's error_during_execution result ends the turn and keeps the run alive", async () => {
+    const { query, release } = interruptibleQuery();
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    let turnEnded: () => void = () => undefined;
+    const turnEndedP = new Promise<void>((resolve) => {
+      turnEnded = resolve;
+    });
+    let ended: () => void = () => undefined;
+    const endedP = new Promise<void>((resolve) => {
+      ended = resolve;
+    });
+    const adapter = createClaudeAdapter({ query, closePollIntervalMs: 5, closeGraceMs: 10, closeTimeoutMs: 10 });
+    const handle = await adapter.start(makeRunStart(), (e) => {
+      events.push(e);
+      if ("kind" in e && e.kind === "turn_ended") turnEnded();
+      if ("kind" in e && e.kind === "run_ended") ended();
+    });
+
+    await handle.interrupt();
+    await turnEndedP;
+    await flushMicrotasks();
+    assert.equal(kinds(events, "error").length, 0, "a Stop is no error");
+    assert.equal(kinds(events, "run_ended").length, 0, "the run outlives the Stop");
+
+    // The prompt stream ends later (Uzavřít, idle): the SDK's throw about
+    // the Stop's result is still a graceful close.
+    release(new Error("Claude Code returned an error result: [ede_diagnostic] result_type=user"));
+    await endedP;
+    const ends = kinds(events, "run_ended") as Extract<CanonicalEvent, { kind: "run_ended" }>[];
+    assert.equal(ends.length, 1);
+    assert.equal(ends[0].payload.reason, "completed");
+    assert.equal(kinds(events, "error").length, 0);
+    await handle.close();
+  });
+});
+
 describe("Claude adapter: canUseTool", () => {
   it("a tier-1 write is allowed without a question", async () => {
     const { query, options } = makeFakeQuery([]);

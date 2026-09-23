@@ -433,6 +433,14 @@ interface RunTranslationState {
   // first -- the translate loop's own completion, its catch branch, or the
   // provider-failure teardown below.
   runEndedEmitted: boolean;
+  // Set by interrupt(): the SDK closes a stopped turn with an
+  // `error_during_execution` result, which is the user's Stop, not a
+  // provider failure. Taken by the next result.
+  interruptRequested: boolean;
+  // The last result was that Stop. The SDK then throws on a later end of
+  // the prompt stream ("Claude Code returned an error result"), which is
+  // still a graceful close.
+  lastResultWasInterrupt: boolean;
 }
 
 function createState(): RunTranslationState {
@@ -459,6 +467,8 @@ function createState(): RunTranslationState {
     capturedPid: null,
     providerEndReason: null,
     runEndedEmitted: false,
+    interruptRequested: false,
+    lastResultWasInterrupt: false,
   };
 }
 
@@ -998,7 +1008,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         // the CLI exits and the translate loop below reports the run_ended
         // this reason belongs to; endAfterProviderFailure is the bound on a
         // child that ignores the end of its stdin.
-        const failure = providerResultFailure(msg);
+        const interrupted = state.interruptRequested && msg.subtype === "error_during_execution";
+        state.interruptRequested = false;
+        state.lastResultWasInterrupt = interrupted;
+        const failure = interrupted ? null : providerResultFailure(msg);
         if (failure !== null && state.providerEndReason === null) {
           state.providerEndReason = failure.reason;
           sink({ kind: "error", payload: { class: "provider", message: failure.message } });
@@ -1066,6 +1079,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         emitRunEnded(state.providerEndReason ?? "completed");
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        if (state.lastResultWasInterrupt && state.providerEndReason === null && /returned an error result/i.test(message)) {
+          emitRunEnded("completed");
+          return;
+        }
         // #411: on a provider failure the provider's own message is already
         // in the transcript and this throw is a consequence of the teardown
         // it triggered -- exactly one error event per run.
@@ -1151,6 +1168,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       // Ending the queue (and therefore the run) belongs to close() alone.
       async interrupt(): Promise<void> {
         if (state.ended) return;
+        state.interruptRequested = true;
         try {
           await q.interrupt();
         } catch {
