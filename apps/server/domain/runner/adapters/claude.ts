@@ -31,6 +31,7 @@ import type {
 import { isPortuniEnvKey } from "../../../shared/runner-env.js";
 import { decidePermission } from "../permissions.js";
 import { isProcessAlive } from "../process-liveness.js";
+import { RunEndedError } from "../types.js";
 import type {
   CanonicalEvent,
   EventSink,
@@ -141,6 +142,9 @@ export async function waitForPidDeadOrTimeout(
 interface PushQueue<T> {
   push(item: T): void;
   end(): void;
+  // #489: a push after this is a message nobody will ever read -- send()
+  // asks before pushing so it can refuse instead of dropping it.
+  isEnded(): boolean;
   [Symbol.asyncIterator](): AsyncIterator<T>;
 }
 
@@ -157,6 +161,9 @@ function createPushQueue<T>(): PushQueue<T> {
       } else {
         buffer.push(item);
       }
+    },
+    isEnded(): boolean {
+      return ended;
     },
     end(): void {
       if (ended) return;
@@ -1140,6 +1147,15 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
     const handle: RunHandle = {
       async send(text: string): Promise<void> {
+        // #489: the run is over, or a close()/provider-failure teardown has
+        // already ended the prompt stream (providerEndReason is set one
+        // microtask before endAfterProviderFailure gets to end it, so it
+        // counts as ending too). Pushing here would buffer the message into
+        // a stream the CLI no longer reads; the runtime instead waits for
+        // the run to end and delivers it to the next one.
+        if (state.ended || state.providerEndReason !== null || promptQueue.isEnded()) {
+          throw new RunEndedError("send: the run has ended, the message was not delivered");
+        }
         promptQueue.push(userMessage(text));
       },
       async answer(requestId: string, decision: QuestionDecision): Promise<void> {

@@ -241,8 +241,26 @@ export interface RunStart {
   effort: EffortLevel | null;
 }
 
+// #489: what send() throws when the run behind the handle is over or in
+// teardown. Pushing the message into a prompt stream nobody reads any more
+// would drop it silently -- the message is already in the chat by then, so
+// the runtime has to learn that this run never got it and deliver it to the
+// next one instead.
+export class RunEndedError extends Error {
+  constructor(message = "the run has ended") {
+    super(message);
+    this.name = "RunEndedError";
+  }
+}
+
+export function isRunEndedError(e: unknown): boolean {
+  return e instanceof RunEndedError || (e instanceof Error && e.name === "RunEndedError");
+}
+
 export interface RunHandle {
   // Next user message (queued mid-turn if the runner is still working).
+  // Throws RunEndedError when the run is already over or tearing down --
+  // never drops the message silently (#489).
   send(text: string): Promise<void>;
   answer(requestId: string, decision: QuestionDecision): Promise<void>;
   interrupt(): Promise<void>;

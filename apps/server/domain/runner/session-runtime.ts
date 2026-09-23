@@ -39,6 +39,7 @@ import { localHostId, resolveHostLabel } from "./hosts.js";
 import { getMirrorPath } from "../sync/mirror-registry.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
+import { isRunEndedError } from "./types.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
 import type {
   CanonicalEvent,
@@ -402,6 +403,41 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // turn_ended came back yet. The idle sweep never ends such a run -- the
   // agent is working, only an open question waits on the user.
   const turnsInFlight = new Set<string>();
+  // #489: the session's current run, from the moment it started until its
+  // run_ended has been handled AND the suspend that follows it is written.
+  // A message that arrives while a run is ending -- the adapter already
+  // refuses it, or run_ended landed but the suspend is still in flight --
+  // waits on this instead of being dropped or refused, and is then
+  // delivered by resuming the thread (the ordinary "write into a suspended
+  // thread" path).
+  const runSettling = new Map<string, { runId: string; promise: Promise<void>; resolve: () => void }>();
+
+  function trackRunSettling(sessionId: string, runId: string): void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    runSettling.set(sessionId, { runId, promise, resolve });
+  }
+
+  // Called once the run's end is fully accounted for (the row, the suspend
+  // or the close). A late run_ended from a run something already replaced
+  // never settles the entry the newer run owns.
+  function settleRun(sessionId: string, runId: string): void {
+    const entry = runSettling.get(sessionId);
+    if (!entry || entry.runId !== runId) return;
+    runSettling.delete(sessionId);
+    entry.resolve();
+  }
+
+  // Resolves once no run end is in flight for this session. Nothing here
+  // waits on a clock: the promise is resolved by the run_ended handler
+  // itself, on the event queue, which never takes the lifecycle lock a
+  // caller of this holds.
+  async function waitForRunToSettle(sessionId: string): Promise<void> {
+    const entry = runSettling.get(sessionId);
+    if (entry) await entry.promise;
+  }
 
   function touchActivity(sessionId: string): void {
     lastActivityAt.set(sessionId, Date.now());
@@ -578,45 +614,52 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
 
     if (canonical.kind === "run_ended") {
-      // Captured before the entry is removed: the adapter may only expose
-      // the runner's own conversation id once the run is actually over
-      // (a real CLI's translation learns it from an early protocol
-      // message, but the value is only load-bearing at resume time, so
-      // reading it here -- once, at run end -- is enough either way).
-      const live = liveRuns.get(sessionId);
-      const agentSessionId = live?.runId === runId ? live.handle.agentSessionId() : null;
-      // #488: only the current run's end takes the session with it.
-      const current = isCurrentRun(sessionId, runId);
-      if (current) {
-        liveRuns.delete(sessionId);
-        lastActivityAt.delete(sessionId);
-      }
-      runStartScopeSize.delete(runId);
-      await store.patchRun(runId, {
-        ended_at: new Date().toISOString(),
-        end_reason: canonical.payload.reason,
-        usage: canonical.payload.usage,
-        ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
-      });
-      await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
-      if (!current) return;
-      await clearWaitingIfPending(sessionId, runId);
-
-      // #378: closeSession()/continueSession() already own the resulting
-      // transition (to "closed") for their own run end -- everything else
-      // (idle, error, a natural CLI-initiated end) writes the mechanical
-      // summary and moves the session to suspended instead.
-      if (closingSessions.has(sessionId)) {
-        closingSessions.delete(sessionId);
-      } else {
-        const reason = pendingEndReason.get(sessionId) ?? "run_ended";
-        pendingEndReason.delete(sessionId);
-        const suspended = await suspendFallback(sessionId, reason);
-        if (suspended) {
-          await appendAndPublish(sessionId, runId, [
-            { kind: "handoff", payload: { path: suspended.handoff_path, hash: suspended.handoff_hash } },
-          ]);
+      // #489: whatever this end turns out to be -- a close, a suspend, a
+      // late end from a replaced run -- a message waiting for it stops
+      // waiting here, once the state it will act on is written.
+      try {
+        // Captured before the entry is removed: the adapter may only expose
+        // the runner's own conversation id once the run is actually over
+        // (a real CLI's translation learns it from an early protocol
+        // message, but the value is only load-bearing at resume time, so
+        // reading it here -- once, at run end -- is enough either way).
+        const live = liveRuns.get(sessionId);
+        const agentSessionId = live?.runId === runId ? live.handle.agentSessionId() : null;
+        // #488: only the current run's end takes the session with it.
+        const current = isCurrentRun(sessionId, runId);
+        if (current) {
+          liveRuns.delete(sessionId);
+          lastActivityAt.delete(sessionId);
         }
+        runStartScopeSize.delete(runId);
+        await store.patchRun(runId, {
+          ended_at: new Date().toISOString(),
+          end_reason: canonical.payload.reason,
+          usage: canonical.payload.usage,
+          ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
+        });
+        await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
+        if (!current) return;
+        await clearWaitingIfPending(sessionId, runId);
+
+        // #378: closeSession()/continueSession() already own the resulting
+        // transition (to "closed") for their own run end -- everything else
+        // (idle, error, a natural CLI-initiated end) writes the mechanical
+        // summary and moves the session to suspended instead.
+        if (closingSessions.has(sessionId)) {
+          closingSessions.delete(sessionId);
+        } else {
+          const reason = pendingEndReason.get(sessionId) ?? "run_ended";
+          pendingEndReason.delete(sessionId);
+          const suspended = await suspendFallback(sessionId, reason);
+          if (suspended) {
+            await appendAndPublish(sessionId, runId, [
+              { kind: "handoff", payload: { path: suspended.handoff_path, hash: suspended.handoff_hash } },
+            ]);
+          }
+        }
+      } finally {
+        settleRun(sessionId, runId);
       }
     }
   }
@@ -659,6 +702,11 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       runStartResume: RunStart["resume"];
       resumeMode: null | "conversation" | "handoff";
       policy: PermissionPolicy;
+      // #489: false when the brief is a message already in the transcript
+      // -- a message the previous run refused while it was ending, being
+      // delivered to this one. The agent still gets it; the chat must not
+      // show it twice.
+      logBrief?: boolean;
     },
   ): Promise<void> {
     const adapter = registry.getAdapter(run.runner);
@@ -685,9 +733,11 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       },
     ]);
     if (opts.brief !== null) {
-      await appendAndPublish(session.id, run.id, [
-        { kind: "user_message", payload: { text: opts.brief, source: "chat" } },
-      ]);
+      if (opts.logBrief !== false) {
+        await appendAndPublish(session.id, run.id, [
+          { kind: "user_message", payload: { text: opts.brief, source: "chat" } },
+        ]);
+      }
       turnsInFlight.add(session.id);
     }
 
@@ -709,6 +759,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
     const handle = await adapter.start(runStart, makeSink(session.id, run.id));
     liveRuns.set(session.id, { handle, runId: run.id, agentSessionIdSaved: false });
+    // #489: from here until this run's end is fully accounted for, a
+    // message that the run refuses waits for that end rather than failing.
+    trackRunSettling(session.id, run.id);
     touchActivity(session.id);
     // Written before drain() lets any already-queued run_ended handler
     // remove it, so write-then-remove ordering always holds even for a
@@ -784,15 +837,50 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // The user's own message goes through the same per-session queue as the
   // adapter's events, and is handed to the adapter only once persisted --
   // so whatever the runner emits in reaction to it can never land before it.
-  async function sendMessageLocked(sessionId: string, text: string): Promise<void> {
+  // #489: how many times one message may follow a run that ends before it
+  // can be delivered. Each retry costs a whole run end, so a message that
+  // gets this far is chasing a runner that cannot start, not a race.
+  const MAX_DELIVERY_ATTEMPTS = 3;
+
+  async function sendMessageLocked(
+    sessionId: string,
+    text: string,
+    // #489: the message is already in the transcript (this is a redelivery
+    // after the run it was written for refused it).
+    logged = false,
+    attempt = 0,
+  ): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (live) {
       touchActivity(sessionId);
       turnsInFlight.add(sessionId);
-      await enqueue(sessionId, () =>
-        appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
-      );
-      await live.handle.send(text);
+      if (!logged) {
+        await enqueue(sessionId, () =>
+          appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
+        );
+      }
+      try {
+        await live.handle.send(text);
+      } catch (err) {
+        if (!isRunEndedError(err)) throw err;
+        // #489: the run was already tearing down (a provider error or
+        // limit, the idle sweep, Předat) and never took the message. It is
+        // in the chat, so it has to reach the agent: wait for the run to
+        // end and for the suspend that follows, then deliver it the way a
+        // message into a suspended thread is delivered -- as the next
+        // run's first message, written once.
+        turnsInFlight.delete(sessionId);
+        await deliverAfterRunEnd(sessionId, text, attempt, true);
+      }
+      return;
+    }
+
+    // #489: run_ended has landed but the suspend it triggers is still being
+    // written, so the row still says running and there is no handle. The
+    // message is not refused -- it waits for the state that suspend leaves
+    // behind and goes to the run it starts.
+    if (runSettling.has(sessionId)) {
+      await deliverAfterRunEnd(sessionId, text, attempt, logged);
       return;
     }
 
@@ -803,10 +891,26 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       return;
     }
     if (session.state === "suspended") {
-      await resumeByWriting(sessionId, session, text);
+      await resumeByWriting(sessionId, session, text, logged);
       return;
     }
     throw new Error(`sendMessage: session ${sessionId} has no live run`);
+  }
+
+  // #489: waits for the run that is ending (never a clock -- the run's own
+  // run_ended handler resolves this, and it runs on the event queue, which
+  // never takes the lifecycle lock this holds) and then sends again.
+  async function deliverAfterRunEnd(
+    sessionId: string,
+    text: string,
+    attempt: number,
+    logged: boolean,
+  ): Promise<void> {
+    if (attempt + 1 >= MAX_DELIVERY_ATTEMPTS) {
+      throw new Error(`sendMessage: session ${sessionId} keeps ending runs before the message can be delivered`);
+    }
+    await waitForRunToSettle(sessionId);
+    await sendMessageLocked(sessionId, text, logged, attempt + 1);
   }
 
   // A thread is a session row from the moment it opens (#374, "the session
@@ -876,7 +980,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // /sessions/:id/resume-info already used); otherwise the session's own
   // summary (written when the last run ended) becomes extra orientation,
   // same as the old handoff-mode resume did.
-  async function resumeByWriting(sessionId: string, session: SessionRow, text: string): Promise<void> {
+  async function resumeByWriting(
+    sessionId: string,
+    session: SessionRow,
+    text: string,
+    // #489: true when `text` is already in the transcript -- a message the
+    // previous run refused while it was ending.
+    logged = false,
+  ): Promise<void> {
     if (!session.node_id) throw new Error(`sendMessage: session ${sessionId} has no anchor node`);
     const runner = session.runner;
     if (!runner) throw new Error(`sendMessage: session ${sessionId} has no runner to resume under`);
@@ -939,6 +1050,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       runStartResume,
       resumeMode: runStartResume ? "conversation" : "handoff",
       policy: "default",
+      logBrief: !logged,
     });
   }
 

@@ -19,6 +19,7 @@ import {
   waitForPidDeadOrTimeout,
   type CreateClaudeAdapterDeps,
 } from "../apps/server/domain/runner/adapters/claude.js";
+import { isRunEndedError } from "../apps/server/domain/runner/types.js";
 import type { CanonicalEvent, DeltaFrame, RunStart } from "../apps/server/domain/runner/types.js";
 import type { Options, PermissionResult, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -1659,5 +1660,95 @@ describe("Claude adapter: pid-death race (#325)", () => {
     // close()'s own race) so no pending promise chain outlives this test.
     releaseIterator?.();
     await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+});
+
+// #489: a message handed to a run that is over (or tearing down) used to be
+// pushed into a prompt stream nobody reads any more -- the chat showed it,
+// the agent never saw it. The handle now says so and the runtime delivers
+// it to the next run.
+describe("Claude adapter: send() into a run that is ending (#489)", () => {
+  function resultMsg(overrides: Record<string, unknown>): SDKMessage {
+    return {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      stop_reason: null,
+      total_cost_usd: 0.01,
+      usage: { input_tokens: 1, output_tokens: 2 },
+      modelUsage: {},
+      permission_denials: [],
+      duration_ms: 1,
+      duration_api_ms: 1,
+      uuid: "u1",
+      session_id: "s1",
+      ...overrides,
+    } as unknown as SDKMessage;
+  }
+
+  it("a live run still takes the message; close() ending the prompt stream makes the next one throw", async () => {
+    const { query, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({
+      query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+
+    // The ordinary case is untouched.
+    await handle.send("keep going");
+
+    const closing = handle.close();
+    await assert.rejects(
+      () => handle.send("too late"),
+      (err: unknown) => {
+        assert.equal(isRunEndedError(err), true);
+        return true;
+      },
+    );
+    release();
+    await closing;
+  });
+
+  it("a message during a provider-limit teardown is refused, not buffered", async () => {
+    const script: SDKMessage[] = [
+      resultMsg({ is_error: true, result: "You've hit your monthly spend limit" }),
+    ];
+    // hold: true -- the CLI is still alive while the teardown runs, which is
+    // exactly when a user who just read the error writes the next message.
+    const { query, release } = makeFakeQuery(script, { hold: true });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    let markEnded: () => void = () => undefined;
+    const ended = new Promise<void>((resolve) => {
+      markEnded = resolve;
+    });
+    const adapter = createClaudeAdapter({
+      query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart(), (e) => {
+      events.push(e);
+      if ("kind" in e && e.kind === "error") {
+        // The provider error is the signal the teardown has begun.
+        markEnded();
+      }
+    });
+    await ended;
+
+    await assert.rejects(
+      () => handle.send("a co teď?"),
+      (err: unknown) => {
+        assert.equal(isRunEndedError(err), true);
+        return true;
+      },
+    );
+    release();
+    await handle.close();
   });
 });

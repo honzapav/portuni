@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { setDbForTesting } from "../apps/server/infra/db.js";
+import { getDb, setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import {
   SessionHandoffError,
@@ -22,10 +22,15 @@ import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/ru
 import type { CanonicalEvent, RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
-import { claudeProjectSlug } from "../apps/server/domain/session-handoff.js";
+import {
+  claudeProjectSlug,
+  createSuspendServerSide,
+  localSuspendDeps,
+} from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 import { GatedAdapter } from "./helpers/gated-adapter.js";
+import { TeardownAdapter } from "./helpers/teardown-adapter.js";
 
 afterEach(() => {
   setDbForTesting(null);
@@ -1496,5 +1501,124 @@ describe("session runtime: one start per thread (#488)", () => {
     await runtime.sendMessage(session.id, "still here");
     assert.equal((await store.listRuns(session.id)).length, 2);
     assert.deepEqual(userTexts(await content.listEvents(session.id)), ["x", "keep going", "still here"]);
+  });
+});
+
+describe("session runtime: a message into a run that is ending (#489)", () => {
+  // The run that is ending never takes the message; the runtime waits for
+  // its end (and the suspend that follows), then delivers the message as
+  // the next run's first message -- written to the transcript exactly once.
+  it("a message a provider-failure teardown refuses is delivered to the next run, once in the log", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new TeardownAdapter();
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const first = adapter.last;
+
+    // What the Claude adapter does on a spend limit: the provider's message
+    // goes into the transcript and the teardown starts; run_ended follows
+    // only once the child is gone.
+    first.emit({ kind: "error", payload: { class: "provider", message: "You've hit your monthly spend limit" } });
+    first.beginTeardown();
+
+    const send = runtime.sendMessage(session.id, "tak co teď?");
+    await first.refused;
+    first.endRun("limit");
+    await send;
+
+    assert.deepEqual(first.refusedTexts, ["tak co teď?"]);
+    assert.equal(adapter.runs.length, 2, "the message started the next run");
+    assert.equal(adapter.runs[1].start.brief, "tak co teď?", "and it is that run's first message");
+
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs.length, 2);
+    assert.equal(runs[0].end_reason, "limit");
+    assert.equal(runs[1].resumed_from_run_id, runs[0].id);
+    assert.equal((await store.getSession(session.id))?.state, "running");
+
+    const events = await content.listEvents(session.id);
+    assert.deepEqual(userTexts(events), ["x", "tak co teď?"], "the message is in the log exactly once");
+  });
+
+  it("a message sent while the idle sweep is ending the run is delivered to the next run", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new TeardownAdapter({ holdClose: true });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const first = adapter.last;
+
+    // The turn has to be over for the sweep to consider the run idle at all;
+    // interrupt() (a no-op on this adapter) drains the event queue, so the
+    // sweep below sees the turn_ended already accounted for.
+    first.emit({ kind: "turn_ended", payload: { run_id: "fake" } });
+    await runtime.interrupt(session.id);
+
+    const ending = runtime.checkIdleRunsOnce(0, Date.now() + 1);
+    await first.closing;
+    const send = runtime.sendMessage(session.id, "ještě jedna věc");
+    await first.refused;
+    first.releaseClose();
+    await ending;
+    await send;
+
+    assert.equal(adapter.runs.length, 2);
+    assert.equal(adapter.runs[1].start.brief, "ještě jedna věc");
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    assert.deepEqual(userTexts(await content.listEvents(session.id)), ["x", "ještě jedna věc"]);
+
+    // The suspend the idle end wrote is still the one the resume built on.
+    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
+    const summary = (await content.getContent(session.id))?.handoff_inline ?? null;
+    assert.ok(summary);
+    assert.equal(parseServerHandoffReason(summary), "idle");
+  });
+
+  it("a message between run_ended and the suspend write is not refused", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new TeardownAdapter();
+
+    // The window: run_ended has landed (no live run any more, the row still
+    // says running) and the suspend it triggers has not been written yet.
+    let markEntered!: () => void;
+    const enteredSuspend = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    let releaseSuspend!: () => void;
+    const suspendGate = new Promise<void>((resolve) => {
+      releaseSuspend = resolve;
+    });
+    const realSuspend = createSuspendServerSide(localSuspendDeps(getDb(), content));
+    const runtime = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+      suspendFallback: async (sessionId, reason, opts) => {
+        markEntered();
+        await suspendGate;
+        return realSuspend(sessionId, reason, opts);
+      },
+    });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    adapter.last.endRun("completed");
+    await enteredSuspend;
+
+    // Used to throw "has no live run" -- the row says running, the handle
+    // is already gone.
+    const send = runtime.sendMessage(session.id, "pokračuj");
+    releaseSuspend();
+    await send;
+
+    assert.equal(adapter.runs.length, 2);
+    assert.equal(adapter.runs[1].start.brief, "pokračuj");
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    assert.deepEqual(userTexts(await content.listEvents(session.id)), ["x", "pokračuj"]);
+    assert.equal((await store.listRuns(session.id)).length, 2);
   });
 });

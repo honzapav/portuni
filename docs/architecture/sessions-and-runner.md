@@ -532,6 +532,22 @@ human verification.
   that run. Nothing else takes the lock -- an adapter event handler must
   never wait on a start, and a start drains the event queue while holding
   it.
+- **No message written into the chat is lost** (#489). `RunHandle.send`
+  throws `RunEndedError` (`domain/runner/types.ts`) instead of pushing into
+  a prompt stream nobody reads any more: the Claude adapter refuses once
+  the run ended, once a provider failure set its end reason, or once
+  `shutdownProcess` ended the prompt queue; the fake adapter refuses once
+  its script ended or `close()` stopped it. `sendMessage` catches that,
+  waits for the run to end and for the suspend that follows it
+  (`runSettling`, resolved by the `run_ended` handler itself -- never a
+  clock, and the event queue never takes the lifecycle lock the waiter
+  holds), and then delivers the message the ordinary way, as the next run's
+  first message (`resumeByWriting`). The message is written to the
+  transcript once: `startRun`'s `logBrief: false` skips the second
+  `user_message`. The same wait covers the window between `run_ended` and
+  the finished suspend -- no live handle, the row still `running` -- which
+  used to be refused with „has no live run". Three retries in, the send
+  fails rather than chasing a runner that cannot start.
 - **A `run_ended` only ends the session's *current* run.** The handler
   records the run's own end (`ended_at`, `end_reason`, `usage`, its pid
   file) either way, but drops the live handle, clears the turn in flight

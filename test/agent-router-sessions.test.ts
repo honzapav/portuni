@@ -43,6 +43,7 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { getMirrorPath, registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { installTestContentDb } from "./helpers/content-db.js";
+import { TeardownAdapter } from "./helpers/teardown-adapter.js";
 import { GatedAdapter } from "./helpers/gated-adapter.js";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 
@@ -457,6 +458,43 @@ describe("agent-router: sessions/tasks", () => {
     assert.notEqual(promoted?.state, "draft");
     assert.equal(promoted?.runner, "fake");
     assert.equal(fake.runs.size, 1);
+  });
+
+  // #489: the same redelivery, in the primary runtime -- a team
+  // workspace's sync agent, whose record store is CentralSessionStore over
+  // the fake central server. Driven through the runtime rather than over
+  // HTTP: the teardown window only exists while the adapter holds it open.
+  it("a message a run that is ending refuses starts the next run (#489)", async () => {
+    clearRegistryForTests();
+    const adapter = new TeardownAdapter();
+    registerAdapter(adapter);
+    const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+    const { session } = await runtime.startTask({
+      userId: SOLO_USER,
+      nodeId: NODE_ID,
+      brief: "x",
+      runner: "fake",
+    });
+    const first = adapter.last;
+    first.emit({ kind: "error", payload: { class: "provider", message: "You've hit your monthly spend limit" } });
+    first.beginTeardown();
+
+    const send = runtime.sendMessage(session.id, "tak co teď?");
+    await first.refused;
+    first.endRun("limit");
+    await send;
+
+    // The message reached the agent as the next run's first message, and
+    // the record central holds is a second run on a running thread.
+    assert.equal(adapter.runs.length, 2);
+    assert.equal(adapter.runs[1].start.brief, "tak co teď?");
+    assert.equal(fake.runs.size, 2);
+    assert.equal(fake.sessions.get(session.id)?.state, "running");
+    const texts = (await content.listEvents(session.id))
+      .filter((e) => e.kind === "user_message")
+      .map((e) => JSON.parse(e.payload).text as string);
+    assert.deepEqual(texts, ["x", "tak co teď?"]);
   });
 
   // #488: the same lifecycle lock, in the primary runtime -- a team

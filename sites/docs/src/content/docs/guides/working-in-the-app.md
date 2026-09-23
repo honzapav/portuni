@@ -157,6 +157,15 @@ message sent into a thread you have just woken up by writing into it.
 it produced, so a thread can never end up with two runners' processes on
 it, and closing one never leaves a process behind on a closed thread.
 
+A message written at the moment a run is ending is not lost either. A run
+can end while you are typing — the runner hit its spend or rate limit, it
+errored, the thread had been idle long enough to be suspended, or you
+pressed Předat. The message still lands in the transcript, and Portuni
+delivers it: it waits for that run to finish ending and for the thread's
+summary to be written, then wakes the thread with that message as the
+first message of the next run. You see it once, the agent answers it, and
+nothing has to be typed again.
+
 Every thread you have open in the window stays live while you look at
 another one: each one keeps its own chat, and switching is only a change
 of which one is on screen. You come back to the same scroll position in
