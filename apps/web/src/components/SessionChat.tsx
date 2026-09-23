@@ -43,7 +43,7 @@ import {
   type AskPicks,
   type QuestionAnswer,
   appendDelta,
-  clearDeltaBuffer,
+  deltaBuffersAfter,
   createDeltaCoalescer,
   deriveTranscriptRows,
   activitySummary,
@@ -327,26 +327,25 @@ export default function SessionChat({
       } else if (event.kind === "run_ended") {
         runId = null;
         coalescer.flush();
-        setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
-        setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setLiveRunId(null);
-      } else if (event.kind === "assistant_message") {
+      } else if (event.kind === "turn_ended") {
+        // #495: frames still waiting for the tick belong to the turn that
+        // just ended; delivered after the clear, they would prefix the
+        // next turn's answer.
+        coalescer.drop(event.payload.run_id, "text");
+        coalescer.drop(event.payload.run_id, "reasoning");
+      } else if (runId && (event.kind === "assistant_message" || event.kind === "reasoning")) {
         // The finalized block supersedes what streamed: drop its still
         // buffered frames before clearing, or the tick delivers the
         // block's tail into the buffer the clear just emptied and that
         // fragment renders as a streaming bubble until the run ends.
-        const id = runId;
-        if (id) {
-          coalescer.drop(id, "text");
-          setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, id));
-        }
-      } else if (event.kind === "reasoning") {
-        const id = runId;
-        if (id) {
-          coalescer.drop(id, "reasoning");
-          setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, id));
-        }
+        coalescer.drop(runId, event.kind === "reasoning" ? "reasoning" : "text");
       }
+      // run_ended, turn_ended and the finalized blocks clear the buffers
+      // (deltaBuffersAfter); every other event leaves them as they are.
+      const id = runId;
+      setTextDeltaBuffers((prev) => deltaBuffersAfter(prev, "text", event, id));
+      setReasoningDeltaBuffers((prev) => deltaBuffersAfter(prev, "reasoning", event, id));
     }
     const offDelta = sessionsClient.onDelta(sessionId, (delta) => coalescer.push(delta));
     // No onSessionStates handler here: App binds the live channel to the

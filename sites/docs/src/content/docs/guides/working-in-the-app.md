@@ -193,7 +193,9 @@ in flight, and Esc does the same — both just call `interrupt()`, which
 cancels whatever the model is doing right now without ending the run, so
 you can keep typing straight after. A stop while the agent waits on your
 approval closes that question too: the thread stops waiting on you and the
-agent's next question shows straight away. A message you write while the agent
+agent's next question shows straight away. Once a turn has stopped, nothing
+in the transcript still looks like it is working, and a half-written answer
+is dropped rather than prepended to the next one. A message you write while the agent
 is still working queues behind the turn in flight and counts as work of
 its own: the stop control, the working row and the idle countdown all go
 by how many of the messages you sent are still unanswered, not by the

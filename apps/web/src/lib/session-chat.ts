@@ -326,6 +326,23 @@ export function clearDeltaBuffer(buffers: DeltaBuffers, runId: string): DeltaBuf
   return next;
 }
 
+// Which events end a run's streaming buffer on one channel. The finalized
+// block supersedes what streamed (assistant_message for text, reasoning
+// for reasoning; neither carries a run id, so the caller's live run is
+// passed in), and a turn_ended or run_ended ends it on both channels:
+// what streamed and was never finalized (a Stop mid-answer) is over, and
+// left in the buffer it would prefix the next turn's answer (#495).
+export function deltaBuffersAfter(
+  buffers: DeltaBuffers,
+  channel: StreamDelta["channel"],
+  event: CanonicalEvent,
+  liveRunId: string | null,
+): DeltaBuffers {
+  if (event.kind === "turn_ended" || event.kind === "run_ended") return clearDeltaBuffer(buffers, event.payload.run_id);
+  const finalized = channel === "reasoning" ? event.kind === "reasoning" : event.kind === "assistant_message";
+  return finalized && liveRunId !== null ? clearDeltaBuffer(buffers, liveRunId) : buffers;
+}
+
 // --- Tool-call collapsing ---------------------------------------------------
 
 // Consecutive tool_call events sharing the same tool_use_id (started ->
@@ -409,7 +426,9 @@ export function runEndReasonLabel(reason: string): string {
 
 // `liveRunId` says which run is live: its trailing activity group (after
 // the last answer) is marked live, so the renderer keeps it expanded on
-// the running tool. run_started and state_changed yield nothing. A
+// the running tool -- but only while a turn is in flight (#495). After a
+// turn_ended (a Stop mid-tool or mid-reasoning included) the run is still
+// open and waiting for the next message, and nothing in it is working. run_started and state_changed yield nothing. A
 // run_ended yields nothing for `completed` and `suspended` (the ordinary
 // ends -- the notice bar already says the process is gone), a neutral
 // note for `interrupted`, and an error row for `error`, `limit` and
@@ -483,7 +502,7 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
     }
   }
   const trailing = group.open;
-  if (trailing && liveRunId !== null && trailing.runId === liveRunId) trailing.live = true;
+  if (trailing && liveRunId !== null && trailing.runId === liveRunId && turnInFlight(events, liveRunId)) trailing.live = true;
   return rows;
 }
 

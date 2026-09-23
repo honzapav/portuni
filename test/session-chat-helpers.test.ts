@@ -8,6 +8,7 @@ import {
   approvalChoices,
   appendDelta,
   clearDeltaBuffer,
+  deltaBuffersAfter,
   collapseToolCalls,
   deriveTranscriptRows,
   activitySummary,
@@ -102,6 +103,32 @@ describe("delta buffers", () => {
     const cleared = clearDeltaBuffer(buffers, "R1");
     assert.equal("R1" in cleared, false);
     assert.equal(cleared.R2, "other");
+  });
+
+  // #495: a Stop mid-answer ends the turn with text streamed and never
+  // finalized; the next turn's answer starts from an empty buffer.
+  it("turn_ended clears the run's buffers on both channels, so the next turn's delta starts clean", () => {
+    const turnEnded = toCanonicalEvent("turn_ended", { run_id: "R1" });
+    let text = appendDelta({}, "R1", "rozepsaná odpověď");
+    let reasoning = appendDelta({}, "R1", "rozepsaná úvaha");
+    text = deltaBuffersAfter(text, "text", turnEnded, "R1");
+    reasoning = deltaBuffersAfter(reasoning, "reasoning", turnEnded, "R1");
+    assert.deepEqual(text, {});
+    assert.deepEqual(reasoning, {});
+    text = appendDelta(text, "R1", "nová odpověď");
+    assert.deepEqual(text, { R1: "nová odpověď" });
+  });
+
+  it("deltaBuffersAfter clears on the finalized block of its own channel and on run_ended, nothing else", () => {
+    const buffers = { R1: "x", R2: "y" };
+    assert.deepEqual(deltaBuffersAfter(buffers, "text", toCanonicalEvent("assistant_message", { text: "x" }), "R1"), { R2: "y" });
+    assert.equal(deltaBuffersAfter(buffers, "reasoning", toCanonicalEvent("assistant_message", { text: "x" }), "R1"), buffers);
+    assert.deepEqual(deltaBuffersAfter(buffers, "reasoning", toCanonicalEvent("reasoning", { summary: "s" }), "R1"), { R2: "y" });
+    assert.deepEqual(
+      deltaBuffersAfter(buffers, "text", toCanonicalEvent("run_ended", { run_id: "R2", reason: "completed", usage: null }), null),
+      { R1: "x" },
+    );
+    assert.equal(deltaBuffersAfter(buffers, "text", toCanonicalEvent("user_message", { text: "hi", source: "chat" }), "R1"), buffers);
   });
 
   it("clearDeltaBuffer is a no-op (same reference-safe shape) for an unknown run_id", () => {
@@ -220,7 +247,7 @@ describe("deriveTranscriptRows", () => {
 
   it("the trailing group of the live run is live; a non-completed run end is an error row", () => {
     const rows = deriveTranscriptRows(
-      [ev(1, "user_message", { text: "hi", source: "chat" }), runStarted(2), toolEv(3, "t1", "Read", "started")],
+      [runStarted(1), ev(2, "user_message", { text: "hi", source: "chat" }), toolEv(3, "t1", "Read", "started")],
       "R1",
     );
     assert.deepEqual(
@@ -247,6 +274,29 @@ describe("deriveTranscriptRows", () => {
       interrupted.map((r) => r.kind),
       ["note"],
     );
+  });
+
+  // #495: after a Stop mid-tool the run stays open, waiting for the next
+  // message; nothing in it is working, so its trailing group is not live.
+  it("after turn_ended the live run's trailing group is not live", () => {
+    const events = [
+      runStarted(1),
+      ev(2, "user_message", { text: "hi", source: "chat" }),
+      toolEv(3, "t1", "Bash", "started"),
+      ev(4, "turn_ended", { run_id: "R1" }),
+    ];
+    const rows = deriveTranscriptRows(events, "R1");
+    assert.deepEqual(
+      rows.map((r) => r.kind),
+      ["prompt", "activity"],
+    );
+    assert.equal((rows[1] as ActivityRow).live, false);
+    // The next message opens a new turn: its trailing group is live again.
+    const next = deriveTranscriptRows(
+      [...events, ev(5, "user_message", { text: "dál", source: "chat" }), toolEv(6, "t2", "Read", "started")],
+      "R1",
+    );
+    assert.equal((next[next.length - 1] as ActivityRow).live, true);
   });
 
   it("question, compaction and handoff keep their markers", () => {

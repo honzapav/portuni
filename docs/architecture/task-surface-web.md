@@ -461,7 +461,9 @@ which also deduplicates a replay against a frame that raced it.
   as "N × <tool>". Expanded, one `ChainOfThoughtStep` per item with the
   `Tool` card inside; a historical group expands by hand, per mount; the
   live run's trailing group (`live: true`) stays open on the tool that is
-  running.
+  running. `live` needs a turn in flight (`turnInFlight`), not just the
+  live run: after `turn_ended` (a Stop mid-tool or mid-reasoning
+  included) the run is idle and no group looks live.
 - **The working row** (`WorkingRow`, `workingPhase`): while a turn is in
   flight (`turnInFlight`: a `user_message` on the live run with no
   `turn_ended` after it; the run start alone opens no turn, so a thread
@@ -476,11 +478,14 @@ which also deduplicates a replay against a frame that raced it.
   in flight only (`turnActive`), never to the idle run.
 - **Deltas**: two `DeltaBuffers` keyed by `run_id`, one for `channel:
   "text"`, one for `channel: "reasoning"`. Each is cleared by its own
-  persisted event (`assistant_message` / `reasoning`) and on `run_ended`.
-  The persisted event is the record; the delta is only its live preview.
-  Frames are coalesced first (`createDeltaCoalescer`): buffered per
-  (run, channel) and flushed once per `requestAnimationFrame`, so a burst
-  costs one render; `run_ended` flushes, unmount clears. The desktop
+  persisted event (`assistant_message` / `reasoning`) and both on
+  `turn_ended` and `run_ended` (`deltaBuffersAfter`): text streamed and
+  never finalized (a Stop mid-answer) ends with its turn and never
+  prefixes the next answer. The persisted event is the record; the delta
+  is only its live preview. Frames are coalesced first
+  (`createDeltaCoalescer`): buffered per (run, channel) and flushed once
+  per `requestAnimationFrame`, so a burst costs one render; `run_ended`
+  flushes, `turn_ended` drops the run's pending frames, unmount clears. The desktop
   bridge forwards frames unchanged.
 - **AI Elements** supply the transcript chrome under
   `src/components/ai-elements/` (`conversation`, `message`, `reasoning`,
