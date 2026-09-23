@@ -7,15 +7,17 @@
 // pattern as DetailPane.access.tsx's AccessSection.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CircleX, FileText, MessageSquare, Pencil, Redo2, X } from "lucide-react";
-import type { SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
+import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, Redo2, X } from "lucide-react";
+import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
 import {
   continueSession,
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
   closePersistentSession,
   renamePersistentSession,
+  startSessionFromHandoff,
 } from "../api";
+import { handoffFileEntries, type HandoffFileEntry } from "../lib/handoff-files";
 import { hostDisplayName, mergeLiveSessionStates, sessionRowChip } from "../lib/session-views";
 import type { SessionStateMessage } from "../lib/sessions-client";
 import { Button } from "@/components/ui/button";
@@ -66,6 +68,10 @@ export function fmtDateTime(value: string): string {
 
 type Props = {
   nodeId: string;
+  // #460 "Navázat na handoff": the node's tracked files, the records the
+  // handoff list is built from (the node detail already has them, so the
+  // tab needs no fetch of its own). Absent where the caller has none.
+  files?: readonly DetailFile[];
   onOpenFile?: (nodeId: string, relPath: string) => void;
   // "Otevřít chat" (#343) -- jumps to Práce with this section's node
   // selected, with THIS row's session as the one Práce shows -- a node
@@ -88,6 +94,7 @@ type Props = {
 
 export function SessionsSection({
   nodeId,
+  files,
   onOpenFile,
   onOpenChat,
   onSessionStarted,
@@ -165,6 +172,26 @@ export function SessionsSection({
     }
   };
 
+  // #460 "Navázat na handoff": the handoff files of this node, whoever
+  // wrote them -- a file another machine's thread wrote arrives here as an
+  // ordinary tracked file, which is exactly the point.
+  const handoffs = useMemo(() => handoffFileEntries(files ?? [], sessions), [files, sessions]);
+  const [startingHandoff, setStartingHandoff] = useState<string | null>(null);
+  const handleStartFromHandoff = async (entry: HandoffFileEntry) => {
+    setStartingHandoff(entry.relative_path);
+    setError(null);
+    try {
+      const { session, run } = await startSessionFromHandoff(nodeId, entry.relative_path);
+      onSessionStarted?.({ session, run });
+      onOpenChat?.(session.id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStartingHandoff(null);
+      await load();
+    }
+  };
+
   if (loading && sessions.length === 0) {
     return (
       <div className="px-5 py-4 text-[14px] text-[var(--color-text-dim)]">
@@ -188,6 +215,43 @@ export function SessionsSection({
       {error && (
         <div className="mb-3 text-[13px]" style={{ color: "var(--color-danger)" }}>
           {error}
+        </div>
+      )}
+
+      {handoffs.length > 0 && (
+        <div className="mb-4">
+          <div className="mb-2 text-[12.5px] text-[var(--color-text-dim)]">Předání k navázání</div>
+          <div className="space-y-2">
+            {handoffs.map((entry) => (
+              <div
+                key={entry.file_id}
+                className="flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13.5px] text-[var(--color-text)]">{entry.title}</div>
+                  <div className="truncate text-[12px] text-[var(--color-text-dim)]">
+                    {[entry.host, entry.last_active_at ? fmtDateTime(entry.last_active_at) : null]
+                      .filter(Boolean)
+                      .join(" · ") || entry.relative_path}
+                  </div>
+                </div>
+                {onOpenFile && (
+                  <RowIcon onClick={() => onOpenFile(nodeId, entry.relative_path)} title="Zobrazit handoff">
+                    <FileText />
+                  </RowIcon>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={startingHandoff !== null}
+                  onClick={() => void handleStartFromHandoff(entry)}
+                >
+                  <GitPullRequestArrow />
+                  {startingHandoff === entry.relative_path ? "Navazuji..." : "Navázat na handoff"}
+                </Button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

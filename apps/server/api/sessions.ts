@@ -580,16 +580,29 @@ async function sessionNodeName(db: DbClient, nodeId: string): Promise<string | n
 // modal, no required field") -- omitting brief creates a draft instead of
 // starting a task; runner is validated as required only in that case
 // (a plain zod .optional() cannot express "required together").
-export const StartSessionBody = z.object({
-  node_id: z.string().min(1),
-  brief: z.string().trim().min(1).optional(),
-  runner: z.string().min(1).optional(),
-  instance_id: z.string().min(1).nullable().optional(),
-  policy: z.enum(["default", "auto"]).optional(),
-  // #375: the thread's own model/effort override.
-  model: z.string().nullable().optional(),
-  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
-});
+export const StartSessionBody = z
+  .object({
+    node_id: z.string().min(1),
+    brief: z.string().trim().min(1).optional(),
+    runner: z.string().min(1).optional(),
+    instance_id: z.string().min(1).nullable().optional(),
+    policy: z.enum(["default", "auto"]).optional(),
+    // #375: the thread's own model/effort override.
+    model: z.string().nullable().optional(),
+    effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+    // #460 "Navázat na handoff": a node-relative handoff path, i.e. exactly
+    // what domain/session-handoff.ts's handoffRelativePath writes. The new
+    // thread starts from that file's content -- no brief, and the runner is
+    // resolved here rather than sent, so neither is accepted alongside it.
+    handoff_path: z
+      .string()
+      .regex(/^wip\/sessions\/[A-Za-z0-9_-]+-handoff\.md$/, "handoff_path must be wip/sessions/<id>-handoff.md")
+      .optional(),
+  })
+  .refine((b) => !(b.handoff_path && b.brief), {
+    message: "handoff_path cannot be combined with brief",
+    path: ["handoff_path"],
+  });
 
 export async function handleStartSession(
   req: IncomingMessage,
@@ -604,6 +617,38 @@ export async function handleStartSession(
     const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
     if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
       respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+
+    // #460 "Navázat na handoff": a new thread from a handoff file of this
+    // node -- the runtime reads the file off this device's mirror, resolves
+    // the runner the way a draft's is resolved, and starts the first run
+    // with the summary as orientation.
+    if (body.handoff_path) {
+      try {
+        const { session, run } = await getSessionRuntime().startFromHandoff({
+          userId: identity.userId,
+          nodeId: body.node_id,
+          handoffPath: body.handoff_path,
+          policy: body.policy,
+        });
+        await logAudit(identity.userId, "session_start", "session", session.id, {
+          node_id: body.node_id,
+          handoff_path: body.handoff_path,
+        });
+        const updated = await getSession(db, session.id);
+        respondJson(res, 201, { session: await toSummary(updated ?? session), run });
+      } catch (err) {
+        if (err instanceof SessionHandoffError) {
+          respondJson(res, 409, { error: err.message, code: err.code });
+          return;
+        }
+        if (err instanceof NoRunnerAvailableError) {
+          respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
+          return;
+        }
+        throw err;
+      }
       return;
     }
 

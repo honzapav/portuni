@@ -28,6 +28,42 @@ export function handoffRelativePath(sessionId: string): string {
   return `wip/sessions/${sessionId}-handoff.md`;
 }
 
+// #460 "Navázat na handoff": the only shape POST /sessions accepts as the
+// handoff a new thread continues from -- exactly what handoffRelativePath
+// writes, so a request can never point a new thread's orientation at an
+// arbitrary file of the mirror.
+const HANDOFF_RELATIVE_PATH_RE = /^wip\/sessions\/[A-Za-z0-9_-]+-handoff\.md$/;
+
+export function isHandoffRelativePath(relPath: string): boolean {
+  return HANDOFF_RELATIVE_PATH_RE.test(relPath);
+}
+
+// The session a handoff file belongs to, read off its name alone -- the
+// source thread may live on another machine (and its record may belong to
+// someone else), so this is a hint for the UI, never an access decision.
+export function handoffPathSessionId(relPath: string): string | null {
+  const match = relPath.match(/^wip\/sessions\/(.+)-handoff\.md$/);
+  return match && isHandoffRelativePath(relPath) ? match[1] : null;
+}
+
+// Reads a node's handoff file from THIS device's mirror. Null when the path
+// is not a handoff path, when the node has no mirror here, or when the file
+// has not arrived yet -- the caller (SessionRuntime.startFromHandoff) turns
+// all three into the same refusal: there is nothing on this device to
+// continue from. Device-local in both workspaces: the mirror registry is
+// this device's sync.db and the bytes are its own copy, so a sync agent
+// answers it without reaching central.
+export async function readNodeHandoffFile(
+  userId: string,
+  nodeId: string,
+  relPath: string,
+): Promise<string | null> {
+  if (!isHandoffRelativePath(relPath)) return null;
+  const mirrorRoot = await getMirrorPath(userId, nodeId);
+  if (!mirrorRoot) return null;
+  return await readFile(join(mirrorRoot, relPath), "utf8").catch(() => null);
+}
+
 export interface WriteHandoffResult {
   session: SessionRow;
   handoffPath: string;

@@ -1022,3 +1022,133 @@ describe("session runtime: handoff (#459 Předat)", () => {
     assert.ok((await content.getContent(session.id))?.handoff_inline);
   });
 });
+
+// #460 "Navázat na handoff": the other end of Předat -- a handoff file
+// (written here or synced in from another machine) starts a NEW thread on
+// this device. A personal workspace here; test/agent-router-sessions.test.ts
+// runs the same body through the fake central server for a team workspace.
+describe("session runtime: startFromHandoff (#460 Navázat na handoff)", () => {
+  let workspace: string | null = null;
+
+  afterEach(async () => {
+    clearRegistryForTests();
+    resetLocalDbForTests();
+    delete process.env.PORTUNI_WORKSPACE_ROOT;
+    if (workspace) await rm(workspace, { recursive: true, force: true });
+    workspace = null;
+  });
+
+  // Thread A: started, then handed over, so its summary is a real file in
+  // the node's mirror -- exactly what a file synced in from another machine
+  // would look like here.
+  async function handedOverThread() {
+    const shared = await sharedDb();
+    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-navazat-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    const mirrorRoot = join(workspace, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", shared.nodeId, mirrorRoot);
+    const store = new DbSessionStore(shared.db);
+    const source = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(new FakeRunnerAdapter({ script: [{ wait: "message" }] })),
+      provision: stubProvision(),
+    });
+    const { session } = await source.startTask({ userId: "U1", nodeId: shared.nodeId, brief: "x", runner: "fake" });
+    const { handoff_path } = await source.handoff(session.id);
+    return { ...shared, store, mirrorRoot, sourceId: session.id, handoffPath: handoff_path };
+  }
+
+  // The continuing thread runs under its own adapter: resolveTaskDefaults
+  // reads the PROCESS registry (detectAll), so the adapter has to be
+  // registered globally too, not only handed to this runtime.
+  function continuingRuntime(store: DbSessionStore) {
+    const { adapter, getRunStart } = capturingAdapter();
+    registerAdapter(adapter);
+    const runtime = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+    });
+    return { runtime, getRunStart };
+  }
+
+  it("a file another thread wrote becomes a new thread's orientation; the source thread is untouched", async () => {
+    const { nodeId, store, mirrorRoot, sourceId, handoffPath } = await handedOverThread();
+    const fileContent = await readFile(join(mirrorRoot, handoffPath), "utf8");
+    const sourceBefore = await store.getSession(sourceId);
+    const sourceEventsBefore = await content.listEvents(sourceId);
+    const { runtime, getRunStart } = continuingRuntime(store);
+
+    const { session, run } = await runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath });
+
+    assert.notEqual(session.id, sourceId);
+    assert.equal(session.node_id, nodeId);
+    assert.equal(session.runner, "fake");
+    // The name is the summary's own H1 title, and stays enrichable (the
+    // user never typed it).
+    assert.equal(session.name, sourceBefore!.name);
+    assert.equal(session.name_is_custom, 0);
+
+    const started = getRunStart();
+    assert.equal(started?.runId, run.id);
+    assert.equal(started?.brief, null);
+    assert.ok(started!.orientation.includes(fileContent), "the file's content is the new run's orientation");
+    assert.match(started!.orientation, /Navázání na handoff/);
+
+    // No events are imported: the transcript starts here.
+    const newEvents = await content.listEvents(session.id);
+    assert.ok(newEvents.some((e) => e.kind === "run_started"));
+    assert.ok(!newEvents.some((e) => e.kind === "user_message"));
+    assert.equal(JSON.parse(newEvents[0].payload).resume, "handoff");
+
+    // The source thread is untouched: same record, same transcript.
+    const sourceAfter = await store.getSession(sourceId);
+    assert.deepEqual(sourceAfter, sourceBefore);
+    assert.deepEqual(await content.listEvents(sourceId), sourceEventsBefore);
+  });
+
+  it("a handoff file that is not on this device yet is refused and creates no record", async () => {
+    const { db, nodeId, store } = await handedOverThread();
+    const before = await db.execute("SELECT COUNT(*) AS n FROM sessions");
+    const { runtime } = continuingRuntime(store);
+
+    await assert.rejects(
+      () =>
+        runtime.startFromHandoff({
+          userId: "U1",
+          nodeId,
+          handoffPath: "wip/sessions/01JNOTHERE-handoff.md",
+        }),
+      (err: unknown) =>
+        err instanceof SessionHandoffError &&
+        err.code === "HANDOFF_FILE_NOT_HERE" &&
+        /ještě není na tomto zařízení/.test(err.message),
+    );
+
+    const after = await db.execute("SELECT COUNT(*) AS n FROM sessions");
+    assert.equal(Number(after.rows[0].n), Number(before.rows[0].n));
+  });
+
+  it("a node with no mirror on this device is refused the same way", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const { runtime } = continuingRuntime(store);
+    await assert.rejects(
+      () => runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath: "wip/sessions/01JX-handoff.md" }),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_FILE_NOT_HERE",
+    );
+  });
+
+  it("a path outside wip/sessions is refused before anything is read", async () => {
+    const { nodeId, store } = await handedOverThread();
+    const { runtime } = continuingRuntime(store);
+    await assert.rejects(
+      () => runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath: "wip/docs/secret.md" }),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_PATH_INVALID",
+    );
+  });
+});

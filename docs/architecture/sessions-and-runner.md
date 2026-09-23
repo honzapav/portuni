@@ -133,6 +133,32 @@ REST 409, Czech message): without a mirror the summary is content in
 `content.db` and there is no file to hand over. The other machine picks the
 work up from the file once it syncs.
 
+**Navázat na handoff** (#460) is the other end of it:
+`SessionRuntime.startFromHandoff`, `POST /sessions` with `handoff_path` (the
+same device-local route a task or a draft goes through, `write` tier). The
+path is node-relative and must be exactly what `handoffRelativePath` writes
+(`wip/sessions/<id>-handoff.md`); the runtime reads it from the node's
+mirror **on this device** (`readNodeHandoffFile`, the mirror registry in
+`sync.db` plus the local bytes, so a sync agent answers it without reaching
+central) before it creates anything. No mirror or no file yet is
+`HANDOFF_FILE_NOT_HERE` (409, „Soubor handoffu ještě není na tomto
+zařízení.") and no record is created; a path of any other shape is
+`HANDOFF_PATH_INVALID` (the routers' schema rejects it as a 400 first). With
+the file in hand it is `continueSession`'s shape minus the close: a new
+record on this device (`runner`/`instance_id` resolved as for a draft,
+`host_id` this device, `name` from the summary's own H1 via
+`extractHandoffTitle`, `name_is_custom` left 0 so this thread's own first
+summary may rename it), and a first run with no brief whose orientation
+carries the file's content under "## Navázání na handoff", the way a resume
+from a summary does -- generalised to a file that belongs to another
+session. No events are imported: the transcript starts on this device, and
+the source thread's record, file and transcript are never touched, which is
+what lets the file come from another machine. The Relace tab of the node
+lists the node's handoff files (`apps/web/src/lib/handoff-files.ts`, built
+from the node's file records; the title and the host come from the source
+record when the user can see it, otherwise the file name is all there is)
+and that is where the action lives.
+
 A rename is `POST /sessions/:id/rename`, device-local, through
 `SessionRuntime.renameSession`: it writes `name` (`name_is_custom`) and
 publishes a `session_changed` frame, which is never persisted or replayed

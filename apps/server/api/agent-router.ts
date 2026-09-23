@@ -56,7 +56,7 @@ import {
   StartSessionBody,
   sessionResumeInfoPayload,
 } from "./sessions.js";
-import { SessionHandoffError } from "../domain/runner/session-runtime.js";
+import { NoRunnerAvailableError, SessionHandoffError } from "../domain/runner/session-runtime.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -461,6 +461,33 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       // promoteDraftAndStart). The row itself is created through the
       // runtime's own store, which in this mode is CentralSessionStore,
       // i.e. central's POST /sessions/record draft shape.
+      // #460 "Navázat na handoff": the file lives in THIS device's mirror
+      // and the run starts here; only the new record is central's, through
+      // the runtime's CentralSessionStore. Same call as the local router.
+      if (body.handoff_path) {
+        try {
+          const { session, run } = await sessionRuntime.startFromHandoff({
+            userId: identity.userId,
+            nodeId: body.node_id,
+            handoffPath: body.handoff_path,
+            policy: body.policy,
+          });
+          const updated = await sessionRuntime.getSession(session.id);
+          respondJson(res, 201, { session: updated ?? session, run });
+        } catch (err) {
+          if (err instanceof SessionHandoffError) {
+            respondJson(res, 409, { error: err.message, code: err.code });
+            return true;
+          }
+          if (err instanceof NoRunnerAvailableError) {
+            respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
+            return true;
+          }
+          if (respondCentral404(res, err)) return true;
+          respondError(res, "POST /sessions", err);
+        }
+        return true;
+      }
       if (body.brief === undefined) {
         try {
           const session = await sessionRuntime.createDraft({

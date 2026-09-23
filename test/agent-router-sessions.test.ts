@@ -662,6 +662,69 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.sessions.get(session.id)?.state, "draft");
   });
 
+  // #460 "Navázat na handoff": the file and the run are this device's, the
+  // new record is central's. test/runner-runtime.test.ts covers the same
+  // body for a personal workspace.
+  it("POST /sessions with handoff_path starts a new thread here from another thread's handoff file", async () => {
+    const adapter = stubScript([{ wait: "message" }]);
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session: source } = (await start.json()) as { session: SessionRow };
+    const handedOver = await fetch(`${base}/sessions/${source.id}/handoff`, { method: "POST" });
+    const { handoff_path } = (await handedOver.json()) as { handoff_path: string };
+    const sourceAfterHandoff = fake.sessions.get(source.id);
+    const sourceEvents = await content.listEvents(source.id);
+    const mirrorRoot = await getMirrorPath(source.user_id, NODE_ID);
+    const fileContent = await readFile(join(mirrorRoot!, handoff_path), "utf8");
+
+    const res = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, handoff_path }),
+    });
+    assert.equal(res.status, 201);
+    const { session, run } = (await res.json()) as { session: SessionRow; run: SessionRunRow };
+
+    assert.notEqual(session.id, source.id);
+    assert.equal(fake.sessions.get(session.id)?.state, "running", "the record is central's");
+    assert.equal(fake.sessions.get(session.id)?.host_id, session.host_id);
+    // Orientation, not an imported transcript: central never saw a byte of
+    // either thread's content.
+    const runStart = adapter.getLastRunStart();
+    assert.equal(runStart?.runId, run.id);
+    assert.ok(runStart!.orientation.includes(fileContent));
+    assert.equal(fake.sessions.get(session.id)?.handoff_inline ?? null, null);
+    const newEvents = await content.listEvents(session.id);
+    assert.ok(newEvents.some((e) => e.kind === "run_started"));
+    assert.ok(!newEvents.some((e) => e.kind === "user_message"));
+
+    // The source thread is untouched by the continuation.
+    assert.deepEqual(fake.sessions.get(source.id), sourceAfterHandoff);
+    assert.deepEqual(await content.listEvents(source.id), sourceEvents);
+
+    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+  });
+
+  it("POST /sessions with a handoff_path that has not synced here yet 409s and creates no record", async () => {
+    stubScript([{ wait: "message" }]);
+    const before = fake.sessions.size;
+
+    const res = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, handoff_path: "wip/sessions/01JNOTHERE-handoff.md" }),
+    });
+
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string; code: string };
+    assert.equal(body.code, "HANDOFF_FILE_NOT_HERE");
+    assert.match(body.error, /ještě není na tomto zařízení/);
+    assert.equal(fake.sessions.size, before);
+  });
+
   // #426: the composer's model picker. The live half can only happen on
   // the device driving the run, so the route is device-local and the
   // record half rides along through CentralSessionStore.

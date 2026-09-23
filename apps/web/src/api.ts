@@ -346,6 +346,10 @@ export function startSession(input: {
   runner?: string;
   instance_id?: string | null;
   policy?: "default" | "auto";
+  // #460 "Navázat na handoff": a node-relative wip/sessions/<id>-handoff.md
+  // path. The new thread starts from that file's content on this device --
+  // no brief and no runner go with it, the server resolves both.
+  handoff_path?: string;
 }): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
   return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", input).then(
     (r) => {
@@ -353,6 +357,17 @@ export function startSession(input: {
       return r;
     },
   );
+}
+
+// #460 "Navázat na handoff": a new thread on THIS device that continues
+// from a handoff file of the node -- one another thread wrote, possibly on
+// another machine. 409 (Czech message) when the file has not synced here
+// yet; nothing is created then.
+export function startSessionFromHandoff(
+  nodeId: string,
+  handoffPath: string,
+): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
+  return startSession({ node_id: nodeId, handoff_path: handoffPath });
 }
 
 // Opens a new, empty thread on a node -- one click, no modal (#374). The

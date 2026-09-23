@@ -19,6 +19,9 @@ import { getSessionScope, threadNameFromFirstMessage } from "../sessions.js";
 import {
   buildRunSummaryContent,
   checkConversationResumable,
+  extractHandoffTitle,
+  isHandoffRelativePath,
+  readNodeHandoffFile,
   suspendSessionServerSide,
   type ServerHandoffReason,
   type SummaryEvent,
@@ -57,7 +60,7 @@ export class NoRunnerAvailableError extends Error {}
 // is Czech, because it is shown to the user as-is.
 export class SessionHandoffError extends Error {
   constructor(
-    readonly code: "HANDOFF_NOT_ALLOWED" | "HANDOFF_NO_MIRROR",
+    readonly code: "HANDOFF_NOT_ALLOWED" | "HANDOFF_NO_MIRROR" | "HANDOFF_FILE_NOT_HERE" | "HANDOFF_PATH_INVALID",
     message: string,
   ) {
     super(message);
@@ -221,6 +224,18 @@ export interface CreateDraftInput {
   effort?: string | null;
 }
 
+// #460 "Navázat na handoff": a new thread on THIS device that starts from a
+// handoff file some other thread wrote -- possibly on another machine, which
+// is the whole point. Only the node and the file's node-relative path: the
+// runner/instance are resolved here the way a draft's are, and the name
+// comes out of the summary's own title.
+export interface StartFromHandoffInput {
+  userId: string;
+  nodeId: string;
+  handoffPath: string;
+  policy?: PermissionPolicy;
+}
+
 export interface SessionSignals {
   // Age of the live run, or null when the session has none.
   runAgeMs: number | null;
@@ -282,6 +297,15 @@ export interface SessionRuntime {
   // thread, or a node with no mirror on this device throws
   // SessionHandoffError -- there is no file to hand over.
   handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }>;
+  // #459/#460 "Navázat na handoff": the other end of Předat. Creates a new
+  // thread on this device from a handoff file of the node -- a new record
+  // (runner/instance resolved as for a draft, name from the summary's
+  // title), whose first run gets the file's content as orientation, the way
+  // a resume from a summary does. No events are imported: the transcript
+  // starts here, and the thread the file came from is never touched.
+  // The file is read from this device's mirror; no mirror or no file yet is
+  // a SessionHandoffError and creates no record at all.
+  startFromHandoff(input: StartFromHandoffInput): Promise<{ session: SessionRow; run: SessionRunRow }>;
   // #378: closes THIS session (summary written from what's in the log,
   // used to seed the new one -- not from a fresh suspend, since Uzavřít-
   // shaped closes never go through the auto-summary path) and starts a new
@@ -956,6 +980,71 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return { session: after, handoff_path: after.handoff_path };
   }
 
+  // #460 "Navázat na handoff". The file is read BEFORE anything is created,
+  // so a handoff that has not reached this device yet leaves no half-made
+  // thread behind. Everything after that is continueSession's shape minus
+  // the close: a new record, the summary as extra orientation, a first run
+  // that starts itself with no brief. The source thread is never read and
+  // never written -- the file is the whole handover, which is what lets it
+  // come from another machine.
+  async function startFromHandoff(input: StartFromHandoffInput): Promise<{
+    session: SessionRow;
+    run: SessionRunRow;
+  }> {
+    if (!isHandoffRelativePath(input.handoffPath)) {
+      throw new SessionHandoffError("HANDOFF_PATH_INVALID", "Cesta k souboru handoffu není platná.");
+    }
+    const summary = await readNodeHandoffFile(input.userId, input.nodeId, input.handoffPath);
+    if (summary === null) {
+      throw new SessionHandoffError("HANDOFF_FILE_NOT_HERE", "Soubor handoffu ještě není na tomto zařízení.");
+    }
+
+    const { runner, instanceId } = await resolveTaskDefaults(input.nodeId, resolveNodeOrgId);
+    const created = await store.createSession({
+      node_id: input.nodeId,
+      user_id: input.userId,
+      runner,
+      instance_id: instanceId,
+      host_id: localHostId(),
+    });
+    // name_is_custom stays 0: the title is the summary's, not the user's,
+    // so this thread's own first summary may rename it later, exactly as a
+    // thread named from its first message is left alone.
+    const title = extractHandoffTitle(summary);
+    const session = title ? await store.patchSession(created.id, { name: title }) : created;
+
+    const provisioned = await provision({
+      userId: input.userId,
+      nodeId: input.nodeId,
+      sessionId: session.id,
+      resume: null,
+    });
+    const seededProvisioned = {
+      ...provisioned,
+      orientation:
+        `${provisioned.orientation}\n\n## Navázání na handoff\n\n` +
+        `Navazuješ na vlákno z jiného zařízení; konverzace se nepřenáší, ` +
+        `pokračuješ z tohoto shrnutí (\`${input.handoffPath}\`):\n\n${summary}`,
+    };
+
+    const run = await store.createRun({
+      session_id: session.id,
+      runner,
+      instance_id: instanceId,
+      host_id: localHostId(),
+    });
+    const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
+
+    await startRun(session, run, seededProvisioned, instanceEnv, {
+      brief: null,
+      runStartResume: null,
+      resumeMode: "handoff",
+      policy: input.policy ?? "default",
+    });
+
+    return { session: await mustGetSession(session.id), run };
+  }
+
   function noMirrorHandoffError(): SessionHandoffError {
     return new SessionHandoffError(
       "HANDOFF_NO_MIRROR",
@@ -1098,6 +1187,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     renameSession,
     closeSession,
     handoff,
+    startFromHandoff,
     continueSession,
     pendingQuestion,
     subscriberCount,

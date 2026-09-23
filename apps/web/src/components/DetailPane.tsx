@@ -1286,6 +1286,7 @@ function DetailPaneBody({
         {tab === "sessions" && (
           <SessionsSection
             nodeId={node.id}
+            files={node.files}
             onOpenFile={onOpenFile}
             onOpenChat={onOpenChat ? (sessionId) => onOpenChat(node.id, sessionId) : undefined}
             onSessionStarted={onSessionStarted}
