@@ -413,8 +413,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     if (!live || live.runId !== runId || live.agentSessionIdSaved) return;
     const agentSessionId = live.handle.agentSessionId();
     if (!agentSessionId) return;
+    // Set before the await so concurrent events don't write it twice;
+    // cleared on failure so the next event retries.
     live.agentSessionIdSaved = true;
-    await store.patchRun(runId, { agent_session_id: agentSessionId });
+    try {
+      await store.patchRun(runId, { agent_session_id: agentSessionId });
+    } catch (e) {
+      live.agentSessionIdSaved = false;
+      throw e;
+    }
   }
 
   async function handleAdapterEvent(
