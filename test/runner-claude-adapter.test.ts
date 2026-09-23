@@ -50,7 +50,11 @@ function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
 // called -- canUseTool only means something on a live run.
 function makeFakeQuery(
   script: readonly SDKMessage[],
-  opts: { hold?: boolean; supportedModels?: () => ReturnType<Query["supportedModels"]> } = {},
+  opts: {
+    hold?: boolean;
+    supportedModels?: () => ReturnType<Query["supportedModels"]>;
+    mcpServerStatus?: () => ReturnType<Query["mcpServerStatus"]>;
+  } = {},
 ) {
   let capturedOptions: Options | undefined;
   const interruptCalls: number[] = [];
@@ -79,6 +83,8 @@ function makeFakeQuery(
     };
     (iterator as unknown as { supportedModels: Query["supportedModels"] }).supportedModels =
       opts.supportedModels ?? (async () => []);
+    (iterator as unknown as { mcpServerStatus: Query["mcpServerStatus"] }).mcpServerStatus =
+      opts.mcpServerStatus ?? (async () => []);
     (iterator as unknown as { toggleMcpServer: Query["toggleMcpServer"] }).toggleMcpServer = async (
       name: string,
       enabled: boolean,
@@ -864,6 +870,80 @@ describe("Claude adapter: MCP elicitation", () => {
     await handle.close();
   });
 
+  it("a form with a second field is declined: the chat would grant it unseen", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const result = await options()!.onElicitation!(
+      {
+        ...PORTUNI_CONFIRM,
+        requestedSchema: {
+          type: "object",
+          properties: { confirm: { type: "boolean" }, rememberForever: { type: "boolean" } },
+        },
+      },
+      { signal: new AbortController().signal, requestId: "el-two" },
+    );
+    assert.deepEqual(result, { action: "decline" });
+    assert.equal(events.filter((e) => "kind" in e && e.kind === "question").length, 0);
+    release();
+    await handle.close();
+  });
+
+  it("a dialog raised while a permission question is open waits for its turn", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const questions = () => events.filter((e) => "kind" in e && e.kind === "question");
+    const permission = options()!.canUseTool!(
+      "ExitPlanMode",
+      { plan: "the plan" },
+      { requestId: "perm-1", signal: new AbortController().signal } as never,
+    );
+    const dialog = options()!.onElicitation!(PORTUNI_CONFIRM, {
+      signal: new AbortController().signal,
+      requestId: "el-queued",
+    });
+    await flushMicrotasks();
+    assert.equal(questions().length, 1, "the dialog must not be shown while the permission question is open");
+
+    await handle.answer("perm-1", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.equal(((await permission) as PermissionResult).behavior, "allow");
+    await flushMicrotasks();
+    assert.equal(questions().length, 2, "the dialog is shown once the first question is answered");
+    assert.equal((questions()[1] as Extract<CanonicalEvent, { kind: "question" }>).payload.request_id, "el-queued");
+
+    await handle.answer("el-queued", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.deepEqual(await dialog, { action: "accept", content: { confirm: true } });
+    release();
+    await handle.close();
+  });
+
+  it("a dialog the SDK abandons is cancelled and the chat learns the question closed", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const controller = new AbortController();
+    const pending = options()!.onElicitation!(PORTUNI_CONFIRM, { signal: controller.signal, requestId: "el-abort" });
+    await flushMicrotasks();
+    controller.abort();
+    assert.deepEqual(await pending, { action: "cancel" });
+    const questions = events.filter((e) => "kind" in e && e.kind === "question") as Extract<
+      CanonicalEvent,
+      { kind: "question" }
+    >[];
+    assert.equal(questions.length, 2);
+    assert.equal(questions[1].payload.request_id, "el-abort");
+    assert.equal(questions[1].payload.decision?.value, false);
+    // A late click on the closed question changes nothing.
+    await handle.answer("el-abort", { by: "U1", value: true, at: new Date().toISOString() });
+    release();
+    await handle.close();
+  });
+
   it("a dialog still open when the run ends is cancelled, so the server stops waiting", async () => {
     const { query, options } = makeFakeQuery([]);
     const adapter = createClaudeAdapter({ query });
@@ -878,40 +958,87 @@ describe("Claude adapter: MCP elicitation", () => {
 });
 
 describe("Claude adapter: inherited claude.ai Portuni connectors", () => {
-  it("switches off every claude.ai Portuni connector at init, and only those", async () => {
-    const script: SDKMessage[] = [
-      {
-        type: "system",
-        subtype: "init",
-        apiKeySource: "none",
-        claude_code_version: "1.0.0",
-        cwd: "/tmp",
-        tools: [],
-        mcp_servers: [
-          { name: "portuni", status: "connected" },
-          { name: "claude.ai Portuni Tempo", status: "connected" },
-          { name: "claude.ai Portuni", status: "connected" },
-          { name: "claude.ai Asana", status: "connected" },
-        ],
-        model: "claude",
-        permissionMode: "default",
-        slash_commands: [],
-        output_style: "default",
-        skills: [],
-        plugins: [],
-        uuid: "u1",
-        session_id: "agent-sess-1",
-      } as unknown as SDKMessage,
-    ];
-    const { query, toggleCalls } = makeFakeQuery(script);
-    const adapter = createClaudeAdapter({ query });
+  const INIT = {
+    type: "system",
+    subtype: "init",
+    apiKeySource: "none",
+    claude_code_version: "1.0.0",
+    cwd: "/tmp",
+    tools: [],
+    mcp_servers: [],
+    model: "claude",
+    permissionMode: "default",
+    slash_commands: [],
+    output_style: "default",
+    skills: [],
+    plugins: [],
+    uuid: "u1",
+    session_id: "agent-sess-1",
+  } as unknown as SDKMessage;
+  const proxy = (name: string, url: string) =>
+    ({ name, status: "connected", scope: "claudeai", config: { type: "claudeai-proxy", url, id: `mcpsrv_${name}` } }) as never;
+
+  it("switches off the claude.ai connectors that point at this Portuni, whatever they are named", async () => {
+    const { query, options, toggleCalls } = makeFakeQuery([INIT], {
+      mcpServerStatus: async () => [
+        { name: "portuni", status: "connected", scope: "dynamic", config: { type: "http", url: "http://127.0.0.1:47011/mcp" } } as never,
+        proxy("claude.ai Portuni Tempo", "https://api.portuni.com/mcp"),
+        proxy("claude.ai Firemní graf", "https://api.portuni.com/mcp"),
+        proxy("claude.ai Asana", "https://mcp.asana.com/v2/mcp"),
+        proxy("claude.ai Portuni jinde", "https://portuni.example.org/mcp"),
+      ],
+    });
+    const adapter = createClaudeAdapter({ query, portuniOrigins: () => ["https://api.portuni.com"] });
     const handle = await adapter.start(makeRunStart(), () => undefined);
-    await handle.close();
     await flushMicrotasks();
     assert.deepEqual(toggleCalls, [
       ["claude.ai Portuni Tempo", false],
-      ["claude.ai Portuni", false],
+      ["claude.ai Firemní graf", false],
     ]);
+    // The backstop for a call issued before the toggle lands: the tool is
+    // refused, and the model is pointed at the run's own server.
+    const denied = (await options()!.canUseTool!(
+      "mcp__claude_ai_Portuni_Tempo__portuni_get_node",
+      { node_id: "N1" },
+      { requestId: "req-c", signal: new AbortController().signal } as never,
+    )) as PermissionResult;
+    assert.equal(denied.behavior, "deny");
+    const asana = (await options()!.canUseTool!(
+      "mcp__claude_ai_Asana__get_task",
+      { task_id: "1" },
+      { requestId: "req-d", signal: new AbortController().signal } as never,
+    )) as PermissionResult;
+    assert.equal(asana.behavior, "allow");
+    await handle.close();
+  });
+
+  it("without a known Portuni origin nothing is switched off", async () => {
+    const { query, toggleCalls } = makeFakeQuery([INIT], {
+      mcpServerStatus: async () => [proxy("claude.ai Portuni Tempo", "https://api.portuni.com/mcp")],
+    });
+    const adapter = createClaudeAdapter({ query, portuniOrigins: () => [] });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    await handle.close();
+    await flushMicrotasks();
+    assert.deepEqual(toggleCalls, []);
+  });
+});
+
+describe("Claude adapter: an approval answered with text", () => {
+  it("denies: only true allows an approval, text is an answer to an input question alone", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const pending = options()!.canUseTool!(
+      "ExitPlanMode",
+      { plan: "the plan" },
+      { requestId: "perm-text", signal: new AbortController().signal } as never,
+    );
+    await handle.answer("perm-text", { by: "U1", value: "Ne", at: new Date().toISOString() });
+    const result = (await pending) as PermissionResult;
+    assert.equal(result.behavior, "deny");
+    release();
+    await handle.close();
   });
 });
 
