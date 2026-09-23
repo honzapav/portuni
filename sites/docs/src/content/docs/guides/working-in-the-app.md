@@ -188,8 +188,9 @@ question panel appears above the composer while
 free-form input — also for a confirmation dialog an MCP server raises
 mid-tool-call, such as Portuni's scope expansion or write access (Ano
 accepts, Ne declines; a dialog asking for more than a yes/no is declined).
-The run uses only its own Portuni connection: a Portuni among the
-claude.ai connectors its profile inherits is switched off, because that
+The run uses only its own Portuni connection: a claude.ai connector its
+profile inherits that points at this Portuni's server (recognised by its
+URL, whatever it is named) is switched off for the run, because that
 one's dialogs would go to claude.ai. The composer itself disables while closed or
 archived, or when you are not the session's owner (messages and answers
 are owner-only; anyone who can see the node can read along). Unlike
