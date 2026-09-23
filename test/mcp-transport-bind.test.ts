@@ -7,7 +7,7 @@
 // test/mcp-transport-suspend-on-close.test.ts.
 process.env.PORTUNI_AUTH_TOKEN = "test-token";
 
-import { test } from "node:test";
+import { before, test } from "node:test";
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +15,13 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { installTestContentDb } from "./helpers/content-db.js";
+
+// A suspend on disconnect writes content: into memory, not a content.db
+// in the repo root.
+before(async () => {
+  await installTestContentDb();
+});
 
 async function setupServer() {
   const { startHttpServer } = await import("../apps/server/http/server.js");

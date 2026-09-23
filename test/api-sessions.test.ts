@@ -16,6 +16,7 @@ import type { DbClient } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
 import {
   createSession,
@@ -105,6 +106,7 @@ describe("session REST endpoints", () => {
     db = await openTestDb();
     await ensureSchemaOn(db);
     setDbForTesting(db);
+    await installTestContentDb();
 
     const orgId = ulid();
     await db.execute({
@@ -136,6 +138,7 @@ describe("session REST endpoints", () => {
 
   after(async () => {
     resetLocalDbForTests();
+    clearTestContentDb();
     delete process.env.PORTUNI_WORKSPACE_ROOT;
     await rm(workspace, { recursive: true, force: true });
   });
