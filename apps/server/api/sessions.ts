@@ -225,8 +225,8 @@ export async function handleListNodeSessions(
 }
 
 // Shared guard for the single-session routes below: resolves sessionAccess
-// and, on denial, writes the response itself (404 for SESSION_NOT_FOUND, 403
-// for SESSION_FORBIDDEN) and returns null so the caller can just `return`.
+// and, on denial, writes the response itself (404, SESSION_NOT_FOUND) and
+// returns null so the caller can just `return`.
 async function guardSessionAccess(
   res: ServerResponse,
   db: DbClient,
@@ -238,7 +238,7 @@ async function guardSessionAccess(
     return await sessionAccess(db, identity, sessionId, action);
   } catch (err) {
     if (err instanceof SessionAccessError) {
-      respondJson(res, err.code === "SESSION_NOT_FOUND" ? 404 : 403, { error: err.message, code: err.code });
+      respondJson(res, 404, { error: err.message, code: err.code });
       return null;
     }
     throw err;

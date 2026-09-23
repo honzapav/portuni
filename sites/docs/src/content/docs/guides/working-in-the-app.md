@@ -327,8 +327,7 @@ app, an upgrade that carried the webview-proxy proof described above
 (`WEBVIEW_PROXY_REQUIRED` otherwise) — a `subscribe` works either way. Every frame is JSON `{ id?, type, payload }`; a frame
 carrying `id` gets `{ id, type: "reply", payload }` on success or
 `{ id, type: "error", payload: { code, message } }` on failure — the same
-codes the REST routes answer with (`SESSION_FORBIDDEN`,
-`SESSION_NOT_FOUND`, `NO_LIVE_RUN`, `NO_PENDING_QUESTION`, …). A refused
+codes the REST routes answer with (`SESSION_NOT_FOUND`, `NO_LIVE_RUN`, `NO_PENDING_QUESTION`, …). A refused
 action is always an error frame, never a closed socket.
 
 Client → server: `subscribe { session_id, after }` (replays the persisted
