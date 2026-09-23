@@ -252,10 +252,15 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `router.ts`, `agent-router.ts`, `sessions-ws.ts`, `min-scopes.ts` and
   `device-local-routes.json` together.
 - Nothing but Uzavřít and the auto-archive sweep reaches `closed`. Every other
-  end (disconnect, idle `PORTUNI_RUN_IDLE_MS`, provider limit or error,
-  boot sweep) suspends with a summary **the device** writes -- it holds the
+  end (idle `PORTUNI_RUN_IDLE_MS`, provider limit or error, boot sweep, a
+  hand-opened CLI's connection dropping) suspends with a summary **the
+  device** writes -- it holds the
   transcript, so the central server never writes one; the next message
-  resumes by writing. An orphaned pid found by the device's boot sweep
+  resumes by writing. An MCP connection closing -- a drop or the transport's
+  idle GC -- never ends a thread a device drives (`runner` set or a run
+  open): `closeSessionIfRunning` checks `isDeviceDrivenSession` in both
+  branches, so the row stays `running` and the agent's client binds back to
+  it. An orphaned pid found by the device's boot sweep
   suspends with no summary at all, and a thread whose device disappeared
   mid-run stays `running` until that sweep runs. `interrupt()` cancels the
   current turn only.

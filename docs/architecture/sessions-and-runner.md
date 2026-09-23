@@ -383,13 +383,24 @@ live action, `sessions-ws.ts` in the same change.
   `disconnect` vs `idle` in the same `onclose`) and by
   `boot/session-sweep.ts` finding a `running` row from a dead process.
   On a device both delegate to `suspendSessionServerSide`;
-  `closeSessionIfRunning` still carries its pre-#329 name. On the central
-  server (#458) they suspend only a session no device drives (no runner, no
-  open run: a hand-opened CLI or connector whose connection was to that
-  process), record only and with no summary, and never touch a task thread:
-  its run lives on a device, and a dropped proxied MCP connection or a
-  central restart says nothing about it. `portuni_session_suspend` is
-  the only channel such a CLI has to write its own handoff.
+  `closeSessionIfRunning` still carries its pre-#329 name.
+  **An MCP connection closing never ends a thread a device drives** (#487),
+  in either workspace: `closeSessionIfRunning` checks
+  `isDeviceDrivenSession` (a `runner` set, or a run still open) before it
+  suspends anything, on the device exactly as on the central server (#458),
+  and what is left for it is a hand-opened CLI or a connector session whose
+  only life was that connection. An agent that spent half an hour on files
+  without calling a Portuni tool, or whose connection dropped, keeps its
+  thread, its run and its transcript -- and because the row stays
+  `running`, its client's next connection binds to it again through
+  `lookupSpawnSessionForBind` instead of being refused with
+  `SESSION_BIND_REFUSED`. Only the runtime ends such a thread: idle with no
+  turn in flight, a provider error or limit, or the device's own boot
+  sweep. The sync agent's front door (`mcp/agent-transport.ts`) has no
+  suspend path at all -- its `onclose` closes the upstream client, and the
+  suspend that could follow is the central branch's, which skips the same
+  threads. `portuni_session_suspend` is the only channel such a CLI has to
+  write its own handoff.
 
 ## The Claude adapter
 

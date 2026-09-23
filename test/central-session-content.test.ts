@@ -147,7 +147,10 @@ describe("personal workspace: the same two suspends still write the device's sum
     const { content } = await installTestContentDb();
     setDbForTesting(db);
     try {
-      const task = await createSession(db, "U1", { node_id: NODE, session_type: "interactive_task", runner: "claude" });
+      // A hand-opened CLI: no runner, no run open -- the connection WAS the
+      // session, so this is the one shape a transport close still suspends
+      // (#487; a runner-driven thread is left to the runtime).
+      const task = await createSession(db, "U1", { node_id: NODE, session_type: "interactive_task", cli: "claude" });
       await closeSessionIfRunning(db, task.id, "disconnect", { central: false });
       const after = await getSession(db, task.id);
       assert.equal(after?.state, "suspended");
