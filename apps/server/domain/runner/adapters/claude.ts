@@ -10,6 +10,7 @@
 // string, even for a brief-only fresh run.
 
 import { execFile as nodeExecFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
 import { access, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
@@ -188,12 +189,62 @@ function createPushQueue<T>(): PushQueue<T> {
   };
 }
 
-function userMessage(text: string): SDKUserMessage {
+// #490: every message pushed into the prompt stream carries a uuid of our
+// own, so the result that answers it can be tied back to it -- the SDK
+// echoes the uuids a turn consumed in `user_message_uuids`. Without it a
+// turn that folded two sends into one is indistinguishable from a turn that
+// answered one and left the other queued.
+function userMessage(text: string, uuid: string): SDKUserMessage {
   return {
     type: "user",
     message: { role: "user", content: text },
     parent_tool_use_id: null,
+    uuid: uuid as SDKUserMessage["uuid"],
   };
+}
+
+// #490: how many of the messages we sent this turn answered, taken off
+// `pending` (the uuids of sends no turn has accounted for yet, in push
+// order). The SDK's own contract, @anthropic-ai/claude-agent-sdk 0.3.270:
+//   - "The CLI emits exactly one result message per turn."
+//   - `user_message_uuids`: "Client uuids of every user message whose
+//     prompt this turn consumed, in consumption order -- all members of a
+//     prompt batch the host merged into this one turn (several messages
+//     sent close together run as one turn whose user_message_uuid is the
+//     LAST member's), then any queued user message folded into the running
+//     turn between tool rounds".
+//   - `queued_turn_count`: "User-initiated sends still waiting in the
+//     command queue when this result was produced ... Queued sends may
+//     coalesce into fewer turns, so this counts pending sends, not
+//     remaining results."
+// So: the uuid echo is exact and is used first; the queue count is the
+// resync for anything it did not report (an interrupt that discarded the
+// backlog, a producer too old to echo); one message is the last-resort
+// default, which is what one result per turn means.
+export function consumeSendUuids(
+  pending: string[],
+  msg: { user_message_uuid?: unknown; user_message_uuids?: unknown; queued_turn_count?: unknown },
+): number {
+  const before = pending.length;
+  if (before === 0) return 0;
+  const list = Array.isArray(msg.user_message_uuids)
+    ? msg.user_message_uuids.filter((u): u is string => typeof u === "string")
+    : null;
+  const last = typeof msg.user_message_uuid === "string" ? msg.user_message_uuid : null;
+  if (list?.some((u) => pending.includes(u))) {
+    for (let i = pending.length - 1; i >= 0; i--) {
+      if (list.includes(pending[i])) pending.splice(i, 1);
+    }
+  } else if (last !== null && pending.includes(last)) {
+    // A coalesced turn echoes the LAST message it folded in, so everything
+    // queued before it went into the same turn.
+    pending.splice(0, pending.indexOf(last) + 1);
+  } else if (list === null && last === null) {
+    pending.shift();
+  }
+  const queued = typeof msg.queued_turn_count === "number" ? msg.queued_turn_count : null;
+  if (queued !== null && pending.length > queued) pending.splice(0, pending.length - queued);
+  return before - pending.length;
 }
 
 // --- executable resolution ---------------------------------------------
@@ -448,6 +499,11 @@ interface RunTranslationState {
   // the prompt stream ("Claude Code returned an error result"), which is
   // still a graceful close.
   lastResultWasInterrupt: boolean;
+  // #490: uuids of the messages pushed into the prompt stream that no turn
+  // has answered yet, in push order. Each result takes the ones its turn
+  // consumed off the front (consumeSendUuids), and what it took is what
+  // turn_ended reports.
+  pendingSends: string[];
 }
 
 function createState(): RunTranslationState {
@@ -476,6 +532,7 @@ function createState(): RunTranslationState {
     runEndedEmitted: false,
     interruptRequested: false,
     lastResultWasInterrupt: false,
+    pendingSends: [],
   };
 }
 
@@ -767,7 +824,14 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   async function start(run: RunStart, sink: EventSink): Promise<import("../types.js").RunHandle> {
     const state = createState();
     const promptQueue = createPushQueue<SDKUserMessage>();
-    if (run.brief !== null) promptQueue.push(userMessage(run.brief));
+    // #490: the brief is the run's first message and is counted like any
+    // other -- the turn that answers it echoes this uuid back.
+    const pushPrompt = (text: string): void => {
+      const uuid = randomUUID();
+      state.pendingSends.push(uuid);
+      promptQueue.push(userMessage(text, uuid));
+    };
+    if (run.brief !== null) pushPrompt(run.brief);
 
     async function canUseTool(
       toolName: string,
@@ -1018,6 +1082,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         const interrupted = state.interruptRequested && msg.subtype === "error_during_execution";
         state.interruptRequested = false;
         state.lastResultWasInterrupt = interrupted;
+        // #490: which of our sends this turn answered -- taken here, before
+        // the failure branch, so a result that ends the run leaves no
+        // message counted as still unanswered either.
+        const consumed = consumeSendUuids(state.pendingSends, msg as Record<string, unknown>);
         const failure = interrupted ? null : providerResultFailure(msg);
         if (failure !== null && state.providerEndReason === null) {
           state.providerEndReason = failure.reason;
@@ -1026,7 +1094,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         } else if (failure === null) {
           // The turn is over and the process waits for the next prompt: say
           // so, or the surface keeps showing the run as working.
-          sink({ kind: "turn_ended", payload: { run_id: run.runId } });
+          sink({ kind: "turn_ended", payload: { run_id: run.runId, consumed_messages: consumed } });
         }
       }
     }
@@ -1156,7 +1224,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         if (state.ended || state.providerEndReason !== null || promptQueue.isEnded()) {
           throw new RunEndedError("send: the run has ended, the message was not delivered");
         }
-        promptQueue.push(userMessage(text));
+        pushPrompt(text);
       },
       async answer(requestId: string, decision: QuestionDecision): Promise<void> {
         const elicitation = state.pendingElicitations.get(requestId);

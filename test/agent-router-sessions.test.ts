@@ -497,6 +497,38 @@ describe("agent-router: sessions/tasks", () => {
     assert.deepEqual(texts, ["x", "tak co teď?"]);
   });
 
+  // #490: the same count of unanswered messages, in the primary runtime --
+  // a team workspace's sync agent, whose record store is CentralSessionStore
+  // over the fake central server. The runtime is shared domain code, so
+  // what the count protects (the idle sweep) must hold here too.
+  it("the idle sweep leaves a run whose second message is still unanswered (#490)", async () => {
+    clearRegistryForTests();
+    const adapter = new TeardownAdapter();
+    registerAdapter(adapter);
+    const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+    const { session } = await runtime.startTask({
+      userId: SOLO_USER,
+      nodeId: NODE_ID,
+      brief: "první",
+      runner: "fake",
+    });
+    const run = adapter.last;
+    await runtime.sendMessage(session.id, "druhá");
+
+    run.emit({ kind: "turn_ended", payload: { run_id: run.start.runId } });
+    // interrupt() is a no-op on this adapter and drains the event queue.
+    await runtime.interrupt(session.id);
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal(fake.sessions.get(session.id)?.state, "running");
+
+    run.emit({ kind: "turn_ended", payload: { run_id: run.start.runId } });
+    await runtime.interrupt(session.id);
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal(fake.sessions.get(session.id)?.state, "suspended");
+    clearRegistryForTests();
+  });
+
   // #488: the same lifecycle lock, in the primary runtime -- a team
   // workspace's sync agent, whose record store is CentralSessionStore over
   // the fake central server. Driven through the runtime rather than over

@@ -120,7 +120,15 @@ export interface ContextUsageEvent {
 // message, and this is the event that says the last turn is over.
 export interface TurnEndedEvent {
   kind: "turn_ended";
-  payload: { run_id: string };
+  payload: {
+    run_id: string;
+    // #490: how many sent messages this turn answered (server:
+    // TurnEndedEvent). One turn can answer several messages -- the runner
+    // folds sends that land while it works into the running turn -- so the
+    // chat subtracts this, not one, per turn. Absent on an older event and
+    // from a runner that cannot tell: one message then.
+    consumed_messages?: number;
+  };
 }
 
 export type CanonicalEvent =
@@ -479,25 +487,36 @@ export function runIsLiveFor(liveRunId: string | null, state: SessionState): boo
   return liveRunId !== null && state === "running";
 }
 
-// Whether the live run is in the middle of a turn: the working row, the
-// stop button and Escape apply only then. A turn opens with a
-// user_message and closes with the run's turn_ended; the run start alone
-// opens none -- a promotion writes the first message as a user_message right
-// after it, while Navázat and a resume start the process with no prompt
-// and wait for the first message. Walks back from the newest event;
-// bookkeeping events in between decide nothing.
+// Whether the live run still owes an answer: the working row, the stop
+// button and Escape apply only then. #490: a count, not "the newest of
+// user_message / turn_ended". A message written while the agent works
+// queues behind the turn in flight, and the turn_ended that follows ends
+// only the turn it belongs to -- so the run is working until the messages
+// its turns answered catch up with the messages sent into it. A turn
+// opens with a user_message; the run start alone opens none -- a promotion
+// writes the first message as a user_message right after it, while Navázat
+// and a resume start the process with no prompt and wait for the first
+// message. Counted forward from the live run's start (nothing before it
+// belongs to this run) and never below zero: a turn_ended whose message is
+// older than the window ends a turn this window never saw open.
 export function turnInFlight(events: readonly ChatEvent[], liveRunId: string | null): boolean {
   if (liveRunId === null) return false;
+  let from = 0;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i].event;
-    if (e.kind === "turn_ended") {
-      if (e.payload.run_id === liveRunId) return false;
-      continue;
+    if (e.kind === "run_started" && e.payload.run_id === liveRunId) {
+      from = i + 1;
+      break;
     }
-    if (e.kind === "user_message") return true;
-    if (e.kind === "run_started" && e.payload.run_id === liveRunId) return false;
   }
-  return false;
+  let pending = 0;
+  for (let i = from; i < events.length; i++) {
+    const e = events[i].event;
+    if (e.kind === "user_message") pending += 1;
+    else if (e.kind === "turn_ended" && e.payload.run_id === liveRunId)
+      pending = Math.max(0, pending - (e.payload.consumed_messages ?? 1));
+  }
+  return pending > 0;
 }
 
 // --- The working row -----------------------------------------------------------

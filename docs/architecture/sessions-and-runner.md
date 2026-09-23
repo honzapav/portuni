@@ -484,6 +484,20 @@ human verification.
   turns, so this is the only signal that the agent stopped working; the
   web's working row, stop button and Escape key on a turn in flight
   (`turnInFlight`). A failed result ends the run instead and emits none.
+- **A turn is not a message (#490).** The SDK's contract (`sdk.d.ts`,
+  `@anthropic-ai/claude-agent-sdk` 0.3.270): the CLI "emits exactly one
+  result message per turn", `user_message_uuids` echoes "client uuids of
+  every user message whose prompt this turn consumed" -- a batch the host
+  merged, plus any queued message folded into the running turn between
+  tool rounds -- and `queued_turn_count` counts the sends still waiting,
+  with "queued sends may coalesce into fewer turns". So the adapter tags
+  every pushed message with a uuid, keeps the unanswered ones in
+  `state.pendingSends`, and `consumeSendUuids` takes off what each result
+  answered: the uuid echo first (exact), then the queue count as the
+  resync for what it did not report (an interrupt that dropped the
+  backlog, a producer too old to echo), then one message as the
+  one-result-per-turn default. What it took is `turn_ended`'s
+  `consumed_messages`.
 - **`context_usage` after every assistant message and every result.**
   `contextUsageFrom` reads the message's `usage`: `used_tokens` =
   `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`
@@ -600,9 +614,17 @@ human verification.
 - **Idle is the server's.** `boot/session-sweep.ts` `startIdleRunSweep`
   (60 s, unref'd; `PORTUNI_RUN_IDLE_MS`, default 30 min) drives
   `checkIdleRunsOnce`; `endIdleRun` sets `pendingEndReason: "idle"` and
-  calls `close()` on the live handle. A run mid-turn (a `user_message`
-  with no `turn_ended` yet) is never idle, unless an open question waits
-  on the user; every adapter event counts as activity. Wired in `index.ts` and in both
+  calls `close()` on the live handle. A run that still owes an answer is
+  never idle, unless an open question waits on the user; every adapter
+  event counts as activity. What "still owes" means is a count, not a flag
+  (#490): the runtime adds one per message sent into the live run (the
+  brief included) and subtracts what each `turn_ended` reports it answered
+  (`consumed_messages`, one when absent), so a message written while the
+  agent works keeps the run working until its own turn ends. `run_ended`
+  zeroes the count, and a message a run that is ending refused gives its
+  own back. The web counts the same way over the transcript
+  (`turnInFlight`), forward from the live run's `run_started` and never
+  below zero. Wired in `index.ts` and in both
   branches of `desktop.ts` against the runtime instance that actually runs
   tasks there.
 - **Resume is writing.** `resumeByWriting` uses `checkConversationResumable`

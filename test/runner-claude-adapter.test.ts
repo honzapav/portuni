@@ -13,6 +13,7 @@ import { isProcessAlive } from "../apps/server/domain/runner/process-liveness.js
 import {
   buildEnv,
   categorizeTool,
+  consumeSendUuids,
   createClaudeAdapter,
   resolveClaudeExecutable,
   toolTitle,
@@ -21,7 +22,7 @@ import {
 } from "../apps/server/domain/runner/adapters/claude.js";
 import { isRunEndedError } from "../apps/server/domain/runner/types.js";
 import type { CanonicalEvent, DeltaFrame, RunStart } from "../apps/server/domain/runner/types.js";
-import type { Options, PermissionResult, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
 function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
   return {
@@ -49,10 +50,16 @@ function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
 // `hold: true` keeps the iterator open after the script (the run stays
 // live, as it is while a real turn is in flight) until `release()` is
 // called -- canUseTool only means something on a live run.
+// `collectPrompt: true` additionally drains the prompt stream the way the
+// real CLI does, so a test can see the SDKUserMessages the adapter pushed
+// (#490: their uuids are what a result echoes back), and `inject()` feeds a
+// message into the live iterator after the script -- the only way to get a
+// result AFTER a send, which is what a queued message needs.
 function makeFakeQuery(
   script: readonly SDKMessage[],
   opts: {
     hold?: boolean;
+    collectPrompt?: boolean;
     supportedModels?: () => ReturnType<Query["supportedModels"]>;
     mcpServerStatus?: () => ReturnType<Query["mcpServerStatus"]>;
   } = {},
@@ -61,15 +68,42 @@ function makeFakeQuery(
   const interruptCalls: number[] = [];
   const setModelCalls: (string | undefined)[] = [];
   const toggleCalls: [string, boolean][] = [];
-  let release: () => void = () => undefined;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const sent: SDKUserMessage[] = [];
+  const sentWaiters: { n: number; resolve: () => void }[] = [];
+  const inbox: SDKMessage[] = [];
+  let wake: (() => void) | null = null;
+  let released = false;
+  const wakeGen = (): void => {
+    const resolve = wake;
+    wake = null;
+    resolve?.();
+  };
+  const release = (): void => {
+    released = true;
+    wakeGen();
+  };
   const fakeQuery = ((_params: { prompt: unknown; options?: Options }) => {
     capturedOptions = _params.options;
+    if (opts.collectPrompt) {
+      void (async () => {
+        for await (const m of _params.prompt as AsyncIterable<SDKUserMessage>) {
+          sent.push(m);
+          for (let i = sentWaiters.length - 1; i >= 0; i--) {
+            if (sentWaiters[i].n <= sent.length) sentWaiters.splice(i, 1)[0].resolve();
+          }
+        }
+      })();
+    }
     async function* gen(): AsyncGenerator<SDKMessage, void> {
       for (const msg of script) yield msg;
-      if (opts.hold) await held;
+      if (!opts.hold) return;
+      for (;;) {
+        while (inbox.length > 0) yield inbox.shift() as SDKMessage;
+        if (released) return;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
     }
     const iterator = gen() as unknown as Query;
     (iterator as unknown as { interrupt: () => Promise<undefined> }).interrupt = async () => {
@@ -101,6 +135,15 @@ function makeFakeQuery(
     setModelCalls,
     toggleCalls,
     release: () => release(),
+    sent,
+    // Resolves once the adapter has pushed at least `n` messages into the
+    // prompt stream -- the stream's own signal, never a timer.
+    waitForSent: (n: number): Promise<void> =>
+      sent.length >= n ? Promise.resolve() : new Promise<void>((resolve) => sentWaiters.push({ n, resolve })),
+    inject: (msg: SDKMessage): void => {
+      inbox.push(msg);
+      wakeGen();
+    },
   };
 }
 
@@ -466,7 +509,12 @@ describe("Claude adapter: message translation", () => {
       await handle.close();
       const ends = events.filter((e) => "kind" in e && e.kind === "turn_ended");
       assert.equal(ends.length, 1);
-      assert.deepEqual((ends[0] as Extract<CanonicalEvent, { kind: "turn_ended" }>).payload, { run_id: "R1" });
+      // #490: the run's brief is its first message, and this turn answered
+      // it -- one message, the SDK's own one-result-per-turn default.
+      assert.deepEqual((ends[0] as Extract<CanonicalEvent, { kind: "turn_ended" }>).payload, {
+        run_id: "R1",
+        consumed_messages: 1,
+      });
     }
     {
       const failed = [{ ...(success[0] as object), is_error: true, result: "Not logged in" }] as unknown as SDKMessage[];
@@ -1750,5 +1798,161 @@ describe("Claude adapter: send() into a run that is ending (#489)", () => {
     );
     release();
     await handle.close();
+  });
+});
+
+// #490: a turn is not a message. The SDK's own contract (sdk.d.ts of
+// @anthropic-ai/claude-agent-sdk 0.3.270) says the CLI "emits exactly one
+// result message per turn" and that "queued sends may coalesce into fewer
+// turns", echoing in `user_message_uuids` "client uuids of every user
+// message whose prompt this turn consumed" -- so a second message written
+// mid-turn can be answered by the SAME result as the first. The adapter
+// tags every send with a uuid and reports on turn_ended how many of them
+// the turn answered; the runtime and the chat count with that number.
+describe("Claude adapter: how many messages a turn answered (#490)", () => {
+  function resultMessage(overrides: Record<string, unknown>): SDKMessage {
+    return {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      stop_reason: null,
+      total_cost_usd: 0.01,
+      usage: { input_tokens: 1, output_tokens: 2 },
+      modelUsage: {},
+      permission_denials: [],
+      duration_ms: 1,
+      duration_api_ms: 1,
+      uuid: "u1",
+      session_id: "s1",
+      ...overrides,
+    } as unknown as SDKMessage;
+  }
+
+  // Collects events and hands out a promise per turn_ended, so nothing here
+  // waits a fixed time for the adapter to translate an injected result.
+  function turnCollector() {
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const waiters: (() => void)[] = [];
+    const turns = (): Extract<CanonicalEvent, { kind: "turn_ended" }>[] =>
+      events.filter((e) => "kind" in e && e.kind === "turn_ended") as Extract<
+        CanonicalEvent,
+        { kind: "turn_ended" }
+      >[];
+    return {
+      events,
+      turns,
+      sink(e: CanonicalEvent | DeltaFrame): void {
+        events.push(e);
+        if ("kind" in e && e.kind === "turn_ended") {
+          for (const w of waiters.splice(0)) w();
+        }
+      },
+      nextTurn(seen: number): Promise<void> {
+        return turns().length > seen ? Promise.resolve() : new Promise<void>((resolve) => waiters.push(resolve));
+      },
+    };
+  }
+
+  it("one result that answered both sends reports both: the turn is over for two messages", async () => {
+    const fake = makeFakeQuery([], { hold: true, collectPrompt: true });
+    const c = turnCollector();
+    const adapter = createClaudeAdapter({
+      query: fake.query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart({ brief: "první" }), c.sink);
+    await fake.waitForSent(1);
+    await handle.send("druhá");
+    await fake.waitForSent(2);
+
+    const uuids = fake.sent.map((m) => String(m.uuid));
+    assert.equal(new Set(uuids).size, 2, "every send carries a uuid of its own");
+    assert.deepEqual(
+      fake.sent.map((m) => m.message.content),
+      ["první", "druhá"],
+    );
+
+    // The CLI folded the queued message into the running turn: one result,
+    // both uuids, nothing left in the queue.
+    fake.inject(
+      resultMessage({ user_message_uuids: uuids, user_message_uuid: uuids[1], queued_turn_count: 0 }),
+    );
+    await c.nextTurn(0);
+    assert.equal(c.turns().length, 1);
+    assert.equal(c.turns()[0].payload.consumed_messages, 2);
+
+    fake.release();
+    await handle.close();
+  });
+
+  it("a result that answered only the first send leaves the second in flight", async () => {
+    const fake = makeFakeQuery([], { hold: true, collectPrompt: true });
+    const c = turnCollector();
+    const adapter = createClaudeAdapter({
+      query: fake.query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart({ brief: "první" }), c.sink);
+    await fake.waitForSent(1);
+    await handle.send("druhá");
+    await fake.waitForSent(2);
+    const uuids = fake.sent.map((m) => String(m.uuid));
+
+    fake.inject(resultMessage({ user_message_uuids: [uuids[0]], user_message_uuid: uuids[0], queued_turn_count: 1 }));
+    await c.nextTurn(0);
+    assert.equal(c.turns()[0].payload.consumed_messages, 1, "one message answered, one still queued");
+
+    fake.inject(resultMessage({ user_message_uuids: [uuids[1]], user_message_uuid: uuids[1], queued_turn_count: 0 }));
+    await c.nextTurn(1);
+    assert.equal(c.turns()[1].payload.consumed_messages, 1);
+
+    fake.release();
+    await handle.close();
+  });
+});
+
+describe("consumeSendUuids (#490)", () => {
+  it("takes every send the turn echoed, in any order", () => {
+    const pending = ["a", "b", "c"];
+    assert.equal(consumeSendUuids(pending, { user_message_uuids: ["a", "b"], user_message_uuid: "b" }), 2);
+    assert.deepEqual(pending, ["c"]);
+  });
+
+  it("a coalesced turn that echoes only its last member takes everything before it too", () => {
+    const pending = ["a", "b", "c"];
+    assert.equal(consumeSendUuids(pending, { user_message_uuid: "b" }), 2);
+    assert.deepEqual(pending, ["c"]);
+  });
+
+  it("no echo at all is one message: one result per turn", () => {
+    const pending = ["a", "b"];
+    assert.equal(consumeSendUuids(pending, {}), 1);
+    assert.deepEqual(pending, ["b"]);
+  });
+
+  it("the queue count resyncs what no echo reported: an interrupt that dropped the backlog", () => {
+    const pending = ["a", "b", "c"];
+    // The interrupted turn answered "a"; the CLI reports an empty queue, so
+    // nothing is waiting any more -- b and c are gone with it.
+    assert.equal(consumeSendUuids(pending, { user_message_uuid: "a", queued_turn_count: 0 }), 3);
+    assert.deepEqual(pending, []);
+  });
+
+  it("a turn that consumed none of ours takes nothing", () => {
+    const pending = ["a"];
+    assert.equal(consumeSendUuids(pending, { user_message_uuids: ["x"], user_message_uuid: "x", queued_turn_count: 1 }), 0);
+    assert.deepEqual(pending, ["a"]);
+  });
+
+  it("nothing pending is nothing consumed", () => {
+    const pending: string[] = [];
+    assert.equal(consumeSendUuids(pending, { user_message_uuid: "a" }), 0);
   });
 });

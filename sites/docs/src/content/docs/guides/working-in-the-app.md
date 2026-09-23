@@ -181,9 +181,13 @@ Stopping a turn is not a header action any more: the composer's own
 submit button doubles as a stop control (a stop square) while a turn is
 in flight, and Esc does the same — both just call `interrupt()`, which
 cancels whatever the model is doing right now without ending the run, so
-you can keep typing straight after. Once the agent has answered, the run
-stays alive only to take your next message: the button is a plain send
-again and nothing is shown as working. The remaining header actions are
+you can keep typing straight after. A message you write while the agent
+is still working queues behind the turn in flight and counts as work of
+its own: the stop control, the working row and the idle countdown all go
+by how many of the messages you sent are still unanswered, not by the
+first "turn finished" that comes back. Once the agent has answered
+everything you sent, the run stays alive only to take your next message:
+the button is a plain send again and nothing is shown as working. The remaining header actions are
 **Předat** (see below), **Pokračovat v nové session** (offered any time
 there's an open thread — `POST /sessions/:id/continue`, which closes this
 session, seeds a new one with its summary, and switches Práce to it) and

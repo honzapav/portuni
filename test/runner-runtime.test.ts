@@ -1504,6 +1504,83 @@ describe("session runtime: one start per thread (#488)", () => {
   });
 });
 
+describe("session runtime: a message queued mid-turn (#490)", () => {
+  // The count, not a flag: the second message is written while the agent is
+  // still on the first, so the turn_ended that lands next ends the FIRST
+  // turn only. Until the second one is answered the run is working and the
+  // idle sweep must leave it alone.
+  it("checkIdleRunsOnce leaves a run whose second message is still unanswered", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new TeardownAdapter();
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "první", runner: "fake" });
+    const run = adapter.last;
+    await runtime.sendMessage(session.id, "druhá");
+    assert.deepEqual(run.delivered, ["druhá"]);
+
+    // The first turn ends; the second message has not been answered yet.
+    run.emit({ kind: "turn_ended", payload: { run_id: run.start.runId } });
+    // interrupt() is a no-op on this adapter and drains the event queue, so
+    // the sweep below sees the turn_ended already accounted for.
+    await runtime.interrupt(session.id);
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "running", "the agent is working on the second message");
+
+    // The second turn ends: nothing is in flight any more.
+    run.emit({ kind: "turn_ended", payload: { run_id: run.start.runId } });
+    await runtime.interrupt(session.id);
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
+  });
+
+  // One turn can answer both messages -- the SDK folds a send that lands
+  // mid-turn into the running turn and reports one result for the pair
+  // (turn_ended's consumed_messages). Counting turn_ended events alone
+  // would leave the run "working" forever and the idle sweep would never
+  // end it.
+  it("a turn that answered both messages ends the wait for both", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new TeardownAdapter();
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "první", runner: "fake" });
+    const run = adapter.last;
+    await runtime.sendMessage(session.id, "druhá");
+
+    run.emit({ kind: "turn_ended", payload: { run_id: run.start.runId, consumed_messages: 2 } });
+    await runtime.interrupt(session.id);
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
+  });
+
+  // run_ended zeroes the count: no turn of a run that is over can still be
+  // in flight, so the next run never starts with work it does not have.
+  it("the next run is not born mid-turn: run_ended zeroes the count", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new TeardownAdapter();
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "první", runner: "fake" });
+    const first = adapter.last;
+    await runtime.sendMessage(session.id, "druhá");
+    // The run dies with both messages unanswered (a provider error), so the
+    // thread suspends; writing into it starts the next run.
+    first.endRun("error");
+    await runtime.sendMessage(session.id, "a dál?");
+    const second = adapter.last;
+    assert.equal(adapter.runs.length, 2);
+
+    second.emit({ kind: "turn_ended", payload: { run_id: second.start.runId } });
+    await runtime.interrupt(session.id);
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
+  });
+});
+
 describe("session runtime: a message into a run that is ending (#489)", () => {
   // The run that is ending never takes the message; the runtime waits for
   // its end (and the suspend that follows), then delivers the message as

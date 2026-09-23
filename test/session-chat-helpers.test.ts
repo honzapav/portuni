@@ -443,6 +443,39 @@ describe("turnInFlight", () => {
     assert.equal(workingPhase([started, said, ended], "r1", null), null);
     assert.equal(workingPhase([started, said, ended, asked], "r1", null), "thinking");
   });
+
+  // #490: a message written while the agent works queues behind the turn in
+  // flight. The turn_ended that lands next ends the FIRST message's turn,
+  // not the second's -- the chat keeps showing work and the Stop button
+  // until every message sent has been answered.
+  it("a message queued mid-turn keeps the turn in flight past the first turn_ended", () => {
+    const second = ev(5, { kind: "user_message", payload: { text: "ještě", source: "chat" } });
+    const endedAgain = ev(6, { kind: "turn_ended", payload: { run_id: "r1" } });
+    assert.equal(turnInFlight([started, asked, second], "r1"), true);
+    assert.equal(turnInFlight([started, asked, second, ended], "r1"), true);
+    assert.equal(turnInFlight([started, asked, second, ended, endedAgain], "r1"), false);
+  });
+
+  it("the working row stays up while the queued message waits", () => {
+    const second = ev(5, { kind: "user_message", payload: { text: "ještě", source: "chat" } });
+    assert.equal(workingPhase([started, asked, second, ended], "r1", null), "thinking");
+  });
+
+  // One turn can answer both messages (the runner folds a send that lands
+  // mid-turn into the running turn): the turn_ended says how many it took.
+  it("a turn_ended that answered both messages ends the turn at once", () => {
+    const second = ev(5, { kind: "user_message", payload: { text: "ještě", source: "chat" } });
+    const endedBoth = ev(6, { kind: "turn_ended", payload: { run_id: "r1", consumed_messages: 2 } });
+    assert.equal(turnInFlight([started, asked, second, endedBoth], "r1"), false);
+  });
+
+  // Nothing before the live run's start belongs to it: a message answered
+  // by the previous run never keeps this one working.
+  it("counts only what happened after the live run started", () => {
+    const olderMessage = ev(0, { kind: "user_message", payload: { text: "staré", source: "chat" } });
+    assert.equal(turnInFlight([olderMessage, started], "r1"), false);
+    assert.equal(turnInFlight([olderMessage, started, asked], "r1"), true);
+  });
 });
 
 // #461: the conversation lives on the device that ran it, so a second

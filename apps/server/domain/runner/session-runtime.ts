@@ -399,10 +399,31 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // (started, a message sent, an adapter event, a question answered) --
   // the idle sweep's own cutoff. Cleared once the run ends.
   const lastActivityAt = new Map<string, number>();
-  // Sessions whose live run is mid-turn: a user_message went in and no
-  // turn_ended came back yet. The idle sweep never ends such a run -- the
-  // agent is working, only an open question waits on the user.
-  const turnsInFlight = new Set<string>();
+  // #490: how many messages the session's live run has been sent that no
+  // turn has answered yet -- a count, not a flag: a message written while
+  // the agent works queues behind the turn in flight, and the first
+  // turn_ended after it ends only ONE of them. The idle sweep never ends a
+  // run with work outstanding -- the agent is working, only an open
+  // question waits on the user. run_ended zeroes the count: no turn of a
+  // run that is over can still be in flight.
+  const turnsInFlight = new Map<string, number>();
+
+  function addTurnInFlight(sessionId: string): void {
+    turnsInFlight.set(sessionId, (turnsInFlight.get(sessionId) ?? 0) + 1);
+  }
+
+  // `count` is what the turn reported it answered (turn_ended's
+  // consumed_messages): the SDK folds sends that arrive close together into
+  // one turn, so one turn_ended can end more than one message's wait.
+  function dropTurnInFlight(sessionId: string, count = 1): void {
+    const left = (turnsInFlight.get(sessionId) ?? 0) - Math.max(count, 0);
+    if (left > 0) turnsInFlight.set(sessionId, left);
+    else turnsInFlight.delete(sessionId);
+  }
+
+  function isTurnInFlight(sessionId: string): boolean {
+    return (turnsInFlight.get(sessionId) ?? 0) > 0;
+  }
   // #489: the session's current run, from the moment it started until its
   // run_ended has been handled AND the suspend that follows it is written.
   // A message that arrives while a run is ending -- the adapter already
@@ -581,8 +602,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const canonical = event as CanonicalEvent;
     await appendAndPublish(sessionId, runId, [canonical]);
     touchActivity(sessionId);
-    if (canonical.kind === "turn_ended" || (canonical.kind === "run_ended" && isCurrentRun(sessionId, runId)))
-      turnsInFlight.delete(sessionId);
+    if (canonical.kind === "turn_ended" && isCurrentRun(sessionId, runId))
+      dropTurnInFlight(sessionId, canonical.payload.consumed_messages ?? 1);
+    if (canonical.kind === "run_ended" && isCurrentRun(sessionId, runId)) turnsInFlight.delete(sessionId);
     if (canonical.kind !== "run_ended") await captureAgentSessionId(sessionId, runId);
 
     if (canonical.kind === "context_usage") {
@@ -738,7 +760,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
           { kind: "user_message", payload: { text: opts.brief, source: "chat" } },
         ]);
       }
-      turnsInFlight.add(session.id);
+      addTurnInFlight(session.id);
     }
 
     const runStart: RunStart = {
@@ -853,7 +875,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const live = liveRuns.get(sessionId);
     if (live) {
       touchActivity(sessionId);
-      turnsInFlight.add(sessionId);
+      addTurnInFlight(sessionId);
       if (!logged) {
         await enqueue(sessionId, () =>
           appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
@@ -869,7 +891,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         // end and for the suspend that follows, then deliver it the way a
         // message into a suspended thread is delivered -- as the next
         // run's first message, written once.
-        turnsInFlight.delete(sessionId);
+        dropTurnInFlight(sessionId);
         await deliverAfterRunEnd(sessionId, text, attempt, true);
       }
       return;
@@ -1329,7 +1351,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   async function checkIdleRunsOnce(idleMs: number, now: number = Date.now()): Promise<void> {
     const staleIds = [...liveRuns.keys()].filter(
       (id) =>
-        (!turnsInFlight.has(id) || pendingQuestions.has(id)) && now - (lastActivityAt.get(id) ?? now) > idleMs,
+        (!isTurnInFlight(id) || pendingQuestions.has(id)) && now - (lastActivityAt.get(id) ?? now) > idleMs,
     );
     for (const id of staleIds) {
       await endIdleRun(id);

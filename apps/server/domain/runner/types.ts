@@ -142,7 +142,18 @@ export interface ContextUsageEvent {
 // replay knows the last turn is over. Renders nothing.
 export interface TurnEndedEvent {
   kind: "turn_ended";
-  payload: { run_id: string };
+  payload: {
+    run_id: string;
+    // #490: how many of the messages sent into this run this turn answered.
+    // One turn is not one message: the SDK folds sends that arrive close
+    // together, or land while a turn is running, into a single turn with a
+    // single result ("queued sends may coalesce into fewer turns" --
+    // SDKResultMessage, @anthropic-ai/claude-agent-sdk 0.3.270), so
+    // counting turn_ended events is not counting answered messages.
+    // Absent when the adapter cannot tell: one message then, which is the
+    // documented one-result-per-turn default.
+    consumed_messages?: number;
+  };
 }
 
 export type CanonicalEvent =
