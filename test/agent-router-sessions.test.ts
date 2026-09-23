@@ -42,7 +42,7 @@ import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { getMirrorPath, registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
-import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
+import { installTestContentDb } from "./helpers/content-db.js";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 
 const NODE_ID = "N1";
@@ -360,7 +360,10 @@ describe("agent-router: sessions/tasks", () => {
     clearRegistryForTests();
     resetLocalDbForTests();
     setDbForTesting(null);
-    clearTestContentDb();
+    // Runs a test left live end after the suite, and their suspend writes
+    // content: a fresh in-memory db takes it, where clearing the singleton
+    // would open a content.db in the repo root.
+    await installTestContentDb();
     delete process.env.PORTUNI_WORKSPACE_ROOT;
     await rm(workspace, { recursive: true, force: true });
   });
