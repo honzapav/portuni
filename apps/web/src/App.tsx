@@ -877,15 +877,20 @@ export default function App() {
   // otherwise PATCH /sessions/:id.
   const workspaceRenameTask = useCallback(
     (session: SessionSummary, name: string) => {
-      if (session.state === "draft") {
-        const before = sessionStore.get(session.id);
-        if (before) sessionStore.put({ ...before, name, name_is_custom: true });
-        return;
-      }
-      // The answer is the renamed row and api.ts puts it, so every surface
-      // -- the sub-row, the chat header, Přehled -- shows it at once, with
-      // no refetch (spec scenario 4).
-      void renamePersistentSession(session.id, name).catch(() => undefined);
+      // Every state goes to the server, a draft included (#474): since #463
+      // the node's session list carries the caller's drafts, so a rename
+      // kept in memory is overwritten by the next refetch of that node.
+      // The optimistic put shows the new name at once; the answer is the
+      // renamed row and api.ts puts it, so every surface -- the sub-row,
+      // the chat header, Přehled -- ends on the server's row with no
+      // refetch (spec scenario 4). A refusal puts the previous record back
+      // and says why on the node surface.
+      const before = sessionStore.get(session.id);
+      sessionStore.put({ ...(before ?? session), name, name_is_custom: true });
+      void renamePersistentSession(session.id, name).catch((e) => {
+        if (before) sessionStore.put(before);
+        setWorkspaceDetailError(`Vlákno se nepodařilo přejmenovat: ${String(e)}`);
+      });
     },
     [sessionStore],
   );

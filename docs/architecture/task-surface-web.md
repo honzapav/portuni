@@ -445,9 +445,14 @@ deduplicates a replay against a frame that raced it.
   draft's composer has focus; its first message is what starts a run.
 - **First message** names the thread server-side from its first line;
   `lib/session-chat.ts`'s `threadNameFromFirstMessage` is the web's copy of
-  the same function for optimistic display. Renaming a local draft is
-  in-memory only (`workspaceRenameTask`); anything else is `PATCH
-  /sessions/:id`.
+  the same function for optimistic display. A rename always goes to the
+  server (`workspaceRenameTask` in the sidebar, `saveRename` in the chat
+  header, both `POST /sessions/:id/rename`), a draft included: since #463
+  the node's session list carries the caller's drafts, so an in-memory
+  rename would be undone by the next refetch. The sidebar's rename writes
+  the new name optimistically and puts the previous record back when the
+  call is refused, with the reason on the node surface
+  (`workspaceDetailError`).
 - **Composer text** belongs to the session, not the component:
   `lib/session-drafts.ts`'s `sessionDrafts` keeps it per session id, in
   memory, for the life of the window.
