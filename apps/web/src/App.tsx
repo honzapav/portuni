@@ -874,10 +874,7 @@ export default function App() {
     openCreateModal();
   }, [openCreateModal]);
 
-  // Inline rename on a thread's own sub-row (#374). A local draft is
-  // renamed only in place (there is no server row to rename yet -- naming
-  // a draft is moot anyway, since its first message renames it for real);
-  // otherwise PATCH /sessions/:id.
+  // Inline rename on a thread's own sub-row (#374).
   const workspaceRenameTask = useCallback(
     (session: SessionSummary, name: string) => {
       // Every state goes to the server, a draft included (#474): since #463
