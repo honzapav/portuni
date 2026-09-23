@@ -315,6 +315,9 @@ One line each; the linked doc carries the mechanism and the reasoning.
 
 ### Web (`task-surface-web.md`)
 
+- A fact about a thread lives in the session store (`lib/session-store.ts`,
+  one record per session id, read through `useSessionStore` and the
+  selectors); a component or map that copies it is a bug.
 - One `SessionsClient` for the app's lifetime, created lazily in `useState`;
   `SessionChat` is lazy-loaded. Compare the main chunk size when adding
   dependencies to it.

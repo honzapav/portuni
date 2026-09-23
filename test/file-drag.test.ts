@@ -18,9 +18,12 @@ import {
   type TimerFns,
 } from "../apps/web/src/lib/file-drag.js";
 import {
+  applyPlan,
   orderMoves,
+  planForNode,
   type FilePlan,
   type MoveTarget,
+  type NodeFilePlan,
   type PlanFile,
 } from "../apps/web/src/lib/file-plan.js";
 import { loadFilePlan, saveFilePlan } from "../apps/web/src/lib/settings.js";
@@ -212,6 +215,77 @@ describe("the plan in localStorage", () => {
       // "Zahodit" clears the node's entry.
       saveFilePlan("node-a", { moves: {}, folders: [] });
       assert.deepEqual(loadFilePlan("node-a"), { moves: {}, folders: [] });
+    });
+  });
+  // #451: the Files tab is not remounted on a node switch, so the plan is
+  // paired with its node and the pairing is resolved during render. This is
+  // that wiring, pure: what the tree renders is planForNode's plan, and what
+  // the tree's cleaning pass writes back is applyPlan's cleaned plan under
+  // planForNode's node id. The browser click-through (plan on A, open B,
+  // return to A) is left for a human.
+  function renderFilesTab(
+    held: NodeFilePlan,
+    nodeId: string,
+    files: readonly PlanFile[],
+  ): { held: NodeFilePlan; writes: { nodeId: string; plan: FilePlan }[] } {
+    const writes: { nodeId: string; plan: FilePlan }[] = [];
+    const current = planForNode(held, nodeId, loadFilePlan);
+    const planned = applyPlan(files, current.plan);
+    if (JSON.stringify(planned.plan) !== JSON.stringify(current.plan)) {
+      writes.push({ nodeId: current.nodeId, plan: planned.plan });
+      saveFilePlan(current.nodeId, planned.plan);
+      return { held: { nodeId: current.nodeId, plan: planned.plan }, writes };
+    }
+    return { held: current, writes };
+  }
+
+  it("a plan loaded for A, laid over B's files, never writes for B (rule 8)", () => {
+    withFakeWindow(() => {
+      const planA: FilePlan = {
+        moves: { fa: { section: "outputs", subpath: "hotove" } },
+        folders: ["wip/nove"],
+      };
+      const planB: FilePlan = { moves: {}, folders: ["resources/zdroje"] };
+      saveFilePlan("node-a", planA);
+      saveFilePlan("node-b", planB);
+      const filesA = [file("wip/a.md", "fa")];
+      const filesB = [file("wip/b.md", "fb")];
+
+      // Node A open: nothing to clean, nothing written.
+      const a = renderFilesTab({ nodeId: "node-a", plan: planA }, "node-a", filesA);
+      assert.deepEqual(a.writes, []);
+
+      // Switch to B while A's plan is still the committed one: the render
+      // pairs B with B's own plan, so no write carries A's remains to B.
+      const b = renderFilesTab(a.held, "node-b", filesB);
+      assert.deepEqual(b.writes, []);
+      assert.equal(b.held.nodeId, "node-b");
+      assert.deepEqual(b.held.plan, planB);
+      assert.deepEqual(loadFilePlan("node-b"), planB);
+
+      // And back to A: A's plan is exactly what it was.
+      const back = renderFilesTab(b.held, "node-a", filesA);
+      assert.deepEqual(back.writes, []);
+      assert.deepEqual(back.held.plan, planA);
+      assert.deepEqual(loadFilePlan("node-a"), planA);
+    });
+  });
+
+  it("the unpaired plan is what corrupted the other node (rule 8, the defect)", () => {
+    withFakeWindow(() => {
+      const planA: FilePlan = {
+        moves: { fa: { section: "outputs", subpath: "hotove" } },
+        folders: ["wip/nove"],
+      };
+      saveFilePlan("node-b", { moves: {}, folders: ["resources/zdroje"] });
+      // Node A's plan laid over node B's files: every entry is dropped
+      // because A's file ids are not in B, which is the write that used to
+      // land under B's id.
+      const cleaned = applyPlan([file("wip/b.md", "fb")], planA).plan;
+      assert.notDeepEqual(cleaned, planA);
+      // planForNode is what keeps that pairing from ever happening.
+      const current = planForNode({ nodeId: "node-a", plan: planA }, "node-b", loadFilePlan);
+      assert.deepEqual(current, { nodeId: "node-b", plan: { moves: {}, folders: ["resources/zdroje"] } });
     });
   });
 });

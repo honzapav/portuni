@@ -43,7 +43,19 @@ collapsible right aside.
   (`lib/use-file-plan.ts`). The plan is state of the Files tab, not of
   `FileTree`: "Nová složka" sits in the toolbar and writes to the same plan
   the tree renders, and a plan holding only a virtual folder is a tree on a
-  node with no files at all (#448).
+  node with no files at all (#448). "Empty" is `isPlanEmpty` in
+  `lib/file-plan.ts` -- no move **and** no virtual folder -- and it decides
+  both the removed localStorage entry and the plan bar: the bar is up while
+  the plan holds anything, because it carries "Zahodit", the only way to drop
+  a virtual folder again; `planChangeCount` is what the bar counts and
+  `planApplyCount` (the moves alone) is what "Použít" runs, so a plan of
+  folders only shows the bar with "Použít" disabled (#452). The held plan carries the node it was
+  loaded for (`NodeFilePlan`) and `useFilePlan` resolves that pairing during
+  render through `planForNode` (#451): the detail pane is not remounted on a
+  node switch -- `App.tsx` keeps the previous node's detail while the new one
+  loads -- so an effect-time reset would let one render pair node B's files
+  with node A's plan, and the tree's cleaning pass (`applyPlan`, rule 3) would
+  write the cleaned remains under B's id and destroy B's own plan.
 - `SessionChat` is lazy-loaded (`lazy(() => import("./SessionChat"))` +
   `Suspense`).
 - **Every open thread keeps a mounted chat** (#429). `WorkspaceView` takes
@@ -51,7 +63,7 @@ collapsible right aside.
   and only flips which pane is visible. Switching threads therefore keeps
   each thread's transcript, its scroll position, its streaming delta
   buffers and its composer, and re-subscribes nothing: `SessionChat`'s
-  subscribe effect is keyed on `session.id`, and a keyed child React keeps
+  subscribe effect is keyed on `sessionId`, and a keyed child React keeps
   mounted never re-runs it.
 - A hidden pane is hidden with `visibility: hidden` plus `inert`, not
   `display: none` (which the design spec wrote before the scroll
@@ -59,17 +71,49 @@ collapsible right aside.
   transcript's scroll offset, which is the thing keeping the pane mounted
   is for. `inert` keeps a hidden pane out of the tab order and out of
   reach of the pointer.
-- The mounted set is `mountedChatSessions(liveOpenSessionsByNode,
-  openNodeIds, workspaceOpenSession)` (`lib/session-views.ts`): every
-  chat-eligible thread of an open node, in open-node order, plus the shown
-  thread when the per-node map has not caught up with it yet (a fresh local
-  draft). Closing a node or a thread drops it from the set, which is what
-  unmounts its chat and unsubscribes it.
-- With several chats mounted, `onSessionUpdated` matches by id
-  (`updateWorkspaceOpenSession` in `App.tsx`): a hidden thread reporting
-  its own state must not replace the shown one.
+- The mounted set is `selectMountedThreads(store, openNodeIds, shownId)`
+  (`lib/session-selectors.ts`): every chat-eligible thread of an open node,
+  in open-node order, plus the shown thread when its node's list has not
+  come back yet. Closing a node or a thread drops it from the set, which is
+  what unmounts its chat and unsubscribes it.
+- With several chats mounted there is nothing to match by id: each pane
+  reads its own record out of the store (`sessionId` is all `SessionChat`
+  takes), so a hidden thread reporting its own state can never land on the
+  shown one.
 
 ### SessionChat (`SessionChat.tsx`)
+
+**What it owns, and what it only reads** (#466). Props are `sessionId`,
+`sessionStore`, `sessionsClient` and `onOpenFile` -- never a session row.
+The thread comes from `useSessionStore(store, selectSession(id))`, so the
+header's name and status chip, the composer's model, effort, runner and
+instance and the "closed" disabling all read the one record (principle 1);
+there is no `live` copy of state and waiting, and the component subscribes
+to no `session_state` frames of its own -- `App.tsx` binds the live channel
+to the store once. What it does own is its transcript: `events`, the delta
+buffers, `liveRunId`, the send clock `sentAt`, `sending`, `loading`,
+`error`, the rename UI, the dialogs, `noticeDismissed` and the
+runner/instance/model lists.
+
+**It never writes the thread back to a parent.** A rename, a close and a
+"Pokračovat v nové session" go to the server and the answered row lands in
+the store (`api.ts` for the first two, `sessionStore.put` for the new
+session `continueSession` answers with). A runner/instance or model/effort
+change is the optimistic form of principle 2: `const before =
+session; store.put({...before, patch})`, the API call folds the server's
+answer in, and a refusal puts `before` back whole and writes the reason
+into the composer's error line ("Runner a instanci se nepodařilo uložit:
+…"). Scenario 2 in `test/session-store-scenarios.test.ts` holds that.
+
+**The send clock.** `sentAt` is what the working row shows as "Spouštím…"
+between the send and its `run_started`. Its rule is the pure `nextSentAt`
+(`lib/session-chat.ts`): the composer sets it **before** the send is
+awaited -- `run_started`, and a `run_ended` right behind it, can arrive
+while the reply is still in flight -- and three things clear it,
+`run_started`, `run_ended` (an error at start included) and a failed send.
+A send into a live run sets nothing: that run already announced itself.
+Scenario 7 holds that, including "the run ended with an error, so the
+working row is gone".
 
 The chat for one thread. Header: status dot, name, status chip
 (`sessionStatusChip`; a draft reads "Nový"), then on the right the context
@@ -157,9 +201,68 @@ on its defaults: a bare 48 px search row with a divider, 40 px rows inset
 name muted on the right (absent under a group heading), and a
 `CommandFooter` of `Kbd` key hints. It finds and opens nodes only.
 
-## State ownership in `App.tsx`
+## The session store (`lib/session-store.ts`)
 
-`App.tsx` owns everything the surfaces share. Rules that hold it together:
+One record per thread, in the window once (#465, spec
+`docs/superpowers/specs/2026-09-22-web-session-state-design.md`). Seven
+principles hold it together:
+
+1. **Every fact about a thread exists in the window once.** Name, state,
+   waiting, runner, instance, model, effort, node, host: one record per
+   session id, and every surface reads that record. The sidebar, the chat
+   header and the composer show the same value at the same moment.
+2. **The server is the truth, the window is a cache.** A change is: send →
+   the server answers with the row → replace the record. An optimistic
+   write is allowed but is always replaced by the answer; a refusal
+   restores the previous record and the surface says why.
+3. **The live channel updates records, never replaces them.** A
+   `session_state` frame carries state, waiting and name; folding it in
+   (`store.applyFrame`) leaves runner, instance and model as they were. No
+   handler holds a copy of a session to hand back to a parent.
+4. **Lists are derived, never stored.** "Threads of node X", "the shown
+   thread", "the mounted threads", "the running count" are selectors over
+   the records plus what is selected. A refetch fills records; it decides
+   nothing.
+5. **A draft is a thread.** No local draft map, no promotion bookkeeping;
+   the record's `state` says `draft` until the first message.
+6. **A component holds only what is its own.** `SessionChat` holds the
+   transcript, the delta buffers, `sending`, the composer text and the
+   working-row clock; the thread itself it reads from the store by id.
+7. **Rules are held by scenario tests**
+   (`test/session-store-scenarios.test.ts`), not by helper tests alone.
+
+The store itself is a plain module, no React and no library:
+`get`/`put`/`putMany`/`remove`/`applyFrame`/`subscribe`/`snapshot`. `put`
+keeps the existing reference when every field is equal and the map is
+copied on write, so "the snapshot reference changed" means exactly
+"something changed". A frame for an id this window never fetched creates a
+record marked `partial` (unknown name and runner); the next `put` -- the
+refetch that frame triggers -- replaces it whole.
+
+**Writing is the API's job, not the caller's** (`apps/web/src/api.ts`).
+`bindSessionStore(store)` is called once, in `App.tsx`; after that
+`fetchNodePersistentSessions` puts the list, `startSession` /
+`startDraftThread` / `renamePersistentSession` / `closePersistentSession` /
+`continueSession` / `fetchSession` put the row they get back,
+`patchSessionModelEffort` and `patchSessionRunnerInstance` fold their two
+fields into the record, and `deletePersistentSession` removes it. No caller
+can forget, and no component hands a row to a parent.
+
+**Reading is `useSessionStore`** (`lib/use-session-store.ts`), a
+`useSyncExternalStore` over the selectors in `lib/session-selectors.ts`:
+`selectSession`, `selectNodeThreads`, `selectShownThread`,
+`selectMountedThreads`, `selectRunningCount`, `selectThreadsByNode` (the
+sidebar's per-node map) and `selectLiveStates` (the store projected down to
+what a frame carries, for the surfaces that fetch their own lists --
+Přehled's Relace card, the Relace tab). Every selector is memoized per
+store and **reference-stable while the store has not changed**: React
+re-reads `getSnapshot` in its post-commit consistency check and
+force-re-renders whenever the value differs by `Object.is`, so an inline
+selector building a fresh object or array loops until React throws
+"Maximum update depth exceeded". A new selector goes through `cached()` and
+gets a reference-stability test in `test/session-store.test.ts`.
+
+## What `App.tsx` still owns
 
 - **One `SessionsClient` for the app's lifetime.** `useState(() =>
   createSessionsClient({ autoConnect: false }))`, connected from an effect
@@ -167,50 +270,30 @@ name muted on the right (absent under a group heading), and a
   connect inside the initializer: StrictMode runs initializers twice and a
   transport opened there has no cleanup, so the discarded client keeps a
   live socket delivering every frame twice.
-- **`sessionStates`** is the latest `session_state` frame per session,
-  folded by `applySessionStateFrame` (terminal entries are dropped once
-  nothing live shares the node). It feeds `StatusFooter`'s running count
-  (`countRunningSessions`), the sidebar overlay and the selected node's
-  refetch. A session can be running without being open anywhere in this
-  window.
-- **`workspaceOpenSession`** is the thread Práce shows. It is refetched
-  from `fetchNodePersistentSessions(id, false)` whenever the selected node,
-  the requested session id, the node's live-state stamp or `localDrafts`
-  change, and picked by `pickOpenChatSession` (requested id first, else the
-  first running / suspended / draft row). `openSessionChat(nodeId,
-  sessionId?)` only records the requested id and opens the node; the
-  effect finds the session.
-- **`openSessionsByNode`** holds each open node's running and suspended
-  threads for the sidebar. `refreshNodeSessions(nodeId)` is coalesced per
-  node: a request while one is in flight sets a trailing flag instead of
-  racing a second fetch, and a response for a node closed in the meantime
-  is dropped (`openNodeIdsRef`). It runs whenever `openNodeIds` changes and
-  on every `session_state` frame whose `node_id` is open, because a thread
-  started anywhere else (Relace tab, node detail, another window)
-  announces itself only through that frame.
-- **`localDrafts`** are the drafts this window opened. The server excludes
-  drafts from every list, so the window that created one is the only place
-  it can be shown. A draft is dropped from here only once a refetch of its
-  node actually carries it as a real thread (`dropPromotedDrafts`); the
-  promotion frame alone is not proof the list has it. `mergeDraftsIntoNodeMap`
-  overlays drafts into the sidebar map, deduplicated by id, so the overlap
-  window renders one row.
-- **`registerSessionStarted`** is the single entry point for every
-  `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's `DetailPane`,
-  the sidebar `+`, the Relace tab's "Navázat"): it sets the shown thread,
-  requests it by id (`requestChatSession`), tracks a draft in `localDrafts`,
-  and puts an already-running thread straight into the node map
-  (`mergeSessionIntoNodeMap`) so its row appears before the confirming
-  refetch. Requesting it is what makes it stick: the pick re-runs the
-  moment the new thread is tracked, so without the requested id a node that
-  already had a thread open snapped straight back to it.
-- The folds above (`applySessionStateFrame`, `pickOpenChatSession`,
-  `requestChatSession`, `mergeSessionIntoNodeMap`, `applyNodeSessionsRefetch`,
-  `dropPromotedDrafts`, `mergeDraftsIntoNodeMap`, `pruneNodeSessions`)
-  return their input unchanged when nothing changed, because effects key on
-  those identities.
+- **The store itself**, created once next to the client and bound to it
+  with `sessionsClient.onSessionState(store.applyFrame)` -- the only place
+  a frame is folded.
+- **Selection**, not facts: `openNodeIds` and
+  `requestedChatSessionByNode`. `openSessionChat(nodeId, sessionId?)`
+  records the requested id and opens the node; `selectShownThread` picks
+  the thread (requested id first, else the newest live one).
+- **`refreshNodeSessions(nodeId)`**, coalesced per node: a request while
+  one is in flight sets a trailing flag instead of racing a second fetch.
+  It runs whenever `openNodeIds` changes and on every `session_state` frame
+  whose `node_id` is open, because a thread started anywhere else (Relace
+  tab, node detail, another window) announces itself only through that
+  frame. It ends in the store's `putMany` (inside `api.ts`) and decides
+  nothing about what is shown; a failure on the node currently selected
+  lands on the node surface as `workspaceDetailError`.
+- **`registerSessionStarted`**, the single entry point for every
+  `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's
+  `DetailPane`, the sidebar `+`, the Relace tab's "Navázat"):
+  `store.put(session)` plus `requestChatSession`. Requesting it is what
+  makes it stick -- the pick re-runs the moment the new record lands, so
+  without the requested id a node that already had a thread open snapped
+  straight back to it.
 
-Threading: `App.tsx` → `Sidebar.tsx` (`workspaceOpenSessionsByNode`,
+Threading: `App.tsx` → `Sidebar.tsx` (`workspaceThreadsByNode`,
 `workspaceActiveSessionId`, `onWorkspaceOpenSessionChat`,
 `onWorkspaceNewTask`, `onWorkspaceRenameTask`, `onWorkspaceCloseTask`) →
 `WorkspaceNodeList.tsx`; `App.tsx` → `WorkspaceView.tsx` / graph
@@ -398,9 +481,10 @@ Two rows under the textarea, inside the composer's border
 `Select` appears only when the selected model's `supportsEffort` is true
 and offers that model's own `effortLevels`; its title says it applies from
 the next run. Both are gated on `access.canResume` and both call
-`patchSessionModelEffort`, updating the header optimistically through
-`onSessionUpdated`. `SessionSummary` carries `model` and `effort`, so no
-second fetch is needed.
+`patchSessionModelEffort` over an optimistic `store.put`, which the
+server's answer replaces and a refusal undoes ("Model se nepodařilo
+uložit: …"). `SessionSummary` carries `model` and `effort`, so no second
+fetch is needed.
 
 **Row 2 -- where it runs, dimmer.** `runner · instance ▾ · host`. The
 `Select` (`lib/runner-picker.ts`: `runnerPickerGroups`,
@@ -408,8 +492,8 @@ second fetch is needed.
 logged-in runner from `GET /runners` as a group, its own default instance
 first and every `GET /runners/instances` entry of it after; the draft's
 initial value -- what the organisation's default resolved to at creation
--- is marked "(výchozí)". It is enabled only while `live.state ===
-"draft"`; a promoted thread renders the pair as a plain label, and a draft
+-- is marked "(výchozí)". It is enabled only while the record's `state`
+is `draft`; a promoted thread renders the pair as a plain label, and a draft
 whose row carries no runner reads "Žádný runner není přihlášený". A change
 calls `patchSessionRunnerInstance` (`PATCH /sessions/:id`, central in a
 team workspace; 409 `SESSION_NOT_DRAFT` once promoted). The host is
@@ -436,12 +520,15 @@ Pure helpers live in `lib/session-chat.ts` (event types, chip, delta
 buffers and the coalescer, `collapseToolCalls`, `deriveTranscriptRows`,
 `activitySummary`, `workingPhase`,
 `threadNameFromFirstMessage`), `lib/session-views.ts` (row chip, access
-echo, live overlay, inbox ordering, the node-map folds, `isThreadSession`,
-`nodeRowActive`), `lib/workspace-list.ts` (the node dot, the Stav
+echo, live overlay, inbox ordering, `pickOpenChatSession`,
+`requestChatSession`, `mountedChatSessions`, `isThreadSession`,
+`nodeRowActive`), `lib/session-store.ts` and `lib/session-selectors.ts`
+(the store and its selectors), `lib/workspace-list.ts` (the node dot, the Stav
 grouping), `lib/runner-picker.ts` (composer row 2) and
 `lib/context-ring.ts` (the ring). All are dependency-free and run under
 the server's `node:test` runner (`test/session-chat-helpers.test.ts`,
-`test/session-views-helpers.test.ts`, `test/workspace-list-helpers.test.ts`,
+`test/session-views-helpers.test.ts`, `test/session-store.test.ts`,
+`test/session-store-scenarios.test.ts`, `test/workspace-list-helpers.test.ts`,
 `test/runner-picker.test.ts`, `test/context-ring.test.ts`); `apps/web` has
 no test runner of its own. New logic that can be pure goes there first.
 
@@ -468,11 +555,11 @@ no test runner of its own. New logic that can be pure goes there first.
 ## Shown thread and the selected node
 
 The pane Práce shows is `shownChatSessionId(selectedNodeId, openSession)`
-(`apps/web/src/lib/session-views.ts`): the open session only while it is
-chat-eligible and anchored on the selected node. After a switch to another
-node the open session is still the previous node's until that node's own
-list is fetched and picked; nothing is shown meanwhile, so a click never
-reads as ignored, and a failed fetch lands on the node surface as an error
-(`workspaceDetailError`) instead of a silent null. The chat header carries
+(`apps/web/src/lib/session-views.ts`): the shown thread only while it is
+chat-eligible and anchored on the selected node. On a node whose threads
+this window has not fetched yet the store has no record for it, so nothing
+is shown meanwhile -- a click never reads as ignored -- and a failed
+refetch lands on the node surface as an error (`workspaceDetailError`)
+instead of a silent null. The chat header carries
 the same icon actions as a Relace row (rename, Pokračovat v nové session,
 Uzavřít behind a separator); rename is inline, Enter saves, Escape cancels.

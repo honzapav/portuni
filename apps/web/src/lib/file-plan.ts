@@ -366,6 +366,30 @@ export function pruneEmptyFolders(
   return { moves: next.moves, folders };
 }
 
+// --- plan size ------------------------------------------------------------
+
+// Rule 1: the plan bar is up while the plan is not empty, and „Zahodit" is the
+// escape hatch that drops the plan with no effect anywhere. Both kinds of
+// entry are a change waiting to be used -- a planned move and a virtual folder
+// alike -- so both are counted and both keep the bar up; a plan holding only a
+// new folder is otherwise unreachable and the folder can never be removed
+// (#452).
+export function planChangeCount(plan: FilePlan): number {
+  return Object.keys(plan.moves).length + plan.folders.length;
+}
+
+export function isPlanEmpty(plan: FilePlan): boolean {
+  return planChangeCount(plan) === 0;
+}
+
+// What „Použít" has to do: only the moves. A virtual folder has nothing to
+// apply -- it becomes real when an applied move puts the first file in it --
+// so a plan of folders alone leaves „Použít" disabled instead of running an
+// empty loop.
+export function planApplyCount(plan: FilePlan): number {
+  return Object.keys(plan.moves).length;
+}
+
 // --- orderMoves -----------------------------------------------------------
 
 // Apply order: shallower targets first, then by path, so a folder's files land
@@ -379,4 +403,26 @@ export function orderMoves(plan: FilePlan): PlannedMove[] {
       if (a.path !== b.path) return a.path < b.path ? -1 : 1;
       return a.fileId < b.fileId ? -1 : a.fileId > b.fileId ? 1 : 0;
     });
+}
+
+// --- the plan's node ------------------------------------------------------
+
+// The held plan together with the node it was loaded for. The pairing is part
+// of the value because the Files tab is never remounted on a node switch
+// (App.tsx keeps the previous node detail while the new one loads), so a
+// render can otherwise pair node B's files with node A's plan and the tree's
+// cleaning pass then writes the cleaned remains under B's id (#451).
+export type NodeFilePlan = { nodeId: string; plan: FilePlan };
+
+// Rule 8: the plan belongs to the node. The held plan is the answer only for
+// the node it was loaded for; for any other node the answer is a fresh load,
+// computed during render so no render ever sees the other node's plan and no
+// write can ever reach the wrong node's entry.
+export function planForNode(
+  held: NodeFilePlan,
+  nodeId: string,
+  load: (id: string) => FilePlan,
+): NodeFilePlan {
+  if (held.nodeId === nodeId) return held;
+  return { nodeId, plan: load(nodeId) };
 }
