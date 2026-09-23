@@ -538,7 +538,7 @@ export async function handleGetNodeOrientation(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
-    const orientation = await orientationForNode(nodeId);
+    const orientation = await orientationForNode(nodeId, identity.userId);
     respondJson(res, 200, { orientation });
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/orientation`, err);
