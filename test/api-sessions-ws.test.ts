@@ -318,11 +318,16 @@ describe("GET /sessions/ws", () => {
     const collector = new FrameCollector(ws);
     await waitOpen(ws);
 
-    const snapshot = await collector.waitFor(
-      (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
-    );
-    assert.equal((snapshot.payload as { state: string }).state, "running");
-    assert.equal((snapshot.payload as { waiting_since: string | null }).waiting_since, null);
+    // The whole snapshot is one frame, never a frame per session.
+    const snapshotFrame = await collector.waitFor((f) => f.type === "session_states");
+    const sessions = (snapshotFrame.payload as { sessions: { session_id: string; state: string; waiting_since: string | null }[] })
+      .sessions;
+    const snapshot = sessions.find((s) => s.session_id === session.id);
+    assert.ok(snapshot);
+    assert.equal(snapshot.state, "running");
+    assert.equal(snapshot.waiting_since, null);
+    assert.equal(collector.frames.filter((f) => f.type === "session_states").length, 1);
+    assert.ok(!collector.frames.some((f) => f.type === "session_state"));
 
     // Unblocks the script into the question step -- the resulting
     // state_changed event must fan out as a live session_state update to
@@ -348,9 +353,7 @@ describe("GET /sessions/ws", () => {
     const ws = openSocket(base, token);
     const collector = new FrameCollector(ws);
     await waitOpen(ws);
-    await collector.waitFor(
-      (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
-    );
+    await collector.waitFor((f) => f.type === "session_states");
 
     await runtime.renameSession(session.id, "Přejmenováno");
     const update = await collector.waitFor(
@@ -382,6 +385,13 @@ describe("GET /sessions/ws", () => {
     assert.ok(
       !collector.frames.some(
         (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
+      ),
+    );
+    assert.ok(
+      !collector.frames.some(
+        (f) =>
+          f.type === "session_states" &&
+          (f.payload as { sessions: { session_id: string }[] }).sessions.some((s) => s.session_id === session.id),
       ),
     );
 

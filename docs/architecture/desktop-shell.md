@@ -343,7 +343,8 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   highest `seq` per session (never moved by `delta` frames) and
   resubscribes every wanted session with `after: <seq>` when the
   transport reopens, so the server's replay fills exactly the gap.
-  `session_state` frames go to one global listener set.
+  `session_state` and `session_states` frames go to one global listener
+  set.
   `test/sessions-client.test.ts` covers the direct transport against a
   fake `ws` server.
 

@@ -344,10 +344,11 @@ event, carrying the `seq` the store assigned it; `delta { session_id,
 run_id, channel, text }` — streamed text, never persisted, never replayed,
 `channel` one of `"text" | "reasoning"` saying which persisted event this
 delta is a live preview of; and
-`session_state { session_id, state, waiting_since, node_id }` — sent for
-every running or suspended session you can see the moment you connect
-(newest activity first, at most 500), and again on every `state_changed`,
-`question` or `run_ended` anywhere, with no subscription needed. This is what lets the Relace tab, the Práce sidebar and Přehled
+`session_states { sessions: [...] }` — one frame the moment you connect,
+listing every running or suspended session you can see (newest activity
+first, at most 500); and `session_state { session_id, state, waiting_since,
+node_id }` — one session, sent on every `state_changed`, `question` or
+`run_ended` anywhere, with no subscription needed. This is what lets the Relace tab, the Práce sidebar and Přehled
 update live instead of polling. A frame for a node open in Práce also refetches that node's thread
 list (`GET /nodes/:id/sessions`), which is how a thread started outside the sidebar shows up there;
 the refetch is coalesced per node, so a burst of frames costs at most two round trips.

@@ -204,17 +204,18 @@ function canSeeSession(identity: RequestIdentity, row: Pick<SessionRow, "user_id
   return row.user_id === identity.userId;
 }
 
-function sessionStateFrame(row: SessionRow): { type: "session_state"; payload: unknown } {
+function sessionStatePayload(row: SessionRow) {
   return {
-    type: "session_state",
-    payload: {
-      session_id: row.id,
-      state: row.state,
-      waiting_since: row.waiting_since,
-      node_id: row.node_id,
-      name: row.name,
-    },
+    session_id: row.id,
+    state: row.state,
+    waiting_since: row.waiting_since,
+    node_id: row.node_id,
+    name: row.name,
   };
+}
+
+function sessionStateFrame(row: SessionRow): { type: "session_state"; payload: unknown } {
+  return { type: "session_state", payload: sessionStatePayload(row) };
 }
 
 function isDeltaFrame(event: PublishedEvent): event is DeltaFrame {
@@ -288,8 +289,12 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     }
   }
 
+  // One frame for the whole snapshot, never one per session: the client
+  // folds a frame into its store and re-renders, so a frame per session was
+  // as many renders in a row (React gave up after 50, #185).
   async function sendInitialSnapshot(conn: Connection): Promise<void> {
-    for (const row of await deps.snapshot(conn.identity)) send(conn.ws, sessionStateFrame(row));
+    const rows = await deps.snapshot(conn.identity);
+    send(conn.ws, { type: "session_states", payload: { sessions: rows.map(sessionStatePayload) } });
   }
 
   // Mutating frames carry the same `write` tier their REST twins do

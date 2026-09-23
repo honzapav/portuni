@@ -679,6 +679,9 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   canonical event carries the `seq` the store assigned
   (`PublishedEvent = (CanonicalEvent & {seq}) | DeltaFrame`,
   `appendAndPublish`).
+- On connect the socket sends the caller's running and suspended sessions
+  as one `session_states { sessions: [...] }` frame, never a frame per
+  session: the client re-renders per frame.
 - `session_state` fans out to every connection whose identity owns the
   session (`canSee`, the same one-line rule) through one server-lifetime
   `subscribe("*", ...)` per `WebSocketServer`, created lazily on the first

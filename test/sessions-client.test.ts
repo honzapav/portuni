@@ -226,7 +226,7 @@ describe("sessions-client: direct-WS transport", () => {
     const client = createSessionsClient({ transport });
     clients.push(client);
     const states: string[] = [];
-    client.onSessionState((s) => states.push(s.state));
+    client.onSessionStates((batch) => states.push(...batch.map((s) => s.state)));
     const statuses: string[] = [];
     client.onConnectionStatus((s) => statuses.push(s));
 
@@ -237,6 +237,34 @@ describe("sessions-client: direct-WS transport", () => {
     });
     await waitUntil(() => states.length === 1);
     assert.deepEqual(states, ["running"]);
+
+    client.disconnect();
+  });
+
+  it("hands the connect snapshot to listeners as one batch", async () => {
+    const server = await fakeServer();
+    const transport = testTransport(server);
+    const client = createSessionsClient({ transport });
+    clients.push(client);
+    const batches: string[][] = [];
+    client.onSessionStates((batch) => batches.push(batch.map((s) => s.session_id)));
+    const statuses: string[] = [];
+    client.onConnectionStatus((s) => statuses.push(s));
+
+    await waitUntil(() => statuses.includes("open"));
+    server.broadcast({
+      type: "session_states",
+      payload: {
+        sessions: Array.from({ length: 120 }, (_, i) => ({
+          session_id: `S${i}`,
+          state: "suspended",
+          waiting_since: null,
+          node_id: "N1",
+        })),
+      },
+    });
+    await waitUntil(() => batches.length === 1);
+    assert.equal(batches[0].length, 120);
 
     client.disconnect();
   });

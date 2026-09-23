@@ -335,7 +335,7 @@ export default function SessionChat({
       }
     });
     const offDelta = sessionsClient.onDelta(sessionId, (delta) => coalescer.push(delta));
-    // No onSessionState handler here: App binds the live channel to the
+    // No onSessionStates handler here: App binds the live channel to the
     // store once (#465), so a frame folds into the record this component
     // already reads (spec principle 3).
 

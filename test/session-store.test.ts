@@ -428,3 +428,26 @@ describe("session store selector cache", () => {
     assert.equal(selectMountedThreads(store, ["node-a"], "s1"), first);
   });
 });
+
+// The snapshot a fresh connection receives carries every running or
+// suspended session. One store write per session re-rendered the app once
+// per session and React threw "Maximum update depth exceeded" after 50.
+describe("the connection burst", () => {
+  it("applyFrames folds a whole burst in one notification", () => {
+    const store = createSessionStore();
+    const calls = counted(store);
+    const burst = Array.from({ length: 200 }, (_, i) => frame({ session_id: `s${i}`, state: i % 2 ? "suspended" : "running" }));
+    store.applyFrames(burst);
+    assert.equal(calls(), 1);
+    assert.equal(store.snapshot().size, 200);
+    assert.equal(store.get("s1")?.state, "suspended");
+  });
+
+  it("applyFrames that changes nothing does not notify", () => {
+    const store = createSessionStore();
+    store.applyFrames([frame({ session_id: "s1" })]);
+    const calls = counted(store);
+    store.applyFrames([frame({ session_id: "s1" })]);
+    assert.equal(calls(), 0);
+  });
+});

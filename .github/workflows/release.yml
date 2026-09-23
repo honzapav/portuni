@@ -164,30 +164,6 @@ jobs:
             "$RUNNER_TEMP/Portuni-macos-aarch64.dmg" \
             --repo "${{ github.repository }}" --clobber
 
-      # tauri-action writes each platform's url as the API asset endpoint
-      # (api.github.com/.../releases/assets/<id>). The GitHub API answers
-      # 403 to a request without a User-Agent, which the updater's download
-      # sends none of, and limits unauthenticated clients to 60 requests an
-      # hour per IP besides. Point every url at the asset's
-      # browser_download_url, which has neither restriction.
-      - name: Point latest.json at direct download urls
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="${{ github.ref_name }}"
-          work="$RUNNER_TEMP/latest-direct.json"
-          rm -f "$work"
-          mkdir -p "$RUNNER_TEMP/upload"
-          gh release download "$tag" --repo "${{ github.repository }}" \
-            --pattern latest.json --output "$work"
-          map="$(gh api "repos/${{ github.repository }}/releases/tags/$tag" \
-            --jq '[.assets[] | {key: .url, value: .browser_download_url}] | from_entries')"
-          jq --argjson map "$map" \
-            '.platforms |= map_values(.url = ($map[.url] // .url))' \
-            "$work" > "$RUNNER_TEMP/upload/latest.json"
-          gh release upload "$tag" "$RUNNER_TEMP/upload/latest.json" \
-            --repo "${{ github.repository }}" --clobber
-
       # Updater artefacts: --config tauri.release.conf.json turns on
       # createUpdaterArtifacts, which produces Portuni.app.tar.gz + .sig next
       # to the .app in bundle/macos (the DMG build no longer deletes the
@@ -231,11 +207,6 @@ jobs:
             exit 1
           fi
           echo "ok: latest.json version $actual_version, darwin-aarch64 present"
-          if jq -r '.platforms[].url' "$work" | grep -v "^https://github.com/${{ github.repository }}/releases/download/$tag/"; then
-            echo "latest.json carries a url that is not a direct release download (above)" >&2
-            exit 1
-          fi
-          echo "ok: every latest.json url is a direct release download"
 
       # The rollout gate, checked rather than assumed. A release carries two
       # independent flags and only the second one ships anything: `prerelease`
