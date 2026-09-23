@@ -373,6 +373,17 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // Per-session serial dispatch: every appendAndPublish for a session
   // chains onto this so emission order survives concurrent sink calls.
   const queues = new Map<string, Promise<void>>();
+  // #488: per-session lifecycle lock. Starting a run takes as long as the
+  // adapter needs to spawn its process, and the live handle only lands in
+  // liveRuns once it returns -- so anything that decides what to do by
+  // looking at liveRuns (a second message, Uzavřít, Předat, Pokračovat v
+  // nové session) queues behind the start in progress instead of acting on
+  // a session whose run is half-started. Without it two quick messages
+  // into a suspended thread start two processes and one of them is
+  // orphaned, a message in the start window is refused with "no live run",
+  // and a close during the start leaves the process running on a closed
+  // session.
+  const lifecycleLocks = new Map<string, Promise<unknown>>();
   // #378: sessions a closeSession()/continueSession() close is in progress
   // for -- the run_ended that follows must NOT trigger the auto-summary/
   // suspend path (handleAdapterEvent), since these two already own the
@@ -428,6 +439,27 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   function drain(sessionId: string): Promise<void> {
     return queues.get(sessionId) ?? Promise.resolve();
+  }
+
+  // #488: runs `task` after every lifecycle operation already queued for
+  // this session, and hands the caller that task's own promise (so its
+  // failure is still the caller's). Separate from `queues`, which serialises
+  // the event sink: an adapter event handler must never wait on a start,
+  // and a start drains the event queue while it holds this lock.
+  function withLifecycleLock<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+    const prev = lifecycleLocks.get(sessionId) ?? Promise.resolve();
+    const result = prev.then(task, task);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    lifecycleLocks.set(sessionId, settled);
+    void settled.then(() => {
+      // Only the tail clears the entry, so a lock taken while this one was
+      // running keeps its place in the chain.
+      if (lifecycleLocks.get(sessionId) === settled) lifecycleLocks.delete(sessionId);
+    });
+    return result;
   }
 
   async function appendAndPublish(
@@ -490,6 +522,17 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
   }
 
+  // #488: whether an adapter event belongs to the session's current live
+  // run. A late event from a run that has already been replaced (a
+  // run_ended arriving after the next run started) must not touch
+  // session-level state -- the live handle, the turn in flight, the
+  // suspend path -- even though the run's own row still records its end.
+  // No live run at all means nothing has replaced it: the ordinary case.
+  function isCurrentRun(sessionId: string, runId: string): boolean {
+    const live = liveRuns.get(sessionId);
+    return !live || live.runId === runId;
+  }
+
   async function handleAdapterEvent(
     sessionId: string,
     runId: string,
@@ -502,7 +545,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const canonical = event as CanonicalEvent;
     await appendAndPublish(sessionId, runId, [canonical]);
     touchActivity(sessionId);
-    if (canonical.kind === "turn_ended" || canonical.kind === "run_ended") turnsInFlight.delete(sessionId);
+    if (canonical.kind === "turn_ended" || (canonical.kind === "run_ended" && isCurrentRun(sessionId, runId)))
+      turnsInFlight.delete(sessionId);
     if (canonical.kind !== "run_ended") await captureAgentSessionId(sessionId, runId);
 
     if (canonical.kind === "context_usage") {
@@ -541,8 +585,12 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       // reading it here -- once, at run end -- is enough either way).
       const live = liveRuns.get(sessionId);
       const agentSessionId = live?.runId === runId ? live.handle.agentSessionId() : null;
-      liveRuns.delete(sessionId);
-      lastActivityAt.delete(sessionId);
+      // #488: only the current run's end takes the session with it.
+      const current = isCurrentRun(sessionId, runId);
+      if (current) {
+        liveRuns.delete(sessionId);
+        lastActivityAt.delete(sessionId);
+      }
       runStartScopeSize.delete(runId);
       await store.patchRun(runId, {
         ended_at: new Date().toISOString(),
@@ -551,6 +599,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
       });
       await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
+      if (!current) return;
       await clearWaitingIfPending(sessionId, runId);
 
       // #378: closeSession()/continueSession() already own the resulting
@@ -735,7 +784,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // The user's own message goes through the same per-session queue as the
   // adapter's events, and is handed to the adapter only once persisted --
   // so whatever the runner emits in reaction to it can never land before it.
-  async function sendMessage(sessionId: string, text: string): Promise<void> {
+  async function sendMessageLocked(sessionId: string, text: string): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (live) {
       touchActivity(sessionId);
@@ -963,7 +1012,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // first: the run_ended this produces must not ALSO trigger the auto-
   // summary/suspend path, since this function already owns the transition
   // to closed.
-  async function closeSession(sessionId: string): Promise<SessionRow> {
+  async function closeSessionLocked(sessionId: string): Promise<SessionRow> {
     const live = liveRuns.get(sessionId);
     if (live) {
       closingSessions.add(sessionId);
@@ -1021,7 +1070,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // this device but has no live handle any more (the device restarted
   // under it) still gets its summary: the suspend path needs no adapter.
   // Suspended with no file: the same summary path writes the file now.
-  async function handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
+  async function handoffLocked(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
     const session = await mustGetSession(sessionId);
     if (session.state === "suspended" && session.handoff_path) {
       return { session, handoff_path: session.handoff_path };
@@ -1192,7 +1241,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // same node, carrying the old summary as extra orientation. No mode
   // picker, no brief: the new thread starts itself, same shape as a
   // handoff-mode resume used to, just into a brand new session row.
-  async function continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
+  async function continueSessionLocked(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
     const oldSession = await mustGetSession(sessionId);
     if (!oldSession.node_id) throw new Error(`continueSession: session ${sessionId} has no anchor node`);
     const runner = oldSession.runner;
@@ -1286,6 +1335,28 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   function listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]> {
     return content.listEvents(sessionId, opts);
+  }
+
+  // #488: the four entry points that either start a run or end one take
+  // the session's lifecycle lock, so they can never observe liveRuns while
+  // a start of the same session is still in flight. A second message
+  // arriving during a start therefore finds the run that start produced and
+  // goes to it as an ordinary message; Uzavřít and Předat wait for the
+  // start and then end that run.
+  function sendMessage(sessionId: string, text: string): Promise<void> {
+    return withLifecycleLock(sessionId, () => sendMessageLocked(sessionId, text));
+  }
+
+  function closeSession(sessionId: string): Promise<SessionRow> {
+    return withLifecycleLock(sessionId, () => closeSessionLocked(sessionId));
+  }
+
+  function handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
+    return withLifecycleLock(sessionId, () => handoffLocked(sessionId));
+  }
+
+  function continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
+    return withLifecycleLock(sessionId, () => continueSessionLocked(sessionId));
   }
 
   function subscriberCount(target: string): number {

@@ -521,6 +521,23 @@ human verification.
   while `state = 'draft'`; on any other state, without a `state` field in
   the same body, the route answers 409 `SESSION_NOT_DRAFT`. The promotion
   patch (`state: "running"` together with them) passes.
+- **One start per thread** (#488). Starting a run takes as long as the
+  adapter needs to spawn its process, and the live handle only reaches
+  `liveRuns` once `adapter.start()` returns. `sendMessage`, `closeSession`,
+  `handoff` and `continueSession` therefore run under a per-session
+  lifecycle lock (`withLifecycleLock`, a chain separate from the event
+  queue `enqueue`/`drain` uses): a second message that arrives while a
+  start is in flight waits for it and then goes to the run that start
+  produced as an ordinary message, Uzavřít and Předat wait and then end
+  that run. Nothing else takes the lock -- an adapter event handler must
+  never wait on a start, and a start drains the event queue while holding
+  it.
+- **A `run_ended` only ends the session's *current* run.** The handler
+  records the run's own end (`ended_at`, `end_reason`, `usage`, its pid
+  file) either way, but drops the live handle, clears the turn in flight
+  and takes the suspend path only when the id matches `liveRuns`'s entry
+  (or there is none). A late `run_ended` from a run that has already been
+  replaced neither suspends the thread that is going nor steals its handle.
 - **The first message promotes.** `sendMessage` with no live run:
   `draft` -> `promoteDraftAndStart`; `suspended` -> `resumeByWriting`; any
   other state refuses. Promotion uses the draft's own `runner`/`instance_id`

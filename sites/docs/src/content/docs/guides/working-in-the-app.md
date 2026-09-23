@@ -148,6 +148,15 @@ closed before a first message is sent is deleted outright, and one left
 open longer than 24 hours is pruned by the same server sweep that resolves
 a `running` row orphaned by a crashed process.
 
+Starting a run takes a moment — the runner's process has to come up — and
+anything you do in that moment waits for it rather than racing it. A second
+message sent while the thread is still starting is delivered to the run
+that start produces, as an ordinary next message; the same holds for a
+message sent into a thread you have just woken up by writing into it.
+**Uzavřít** and **Předat** wait for the start too and then act on the run
+it produced, so a thread can never end up with two runners' processes on
+it, and closing one never leaves a process behind on a closed thread.
+
 Every thread you have open in the window stays live while you look at
 another one: each one keeps its own chat, and switching is only a change
 of which one is on screen. You come back to the same scroll position in

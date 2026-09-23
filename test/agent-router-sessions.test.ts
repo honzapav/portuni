@@ -43,6 +43,7 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { getMirrorPath, registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { installTestContentDb } from "./helpers/content-db.js";
+import { GatedAdapter } from "./helpers/gated-adapter.js";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 
 const NODE_ID = "N1";
@@ -456,6 +457,39 @@ describe("agent-router: sessions/tasks", () => {
     assert.notEqual(promoted?.state, "draft");
     assert.equal(promoted?.runner, "fake");
     assert.equal(fake.runs.size, 1);
+  });
+
+  // #488: the same lifecycle lock, in the primary runtime -- a team
+  // workspace's sync agent, whose record store is CentralSessionStore over
+  // the fake central server. Driven through the runtime rather than over
+  // HTTP, so the second message is provably in flight while the start is:
+  // two fetches give no signal for when the second one reached sendMessage.
+  it("a second message sent while a draft's first run is starting reaches that run (#488)", async () => {
+    clearRegistryForTests();
+    const gated = new GatedAdapter(new FakeRunnerAdapter({ script: [{ wait: "message" }] }));
+    registerAdapter(gated);
+    const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+    const draft = await runtime.createDraft({ userId: SOLO_USER, nodeId: NODE_ID });
+    const first = runtime.sendMessage(draft.id, "one");
+    const second = runtime.sendMessage(draft.id, "two");
+    await gated.entered;
+    gated.open();
+    await first;
+    // Not "has no live run": the second message waited for the start.
+    await second;
+
+    // One process, one run on the record central holds.
+    assert.equal(gated.startCount, 1);
+    assert.equal(fake.runs.size, 1);
+    assert.equal(fake.sessions.get(draft.id)?.state, "running");
+    const events = await content.listEvents(draft.id);
+    assert.deepEqual(
+      events.filter((e) => e.kind === "user_message").map((e) => JSON.parse(e.payload).text),
+      ["one", "two"],
+    );
+    await runtime.closeSession(draft.id);
+    clearRegistryForTests();
   });
 
   it("a run ending on a provider limit suspends the thread on central too (#411)", async () => {

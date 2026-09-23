@@ -19,12 +19,13 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
 import { createInstance, setOrgDefault } from "../apps/server/domain/runner/instances.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
-import type { RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
+import type { CanonicalEvent, RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 import { claudeProjectSlug } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
+import { GatedAdapter } from "./helpers/gated-adapter.js";
 
 afterEach(() => {
   setDbForTesting(null);
@@ -1366,5 +1367,134 @@ describe("session runtime: startFromHandoff (#460 Navázat na handoff)", () => {
       () => runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath: "wip/docs/secret.md" }),
       (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_PATH_INVALID",
     );
+  });
+});
+
+function userTexts(events: { kind: string; payload: string }[]): string[] {
+  return events.filter((e) => e.kind === "user_message").map((e) => JSON.parse(e.payload).text as string);
+}
+
+describe("session runtime: one start per thread (#488)", () => {
+  it("two quick messages into a suspended thread start one run, and the second is an ordinary message", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const firstAdapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const registry = { getAdapter: (id: string) => (id === "fake" ? (firstAdapter as RunnerAdapter) : null) };
+    const runtime = createSessionRuntime({ store, content, registry, provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(0, Date.now() + 1);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
+
+    const gated = new GatedAdapter(new FakeRunnerAdapter({ script: [{ wait: "message" }] }));
+    registry.getAdapter = (id: string) => (id === "fake" ? (gated as RunnerAdapter) : null);
+
+    const first = runtime.sendMessage(session.id, "one");
+    const second = runtime.sendMessage(session.id, "two");
+    await gated.entered;
+    gated.open();
+    await first;
+    await second;
+
+    // One resume run, not two: the second message waited for the start the
+    // first one had in flight and went into its run.
+    assert.equal(gated.startCount, 1);
+    assert.equal((await store.listRuns(session.id)).length, 2);
+    const events = await content.listEvents(session.id);
+    assert.deepEqual(userTexts(events), ["x", "one", "two"]);
+    assert.equal((await store.getSession(session.id))?.state, "running");
+  });
+
+  it("a message sent while a draft's first run is starting reaches that run", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    clearRegistryForTests();
+    const gated = new GatedAdapter(new FakeRunnerAdapter({ script: [{ wait: "message" }] }));
+    registerAdapter(gated);
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(gated), provision: stubProvision() });
+
+    const draft = await runtime.createDraft({ userId: "U1", nodeId });
+    const first = runtime.sendMessage(draft.id, "one");
+    const second = runtime.sendMessage(draft.id, "two");
+    await gated.entered;
+    gated.open();
+    await first;
+    // No "has no live run": the second message waited for the start.
+    await second;
+
+    assert.equal(gated.startCount, 1);
+    assert.equal((await store.listRuns(draft.id)).length, 1);
+    assert.deepEqual(userTexts(await content.listEvents(draft.id)), ["one", "two"]);
+    clearRegistryForTests();
+  });
+
+  it("Uzavřít during a start waits for it and ends the run it produced", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    clearRegistryForTests();
+    const gated = new GatedAdapter(new FakeRunnerAdapter({ script: [{ wait: "message" }] }));
+    registerAdapter(gated);
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(gated), provision: stubProvision() });
+
+    const draft = await runtime.createDraft({ userId: "U1", nodeId });
+    const send = runtime.sendMessage(draft.id, "one");
+    const close = runtime.closeSession(draft.id);
+    await gated.entered;
+    gated.open();
+    await send;
+    const closed = await close;
+
+    assert.equal(closed.state, "closed");
+    // The process that the start produced is the one that was closed --
+    // without the wait the close saw no live run and left it running.
+    assert.equal(gated.closeCount, 1);
+    const runs = await store.listRuns(draft.id);
+    assert.equal(runs.length, 1);
+    assert.ok(runs[0].ended_at);
+    clearRegistryForTests();
+  });
+
+  it("a run_ended from a run that is no longer live leaves the live run alone", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    // Every sink the adapter is handed, in start order: sinks[0] belongs to
+    // the first run, sinks[1] to the resume run.
+    const sinks: ((event: CanonicalEvent) => void)[] = [];
+    const inner = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const adapter: RunnerAdapter = {
+      id: "fake",
+      detect: () => inner.detect(),
+      models: () => inner.models(),
+      async start(run, sink) {
+        sinks.push(sink);
+        return inner.start(run, sink);
+      },
+    };
+    const runtime = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+    });
+
+    const { session, run: firstRun } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(0, Date.now() + 1);
+    await runtime.sendMessage(session.id, "keep going");
+    const afterResume = await store.listRuns(session.id);
+    assert.equal(afterResume.length, 2);
+
+    // The dead first run emits one more run_ended, after the resume run is
+    // already the live one. interrupt() drains the event queue.
+    sinks[0]({ kind: "run_ended", payload: { run_id: firstRun.id, reason: "completed", usage: null } });
+    await runtime.interrupt(session.id);
+
+    // The live run is untouched: still running, still holding its handle,
+    // no second suspend written on top of it.
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    const events = await content.listEvents(session.id);
+    assert.equal(events.filter((e) => e.kind === "handoff").length, 1);
+    await runtime.sendMessage(session.id, "still here");
+    assert.equal((await store.listRuns(session.id)).length, 2);
+    assert.deepEqual(userTexts(await content.listEvents(session.id)), ["x", "keep going", "still here"]);
   });
 });
