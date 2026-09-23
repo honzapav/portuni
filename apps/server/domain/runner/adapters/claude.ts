@@ -30,7 +30,7 @@ import type {
   SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import { isPortuniEnvKey } from "../../../shared/runner-env.js";
-import { decidePermission } from "../permissions.js";
+import { askUserQuestionAnswers, decidePermission } from "../permissions.js";
 import { isProcessAlive } from "../process-liveness.js";
 import { RunEndedError } from "../types.js";
 import type {
@@ -872,6 +872,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
               title: decision.question.title,
               detail: decision.question.detail,
               options: decision.question.options,
+              ...(decision.question.questions ? { questions: decision.question.questions } : {}),
               decision: null,
             },
           });
@@ -1237,10 +1238,15 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         state.pendingPermissions.delete(requestId);
         if (decision.value === true) {
           pending.resolve({ behavior: "allow", updatedInput: pending.input });
-        } else if (pending.type === "input" && typeof decision.value === "string") {
-          // AskUserQuestion (input-type ask): the typed answer becomes part
-          // of the tool's own input rather than a plain allow/deny.
-          pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answer: decision.value } });
+        } else if (
+          pending.type === "input" &&
+          (typeof decision.value === "string" || (typeof decision.value === "object" && decision.value !== null))
+        ) {
+          // AskUserQuestion (input-type ask, #492): the tool reads the
+          // user's reply from `answers`, keyed by question text -- anything
+          // else and the model is told the user did not answer.
+          const answers = askUserQuestionAnswers(pending.input, decision.value);
+          pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answers } });
         } else {
           // `false`, or text where an approval was asked: never an allow.
           pending.resolve({ behavior: "deny", message: "Zamítnuto uživatelem." });

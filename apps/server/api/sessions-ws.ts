@@ -75,7 +75,7 @@ const ClientFrameSchema = z.discriminatedUnion("type", [
     payload: z.object({
       session_id: z.string(),
       request_id: z.string(),
-      decision: z.object({ value: z.union([z.string(), z.boolean()]) }),
+      decision: z.object({ value: z.union([z.string(), z.boolean(), z.record(z.string(), z.string())]) }),
     }),
   }),
   z.object({

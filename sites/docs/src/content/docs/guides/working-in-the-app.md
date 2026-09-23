@@ -264,7 +264,13 @@ matching event lands; the reasoning aside stays open while its deltas are
 still arriving and collapses once the batched event replaces it. A
 question panel appears above the composer while
 `waiting_since` is set — option buttons for an approval, a text field for
-free-form input — also for a confirmation dialog an MCP server raises
+free-form input; an agent's question with a choice (AskUserQuestion) shows
+each question's options as buttons above that field, one question under
+another when it asks several. A single one-choice question answers on the
+click; otherwise pick an option for each (a multi-select question takes
+several) and send with Odeslat, where whatever you type answers the
+questions you left without a pick. An empty field sends nothing, and the
+answer goes out once however often you click — also for a confirmation dialog an MCP server raises
 mid-tool-call, such as Portuni's scope expansion or write access (Ano
 accepts, Ne declines; a dialog asking for more than a yes/no is declined).
 The run uses only its own Portuni connection: a claude.ai connector its

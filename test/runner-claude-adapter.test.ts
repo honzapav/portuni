@@ -976,6 +976,61 @@ describe("Claude adapter: canUseTool", () => {
     await handle.close();
   });
 
+  // #492: the tool reads `answers: { [question text]: answer }`
+  // (sdk-tools.d.ts AskUserQuestionInput); an `answer` field is ignored and
+  // the model is told the user did not answer.
+  it("an AskUserQuestion answer reaches the tool as answers keyed by question text", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const input = { questions: [{ question: "Continue?", header: "Go", options: [{ label: "Yes" }, { label: "No" }], multiSelect: false }] };
+    const pending = options()!.canUseTool!("AskUserQuestion", input, {
+      requestId: "req-a",
+      signal: new AbortController().signal,
+    } as never);
+    const question = events.find((e) => "kind" in e && e.kind === "question") as
+      | Extract<CanonicalEvent, { kind: "question" }>
+      | undefined;
+    assert.deepEqual(question?.payload.options, ["Yes", "No"]);
+    assert.deepEqual(question?.payload.questions, [{ question: "Continue?", options: ["Yes", "No"], multi_select: false }]);
+
+    await handle.answer("req-a", { by: "U1", value: "Yes", at: new Date().toISOString() });
+    const result = (await pending) as { behavior: string; updatedInput: Record<string, unknown> };
+    assert.equal(result.behavior, "allow");
+    assert.deepEqual(result.updatedInput.answers, { "Continue?": "Yes" });
+    assert.equal("answer" in result.updatedInput, false);
+    release();
+    await handle.close();
+  });
+
+  it("a multi-question AskUserQuestion answered with a map passes one answer per question", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const input = {
+      questions: [
+        { question: "Which environment?", header: "Env", options: [{ label: "staging" }, { label: "production" }], multiSelect: false },
+        { question: "Dry run first?", header: "Mode", options: [{ label: "yes" }, { label: "no" }], multiSelect: false },
+      ],
+    };
+    const pending = options()!.canUseTool!("AskUserQuestion", input, {
+      requestId: "req-m",
+      signal: new AbortController().signal,
+    } as never);
+    await handle.answer("req-m", {
+      by: "U1",
+      value: { "Which environment?": "production", "Dry run first?": "no" },
+      at: new Date().toISOString(),
+    });
+    const result = (await pending) as { behavior: string; updatedInput: Record<string, unknown> };
+    assert.equal(result.behavior, "allow");
+    assert.deepEqual(result.updatedInput.answers, { "Which environment?": "production", "Dry run first?": "no" });
+    assert.deepEqual(result.updatedInput.questions, input.questions);
+    release();
+    await handle.close();
+  });
+
   it("rejecting an ask denies with the Czech refusal message", async () => {
     const { query, options, release } = makeFakeQuery([], { hold: true });
     const adapter = createClaudeAdapter({ query });

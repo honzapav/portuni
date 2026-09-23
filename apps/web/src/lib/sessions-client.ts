@@ -21,6 +21,7 @@
 
 import { isTauri } from "./backend-url.js";
 import type { SessionSummary, SessionRunRow } from "../types";
+import type { QuestionAnswer } from "./session-chat.js";
 
 export type SessionState = "running" | "suspended" | "closed" | "archived";
 export type ConnectionStatus = "open" | "reconnecting" | "closed";
@@ -98,7 +99,7 @@ type ClientFrame =
   | {
       id: string;
       type: "answer";
-      payload: { session_id: string; request_id: string; decision: { value: string | boolean } };
+      payload: { session_id: string; request_id: string; decision: { value: QuestionAnswer } };
     }
   | { id: string; type: "interrupt"; payload: { session_id: string } }
   | { id: string; type: "continue"; payload: { session_id: string } }
@@ -354,7 +355,7 @@ export interface SessionsClient {
   subscribe(sessionId: string, afterSeq?: number): Promise<void>;
   unsubscribe(sessionId: string): void;
   message(sessionId: string, text: string): Promise<void>;
-  answer(sessionId: string, requestId: string, value: string | boolean): Promise<void>;
+  answer(sessionId: string, requestId: string, value: QuestionAnswer): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
   // #378: "Pokračovat v nové session" / "Navázat" -- closes this session and
   // starts a fresh, running one on the same node, carrying its summary as

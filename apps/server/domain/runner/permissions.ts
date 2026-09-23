@@ -16,11 +16,23 @@ export interface DecidePermissionInput {
   policy: PermissionPolicy;
 }
 
+// One dotaz of an AskUserQuestion ask: its text, its option labels and
+// whether several of them may be picked. The answer to it is keyed by
+// `question` (the tool reads `answers: { [question text]: answer }`).
+export interface AskPrompt {
+  question: string;
+  options: string[];
+  multi_select: boolean;
+}
+
 export interface AskQuestion {
   type: "approval" | "input";
   title: string;
   detail: string;
   options: string[] | null;
+  // AskUserQuestion only (#492): every dotaz with its own options, so a
+  // multi-question ask is answered question by question.
+  questions?: AskPrompt[];
 }
 
 export type PermissionDecision =
@@ -49,37 +61,62 @@ function stringArrayField(input: Record<string, unknown>, key: string): string[]
   return strings.length > 0 ? strings : null;
 }
 
+function optionLabels(options: unknown): string[] {
+  if (!Array.isArray(options)) return [];
+  return options
+    .map((o) => (typeof o === "string" ? o : typeof o === "object" && o !== null ? (o as Record<string, unknown>).label : null))
+    .filter((l): l is string => typeof l === "string");
+}
+
 // Claude Code's AskUserQuestion input is `{ questions: [{ question, header?,
 // options: [{ label, description? }], multiSelect? }] }` -- one or more
-// questions, each with labelled options. The canonical question event
-// carries one detail string and a flat option list, so the first question
-// is the one surfaced (its text as detail, its option labels as options;
-// further questions are appended to the detail so nothing is lost). A flat
-// `{ question, options: string[] }` shape is still accepted for callers
-// that pre-flatten.
-function askUserQuestionFields(input: Record<string, unknown>): { detail: string; options: string[] | null } {
+// questions, each with labelled options. Every question keeps its own
+// options in `questions` (#492); `detail` joins the texts for a reader that
+// shows only the flat fields (the transcript row, an older web), and the
+// flat `options` are the single question's labels -- with several
+// questions there is no one list that fits them all. A flat `{ question,
+// options: string[] }` shape is still accepted for callers that
+// pre-flatten.
+export function askUserQuestionFields(
+  input: Record<string, unknown>,
+): { detail: string; options: string[] | null; questions: AskPrompt[] } {
   const questions = input.questions;
   if (Array.isArray(questions) && questions.length > 0) {
-    const texts: string[] = [];
-    let options: string[] | null = null;
-    for (const [i, q] of questions.entries()) {
+    const prompts: AskPrompt[] = [];
+    for (const q of questions) {
       if (typeof q !== "object" || q === null) continue;
       const rec = q as Record<string, unknown>;
       const text = stringField(rec, "question");
-      if (text !== null) texts.push(text);
-      if (i === 0 && Array.isArray(rec.options)) {
-        const labels = rec.options
-          .map((o) => (typeof o === "string" ? o : typeof o === "object" && o !== null ? (o as Record<string, unknown>).label : null))
-          .filter((l): l is string => typeof l === "string");
-        options = labels.length > 0 ? labels : null;
-      }
+      if (text === null) continue;
+      prompts.push({ question: text, options: optionLabels(rec.options), multi_select: rec.multiSelect === true });
     }
-    return { detail: texts.join("\n\n"), options };
+    const single = prompts.length === 1 && prompts[0].options.length > 0 ? prompts[0].options : null;
+    return { detail: prompts.map((p) => p.question).join("\n\n"), options: single, questions: prompts };
   }
+  const detail = stringField(input, "question") ?? "";
+  const options = stringArrayField(input, "options");
   return {
-    detail: stringField(input, "question") ?? "",
-    options: stringArrayField(input, "options"),
+    detail,
+    options,
+    questions: detail === "" ? [] : [{ question: detail, options: options ?? [], multi_select: false }],
   };
+}
+
+// The tool's own answer shape (sdk-tools.d.ts `AskUserQuestionInput.answers`,
+// keyed by question text). A string answers every question (the one-question
+// case, or one typed reply for all); a map answers question by question and
+// only its entries naming an asked question count.
+export function askUserQuestionAnswers(
+  input: Record<string, unknown>,
+  value: string | Record<string, string>,
+): Record<string, string> {
+  const { questions } = askUserQuestionFields(input);
+  const answers: Record<string, string> = {};
+  for (const q of questions) {
+    const answer = typeof value === "string" ? value : Object.hasOwn(value, q.question) ? value[q.question] : undefined;
+    if (typeof answer === "string" && answer.trim() !== "") answers[q.question] = answer;
+  }
+  return answers;
 }
 
 export function decidePermission(input: DecidePermissionInput): PermissionDecision {
@@ -126,6 +163,7 @@ export function decidePermission(input: DecidePermissionInput): PermissionDecisi
         title: "Otázka od agenta",
         detail: asked.detail,
         options: asked.options,
+        questions: asked.questions,
       },
     };
   }

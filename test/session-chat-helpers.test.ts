@@ -19,6 +19,11 @@ import {
   type ActivityItem,
   type ActivityRow,
   type ChatEvent,
+  askPrompts,
+  togglePick,
+  picksComplete,
+  askAnswer,
+  createAnswerGate,
 } from "../apps/web/src/lib/session-chat.js";
 
 function ev(seq: number, kind: string, payload: unknown): ChatEvent {
@@ -500,5 +505,56 @@ describe("transcriptElsewhere", () => {
     // A run that started writing on this device between the header call
     // and the replay: the log wins, the notice goes.
     assert.equal(transcriptElsewhere("MacBook Pro", 1), null);
+  });
+});
+
+describe("input questions (#492)", () => {
+  const env = { question: "Which environment?", options: ["staging", "production"], multi_select: false };
+  const dry = { question: "Dry run first?", options: ["yes", "no"], multi_select: false };
+  const base = { request_id: "q", type: "input" as const, tool: "AskUserQuestion", title: "t", decision: null };
+
+  it("askPrompts reads questions, and falls back to the flat detail/options of an older row", () => {
+    assert.deepEqual(askPrompts({ ...base, detail: "x", options: null, questions: [env, dry] }), [env, dry]);
+    assert.deepEqual(askPrompts({ ...base, detail: "Which environment?", options: ["staging", "production"] }), [env]);
+    assert.deepEqual(askPrompts({ ...base, detail: "Free text?", options: null }), []);
+  });
+
+  it("Enter in an empty field sends nothing", () => {
+    assert.equal(askAnswer([], {}, ""), null);
+    assert.equal(askAnswer([], {}, "   "), null);
+    assert.equal(askAnswer([env], {}, ""), null);
+    assert.equal(askAnswer([env, dry], {}, " "), null);
+    assert.equal(askAnswer([env], {}, " moje "), "moje");
+  });
+
+  it("one single-choice question answers on the click; several wait for every pick", () => {
+    const one = togglePick({}, env, "production");
+    assert.equal(picksComplete([env], one), true);
+    assert.equal(askAnswer([env], one, ""), "production");
+
+    const first = togglePick({}, env, "staging");
+    assert.equal(picksComplete([env, dry], first), false);
+    const both = togglePick(first, dry, "no");
+    assert.equal(picksComplete([env, dry], both), true);
+    assert.deepEqual(askAnswer([env, dry], both, ""), { "Which environment?": "staging", "Dry run first?": "no" });
+  });
+
+  it("typed text fills the questions left without a pick; a multi-select joins its picks", () => {
+    const multi = { question: "Which features?", options: ["a", "b", "c"], multi_select: true };
+    let picks = togglePick({}, multi, "a");
+    picks = togglePick(picks, multi, "c");
+    picks = togglePick(picks, multi, "a");
+    picks = togglePick(picks, multi, "b");
+    assert.equal(picksComplete([multi], picks), false, "a multi-select is finished with Odeslat");
+    assert.deepEqual(askAnswer([multi, dry], picks, "nevím"), { "Which features?": "c, b", "Dry run first?": "nevím" });
+  });
+
+  it("a second submit of the same question is dropped; a failed one can be retried", () => {
+    const gate = createAnswerGate();
+    assert.equal(gate.claim("q1"), true);
+    assert.equal(gate.claim("q1"), false);
+    gate.release("q1");
+    assert.equal(gate.claim("q1"), true);
+    assert.equal(gate.claim("q2"), true);
   });
 });

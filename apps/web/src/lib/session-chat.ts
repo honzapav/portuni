@@ -21,9 +21,13 @@ export type FileChangeOp = "create" | "edit" | "delete" | "rename";
 export type QuestionType = "approval" | "input";
 export type ErrorClass = "provider" | "transport" | "permission" | "unknown";
 
+// Mirrors the server's QuestionAnswer: a map answers an AskUserQuestion ask
+// question by question, keyed by the question text (#492).
+export type QuestionAnswer = string | boolean | Record<string, string>;
+
 export interface QuestionDecision {
   by: string;
-  value: string | boolean;
+  value: QuestionAnswer;
   at: string;
 }
 
@@ -73,8 +77,14 @@ export interface QuestionEvent {
     title: string;
     detail: string;
     options: string[] | null;
+    questions?: AskPrompt[];
     decision: QuestionDecision | null;
   };
+}
+export interface AskPrompt {
+  question: string;
+  options: string[];
+  multi_select: boolean;
 }
 export interface CompactionEvent {
   kind: "compaction";
@@ -225,6 +235,77 @@ export function approvalChoices(
     ];
   }
   return options.map((label) => ({ label, value: label }));
+}
+
+// --- Input questions (AskUserQuestion, #492) ---------------------------------
+
+// The dotazy of an input question. A row written before `questions` existed
+// (or a flat ask) falls back to its detail and flat options as one dotaz.
+export function askPrompts(payload: QuestionEvent["payload"]): AskPrompt[] {
+  if (payload.questions && payload.questions.length > 0) return payload.questions;
+  if (payload.options === null || payload.options.length === 0) return [];
+  return [{ question: payload.detail, options: payload.options, multi_select: false }];
+}
+
+// What the user picked so far, per question text; a multi-select question
+// holds its labels in click order.
+export type AskPicks = Readonly<Record<string, readonly string[]>>;
+
+export function togglePick(picks: AskPicks, prompt: AskPrompt, label: string): AskPicks {
+  const current = picks[prompt.question] ?? [];
+  if (!prompt.multi_select) return { ...picks, [prompt.question]: [label] };
+  const next = current.includes(label) ? current.filter((l) => l !== label) : [...current, label];
+  return { ...picks, [prompt.question]: next };
+}
+
+// A click on an option answers at once when it settles everything: every
+// dotaz single-choice and picked. Otherwise the user finishes with Odeslat.
+export function picksComplete(prompts: readonly AskPrompt[], picks: AskPicks): boolean {
+  return (
+    prompts.length > 0 &&
+    prompts.every((p) => !p.multi_select && (picks[p.question]?.length ?? 0) > 0)
+  );
+}
+
+// The value to send, or null when there is nothing to send (an empty field
+// and no pick -- Enter in an empty field sends nothing). One dotaz (or none)
+// answers with a plain string; several answer question by question, the
+// typed text filling each one left without a pick.
+export function askAnswer(prompts: readonly AskPrompt[], picks: AskPicks, text: string): string | Record<string, string> | null {
+  const typed = text.trim();
+  const picked = (p: AskPrompt): string | null => {
+    const labels = picks[p.question] ?? [];
+    return labels.length > 0 ? labels.join(", ") : null;
+  };
+  if (prompts.length <= 1) {
+    if (typed !== "") return typed;
+    const only = prompts[0];
+    return only ? picked(only) : null;
+  }
+  const answers: Record<string, string> = {};
+  for (const p of prompts) {
+    const answer = picked(p) ?? (typed !== "" ? typed : null);
+    if (answer !== null) answers[p.question] = answer;
+  }
+  return Object.keys(answers).length > 0 ? answers : null;
+}
+
+// One answer per question: the first submit claims the request id, every
+// later submit of the same question is dropped here instead of reaching the
+// server as NO_PENDING_QUESTION. A submit that failed releases the claim so
+// the user can try again.
+export function createAnswerGate(): { claim(requestId: string): boolean; release(requestId: string): void } {
+  const claimed = new Set<string>();
+  return {
+    claim(requestId) {
+      if (claimed.has(requestId)) return false;
+      claimed.add(requestId);
+      return true;
+    },
+    release(requestId) {
+      claimed.delete(requestId);
+    },
+  };
 }
 
 // --- Streamed delta buffering ------------------------------------------------

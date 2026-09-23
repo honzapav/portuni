@@ -784,7 +784,7 @@ export async function handleSendSessionMessage(
 }
 
 const AnswerBody = z.object({
-  decision: z.object({ value: z.union([z.string(), z.boolean()]) }),
+  decision: z.object({ value: z.union([z.string(), z.boolean(), z.record(z.string(), z.string())]) }),
 });
 
 export async function handleAnswerSessionQuestion(

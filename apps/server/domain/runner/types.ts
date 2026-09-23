@@ -14,9 +14,14 @@ export type FileChangeOp = "create" | "edit" | "delete" | "rename";
 export type QuestionType = "approval" | "input";
 export type ErrorClass = "provider" | "transport" | "permission" | "unknown";
 
+// `value`: true/false for an approval; a string answers an input question
+// (every dotaz of it); a map answers an AskUserQuestion ask question by
+// question, keyed by the question text (#492).
+export type QuestionAnswer = string | boolean | Record<string, string>;
+
 export interface QuestionDecision {
   by: string;
-  value: string | boolean;
+  value: QuestionAnswer;
   at: string;
 }
 
@@ -81,6 +86,9 @@ export interface QuestionEvent {
     title: string;
     detail: string;
     options: string[] | null;
+    // AskUserQuestion (#492): each dotaz with its own options; absent for
+    // every other question and on rows written before it.
+    questions?: { question: string; options: string[]; multi_select: boolean }[];
     decision: QuestionDecision | null;
   };
 }

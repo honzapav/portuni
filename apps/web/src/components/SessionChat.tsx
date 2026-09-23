@@ -18,7 +18,7 @@
 // stick-to-bottom scrolling); everything about sessions -- subscribe,
 // suspend/resume, handoffs, access control -- stays ours.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hostDisplayName } from "../lib/session-views";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
@@ -35,6 +35,13 @@ import {
   sessionStatusChip,
   latestQuestionEvent,
   approvalChoices,
+  askPrompts,
+  togglePick,
+  picksComplete,
+  askAnswer,
+  createAnswerGate,
+  type AskPicks,
+  type QuestionAnswer,
   appendDelta,
   clearDeltaBuffer,
   createDeltaCoalescer,
@@ -376,6 +383,10 @@ export default function SessionChat({
   // replay). Absent entirely for a draft or a session that never reported.
   const liveUsage = useMemo(() => latestContextUsage(events), [events]);
 
+  // #492: one answer per question -- a second click or Enter while the
+  // first is on its way is dropped, not sent into a NO_PENDING_QUESTION.
+  const [answerGate] = useState(createAnswerGate);
+
   // Every hook has run; from here the record is what the component reads.
   // It is missing only in the moment between its removal from the store (a
   // deleted draft) and the parent dropping this pane, so there is nothing
@@ -549,11 +560,14 @@ export default function SessionChat({
     }
   };
 
-  const handleAnswer = async (value: string | boolean) => {
+  const handleAnswer = async (value: QuestionAnswer) => {
     if (!openQuestion) return;
+    const requestId = openQuestion.payload.request_id;
+    if (!answerGate.claim(requestId)) return;
     try {
-      await sessionsClient.answer(sessionId, openQuestion.payload.request_id, value);
+      await sessionsClient.answer(sessionId, requestId, value);
     } catch (e) {
+      answerGate.release(requestId);
       setError(String(e));
     }
   };
@@ -790,7 +804,7 @@ export default function SessionChat({
       </Conversation>
 
       {openQuestion && isWaiting && (
-        <QuestionConfirmation question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
+        <QuestionConfirmation key={openQuestion.payload.request_id} question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
       )}
 
       <div className="border-t border-[var(--color-border)] py-3">
@@ -1105,9 +1119,25 @@ function QuestionConfirmation({
   onAnswer,
 }: {
   question: Extract<CanonicalEvent, { kind: "question" }>;
-  onAnswer: (value: string | boolean) => void;
+  onAnswer: (value: QuestionAnswer) => void;
 }) {
   const [text, setText] = useState("");
+  const [picks, setPicks] = useState<AskPicks>({});
+  const prompts = question.payload.type === "input" ? askPrompts(question.payload) : [];
+  // Several dotazy: each one's text stands where the detail does today.
+  const perQuestion = prompts.length > 1;
+  const submitText = () => {
+    const value = askAnswer(prompts, picks, text);
+    if (value !== null) onAnswer(value);
+  };
+  const pick = (prompt: (typeof prompts)[number], label: string) => {
+    const next = togglePick(picks, prompt, label);
+    setPicks(next);
+    if (picksComplete(prompts, next)) {
+      const value = askAnswer(prompts, next, "");
+      if (value !== null) onAnswer(value);
+    }
+  };
   return (
     <div className="border-t border-[var(--color-border)]">
       <div className={`${THREAD_COLUMN} py-2.5`}>
@@ -1115,7 +1145,7 @@ function QuestionConfirmation({
         <ConfirmationTitle className="text-[13px] font-medium text-[var(--color-text)]">
           {question.payload.title}
         </ConfirmationTitle>
-        {question.payload.detail && (
+        {question.payload.detail && !perQuestion && (
           <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]">{question.payload.detail}</p>
         )}
         <ConfirmationRequest>
@@ -1128,18 +1158,50 @@ function QuestionConfirmation({
               ))}
             </ConfirmationActions>
           ) : (
-            <ConfirmationActions className="w-full">
-              <Input
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onAnswer(text);
-                }}
-                placeholder="Odpověď…"
-                className="min-w-0 flex-1"
-              />
-              <ConfirmationAction onClick={() => onAnswer(text)}>Odeslat</ConfirmationAction>
-            </ConfirmationActions>
+            <>
+              {prompts.map((prompt) => (
+                <Fragment key={prompt.question}>
+                  {perQuestion && (
+                    <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]">{prompt.question}</p>
+                  )}
+                  {prompt.options.length > 0 && (
+                    <ConfirmationActions>
+                      {prompt.options.map((label) => (
+                        <ConfirmationAction
+                          key={label}
+                          // One single-choice dotaz answers on the click,
+                          // like approval; otherwise a pick is shown until
+                          // the rest is answered.
+                          variant={
+                            (prompts.length === 1 && !prompt.multi_select) ||
+                            (picks[prompt.question] ?? []).includes(label)
+                              ? "default"
+                              : "outline"
+                          }
+                          onClick={() => pick(prompt, label)}
+                        >
+                          {label}
+                        </ConfirmationAction>
+                      ))}
+                    </ConfirmationActions>
+                  )}
+                </Fragment>
+              ))}
+              <ConfirmationActions className="w-full">
+                <Input
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => {
+                    // An IME composition's Enter confirms the composition,
+                    // it is not a send.
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) submitText();
+                  }}
+                  placeholder="Odpověď…"
+                  className="min-w-0 flex-1"
+                />
+                <ConfirmationAction onClick={submitText}>Odeslat</ConfirmationAction>
+              </ConfirmationActions>
+            </>
           )}
         </ConfirmationRequest>
       </Confirmation>

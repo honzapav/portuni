@@ -560,7 +560,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       const body = await parseJsonBody(
         req,
         res,
-        z.object({ decision: z.object({ value: z.union([z.string(), z.boolean()]) }) }),
+        z.object({ decision: z.object({ value: z.union([z.string(), z.boolean(), z.record(z.string(), z.string())]) }) }),
       );
       if (!body) return true;
       const pending = sessionRuntime.pendingQuestion(sessionId);

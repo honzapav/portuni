@@ -418,10 +418,21 @@ human verification.
   mirror by `startRun`). An "ask" decision emits a `question` event and
   leaves the `canUseTool` promise open until `RunHandle.answer()`: an
   approval allows on `true` only (`false` or text denies); an input
-  question (AskUserQuestion) takes a string as
-  `{behavior: "allow", updatedInput: {...originalInput, answer}}`. A
-  question still open when the run ends is denied; one raised after the
-  end is denied outright.
+  question (AskUserQuestion) allows with
+  `updatedInput: {...originalInput, answers}`, `answers` keyed by question
+  text -- the field the tool reads (`sdk-tools.d.ts`); anything else and
+  the model is told the user did not answer. The decision is a string (it
+  answers every dotaz) or a map `{ [question text]: answer }`
+  (`askUserQuestionAnswers`); the `question` event carries every dotaz
+  with its own options in `questions`, and the flat `options` only for a
+  single one. The chat renders each dotaz's options as buttons above the
+  free-text field: one single-choice dotaz answers on the click, several
+  (or a multi-select, labels joined `, `) finish when all are picked or on
+  Odeslat, the typed text filling the dotazy left without a pick. An empty
+  field or an IME Enter sends nothing, and a second submit of the same
+  question is dropped in the web (`createAnswerGate`). A question still
+  open when the run ends is denied; one raised after the end is denied
+  outright.
 - **MCP elicitation** (`onElicitation`): a dialog whose form is exactly one
   boolean field (Portuni's scope and write confirmations) emits an
   `approval` question and waits on `RunHandle.answer()`: `true` accepts

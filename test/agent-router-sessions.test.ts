@@ -1166,6 +1166,50 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(answerRes.status, 202);
     assert.equal(fake.sessions.get(session.id)?.waiting_since, null);
   });
+  // #492: a multi-question AskUserQuestion is answered question by question;
+  // the sync agent's route takes the map and the answered row keeps it.
+  it("an AskUserQuestion with several questions is answered with a map over POST /sessions/:id/questions/:request_id", async () => {
+    const questions = [
+      { question: "Which environment?", options: ["staging", "production"], multi_select: false },
+      { question: "Dry run first?", options: ["yes", "no"], multi_select: false },
+    ];
+    stubScript([
+      {
+        kind: "question",
+        payload: {
+          request_id: "req-q",
+          type: "input",
+          tool: "AskUserQuestion",
+          title: "Otázka od agenta",
+          detail: "Which environment?\n\nDry run first?",
+          options: null,
+          questions,
+          decision: null,
+        },
+      },
+      { wait: "answer" },
+    ]);
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    const value = { "Which environment?": "staging", "Dry run first?": "yes" };
+    const answerRes = await fetch(`${base}/sessions/${session.id}/questions/req-q`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: { value } }),
+    });
+    assert.equal(answerRes.status, 202);
+    assert.equal(fake.sessions.get(session.id)?.waiting_since, null);
+    const answered = (await content.listEvents(session.id))
+      .filter((e) => e.kind === "question")
+      .map((e) => JSON.parse(e.payload))
+      .find((p) => p.decision !== null);
+    assert.deepEqual(answered?.decision.value, value);
+    assert.deepEqual(answered?.questions, questions);
+  });
   it("GET /sessions/ws is mounted in agent mode: a task started over REST streams on the socket", async () => {
     stubScript([{ wait: "message" }, { kind: "assistant_message", payload: { text: "done" } }]);
     const ws = new WebSocket(`${base.replace(/^http/, "ws")}/sessions/ws`);
