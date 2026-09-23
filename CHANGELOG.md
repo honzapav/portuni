@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.23.0](https://github.com/honzapav/portuni/compare/v0.22.0...v0.23.0) (2026-09-23)
+
+
+### Features
+
+* **runner,server,web:** the central server holds the session record, the device holds the content; Předat and Navázat na handoff ([#478](https://github.com/honzapav/portuni/issues/478)) ([5d0ba84](https://github.com/honzapav/portuni/commit/5d0ba8405ffb78c42ea89ebc168bc1e2c3fe5988))
+* **web,desktop:** files organize – drag and drop, folders, plan apply ([#450](https://github.com/honzapav/portuni/issues/450)) ([d6857af](https://github.com/honzapav/portuni/commit/d6857afe7a6762a8cd3cf3beca281891b92dd1e2))
+
+
+### Bug Fixes
+
+* **runner,web:** MCP confirmation dialogs reach the chat, and Ne refuses ([#473](https://github.com/honzapav/portuni/issues/473)) ([fae7513](https://github.com/honzapav/portuni/commit/fae7513aa9795805537ed0b8bb69f0f027038226))
+* **web,runner:** chat surface quirks and a resume that keeps the conversation ([#469](https://github.com/honzapav/portuni/issues/469)) ([dc97d14](https://github.com/honzapav/portuni/commit/dc97d1407b17d76be54f2a360783c45359c125c5))
+* **web,runner:** draft picker sticks, default CLAUDE_CONFIG_DIR logs in, turn end clears the working row ([#453](https://github.com/honzapav/portuni/issues/453)) ([d078f36](https://github.com/honzapav/portuni/commit/d078f364a4859b488ef22e5e628925a0cc6988e5))
+* **web:** a run waiting for its first message is idle, not "Přemýšlím…" ([cc5fcee](https://github.com/honzapav/portuni/commit/cc5fceed35f44e03585ce2d56ccd0384909ad1fb))
+* **web:** a run waiting for its first message is idle, not Přemýšlím ([#454](https://github.com/honzapav/portuni/issues/454)) ([cc5fcee](https://github.com/honzapav/portuni/commit/cc5fceed35f44e03585ce2d56ccd0384909ad1fb))
+* **web:** no focus outline on the command palette input ([#441](https://github.com/honzapav/portuni/issues/441)) ([0cb5948](https://github.com/honzapav/portuni/commit/0cb59486c368ec0e6ec1f9fcb70a9c0907962a26))
+
 ## [0.22.0](https://github.com/honzapav/portuni/compare/v0.21.0...v0.22.0) (2026-09-21)
 
 
