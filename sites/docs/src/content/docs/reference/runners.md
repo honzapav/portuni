@@ -86,6 +86,14 @@ In a personal workspace both halves are the same machine, so nothing about
 this is visible — the split only decides what a team workspace's sidecar
 sends to `api.portuni.com`, which is the record and nothing else.
 
+Threads from before this split keep their history. A personal workspace
+copies its transcripts into `content.db` on the first boot. In a team
+workspace an older desktop sent the content to the central server; on
+its first boot after the upgrade each device downloads, once, the content
+of your threads that ran on that device, and keeps it from then on. A
+download that fails (the server unreachable, say) runs again on the next
+start.
+
 ## Model and reasoning effort
 
 `POST /sessions` accepts `model` (a runner-defined model id/alias, free text) and `effort` (`"low" | "medium" | "high" | "xhigh" | "max"`) at creation, `POST /sessions/:id/model` changes either afterwards, and `SessionSummary` carries both back. Either is a per-thread override; when unset, the value resolves at the start of every run, first match wins:

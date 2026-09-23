@@ -122,7 +122,7 @@ folders of its own; file content it serves is Drive-direct
 | Remote (Drive) and remote watcher | yes, service account, `RemoteWatchLoop` | through the central server | never |
 | Session runtime (runs the task) | no | yes, `CentralSessionStore` + `SessionContentStore` | yes, `DbSessionStore` + `SessionContentStore` |
 | Session record, access checks | yes (`api/sessions.ts` record half) | on the central server | local db |
-| Session content (`content.db`) | never | yes, this device's | yes, this device's |
+| Session content (`content.db`) | never; only the legacy graph-db rows an older sidecar wrote, read back to it and downloaded once by each sync agent | yes, this device's | yes, this device's |
 | Live channel `GET /sessions/ws` | yes | yes (own runtime) | yes |
 | MCP | `/mcp` for remote MCP clients (OAuth grant) and proxied tool calls | front door: device tools local, the rest proxied | `/mcp` |
 | Runner registry `runners.json` | its own host's | this device's | this device's |

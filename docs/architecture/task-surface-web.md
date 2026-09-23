@@ -148,7 +148,13 @@ See `sessions-and-runner.md`, "Runs, events, pid files and the boot sweep".
 `POST /sessions/:id/handoff`, whose answered `handoff_path` stays on screen
 in the notice bar (it is what the other machine opens). `api.ts` puts the
 suspended record into the store, so the header, the sidebar and Relace
-follow without a refetch. **Navázat na handoff** is the Relace tab's, not
+follow without a refetch. A refusal (409) rejects with
+`HandoffRefusedError` (`lib/handoff-refusal.ts`, its own module so the main
+chunk does not pull in the chat's helpers); the chat and the sidebar show
+its Czech message through `handoffErrorText`, never the status line, and
+after a refusal that does not depend on the thread's state (no mirror, the
+run or the transcript on another device) the chat stops offering Předat
+for that view. **Navázat na handoff** is the Relace tab's, not
 the chat's: `startSessionFromHandoff(nodeId, relPath)`.
 
 **The transcript is on another machine** (#461). A thread's content lives

@@ -64,8 +64,32 @@ record/content split).
   payload is in `domain/runner/types.ts`'s `CanonicalEvent` union. The
   `sessions.brief` and `sessions.handoff_inline` columns and the graph
   db's own `session_events` table still exist; nothing writes them after
-  #456 except the two central record-half routes that keep accepting them
-  for a sidecar released before it, and the central migration drops them.
+  #456 except the central routes that keep accepting them for a sidecar
+  released before it, and the central migration drops them.
+- **The central server never opens a `content.db`** (`getDeviceContentDb`
+  refuses when `isCentralServer()`). Its content store,
+  `sessionContentStoreForProcess()`, is `LegacyGraphContentStore`: the
+  graph db's `session_events` plus the two `sessions` columns. That is
+  where an older sidecar's `POST /sessions/:id/events` writes and where
+  its `GET /sessions/:id/events` and `resume-info` read, so it reads back
+  what it wrote. On a device (sidecar, sync agent, a standalone personal
+  server) the same function answers the device's `content.db`.
+- **The history that predates `content.db` is imported once**
+  (`boot/content-import.ts`, step 2 of `content.db`'s version history).
+  A personal workspace copies its graph db's rows at boot, before serving
+  (`importPersonalWorkspaceSessionContentOnBoot`, called by both
+  `index.ts` and `desktop.ts`'s local branch). A sync agent downloads,
+  in the background after it binds, the legacy content of its user's
+  threads that ran on this device (the record's `host_id` or a run's):
+  `CentralClient.listLegacySessionContent(hostId)` and
+  `getLegacySessionContent(id, {after})` over the central, owner-only
+  `GET /sessions/legacy-content?host_id=…` and
+  `GET /sessions/:id/legacy-content` (500 events a page). The central copy
+  stays. Each thread is copied in one transaction and skipped when an
+  earlier attempt already copied it; events a thread got here before a
+  retried import stay after the imported ones. The version is raised only
+  when every thread went through, so a failure runs again on the next
+  boot. Imported timestamps are normalised to `YYYY-MM-DD HH:MM:SS`.
 - `GET /sessions/:id/events` answers from the `content.db` of the device
   serving it, in both routers. When that device has no rows for the thread
   and the record's `host_id` is another device, the answer carries
@@ -127,11 +151,24 @@ mirror, registers the file and patches the record to `suspended` -- one
 suspend implementation, the reason marker being the only difference
 (`portuni:server-handoff reason=handoff`, the one reason a person chose).
 On an already `suspended` thread with its file, it is a no-op answering the
-same path. A `draft` or `closed` thread is `HANDOFF_NOT_ALLOWED` and a node
-with no mirror on this device `HANDOFF_NO_MIRROR` (`SessionHandoffError`,
-REST 409, Czech message): without a mirror the summary is content in
-`content.db` and there is no file to hand over. The other machine picks the
-work up from the file once it syncs.
+same path. On a `suspended` thread without a file (suspended where the node
+had no mirror), the same suspend code writes the file now
+(`createSuspendServerSide`'s `writeFileIfSuspended`): its inline summary
+from `content.db` when there is one, else the summary built from the
+transcript here. Every refusal is a `SessionHandoffError` (REST 409, Czech
+message; `api/session-handoff-errors.ts` is the one mapping the local
+router, the agent router and the socket share) and comes before any side
+effect -- nothing is interrupted, ended or suspended:
+`HANDOFF_NOT_ALLOWED` (a `draft` or `closed` thread), `HANDOFF_NO_MIRROR`
+(no mirror of the node on this device: nowhere to write the file),
+`HANDOFF_RUN_ELSEWHERE` (running, with no live run here and the open run's
+host another device: only that device can end it) and
+`HANDOFF_TRANSCRIPT_ELSEWHERE` (suspended without a file and no content
+here while the thread last ran on another device). The last two name the
+device the way `transcript_host` does. The web shows the message as-is
+(`apps/web/src/lib/handoff-refusal.ts`) and does not offer Předat in the
+chat where the transcript is on another device. The other machine picks
+the work up from the file once it syncs.
 
 **Navázat na handoff** (#460) is the other end of it:
 `SessionRuntime.startFromHandoff`, `POST /sessions` with `handoff_path` (the
@@ -263,7 +300,9 @@ agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
 `signals`, `resume-info`, `questions/:request_id`. The record half stays on the
 central server: bare `GET`/`PATCH /sessions/:id`, `/state`, `/scope`,
 `/runs...`, `/sessions/record`, plus `GET /nodes/:id/sessions` and
-`/overview`.
+`/overview`. The two legacy-content routes (`/sessions/legacy-content`,
+`/sessions/:id/legacy-content`) are central too; only the sync agent's
+boot import calls them, through `CentralClient`.
 `resume-info` is device-local (#456) because both of its inputs are the
 device's: the inline handoff summary in `content.db` and the handoff file
 in this device's mirror, which it hashes to report `handoff_changed`.
@@ -315,8 +354,9 @@ live action, `sessions-ws.ts` in the same change.
     the one that died, and the central server has no content to summarise.
     The thread resumes from its transcript, which is on this device.
 - A pid file is only ever found by the next boot of the same process on the
-  same machine. Both kinds of workspace run the sweep: `index.ts` and `desktop.ts`'s
-  local branch call `sweepOrphanedRunsOnBoot` (`localRunSweepBackend`,
+  same machine. Both kinds of workspace run the sweep: `index.ts` in a
+  personal workspace (the central server runs no runner, so it has no pid
+  file to sweep) and `desktop.ts`'s local branch call `sweepOrphanedRunsOnBoot` (`localRunSweepBackend`,
   resolves the run by id in `session_runs`); `desktop.ts`'s `agentMain`
   calls `sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client))`
   (`centralRunSweepBackend`, resolves via `store.listRuns(session_id)`).
@@ -342,7 +382,12 @@ live action, `sessions-ws.ts` in the same change.
   `disconnect` vs `idle` in the same `onclose`) and by
   `boot/session-sweep.ts` finding a `running` row from a dead process.
   `closeSessionIfRunning`/`closeStaleRunningSessionsOnBoot` keep their names
-  but delegate to `suspendSessionServerSide`. `portuni_session_suspend` is
+  but delegate to `suspendSessionServerSide` on a device. On the central
+  server (#458) they suspend only a session no device drives (no runner, no
+  open run: a hand-opened CLI or connector whose connection was to that
+  process), record only and with no summary, and never touch a task thread:
+  its run lives on a device, and a dropped proxied MCP connection or a
+  central restart says nothing about it. `portuni_session_suspend` is
   the only channel such a CLI has to write its own handoff.
 
 ## The Claude adapter
@@ -512,7 +557,8 @@ human verification.
   until that device's own boot sweep ends it, and that sweep suspends it
   with no handoff. The central server's `sweepStaleRunningSessionsOnBoot`,
   `sweepStaleDraftSessionsOnBoot` and `sweepArchivedSessionsOnBoot` stay,
-  as record maintenance.
+  as record maintenance; the running sweep there leaves every thread a
+  device drives alone (see the hand-opened CLI bullet above).
 - **Idle is the server's.** `boot/session-sweep.ts` `startIdleRunSweep`
   (60 s, unref'd; `PORTUNI_RUN_IDLE_MS`, default 30 min) drives
   `checkIdleRunsOnce`; `endIdleRun` sets `pendingEndReason: "idle"` and

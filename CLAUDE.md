@@ -241,7 +241,10 @@ One line each; the linked doc carries the mechanism and the reasoning.
   differs by workspace (`DbSessionStore` locally, `CentralSessionStore` in
   sync-agent mode), the content store never does -- it is always
   `SessionContentStore` over this device's `content.db`. Nothing on the
-  device sends events, `brief` or `handoff_inline` to the central server.
+  device sends events, `brief` or `handoff_inline` to the central server;
+  the central server never opens a `content.db` and writes no summary, and
+  its legacy rows (read back to older sidecars) are downloaded once by
+  each sync agent at boot.
   Access is enforced once, on the central server, by
   `auth/session-access.ts`, whose table is one line: a thread is its
   owner's, for every action, `manage` included; anyone else gets

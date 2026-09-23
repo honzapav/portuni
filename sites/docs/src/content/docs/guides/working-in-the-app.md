@@ -199,12 +199,16 @@ device writes the thread's summary to `wip/sessions/<id>-handoff.md` in the
 node's mirror — a tracked file of the node like any other, so the next sync
 carries it — and the thread goes to "Pozastaveno"; the chat then names the
 file it wrote. Pressing it again on the same thread changes nothing and
-answers the same path. A draft (nothing to summarise) and a closed thread
-are refused, and so is a node that has no mirror on this device: there is
-nowhere to write the file, and the summary stays here as the thread's own
-inline handoff. The transcript never travels — only the summary file does
-— so the other machine continues from what the file says, not from the
-conversation.
+answers the same path. On a suspended thread that has no file yet (it was
+suspended while the node had no mirror here), Předat writes the file now
+from the summary this device holds. Předat refuses, and says why, before
+it touches anything: on a draft (nothing to summarise) or a closed thread,
+on a node that has no mirror on this device (there is nowhere to write the
+file; the running thread keeps running), on a thread whose run is live on
+another device, and on a thread whose transcript is on another device —
+those two name the device, and that is where to press it. The transcript
+never travels — only the summary file does — so the other machine
+continues from what the file says, not from the conversation.
 
 **Navázat na handoff** is how the other machine picks it up. The node's
 Relace tab there lists the node's handoff files as soon as the sync has
