@@ -169,6 +169,11 @@ be suspended, then wakes the thread with that message as the
 first message of the next run. You see it once, the agent answers it, and
 nothing has to be typed again.
 
+When the model's API fails (the model is unavailable, overloaded, the
+prompt is too long, or a limit was hit), the error shows in the chat once,
+as an error and never also as the agent's reply, and the context ring keeps
+the last size the conversation really had.
+
 The inactivity timeout never catches a thread you have just gone back to.
 It looks over all your live threads at once, but suspending one takes a
 few seconds, and each remaining thread is checked again the moment before

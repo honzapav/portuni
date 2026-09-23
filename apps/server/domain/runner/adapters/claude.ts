@@ -643,6 +643,18 @@ function isSubagentFrame(msg: SDKMessage): boolean {
   return typeof parent === "string" && parent !== "";
 }
 
+// #500: an API failure (model unavailable, overloaded after retries, prompt
+// too long, a limit) arrives as a synthetic assistant message -- `error`
+// set, `model: "<synthetic>"`, zero usage -- and then as a `result` with the
+// same text. The result is the one that reports it (#411); translating the
+// synthetic message too showed the error twice, as a reply and as an
+// error, and its zero usage dropped the context ring to nothing.
+function isSyntheticErrorMessage(msg: Extract<SDKMessage, { type: "assistant" }>): boolean {
+  const error = (msg as { error?: unknown }).error;
+  if (typeof error === "string" && error !== "") return true;
+  return (msg.message as { model?: unknown }).model === "<synthetic>";
+}
+
 async function translateAssistantMessage(
   msg: Extract<SDKMessage, { type: "assistant" }>,
   state: RunTranslationState,
@@ -1092,6 +1104,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       // ring to the subagent's window. The main agent's Task tool_use and
       // its tool_result are top-level frames and still translate.
       if (isSubagentFrame(msg)) return;
+      if (msg.type === "assistant" && isSyntheticErrorMessage(msg)) return;
       if (msg.type === "assistant") {
         await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);
         return;

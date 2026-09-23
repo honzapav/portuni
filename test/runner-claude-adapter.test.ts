@@ -927,6 +927,74 @@ describe("Claude adapter: a provider limit/error ends the run (#411)", () => {
       "exactly one error event",
     );
   });
+  it("an API error shows once and keeps the context ring (#500)", async () => {
+    const usage = { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 40_000, output_tokens: 5 };
+    const script: SDKMessage[] = [
+      {
+        type: "assistant",
+        message: { role: "assistant", model: "claude-opus-5", content: [{ type: "text", text: "Hotovo." }], usage },
+        parent_tool_use_id: null,
+        uuid: "a1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      resultMessage({ usage, modelUsage: { "claude-opus-5": { contextWindow: 200_000 } } }),
+      // The SDK's synthetic assistant message for an API failure, then the
+      // result carrying the same text.
+      {
+        type: "assistant",
+        error: "overloaded",
+        message: {
+          role: "assistant",
+          model: "<synthetic>",
+          content: [{ type: "text", text: "API Error: Overloaded" }],
+          usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a2",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      resultMessage({
+        is_error: true,
+        result: "API Error: Overloaded",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        modelUsage: {},
+        uuid: "u2",
+      }),
+    ];
+    const { query, release } = makeFakeQuery(script, { hold: true });
+    const c = collector();
+    const adapter = createClaudeAdapter({
+      query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart(), c.sink);
+    await c.ended;
+
+    const kinds = (kind: string) => c.events.filter((e) => "kind" in e && e.kind === kind) as CanonicalEvent[];
+    const replies = kinds("assistant_message") as Extract<CanonicalEvent, { kind: "assistant_message" }>[];
+    assert.deepEqual(
+      replies.map((r) => r.payload.text),
+      ["Hotovo."],
+      "the synthetic error message is no reply",
+    );
+    const errors = kinds("error") as Extract<CanonicalEvent, { kind: "error" }>[];
+    assert.equal(errors.length, 1, "the error shows once");
+    assert.match(errors[0].payload.message, /Overloaded/);
+
+    const rings = kinds("context_usage") as Extract<CanonicalEvent, { kind: "context_usage" }>[];
+    assert.ok(rings.length > 0);
+    for (const ring of rings) {
+      assert.equal(ring.payload.used_tokens, 40_010, "the ring never drops to the synthetic zero");
+      assert.equal(ring.payload.model, "claude-opus-5", "the model is never <synthetic>");
+    }
+    assert.equal(rings[rings.length - 1].payload.max_tokens, 200_000);
+
+    await handle.close();
+    release();
+  });
 });
 
 describe("Claude adapter: Stop (Esc) ends the turn, not the run", () => {

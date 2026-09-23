@@ -555,6 +555,16 @@ human verification.
   frames and translate as any tool. What the subagent does in the
   background stays the agent's business; Portuni neither shows nor
   watches it.
+- **An API error is reported once, by its `result` (#500).** An API
+  failure (model unavailable, overloaded after retries, prompt too long,
+  a limit) arrives as a synthetic assistant message -- `error` set,
+  `model: "<synthetic>"`, zero usage -- followed by a `result` with the
+  same text. `isSyntheticErrorMessage` drops the first before
+  translation: no `assistant_message`, no `context_usage`, and
+  `state.model` keeps the real model. The `result` alone reports the
+  failure (the #411 path, one `error` event), and the ring's turn-end
+  reading still comes from the last real message's prompt, so
+  `sessions.context_used_tokens` keeps its last real value instead of 0.
 - **`models()` never starts a process.** A module-wide `modelsCache`
   starts `null` and is filled from the first live run's
   `Query.supportedModels()` (called inside the promise chain so a missing
