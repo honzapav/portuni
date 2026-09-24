@@ -617,12 +617,24 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       return;
     }
     const canonical = event as CanonicalEvent;
+    if (canonical.kind === "run_ended") {
+      // #489: whatever this end turns out to be -- a close, a suspend, a
+      // late end from a replaced run, or a failure anywhere in handling it
+      // (the log write included) -- a message waiting for it stops waiting
+      // here. Settling in a finally is what keeps a failed write from
+      // wedging every later lifecycle verb on the thread.
+      try {
+        await handleRunEnded(sessionId, runId, canonical);
+      } finally {
+        settleRun(sessionId, runId);
+      }
+      return;
+    }
     await appendAndPublish(sessionId, runId, [canonical]);
     touchActivity(sessionId);
     if (canonical.kind === "turn_ended" && isCurrentRun(sessionId, runId))
       dropTurnInFlight(sessionId, canonical.payload.consumed_messages ?? 1);
-    if (canonical.kind === "run_ended" && isCurrentRun(sessionId, runId)) turnsInFlight.delete(sessionId);
-    if (canonical.kind !== "run_ended") await captureAgentSessionId(sessionId, runId);
+    await captureAgentSessionId(sessionId, runId);
 
     if (canonical.kind === "context_usage") {
       // The ring's counters on the row (v2 spec): lists and the header
@@ -651,72 +663,78 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       ]);
       return;
     }
+  }
 
-    if (canonical.kind === "run_ended") {
-      // #489: whatever this end turns out to be -- a close, a suspend, a
-      // late end from a replaced run -- a message waiting for it stops
-      // waiting here, once the state it will act on is written.
-      try {
-        // Captured before the entry is removed: the adapter may only expose
-        // the runner's own conversation id once the run is actually over
-        // (a real CLI's translation learns it from an early protocol
-        // message, but the value is only load-bearing at resume time, so
-        // reading it here -- once, at run end -- is enough either way).
-        const live = liveRuns.get(sessionId);
-        const agentSessionId = live?.runId === runId ? live.handle.agentSessionId() : null;
-        // #488: only the current run's end takes the session with it.
-        const current = isCurrentRun(sessionId, runId);
-        if (current) {
-          liveRuns.delete(sessionId);
-          lastActivityAt.delete(sessionId);
-          activityTicks.delete(sessionId);
-        }
-        runStartScopeSize.delete(runId);
-        await store.patchRun(runId, {
-          ended_at: new Date().toISOString(),
-          end_reason: canonical.payload.reason,
-          usage: canonical.payload.usage,
-          ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
-        });
-        await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
-        if (!current) return;
-        await clearWaitingIfPending(sessionId, runId);
+  async function handleRunEnded(
+    sessionId: string,
+    runId: string,
+    canonical: Extract<CanonicalEvent, { kind: "run_ended" }>,
+  ): Promise<void> {
+    // The run is over whether or not its end reaches the log: a failed
+    // write is reported and the teardown below still runs, so the thread
+    // never keeps a dead handle (and a client replaying the log reads the
+    // record's state, which the suspend below still writes).
+    await appendAndPublish(sessionId, runId, [canonical]).catch((err) => {
+      console.error(`[portuni:runner] session ${sessionId}: recording run_ended of run ${runId} failed:`, err);
+    });
+    touchActivity(sessionId);
+    if (isCurrentRun(sessionId, runId)) turnsInFlight.delete(sessionId);
+    // Captured before the entry is removed: the adapter may only expose
+    // the runner's own conversation id once the run is actually over
+    // (a real CLI's translation learns it from an early protocol
+    // message, but the value is only load-bearing at resume time, so
+    // reading it here -- once, at run end -- is enough either way).
+    const live = liveRuns.get(sessionId);
+    const agentSessionId = live?.runId === runId ? live.handle.agentSessionId() : null;
+    // #488: only the current run's end takes the session with it.
+    const current = isCurrentRun(sessionId, runId);
+    if (current) {
+      liveRuns.delete(sessionId);
+      lastActivityAt.delete(sessionId);
+      activityTicks.delete(sessionId);
+    }
+    runStartScopeSize.delete(runId);
+    await store.patchRun(runId, {
+      ended_at: new Date().toISOString(),
+      end_reason: canonical.payload.reason,
+      usage: canonical.payload.usage,
+      ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
+    });
+    await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
+    if (!current) return;
+    await clearWaitingIfPending(sessionId, runId);
 
-        // #378: closeSession()/continueSession() already own the resulting
-        // transition (to "closed") for their own run end -- everything else
-        // (idle, error, a natural CLI-initiated end) moves the session to
-        // suspended instead; #497: with a summary only for Předat.
-        if (closingSessions.has(sessionId)) {
-          closingSessions.delete(sessionId);
-        } else {
-          const reason = pendingEndReason.get(sessionId) ?? "run_ended";
-          pendingEndReason.delete(sessionId);
-          const suspended = await suspendFallback(sessionId, reason);
-          if (suspended) {
-            // #494: the run_ended above already fanned a session_state out
-            // (api/sessions-ws.ts reads the row the moment it sees one) --
-            // but it read the row before this suspend wrote it, so every
-            // window kept showing the thread as running. The transition
-            // itself is what tells them it is suspended now.
-            // #497: the handoff event (the chat's "Shrnutí uloženo" row)
-            // only when a summary was actually written -- Předat.
-            await appendAndPublish(sessionId, runId, [
-              ...(suspended.state === "suspended"
-                ? [{ kind: "state_changed" as const, payload: { from: "running", to: "suspended", waiting: false } }]
-                : []),
-              ...(reason === "handoff"
-                ? [
-                    {
-                      kind: "handoff" as const,
-                      payload: { path: suspended.handoff_path, hash: suspended.handoff_hash },
-                    },
-                  ]
-                : []),
-            ]);
-          }
-        }
-      } finally {
-        settleRun(sessionId, runId);
+    // #378: closeSession()/continueSession() already own the resulting
+    // transition (to "closed") for their own run end -- everything else
+    // (idle, error, a natural CLI-initiated end) moves the session to
+    // suspended instead; #497: with a summary only for Předat.
+    if (closingSessions.has(sessionId)) {
+      closingSessions.delete(sessionId);
+    } else {
+      const reason = pendingEndReason.get(sessionId) ?? "run_ended";
+      pendingEndReason.delete(sessionId);
+      const suspended = await suspendFallback(sessionId, reason);
+      if (suspended) {
+        // #494: the run_ended above already fanned a session_state out
+        // (api/sessions-ws.ts reads the row the moment it sees one) --
+        // but it read the row before this suspend wrote it, so every
+        // window kept showing the thread as running. The transition
+        // itself is what tells them it is suspended now.
+        // #497: the handoff event (the chat's "Shrnutí uloženo" row)
+        // only when a summary was actually written -- Předat.
+        await appendAndPublish(sessionId, runId, [
+          ...(suspended.state === "suspended"
+            ? [{ kind: "state_changed" as const, payload: { from: "running", to: "suspended", waiting: false } }]
+            : []),
+          ...(reason === "handoff"
+            ? [
+                {
+                  kind: "handoff" as const,
+                  payload: { path: suspended.handoff_path, hash: suspended.handoff_hash },
+                },
+              ]
+            : []),
+        ]);
       }
     }
   }

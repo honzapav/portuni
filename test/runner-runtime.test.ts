@@ -1870,7 +1870,58 @@ describe("session runtime: a message into a run that is ending (#489)", () => {
     assert.deepEqual(userTexts(await content.listEvents(session.id)), ["x", "pokračuj"]);
     assert.equal((await store.listRuns(session.id)).length, 2);
   });
+
+  // A run_ended the content store cannot record must not wedge the thread:
+  // the message waiting for that end is delivered, and the lifecycle verbs
+  // queued behind it (Uzavřít here) still run. The timeout only turns the
+  // old hang into a failure; nothing in the test waits on a clock.
+  it("a run_ended whose log write fails still ends the run and releases the waiting message", { timeout: 10_000 }, async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new TeardownAdapter();
+    const flaky = failingRunEndedWrites(content);
+    const runtime = createSessionRuntime({
+      store,
+      content: flaky,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+      suspendFallback: createSuspendServerSide(localSuspendDeps(getDb(), flaky)),
+    });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const first = adapter.last;
+    first.beginTeardown();
+    const send = runtime.sendMessage(session.id, "pokračuj");
+    await first.refused;
+    first.endRun("error");
+    await send;
+
+    assert.equal(adapter.runs.length, 2, "the refused message started the next run");
+    assert.equal(adapter.runs[1].start.brief, "pokračuj");
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[0].end_reason, "error", "the first run's row is ended even though its log write failed");
+
+    const closed = await runtime.closeSession(session.id);
+    assert.equal(closed.state, "closed");
+  });
 });
+
+// The content store with every write that carries a run_ended refused, the
+// way a full disk would refuse it.
+function failingRunEndedWrites(inner: SessionContentStore): SessionContentStore {
+  return new Proxy(inner, {
+    get(target, prop) {
+      if (prop === "appendEvents") {
+        return async (...args: Parameters<SessionContentStore["appendEvents"]>) => {
+          if (args[2].some((e) => e.kind === "run_ended")) throw new Error("disk full");
+          return target.appendEvents(...args);
+        };
+      }
+      const value = Reflect.get(target, prop, target) as unknown;
+      return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+}
 
 describe("session runtime: the idle sweep re-checks before it ends (#491)", () => {
   // The sweep computes its list once and then ends the runs on it one at a
