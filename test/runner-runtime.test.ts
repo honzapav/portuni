@@ -1718,6 +1718,62 @@ describe("session runtime: one start per thread (#488)", () => {
     clearRegistryForTests();
   });
 
+  it("Stop and an answer during a start wait for it and act on the run it produced", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const inner = new TeardownAdapter();
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const interrupts: string[] = [];
+    const answers: string[] = [];
+    const adapter: RunnerAdapter = {
+      id: "fake",
+      detect: () => inner.detect(),
+      models: () => inner.models(),
+      async start(run, sink) {
+        markEntered();
+        await gate;
+        const handle = await inner.start(run, sink);
+        return {
+          ...handle,
+          interrupt: async () => {
+            interrupts.push(run.runId);
+          },
+          answer: async (requestId: string) => {
+            answers.push(requestId);
+          },
+        };
+      },
+    };
+    clearRegistryForTests();
+    registerAdapter(adapter);
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    try {
+      const draft = await runtime.createDraft({ userId: "U1", nodeId });
+      const send = runtime.sendMessage(draft.id, "one");
+      await entered;
+      const stop = runtime.interrupt(draft.id);
+      const answered = runtime.answer(draft.id, "req-1", { by: "U1", value: true, at: new Date().toISOString() });
+      openGate();
+      await send;
+      await stop;
+      await answered;
+
+      assert.deepEqual(interrupts, [inner.last.start.runId], "Stop reached the run the start produced");
+      assert.deepEqual(answers, ["req-1"], "the answer reached it too, instead of 'has no live run'");
+      await runtime.closeSession(draft.id);
+    } finally {
+      clearRegistryForTests();
+    }
+  });
+
   it("a run_ended from a run that is no longer live leaves the live run alone", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);

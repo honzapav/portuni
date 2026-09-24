@@ -1177,7 +1177,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   // Same ordering rule: the answered question (and the waiting: false
   // state) is recorded before the adapter learns the decision.
-  async function answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
+  async function answerLocked(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (!live) throw new Error(`answer: session ${sessionId} has no live run`);
     touchActivity(sessionId);
@@ -1200,7 +1200,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // the prompt queue and the run stay alive, so a message right after is an
   // ordinary one. Ending the run belongs to close() alone (closeSession,
   // continueSession, the idle sweep).
-  async function interrupt(sessionId: string): Promise<void> {
+  async function interruptLocked(sessionId: string): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (!live) return;
     touchActivity(sessionId);
@@ -1328,7 +1328,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
           );
         }
       }
-      await interrupt(sessionId);
+      await interruptLocked(sessionId);
       if (!(await endRunWithReason(sessionId, "handoff"))) {
         await suspendFallback(sessionId, "handoff");
       }
@@ -1578,14 +1578,25 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return content.listEvents(sessionId, opts);
   }
 
-  // #488: the four entry points that either start a run or end one take
-  // the session's lifecycle lock, so they can never observe liveRuns while
+  // #488: the entry points that start a run, end one or act on the live
+  // one take the session's lifecycle lock, so they can never observe liveRuns while
   // a start of the same session is still in flight. A second message
   // arriving during a start therefore finds the run that start produced and
   // goes to it as an ordinary message; Uzavřít and Předat wait for the
   // start and then end that run.
   function sendMessage(sessionId: string, text: string): Promise<void> {
     return withLifecycleLock(sessionId, () => sendMessageLocked(sessionId, text));
+  }
+
+  // Stop and an answer act on the live run too: during a start they wait
+  // for the run it produces instead of finding none (Stop a silent no-op,
+  // an answer "has no live run").
+  function interrupt(sessionId: string): Promise<void> {
+    return withLifecycleLock(sessionId, () => interruptLocked(sessionId));
+  }
+
+  function answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
+    return withLifecycleLock(sessionId, () => answerLocked(sessionId, requestId, decision));
   }
 
   function closeSession(sessionId: string): Promise<SessionRow> {

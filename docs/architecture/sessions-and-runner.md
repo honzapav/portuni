@@ -643,9 +643,11 @@ human verification.
   queue `enqueue`/`drain` uses): a second message that arrives while a
   start is in flight waits for it and then goes to the run that start
   produced as an ordinary message, Uzavřít and Předat wait and then end
-  that run. Nothing else takes the lock -- an adapter event handler must
-  never wait on a start, and a start drains the event queue while holding
-  it.
+  that run. `interrupt` and `answer` take it too, so Stop and an answer
+  during a start act on the run the start produced (Předat's own
+  interrupt runs inside its lock). Nothing else takes the lock -- an
+  adapter event handler must never wait on a start, and a start drains
+  the event queue while holding it.
 - **No message written into the chat is lost** (#489). `RunHandle.send`
   throws `RunEndedError` (`domain/runner/types.ts`) instead of pushing into
   a prompt stream nobody reads any more: the Claude adapter refuses once
