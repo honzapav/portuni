@@ -28,7 +28,10 @@ export interface ProvisionRunResumeInfo {
 export interface ProvisionRunInput {
   userId: string;
   nodeId: string;
-  sessionId: string;
+  // Null when the run is provisioned before its record exists (a new
+  // thread is provisioned first, so a run that cannot start creates
+  // nothing).
+  sessionId: string | null;
   resume: ProvisionRunResumeInfo | null;
 }
 

@@ -873,6 +873,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   async function startTask(input: StartTaskInput): Promise<{ session: SessionRow; run: SessionRunRow }> {
     const instanceId = input.instanceId ?? null;
+    // Provisioned before anything is created: a run that cannot start (no
+    // front-door token, #507; a mirror that cannot be made) is refused
+    // with no record and no first message left behind.
+    const provisioned = await provision({
+      userId: input.userId,
+      nodeId: input.nodeId,
+      sessionId: null,
+      resume: null,
+    });
     const session = await store.createSession({
       node_id: input.nodeId,
       user_id: input.userId,
@@ -885,13 +894,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // The brief is the thread's first message, i.e. content: it stays on
     // this device even when the record above was created on central.
     await content.setContent(session.id, { brief: input.brief });
-
-    const provisioned = await provision({
-      userId: input.userId,
-      nodeId: input.nodeId,
-      sessionId: session.id,
-      resume: null,
-    });
 
     const run = await store.createRun({
       session_id: session.id,
@@ -1006,6 +1008,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const { runner, instanceId } = session.runner
       ? { runner: session.runner, instanceId: session.instance_id }
       : await resolveTaskDefaults(session.node_id, resolveNodeOrgId);
+    // Provisioned before the draft is touched: a run that cannot start
+    // (#507) leaves the draft a draft, with the message still the user's.
+    const provisioned = await provision({
+      userId: session.user_id,
+      nodeId: session.node_id,
+      sessionId,
+      resume: null,
+    });
     // Content first, record second: the first message and the user_message
     // event below are the device's, the patch is the record's (#456).
     await content.setContent(sessionId, { brief: text });
@@ -1029,12 +1039,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       { kind: "state_changed", payload: { from: "draft", to: "running", waiting: false } },
     ]);
 
-    const provisioned = await provision({
-      userId: updated.user_id,
-      nodeId: session.node_id,
-      sessionId,
-      resume: null,
-    });
     const run = await store.createRun({
       session_id: sessionId,
       runner,
@@ -1376,6 +1380,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
 
     const { runner, instanceId } = await resolveTaskDefaults(input.nodeId, resolveNodeOrgId);
+    // Provisioned before the record is created, like startTask.
+    const provisioned = await provision({
+      userId: input.userId,
+      nodeId: input.nodeId,
+      sessionId: null,
+      resume: null,
+    });
     const created = await store.createSession({
       node_id: input.nodeId,
       user_id: input.userId,
@@ -1389,12 +1400,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const title = extractHandoffTitle(summary);
     const session = title ? await store.patchSession(created.id, { name: title }) : created;
 
-    const provisioned = await provision({
-      userId: input.userId,
-      nodeId: input.nodeId,
-      sessionId: session.id,
-      resume: null,
-    });
     const seededProvisioned = {
       ...provisioned,
       orientation:
@@ -1469,6 +1474,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const runner = oldSession.runner;
     if (!runner) throw new Error(`continueSession: session ${sessionId} has no runner to continue under`);
 
+    // Provisioned before the old thread is closed: when the new run cannot
+    // start (#507), the old one stays as it is.
+    const provisioned = await provision({
+      userId: oldSession.user_id,
+      nodeId: oldSession.node_id,
+      sessionId: null,
+      resume: null,
+    });
+
     const live = liveRuns.get(sessionId);
     if (live) {
       closingSessions.add(sessionId);
@@ -1498,12 +1512,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     });
     await store.patchSession(newSession.id, { name: oldSession.name, name_is_custom: true });
 
-    const provisioned = await provision({
-      userId: oldSession.user_id,
-      nodeId: oldSession.node_id,
-      sessionId: newSession.id,
-      resume: null,
-    });
     const seededProvisioned = {
       ...provisioned,
       orientation: written

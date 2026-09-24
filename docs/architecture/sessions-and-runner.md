@@ -32,7 +32,13 @@ record/content split).
   `PORTUNI_MCP_TOKEN[_<WS>]`, which is only the name per-mirror configs
   expand in a user's own shell and is never set in the sidecar. With no
   token the provision throws `RunnerMcpTokenMissingError` before any mirror
-  work; a run never starts with an empty `Authorization: Bearer `.
+  work; a run never starts with an empty `Authorization: Bearer `. The
+  runtime provisions before it creates or changes anything: `startTask`
+  and Navázat na handoff before the record, a draft's first message
+  before the draft is promoted, Pokračovat v nové session before the old
+  thread is closed -- a refused run leaves no half-made thread. REST
+  answers the refusal with 503 `RUNNER_MCP_TOKEN_MISSING`
+  (`respondError`), the live channel with an error reply of that code.
   `test/runner-mcp-front-door.test.ts` connects a runner-style client with
   the provisioned URL and token to the real front door in both workspaces.
 - `createMcpServer` returns `bindSession(cli?)`; the caller invokes it at its

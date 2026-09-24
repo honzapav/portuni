@@ -28,6 +28,7 @@ import {
   localSuspendDeps,
 } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
+import { RunnerMcpTokenMissingError } from "../apps/server/domain/write-scope.js";
 import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 import { GatedAdapter } from "./helpers/gated-adapter.js";
 import { TeardownAdapter } from "./helpers/teardown-adapter.js";
@@ -119,6 +120,74 @@ describe("session runtime: startTask", () => {
     await assert.rejects(() =>
       runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "nonexistent" }),
     );
+  });
+});
+
+// #507: a run that cannot be provisioned (no front-door token) is refused
+// before anything is created -- no record, no first message, no closed
+// source thread.
+describe("session runtime: a run that cannot be provisioned", () => {
+  const refusingProvision = async (): Promise<ProvisionRunResult> => {
+    throw new RunnerMcpTokenMissingError();
+  };
+
+  async function sessionCount(db: SharedDb["db"]): Promise<number> {
+    const res = await db.execute("SELECT COUNT(*) AS n FROM sessions");
+    return Number(res.rows[0].n);
+  }
+
+  it("startTask creates no thread and no first message", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: refusingProvision });
+
+    const before = await sessionCount(db);
+    await assert.rejects(
+      runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" }),
+      RunnerMcpTokenMissingError,
+    );
+    assert.equal(await sessionCount(db), before, "no session row");
+  });
+
+  it("a draft's first message leaves the draft a draft", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    clearRegistryForTests();
+    registerAdapter(adapter);
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: refusingProvision });
+
+    try {
+      const draft = await runtime.createDraft({ userId: "U1", nodeId });
+      await assert.rejects(runtime.sendMessage(draft.id, "ahoj"), RunnerMcpTokenMissingError);
+      assert.equal((await store.getSession(draft.id))?.state, "draft");
+      assert.equal((await content.getContent(draft.id))?.brief ?? null, null);
+      assert.equal((await content.listEvents(draft.id)).length, 0);
+    } finally {
+      clearRegistryForTests();
+    }
+  });
+
+  it("Pokračovat v nové session leaves the old thread running and creates no new one", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    let refuse = false;
+    const runtime = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(adapter),
+      provision: async (input) => (refuse ? refusingProvision() : stubProvision()(input)),
+    });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const before = await sessionCount(db);
+    refuse = true;
+    await assert.rejects(runtime.continueSession(session.id), RunnerMcpTokenMissingError);
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    assert.equal(await sessionCount(db), before);
+    await runtime.closeSession(session.id);
   });
 });
 

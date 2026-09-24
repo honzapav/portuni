@@ -40,6 +40,7 @@ import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../
 import { listSessions } from "../domain/sessions.js";
 import { scopeAtLeast } from "../auth/roles.js";
 import { handoffRefusal } from "./session-handoff-errors.js";
+import { RunnerMcpTokenMissingError } from "../domain/write-scope.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 import { logAudit } from "../infra/audit.js";
@@ -558,6 +559,11 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       }
     } catch (err) {
       console.error("[portuni:sessions-ws] frame handling failed:", err);
+      // #507: a run that cannot start says why, the way REST's 503 does.
+      if (err instanceof RunnerMcpTokenMissingError) {
+        sendErrorReply(conn.ws, frame.id, err.code, err.message);
+        return;
+      }
       sendErrorReply(conn.ws, frame.id, "INTERNAL_ERROR", "internal error");
     }
   }

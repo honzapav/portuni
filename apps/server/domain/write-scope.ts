@@ -273,6 +273,8 @@ export function resolveTokenEnvVar(): string {
 // sets it in the sidecar's env. A missing token is an error, never an
 // empty `Authorization: Bearer ` the front door answers with 401.
 export class RunnerMcpTokenMissingError extends Error {
+  // What REST (503) and the live channel answer with.
+  readonly code = "RUNNER_MCP_TOKEN_MISSING";
   constructor() {
     super(
       "PORTUNI_AUTH_TOKEN is not set: the run's Portuni MCP connection would have no bearer for the front door",

@@ -95,7 +95,12 @@ import type {
 const NO_DB = null as unknown as DbClient;
 
 function respondCentral404(res: ServerResponse, err: unknown): boolean {
-  if (err instanceof CentralHttpError && err.status === 404) {
+  // A new thread is provisioned (its mirror made) before its record is
+  // created, so an unknown node can surface from the mirror step first.
+  const unknownNode =
+    (err instanceof CentralHttpError && err.status === 404) ||
+    (err instanceof MirrorCreateError && err.code === "NODE_NOT_FOUND");
+  if (unknownNode) {
     respondJson(res, 404, { error: "node not found" });
     return true;
   }

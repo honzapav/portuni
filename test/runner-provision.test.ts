@@ -23,6 +23,8 @@ import { listUserMirrors } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
+import { respondError } from "../apps/server/http/middleware.js";
+import type { ServerResponse } from "node:http";
 
 let workspace: string;
 let originalWorkspaceRoot: string | undefined;
@@ -192,5 +194,34 @@ describe("createProvisionRunCentral (sync agent)", () => {
       RunnerMcpTokenMissingError,
     );
     assert.deepEqual(syncInfoCalls, [], "no mirror work for a run that cannot start");
+  });
+});
+
+// #507: the refusal reaches a REST caller as what it is -- the server cannot
+// start a run without the token -- not as a bare 500.
+describe("respondError: a run refused for a missing token", () => {
+  it("answers 503 with the error's code and message", () => {
+    const written: { status?: number; body?: string } = {};
+    const res = {
+      headersSent: false,
+      writeHead(status: number) {
+        written.status = status;
+        return this;
+      },
+      end(body: string) {
+        written.body = body;
+      },
+    } as unknown as ServerResponse;
+    const originalError = console.error;
+    console.error = () => undefined;
+    try {
+      respondError(res, "POST /sessions", new RunnerMcpTokenMissingError());
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal(written.status, 503);
+    const body = JSON.parse(written.body ?? "{}") as { code: string; error: string };
+    assert.equal(body.code, "RUNNER_MCP_TOKEN_MISSING");
+    assert.match(body.error, /PORTUNI_AUTH_TOKEN/);
   });
 });
