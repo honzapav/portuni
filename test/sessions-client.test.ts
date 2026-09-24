@@ -549,6 +549,57 @@ describe("sessions-client: a timed-out or dropped request is never delivered lat
     }
   });
 
+  // A message on the wire may take the server longer than the request
+  // timeout (a start waiting for the lifecycle lock, a redelivery waiting
+  // for a run to end). Reporting it failed while it is delivered is what
+  // made a resend reach the agent twice.
+  it("a message on the wire waits past the request timeout for its reply", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      const slow = settle(client.message("S1", "ahoj"));
+      const sent = FakeSocket.allSent("message");
+      assert.equal(sent.length, 1);
+
+      mock.timers.tick(45_000);
+      await flush();
+      assert.equal(slow.done, false, "not reported failed while the server works on it");
+
+      FakeSocket.last().reply(sent[0].id);
+      await flush();
+      assert.deepEqual(slow, { done: true, error: null });
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("a message queued during an outage and flushed by the reconnect waits for its reply", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      FakeSocket.last().drop();
+      const queued = settle(client.message("S1", "ahoj"));
+      mock.timers.tick(10);
+      const reopened = FakeSocket.last();
+      reopened.open();
+      const sent = reopened.sent.filter((f) => f.type === "message");
+      assert.equal(sent.length, 1);
+
+      mock.timers.tick(45_000);
+      await flush();
+      assert.equal(queued.done, false);
+      reopened.reply(sent[0].id);
+      await flush();
+      assert.deepEqual(queued, { done: true, error: null });
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
   it("a timed-out request cancels its own frame on the transport (the Tauri outbox's cancel path)", async () => {
     mock.timers.enable({ apis: ["setTimeout"] });
     try {

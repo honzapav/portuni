@@ -393,6 +393,12 @@ Client rules:
     in Tauri `sessions_cancel` on the Rust outbox), so a message that
     waited out a reconnect never reaches the agent after the chat showed
     the error, and sending it again delivers it once;
+  - a `message` or `continue` on the wire (sent on an open connection, or
+    flushed by the open that followed) has no timeout: the server may take
+    longer than 30 s (a start waiting for the lifecycle lock, a
+    redelivery waiting for a run to end), and reporting it failed while it
+    is still delivered is what made a resend reach the agent twice. Its
+    reply or a drop settles it;
   - when an open connection drops, every request already sent rejects at
     once (`disconnected: ...`), since its reply cannot come on the next
     connection; a request sent while the connection is down stays queued
@@ -423,7 +429,7 @@ Client rules:
 `ws` server (reply correlation, ordering, resubscribe-with-`after` across a
 forced drop, deltas not moving the seq), and over an in-memory socket with
 mocked timers the #496 rules (timeout during an outage, drop in flight,
-subscribe across a long outage). The Tauri transport has no runtime
+subscribe across a long outage, a message on the wire past the timeout). The Tauri transport has no runtime
 to test against here.
 
 ## Event rendering

@@ -412,10 +412,16 @@ export interface CreateSessionsClientOptions {
   autoConnect?: boolean;
 }
 
+// #496: requests that must not be reported as failed while the server may
+// still carry them out -- a resend of either repeats the action.
+const SETTLED_BY_REPLY_ON_WIRE: ReadonlySet<ClientFrame["type"]> = new Set(["message", "continue"]);
+
 interface PendingRequest {
   type: ClientFrame["type"];
   sessionId: string;
-  timer: ReturnType<typeof setTimeout>;
+  // Null once the frame is on the wire for a request settled by its reply
+  // or the connection dropping (SETTLED_BY_REPLY_ON_WIRE).
+  timer: ReturnType<typeof setTimeout> | null;
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
 }
@@ -459,32 +465,44 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
   //   Each open (the first one included) sends one subscribe per wanted
   //   session and settles every caller waiting on it (`parkedSubscribes`),
   //   so a load that finishes after a reconnect shows no error.
+  // - A message or a Pokračovat v nové session that is on the wire (sent on
+  //   an open connection, or flushed by the open that followed) has no
+  //   timeout: the server may legitimately take longer than
+  //   REQUEST_TIMEOUT_MS (a start waiting for the lifecycle lock, a
+  //   redelivery waiting for a run to end), and a failure reported while
+  //   the server still delivers it is what makes a resend reach the agent
+  //   twice. Its reply or the connection dropping settles it.
   // - `disconnect()` rejects everything still outstanding.
   const parkedSubscribes = new Map<string, ParkedSubscribe>();
+
+  function armTimeout(id: string, type: ClientFrame["type"], reject: (e: Error) => void) {
+    return setTimeout(() => {
+      pendingReplies.delete(id);
+      transport.cancel(id);
+      reject(new Error(`request_timeout: ${type} got no reply within ${REQUEST_TIMEOUT_MS} ms`));
+    }, REQUEST_TIMEOUT_MS);
+  }
 
   function send<T>(frame: Omit<ClientFrame, "id">): Promise<T> {
     const id = randomFrameId();
     const full = { ...frame, id } as ClientFrame;
     const sessionId = (frame.payload as { session_id: string }).session_id;
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingReplies.delete(id);
-        transport.cancel(id);
-        reject(new Error(`request_timeout: ${frame.type} got no reply within ${REQUEST_TIMEOUT_MS} ms`));
-      }, REQUEST_TIMEOUT_MS);
-      pendingReplies.set(id, {
+      const onWireSettlesByReply = isOpen && SETTLED_BY_REPLY_ON_WIRE.has(frame.type);
+      const pending: PendingRequest = {
         type: frame.type,
         sessionId,
-        timer,
+        timer: onWireSettlesByReply ? null : armTimeout(id, frame.type, reject),
         resolve: (v) => {
-          clearTimeout(timer);
+          if (pending.timer) clearTimeout(pending.timer);
           (resolve as (v: unknown) => void)(v);
         },
         reject: (e) => {
-          clearTimeout(timer);
+          if (pending.timer) clearTimeout(pending.timer);
           reject(e);
         },
-      });
+      };
+      pendingReplies.set(id, pending);
       transport.send(full);
     });
   }
@@ -509,7 +527,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
   function onConnectionLost(): void {
     for (const [id, pending] of pendingReplies) {
       pendingReplies.delete(id);
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       transport.cancel(id);
       if (pending.type === "subscribe" && subscribedSessions.has(pending.sessionId)) {
         void park(pending.sessionId, lastSeq.get(pending.sessionId)).then(pending.resolve, pending.reject);
@@ -525,6 +543,14 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
   // nothing is missed -- the server's own replay (sessions-ws.ts) fills
   // exactly that gap.
   function onConnectionOpened(): void {
+    // The open flushed every queued frame: a message or a continue waiting
+    // in the queue is on the wire now and waits for its reply instead.
+    for (const pending of pendingReplies.values()) {
+      if (pending.timer && SETTLED_BY_REPLY_ON_WIRE.has(pending.type)) {
+        clearTimeout(pending.timer);
+        pending.timer = null;
+      }
+    }
     for (const sessionId of subscribedSessions) {
       const parked = parkedSubscribes.get(sessionId);
       parkedSubscribes.delete(sessionId);
