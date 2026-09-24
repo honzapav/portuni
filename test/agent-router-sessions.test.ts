@@ -322,7 +322,11 @@ let emptyDb: ReturnType<typeof createLibsqlDbClient>;
 
 describe("agent-router: sessions/tasks", () => {
   before(async () => {
-    delete process.env.PORTUNI_AUTH_TOKEN;
+    // The token the desktop gives every sidecar; a run's provisioning hands
+    // it to the runner as its MCP bearer and refuses to start without it
+    // (#507). The bearer gate itself was frozen at middleware.ts's load,
+    // before this runs, so these requests still go without one.
+    process.env.PORTUNI_AUTH_TOKEN = "device-front-door-token";
     // provisionRunCentral creates a real mirror directory on disk (same as
     // local mode's own provisionRun) -- a task can't start without one.
     workspace = await mkdtemp(join(tmpdir(), "portuni-agent-sessions-"));

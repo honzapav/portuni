@@ -16,7 +16,7 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_TEST_PG_URL` | Live Postgres connection string for `test/db-client-conformance.test.ts`'s `pg` driver leg; unset (the default -- no live Postgres in CI or this repo's dev loop) skips just that one suite |
 | `PORTUNI_WORKSPACE_ROOT` | Root for local mirrors; also anchors the per-device `.portuni/sync.db` |
 | `PORTUNI_USER_EMAIL`, `PORTUNI_USER_NAME` | Solo-user identity seeded at boot |
-| `PORTUNI_AUTH_TOKEN` | Bearer for HTTP/MCP auth (sensitive); required for non-loopback bind or remote Turso |
+| `PORTUNI_AUTH_TOKEN` | Bearer for HTTP/MCP auth (sensitive); required for non-loopback bind or remote Turso. Also the bearer a runner-driven run's own MCP connection presents to this process's front door; a run's provisioning refuses to start without it (#507) |
 | `PORTUNI_WEBVIEW_PROXY_SECRET` | Env-mode REST write gate (sensitive, #213): when set, hardens the blanket write exemption -- a request needs a matching `X-Portuni-Webview-Proxy` header (proof it came through a trusted proxy, not some other process on this device holding the same `PORTUNI_AUTH_TOKEN`) or a resolvable `X-Portuni-Spawn-Id` session, or it is refused. Empty (default) = legacy behavior, every env-mode REST write allowed. The packaged desktop app always sets its own per-launch value |
 
 ## HTTP server

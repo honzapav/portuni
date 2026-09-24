@@ -367,6 +367,12 @@ A task's own MCP connection (the one the runner spawns to talk back to
 Portuni) binds to the session `POST /sessions` already created instead of
 minting a second row — this is why a task's Relace row appears the moment
 you start it, not only once its first tool call lands.
+It authenticates with the same token the sidecar's front door checks
+(`PORTUNI_AUTH_TOKEN`, which the app gives every workspace's sidecar), in a
+personal and a team workspace alike, so the chat has Portuni's tools
+(`mcp__portuni__*`) from its first turn. A sidecar without that token
+refuses to start the run with a clear error instead of connecting with an
+empty bearer.
 
 ### Live channel: `GET /sessions/ws`
 

@@ -24,6 +24,17 @@ record/content split).
   a run whose MCP connection carries the row id in `X-Portuni-Spawn-Id`
   (`RunStart.mcp.headers`). The handshake of that connection binds to the
   existing row; it never creates a second one.
+- **The run's MCP bearer is the front door's own token** (#507).
+  `provisionRun` and `createProvisionRunCentral` both take it from
+  `resolveRunnerMcpToken()` (`domain/write-scope.ts`), which reads
+  `PORTUNI_AUTH_TOKEN` -- the token `http/middleware.ts` verifies and the
+  desktop gives every sidecar -- never `resolveTokenEnvVar()`'s
+  `PORTUNI_MCP_TOKEN[_<WS>]`, which is only the name per-mirror configs
+  expand in a user's own shell and is never set in the sidecar. With no
+  token the provision throws `RunnerMcpTokenMissingError` before any mirror
+  work; a run never starts with an empty `Authorization: Bearer `.
+  `test/runner-mcp-front-door.test.ts` connects a runner-style client with
+  the provisioned URL and token to the real front door in both workspaces.
 - `createMcpServer` returns `bindSession(cli?)`; the caller invokes it at its
   own post-handshake signal (`transport.ts` `onsessioninitialized`,
   `stdio-entry.ts` `server.server.oninitialized`). A hand-opened CLI has no
