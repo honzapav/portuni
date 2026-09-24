@@ -33,7 +33,15 @@ export interface QuestionDecision {
 
 export interface RunStartedEvent {
   kind: "run_started";
-  payload: { run_id: string; runner: string; instance_id: string | null; resume: null | "conversation" | "handoff" };
+  payload: {
+    run_id: string;
+    runner: string;
+    instance_id: string | null;
+    resume: null | "conversation" | "handoff";
+    // A redelivered message (#489) is logged before this event; the run
+    // starts with it as its first turn.
+    carried_messages?: number;
+  };
 }
 export interface RunEndedEvent {
   kind: "run_ended";
@@ -598,18 +606,23 @@ export function runIsLiveFor(liveRunId: string | null, state: SessionState): boo
 // and a resume start the process with no prompt and wait for the first
 // message. Counted forward from the live run's start (nothing before it
 // belongs to this run) and never below zero: a turn_ended whose message is
-// older than the window ends a turn this window never saw open.
+// older than the window ends a turn this window never saw open. The one
+// message of this run logged before its start is a redelivery (#489): the
+// run it was written for refused it while ending, and the next run starts
+// with it -- run_started says so (`carried_messages`), and the count
+// starts there.
 export function turnInFlight(events: readonly ChatEvent[], liveRunId: string | null): boolean {
   if (liveRunId === null) return false;
   let from = 0;
+  let pending = 0;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i].event;
     if (e.kind === "run_started" && e.payload.run_id === liveRunId) {
       from = i + 1;
+      pending = e.payload.carried_messages ?? 0;
       break;
     }
   }
-  let pending = 0;
   for (let i = from; i < events.length; i++) {
     const e = events[i].event;
     if (e.kind === "user_message") pending += 1;

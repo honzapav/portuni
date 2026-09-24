@@ -804,6 +804,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
           runner: run.runner,
           instance_id: run.instance_id,
           resume: opts.resumeMode,
+          // #489: the brief is a redelivered message the log already
+          // holds (before this event); the web counts it from here.
+          ...(opts.brief !== null && opts.logBrief === false ? { carried_messages: 1 } : {}),
         },
       },
     ]);

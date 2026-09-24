@@ -1789,6 +1789,13 @@ describe("session runtime: a message into a run that is ending (#489)", () => {
 
     const events = await content.listEvents(session.id);
     assert.deepEqual(userTexts(events), ["x", "tak co teď?"], "the message is in the log exactly once");
+    // The message sits before the next run's run_started in the log; that
+    // run_started says the run carries it, which is what the web counts
+    // the turn in flight from (#490).
+    const secondStart = events.find((e) => e.kind === "run_started" && JSON.parse(e.payload).run_id === runs[1].id);
+    assert.equal(JSON.parse(secondStart!.payload).carried_messages, 1);
+    const firstStart = events.find((e) => e.kind === "run_started" && JSON.parse(e.payload).run_id === runs[0].id);
+    assert.equal(JSON.parse(firstStart!.payload).carried_messages, undefined, "a brief logged by its own run carries nothing");
   });
 
   it("a message sent while the idle sweep is ending the run is delivered to the next run", async () => {

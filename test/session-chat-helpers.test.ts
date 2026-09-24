@@ -494,6 +494,24 @@ describe("turnInFlight", () => {
   it("no live run is never in flight", () => {
     assert.equal(turnInFlight([started, asked, said], null), false);
   });
+  // #489: a message the ending run r0 refused is logged before r1 starts
+  // and redelivered as r1's first message; r1's run_started says it carries
+  // one, so the chat shows the turn working (Stop, Esc, the working row).
+  it("a redelivered message counts from the run that carries it", () => {
+    const r0 = ev(1, { kind: "run_started", payload: { run_id: "r0", runner: "claude", instance_id: null, resume: null } });
+    const refused = ev(2, { kind: "user_message", payload: { text: "tak co teď?", source: "chat" } });
+    const r0End = ev(3, { kind: "run_ended", payload: { run_id: "r0", reason: "limit", usage: null } });
+    const r1 = ev(4, {
+      kind: "run_started",
+      payload: { run_id: "r1", runner: "claude", instance_id: null, resume: "conversation", carried_messages: 1 },
+    });
+    const r1Said = ev(5, { kind: "assistant_message", payload: { text: "hned" } });
+    const r1Ended = ev(6, { kind: "turn_ended", payload: { run_id: "r1" } });
+    assert.equal(turnInFlight([r0, refused, r0End, r1], "r1"), true);
+    assert.equal(workingPhase([r0, refused, r0End, r1], "r1", null), "thinking");
+    assert.equal(turnInFlight([r0, refused, r0End, r1, r1Said], "r1"), true);
+    assert.equal(turnInFlight([r0, refused, r0End, r1, r1Said, r1Ended], "r1"), false);
+  });
   it("workingPhase shows nothing once the turn ended", () => {
     assert.equal(workingPhase([started, said, ended], "r1", null), null);
     assert.equal(workingPhase([started, said, ended, asked], "r1", null), "thinking");

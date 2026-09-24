@@ -32,6 +32,12 @@ export interface RunStartedEvent {
     runner: string;
     instance_id: string | null;
     resume: null | "conversation" | "handoff";
+    // #489/#490: messages already in the transcript that this run starts
+    // with as its first turn -- a message the previous run refused while
+    // it was ending, redelivered here without being logged again. They
+    // sit before this run_started in the log, so a client counting the
+    // turn in flight from run_started adds them. Absent means none.
+    carried_messages?: number;
   };
 }
 

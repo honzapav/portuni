@@ -465,10 +465,11 @@ which also deduplicates a replay against a frame that raced it.
   live run: after `turn_ended` (a Stop mid-tool or mid-reasoning
   included) the run is idle and no group looks live.
 - **The working row** (`WorkingRow`, `workingPhase`): while a turn is in
-  flight (`turnInFlight`: a `user_message` on the live run with no
-  `turn_ended` after it; the run start alone opens no turn, so a thread
-  started by Navázat or a resume waits idle for its first message) or a
-  send is in flight (`sentAt`), and
+  flight (`turnInFlight`: the live run's `user_message`s, counted from its
+  `run_started` plus the `carried_messages` that event names, outnumber
+  what its `turn_ended`s answered (`consumed_messages`); the run start
+  alone opens no turn, so a thread started by Navázat or a resume waits
+  idle for its first message) or a send is in flight (`sentAt`), and
   neither streaming text nor a running tool is on screen, a `Loader` with
   "Spouštím…" (until `run_started`), "Přemýšlím…" (until the first delta
   or tool) or "Pokračuji…" (after a tool finished) and a seconds counter.
