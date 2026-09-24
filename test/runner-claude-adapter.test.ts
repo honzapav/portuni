@@ -1524,6 +1524,72 @@ describe("Claude adapter: MCP elicitation", () => {
     await handle.close();
   });
 
+  // #509: the SDK does not abort a dialog's signal on interrupt() (live
+  // probe: scripts/probe-sdk-elicitation.mjs PROBE_ANSWER=interrupt), so
+  // the adapter closes it itself; the fake query's interrupt aborts nothing.
+  it("Stop while a dialog is open cancels it, closes the question and drops the dialog waiting in line", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const questions = () =>
+      events.filter((e) => "kind" in e && e.kind === "question") as Extract<CanonicalEvent, { kind: "question" }>[];
+    const open = options()!.onElicitation!(PORTUNI_CONFIRM, {
+      signal: new AbortController().signal,
+      requestId: "el-stop",
+    });
+    const queued = options()!.onElicitation!(PORTUNI_CONFIRM, {
+      signal: new AbortController().signal,
+      requestId: "el-stop-queued",
+    });
+    await flushMicrotasks();
+    assert.equal(questions().length, 1);
+
+    await handle.interrupt();
+    assert.deepEqual(await open, { action: "cancel" });
+    assert.deepEqual(await queued, { action: "cancel" });
+    await flushMicrotasks();
+    assert.equal(questions().length, 2, "the chat learns the open question closed; the queued one is never shown");
+    assert.equal(questions()[1].payload.request_id, "el-stop");
+    assert.deepEqual(
+      { by: questions()[1].payload.decision?.by, value: questions()[1].payload.decision?.value },
+      { by: "system", value: false },
+    );
+
+    // The next turn's dialog shows at once, and a late click on the closed
+    // one changes nothing.
+    await handle.answer("el-stop", { by: "U1", value: true, at: new Date().toISOString() });
+    const next = options()!.onElicitation!(PORTUNI_CONFIRM, {
+      signal: new AbortController().signal,
+      requestId: "el-next",
+    });
+    await flushMicrotasks();
+    assert.equal(questions().length, 3);
+    assert.equal(questions()[2].payload.request_id, "el-next");
+    await handle.answer("el-next", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.deepEqual(await next, { action: "accept", content: { confirm: true } });
+    release();
+    await handle.close();
+  });
+
+  it("a URL dialog is declined without a question, and the transcript names the server", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const result = await options()!.onElicitation!(
+      { serverName: "tempo", message: "Sign in", mode: "url", url: "https://example.test/login", elicitationId: "e1" },
+      { signal: new AbortController().signal, requestId: "el-url" },
+    );
+    assert.deepEqual(result, { action: "decline" });
+    assert.equal(events.filter((e) => "kind" in e && e.kind === "question").length, 0);
+    const errors = events.filter((e) => "kind" in e && e.kind === "error") as Extract<CanonicalEvent, { kind: "error" }>[];
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].payload.message, /tempo/);
+    release();
+    await handle.close();
+  });
+
   it("a dialog still open when the run ends is cancelled, so the server stops waiting", async () => {
     const { query, options } = makeFakeQuery([]);
     const adapter = createClaudeAdapter({ query });

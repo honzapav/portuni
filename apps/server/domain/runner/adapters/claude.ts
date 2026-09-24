@@ -477,6 +477,11 @@ interface RunTranslationState {
   pendingToolCalls: Map<string, PendingToolCall>;
   pendingPermissions: Map<string, PendingPermission>;
   pendingElicitations: Map<string, PendingElicitation>;
+  // #509: one stop per dialog still open or waiting in line. interrupt()
+  // calls them, because the SDK does not abort a dialog's signal when the
+  // turn is interrupted (scripts/probe-sdk-elicitation.mjs, PROBE_ANSWER=
+  // interrupt) and the server would otherwise wait for its own timeout.
+  elicitationStops: Set<() => void>;
   // The chat shows one open question at a time (the runtime keeps a single
   // pending question per session): a permission ask or a dialog raised
   // while another is open waits in line for its turn.
@@ -528,6 +533,7 @@ function createState(): RunTranslationState {
     pendingToolCalls: new Map(),
     pendingPermissions: new Map(),
     pendingElicitations: new Map(),
+    elicitationStops: new Set(),
     questionOpen: false,
     questionQueue: [],
     disabledToolPrefixes: [],
@@ -1000,6 +1006,20 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       request: ElicitationRequest,
       options: { signal: AbortSignal; requestId: string },
     ): Promise<ElicitationResult> {
+      // A URL dialog (a sign-in the server wants opened in a browser) is
+      // never granted from the chat: it is declined, and the transcript
+      // says which server asked, so the refusal the agent reports has a
+      // cause the user can see.
+      if (request.mode === "url") {
+        sink({
+          kind: "error",
+          payload: {
+            class: "permission",
+            message: `Server ${request.displayName ?? request.serverName} žádá přihlášení v prohlížeči; chat ho otevřít neumí, žádost byla odmítnuta.`,
+          },
+        });
+        return { action: "decline" };
+      }
       const field = confirmationField(request);
       if (field === null) return { action: "decline" };
       if (state.ended || options.signal.aborted) return { action: "cancel" };
@@ -1012,8 +1032,17 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         detail: request.message,
         options: null,
       };
-      return askInTurn(
+      // Aborted by the SDK giving up on the dialog (its own timeout) or by
+      // interrupt() (Stop): either way the tool call waiting on it is gone.
+      const stop = new AbortController();
+      const stopDialog = () => stop.abort();
+      options.signal.addEventListener("abort", stopDialog, { once: true });
+      state.elicitationStops.add(stopDialog);
+      return askInTurn<ElicitationResult>(
         () => {
+          // Stopped while waiting in line behind another question: never
+          // shown, so there is nothing to close in the chat either.
+          if (stop.signal.aborted) return Promise.resolve<ElicitationResult>({ action: "cancel" });
           sink({ kind: "question", payload: { ...payload, decision: null } });
           return new Promise<ElicitationResult>((resolve) => {
             const settle = (result: ElicitationResult) => {
@@ -1023,11 +1052,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
             state.pendingElicitations.set(requestId, (result) =>
               settle(result.action === "accept" ? { action: "accept", content: { [field]: true } } : result),
             );
-            // The SDK gave up on the dialog (its own timeout, or the turn
-            // was interrupted): the chat must stop waiting for an answer
-            // nobody will use. A question event carrying a decision is how
-            // the runtime learns a question closed without the user.
-            options.signal.addEventListener(
+            // The chat must stop waiting for an answer nobody will use. A
+            // question event carrying a decision is how the runtime learns
+            // a question closed without the user.
+            stop.signal.addEventListener(
               "abort",
               () => {
                 if (!state.pendingElicitations.has(requestId)) return;
@@ -1042,7 +1070,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           });
         },
         () => ({ action: "cancel" }),
-      );
+      ).finally(() => {
+        state.elicitationStops.delete(stopDialog);
+        options.signal.removeEventListener("abort", stopDialog);
+      });
     }
 
     async function preCompactHook(input: HookInput): Promise<HookJSONOutput> {
@@ -1357,6 +1388,9 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       async interrupt(): Promise<void> {
         if (state.ended) return;
         state.interruptRequested = true;
+        // #509: Stop closes an open connector dialog (and drops the ones
+        // waiting in line) with `cancel`; the SDK leaves them open.
+        for (const stopDialog of [...state.elicitationStops]) stopDialog();
         // #502: the stopped turn's thinking never completes; its start must
         // not carry over into the next turn's duration.
         state.reasoningStartedAt = null;

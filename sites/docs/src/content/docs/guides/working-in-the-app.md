@@ -289,7 +289,9 @@ several) and send with Odeslat, where whatever you type answers the
 questions you left without a pick. An empty field sends nothing, and the
 answer goes out once however often you click — also for a confirmation dialog an MCP server raises
 mid-tool-call, such as Portuni's scope expansion or write access (Ano
-accepts, Ne declines; a dialog asking for more than a yes/no is declined).
+accepts, Ne declines; Stop closes it; a dialog asking for more than a
+yes/no is declined, and one asking you to sign in through a browser link is
+declined with a line in the transcript naming the server).
 The run uses only its own Portuni connection: a claude.ai connector its
 profile inherits that points at this Portuni's server (recognised by its
 URL, whatever it is named) is switched off for the run, because that

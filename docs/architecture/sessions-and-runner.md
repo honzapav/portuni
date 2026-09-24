@@ -459,13 +459,24 @@ human verification.
 - **MCP elicitation** (`onElicitation`): a dialog whose form is exactly one
   boolean field (Portuni's scope and write confirmations) emits an
   `approval` question and waits on `RunHandle.answer()`: `true` accepts
-  with that field `true`, anything else declines. A form with more fields,
-  any non-boolean field or a `url` dialog is declined without a question:
-  the chat shows only the dialog's message, so a second field would be
-  granted unseen. An open dialog is cancelled when the run ends; when the
-  SDK abandons it (its timeout, an interrupted turn) the adapter also
-  emits the question again with a `system` decision, which the runtime
-  reads as "closed without the user" and clears `waiting_since`.
+  with that field `true`, anything else declines. A form with more fields
+  or any non-boolean field is declined without a question: the chat shows
+  only the dialog's message, so a second field would be granted unseen. A
+  `url` dialog (a browser sign-in) is declined too and emits an `error`
+  event naming the server, so the transcript says why the agent was
+  refused (#509). An open dialog is cancelled when the run ends; when the
+  SDK abandons it (its timeout) or Stop interrupts the turn, the adapter
+  answers `cancel` and emits the question again with a `system` decision,
+  which the runtime reads as "closed without the user" and clears
+  `waiting_since`; a dialog stopped while it waits in line is never shown.
+  `interrupt()` cancels the dialogs itself: the SDK does not abort an
+  elicitation's `signal` on an interrupt (`scripts/probe-sdk-elicitation.mjs`,
+  a live probe that needs no login, shows the round trip and this). The
+  CLI declares the `elicitation` capability only because `onElicitation`
+  is set; a request it receives before it has installed its handler, just
+  after the handshake, is answered `cancel` unseen. In a team workspace
+  the dialog comes from the central server through the sync agent's MCP
+  front door (`agent-transport.ts` relays it), the adapter is the same.
 - **One question at a time** (`askInTurn`): the runtime keeps a single
   pending question per session, so a permission ask or a dialog raised
   while another question is open waits in line and is emitted once that
