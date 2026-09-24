@@ -770,8 +770,10 @@ human verification.
   old thread's handoff file (`handoffs.writeFile`, registered like
   Předat's; `handoff_path`/`handoff_hash` go on the old record with the
   close) and the new thread's orientation names that file the way
-  Navázat na handoff's does (#497); without a mirror the summary goes into
-  the orientation only. It answers `{session, run}` (the WS reply carries `toSummary`'s
+  Navázat na handoff's does (#497); without a mirror, or when writing the
+  file fails (logged; the old run is already ended by then), the summary
+  goes into the orientation only. The new run is provisioned before the
+  old thread is touched. It answers `{session, run}` (the WS reply carries `toSummary`'s
   `SessionSummary`). Web labels: "Pokračovat v nové session" on an open
   thread, "Navázat" on a closed one.
 - No context-usage ring exists: `RunEndedEvent.payload.usage` is

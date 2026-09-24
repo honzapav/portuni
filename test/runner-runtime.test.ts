@@ -872,6 +872,37 @@ describe("session runtime: close", () => {
   });
 });
 
+describe("session runtime: continueSession when the handoff file cannot be written", () => {
+  it("closes the old thread and seeds the new one with the summary inline", async (t) => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+      handoffs: {
+        summarize: async () => "# Shrnutí vlákna\n\nCo se udělalo.",
+        writeFile: async () => {
+          throw new Error("EROFS: read-only file system");
+        },
+      },
+    });
+    t.mock.method(console, "error", () => undefined);
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const { session: next } = await runtime.continueSession(session.id);
+
+    const old = await store.getSession(session.id);
+    assert.equal(old?.state, "closed");
+    assert.equal(old?.handoff_path, null);
+    assert.equal(next.state, "running");
+    assert.match(adapter.getLastRunStart()?.orientation ?? "", /Co se udělalo\./);
+    await runtime.closeSession(next.id);
+  });
+});
+
 describe("session runtime: subscribers vs. store", () => {
   it("subscribers receive delta frames, but the store never persists them", async () => {
     const { db, nodeId } = await sharedDb();

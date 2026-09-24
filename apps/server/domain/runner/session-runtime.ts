@@ -1506,7 +1506,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
 
     const summary = await handoffs.summarize(oldSession, "continue");
-    const written = await handoffs.writeFile(oldSession, summary);
+    // The old run is already ended: a file that cannot be written (a full
+    // disk, a mirror gone read-only) must not strand the old thread running
+    // with no live run. The summary still seeds the new thread inline, the
+    // way it does when there is no mirror.
+    const written = await handoffs.writeFile(oldSession, summary).catch((err: unknown) => {
+      console.error(`[portuni:runner] continueSession ${sessionId}: writing the handoff file failed:`, err);
+      return null;
+    });
 
     await store.patchSession(sessionId, {
       state: "closed",
