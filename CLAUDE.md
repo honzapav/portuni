@@ -251,7 +251,8 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `SESSION_NOT_FOUND`, and every list route filters on `user_id`. A new session verb lands in
   `router.ts`, `agent-router.ts`, `sessions-ws.ts`, `min-scopes.ts` and
   `device-local-routes.json` together.
-- Nothing but Uzavřít and the auto-archive sweep reaches `closed`. Every other
+- Nothing but Uzavřít and the auto-archive sweep reaches `closed`; writing
+  into a closed thread reopens it like a suspended one (#498). Every other
   end (idle `PORTUNI_RUN_IDLE_MS`, provider limit or error, boot sweep, a
   hand-opened CLI's connection dropping) suspends with no summary; a
   handoff file is written only by Předat and Pokračovat v nové session,

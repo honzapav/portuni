@@ -126,10 +126,20 @@ record/content split).
 | `draft` | `running` (deletion is the only other exit, `deleteDraftSession`) |
 | `running` | `suspended`, `closed` |
 | `suspended` | `running`, `closed` |
-| `closed` | `archived` |
+| `closed` | `running` (writing into it, #498), `archived` |
 
 `closed` is reached only by the user's explicit Uzavřít (or `continue`, see
-below) and `archived` only by the auto-archive sweep
+below). It means "done, off the active lists", not "never again" (#498):
+`sendMessage` into a closed thread reopens it exactly the way it resumes a
+suspended one (`resumeByWriting`: `--resume` on the last run's
+conversation while it exists, else a summary built from this device's
+transcript, or Předat's / Pokračovat's file when one exists), publishes
+`state_changed {from: "closed", to: "running"}` and clears `closed_at`.
+The transition is validated once, in `transitionSessionState`, which is
+what both the local store and the central record route
+(`PATCH /sessions/:id`, `CentralSessionStore.patchSession` in a team
+workspace) go through. `archived` has no composer and no way back.
+`archived` is reached only by the auto-archive sweep
 (`sweepArchivedSessionsOnBoot` in `boot/session-sweep.ts`, run at boot of the
 process that owns the graph db: closed for more than 30 days moves to
 archived, an archived session's event log is dropped after 90 days; the
@@ -784,8 +794,9 @@ human verification.
   file fails (logged; the old run is already ended by then), the summary
   goes into the orientation only. The new run is provisioned before the
   old thread is touched. It answers `{session, run}` (the WS reply carries `toSummary`'s
-  `SessionSummary`). Web labels: "Pokračovat v nové session" on an open
-  thread, "Navázat" on a closed one.
+  `SessionSummary`). Web label: "Pokračovat v nové session" on a running
+  or suspended thread; a closed thread has no Navázat (#498), writing
+  into it reopens it.
 - No context-usage ring exists: `RunEndedEvent.payload.usage` is
   adapter-reported and untyped, so nothing tracks tokens per thread.
 

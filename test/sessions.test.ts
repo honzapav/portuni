@@ -204,6 +204,16 @@ describe("transitionSessionState: the state machine", () => {
     );
   });
 
+  it("reopens a closed thread (closed -> running) and clears closed_at (#498)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    const closed = await transitionSessionState(db, "U1", row.id, "closed");
+    assert.ok(closed.closed_at);
+    const reopened = await transitionSessionState(db, "U1", row.id, "running");
+    assert.equal(reopened.state, "running");
+    assert.equal(reopened.closed_at, null);
+  });
+
   it("is a no-op (not an error) when the target state equals the current state", async () => {
     const { db, nodeId } = await makeSharedDb();
     const row = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });

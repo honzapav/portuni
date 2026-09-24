@@ -401,6 +401,19 @@ export default function App() {
     [setSelectedId],
   );
 
+  // #465: the window's one record per thread (spec
+  // docs/superpowers/specs/2026-09-22-web-session-state-design.md). Every
+  // fact about a thread -- name, state, waiting, runner, instance, model,
+  // node -- lives here once; the sidebar, the chat header and the composer
+  // read the same record, so nothing in this file holds a copy to keep in
+  // step.
+  const [sessionStore] = useState(createSessionStore);
+  // Bound during render, not from an effect: the API functions write the
+  // rows they get back themselves (spec "Writing"), and the first fetch is
+  // fired by an effect, which runs after this. Idempotent -- the same store
+  // for the life of the app.
+  bindSessionStore(sessionStore);
+
   // Also #343's "Otevřít chat" (Relace tab, Práce sidebar, Přehled): jumps
   // to Práce with the node selected and THAT session as the node's shown
   // chat. A node can have several running/suspended sessions, so the
@@ -408,12 +421,22 @@ export default function App() {
   // it is among the node's live threads and only falls back to the newest
   // live one otherwise (first open, or the requested thread has closed).
   const [requestedChatSessionByNode, setRequestedChatSessionByNode] = useState<Record<string, string>>({});
+  // #498: the closed thread a node's Otevřít chat opened (Relace). Shown
+  // while it stays closed; writing into it reopens it, and the entry goes
+  // (the effect under shownThread), so a later Uzavřít leaves the surface
+  // the way closing any thread does.
+  const [openedClosedChatByNode, setOpenedClosedChatByNode] = useState<Record<string, string>>({});
   const openSessionChat = useCallback(
     (nodeId: string, sessionId?: string) => {
-      if (sessionId) setRequestedChatSessionByNode((p) => ({ ...p, [nodeId]: sessionId }));
+      if (sessionId) {
+        setRequestedChatSessionByNode((p) => ({ ...p, [nodeId]: sessionId }));
+        if (sessionStore.get(sessionId)?.state === "closed") {
+          setOpenedClosedChatByNode((p) => ({ ...p, [nodeId]: sessionId }));
+        }
+      }
       openNode(nodeId);
     },
-    [openNode],
+    [openNode, sessionStore],
   );
 
   // The workspace's left-column rows: the open nodes, in open order, with
@@ -502,19 +525,6 @@ export default function App() {
     return () => sessionsClient.disconnect();
   }, [sessionsClient]);
 
-  // #465: the window's one record per thread (spec
-  // docs/superpowers/specs/2026-09-22-web-session-state-design.md). Every
-  // fact about a thread -- name, state, waiting, runner, instance, model,
-  // node -- lives here once; the sidebar, the chat header and the composer
-  // read the same record, so nothing in this file holds a copy to keep in
-  // step.
-  const [sessionStore] = useState(createSessionStore);
-  // Bound during render, not from an effect: the API functions write the
-  // rows they get back themselves (spec "Writing"), and the first fetch is
-  // fired by an effect, which runs after this. Idempotent -- the same store
-  // for the life of the app.
-  bindSessionStore(sessionStore);
-
   // #343: the latest session_state frame per session -- sent for every
   // session the caller can see the moment sessionsClient connects, and
   // again on every state_changed/question/run_ended anywhere, no
@@ -540,13 +550,29 @@ export default function App() {
   const requestedChatSessionId = selectedWorkspaceNodeId
     ? (requestedChatSessionByNode[selectedWorkspaceNodeId] ?? null)
     : null;
+  const openedClosedChatId = selectedWorkspaceNodeId
+    ? (openedClosedChatByNode[selectedWorkspaceNodeId] ?? null)
+    : null;
   const shownThread = useSessionStore(
     sessionStore,
     useCallback(
-      (store) => selectShownThread(store, selectedWorkspaceNodeId, requestedChatSessionId),
-      [selectedWorkspaceNodeId, requestedChatSessionId],
+      (store) => selectShownThread(store, selectedWorkspaceNodeId, requestedChatSessionId, openedClosedChatId),
+      [selectedWorkspaceNodeId, requestedChatSessionId, openedClosedChatId],
     ),
   );
+  // #498: the opened closed thread was written into and is live again --
+  // from here on it is shown as any live thread is, and closing it again
+  // takes it off the surface.
+  useEffect(() => {
+    if (!shownThread?.node_id || shownThread.state === "closed") return;
+    const nodeId = shownThread.node_id;
+    if (openedClosedChatByNode[nodeId] !== shownThread.id) return;
+    setOpenedClosedChatByNode((p) => {
+      const next = { ...p };
+      delete next[nodeId];
+      return next;
+    });
+  }, [shownThread?.id, shownThread?.node_id, shownThread?.state, openedClosedChatByNode]);
 
 
   // What is open right now, readable from a fetch callback without making
@@ -622,8 +648,8 @@ export default function App() {
   const workspaceMountedSessions = useSessionStore(
     sessionStore,
     useCallback(
-      (store) => selectMountedThreads(store, openNodeIds, shownThread?.id ?? null),
-      [openNodeIds, shownThread?.id],
+      (store) => selectMountedThreads(store, openNodeIds, shownThread?.id ?? null, openedClosedChatId),
+      [openNodeIds, shownThread?.id, openedClosedChatId],
     ),
   );
 
@@ -901,10 +927,8 @@ export default function App() {
   );
 
   // The × on a thread's own sub-row (#374): a draft with no first message
-  // yet is deleted outright; anything else is Uzavřít, which asks first --
-  // via closeTaskConfirm below, a real dialog (window.confirm is a no-op
-  // in the Tauri webview, same reasoning as editorGuard).
-  const [closeTaskConfirm, setCloseTaskConfirm] = useState<SessionSummary | null>(null);
+  // yet is deleted outright; a running or suspended thread is Uzavřít,
+  // without a dialog (#498: a closed thread reopens by writing into it).
   const workspaceCloseTask = useCallback(
     (session: SessionSummary) => {
       // #506: the same deletion the chat header and the Relace row use --
@@ -914,9 +938,9 @@ export default function App() {
         deleteDraftSession(session.id);
         return;
       }
-      if (action === "confirm") setCloseTaskConfirm(session);
+      if (action === "close") void sessionsClient.close(session.id).catch(() => undefined);
     },
-    [],
+    [sessionsClient],
   );
 
   // #459 "Předat" on a thread's sub-row: ends the turn and the run and
@@ -1234,34 +1258,6 @@ export default function App() {
                 onClick={() => void resolveEditorGuard("save")}
               >
                 {fileEditor.saving ? "Ukládám…" : "Uložit"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
-      {closeTaskConfirm && (
-        <Dialog open onOpenChange={(open) => !open && setCloseTaskConfirm(null)}>
-          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
-            <DialogHeader>
-              <DialogTitle>Uzavřít vlákno?</DialogTitle>
-              <DialogDescription>
-                Vlákno „{closeTaskConfirm.name}“ se uzavře. Server napřed uloží shrnutí konverzace; najdeš ho pak
-                mezi Hotové.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCloseTaskConfirm(null)}>
-                Zpět
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  const session = closeTaskConfirm;
-                  setCloseTaskConfirm(null);
-                  void sessionsClient.close(session.id).catch(() => undefined);
-                }}
-              >
-                Uzavřít
               </Button>
             </DialogFooter>
           </DialogContent>

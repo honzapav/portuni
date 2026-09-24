@@ -620,6 +620,55 @@ describe("agent-router: sessions/tasks", () => {
     }
   });
 
+  // #498, the primary runtime: a team workspace's sync agent reopens a
+  // closed thread by writing into it -- the record on central goes back to
+  // running (and so into the running list), the conversation continues.
+  it("writing into a closed thread reopens it on central and resumes the conversation (#498)", async () => {
+    clearRegistryForTests();
+    const dir = await mkdtemp(join(tmpdir(), "portuni-agent-closed-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      const configDir = join(dir, "claude-tempo");
+      const instance = await createInstance({ name: "Tempo", runner: "claude", env: { CLAUDE_CONFIG_DIR: configDir } });
+      const inner = new FakeRunnerAdapter({ script: [TURN_DONE_STEP, { wait: "message" }], agentSessionId: "conv-closed" });
+      registerAdapter({
+        id: "claude",
+        detect: () => inner.detect(),
+        start: (run, sink) => inner.start(run, sink),
+        models: () => inner.models(),
+      });
+      const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+      const { session } = await runtime.startTask({
+        userId: SOLO_USER,
+        nodeId: NODE_ID,
+        brief: "zadání",
+        runner: "claude",
+        instanceId: instance.id,
+      });
+      const cwd = inner.getLastRunStart()!.cwd;
+      await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+      await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-closed.jsonl"), "{}\n", "utf8");
+      await runtime.closeSession(session.id);
+      assert.equal(fake.sessions.get(session.id)?.state, "closed");
+
+      await runtime.sendMessage(session.id, "ještě tohle");
+
+      assert.deepEqual(inner.getLastRunStart()?.resume, { agentSessionId: "conv-closed" });
+      assert.equal([...fake.runs.values()].filter((r) => r.session_id === session.id).length, 2);
+      assert.equal(fake.sessions.get(session.id)?.state, "running");
+      const listed = await fake.listSessionRecords({ states: ["running"] });
+      assert.ok(listed.some((s) => s.id === session.id));
+      await runtime.closeSession(session.id);
+    } finally {
+      clearRegistryForTests();
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   // #488: the same lifecycle lock, in the primary runtime -- a team
   // workspace's sync agent, whose record store is CentralSessionStore over
   // the fake central server. Driven through the runtime rather than over

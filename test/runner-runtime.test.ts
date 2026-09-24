@@ -559,6 +559,103 @@ describe("session runtime: resume by writing (#378)", () => {
   });
 });
 
+// #498: Uzavřít is "done, off the active lists", not "never again" --
+// writing into a closed thread reopens it the way it reopens a suspended
+// one: the same history, the conversation when it still exists, else a
+// summary from this device's transcript.
+describe("session runtime: writing into a closed thread reopens it (#498)", () => {
+  it("resumes the conversation when its transcript still exists", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const dir = await mkdtemp(join(tmpdir(), "portuni-closed-resume-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      const configDir = join(dir, "claude-profile");
+      const cwd = join(dir, "mirror");
+      const instance = await createInstance({ name: "JRD", runner: "fake", env: { CLAUDE_CONFIG_DIR: configDir } });
+      await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+      await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-closed.jsonl"), "{}\n", "utf8");
+
+      const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }], agentSessionId: "conv-closed" });
+      const runtime = createSessionRuntime({
+        store,
+        content,
+        registry: registryOf(adapter),
+        provision: stubProvision({ cwd, mirrors: [cwd] }),
+      });
+      const { session, run: firstRun } = await runtime.startTask({
+        userId: "U1",
+        nodeId,
+        brief: "x",
+        runner: "fake",
+        instanceId: instance.id,
+      });
+      await db.execute({ sql: "UPDATE sessions SET cli = 'claude' WHERE id = ?", args: [session.id] });
+      await runtime.closeSession(session.id);
+      assert.equal((await store.getSession(session.id))?.state, "closed");
+
+      const frames: Array<{ from: unknown; to: unknown }> = [];
+      runtime.subscribe(session.id, (_id, event) => {
+        if ("kind" in event && event.kind === "state_changed") frames.push({ from: event.payload.from, to: event.payload.to });
+      });
+      await runtime.sendMessage(session.id, "ještě jedna věc");
+
+      const row = await store.getSession(session.id);
+      assert.equal(row?.state, "running");
+      assert.equal(row?.closed_at, null);
+      const runs = await store.listRuns(session.id);
+      assert.equal(runs.length, 2);
+      assert.equal(runs[1].resumed_from_run_id, firstRun.id);
+      assert.equal(runs[1].agent_session_id, "conv-closed", "the new run continues the same conversation");
+      assert.deepEqual(adapter.getLastRunStart()?.resume, { agentSessionId: "conv-closed" });
+      assert.deepEqual(frames, [{ from: "closed", to: "running" }]);
+      const events = await content.listEvents(session.id);
+      const started = events.find((e) => e.run_id === runs[1].id && e.kind === "run_started");
+      assert.equal(JSON.parse(started!.payload).resume, "conversation");
+      assert.ok(
+        events.some((e) => e.run_id === runs[1].id && e.kind === "user_message" && JSON.parse(e.payload).text === "ještě jedna věc"),
+      );
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("without the conversation starts from a summary of this device's transcript", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "první zadání", runner: "fake" });
+    await runtime.closeSession(session.id);
+
+    await runtime.sendMessage(session.id, "pokračuj");
+
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    assert.equal((await store.listRuns(session.id)).length, 2);
+    const start = adapter.getLastRunStart();
+    assert.equal(start?.resume, null);
+    assert.match(start?.orientation ?? "", /Předání \(obnovení ze shrnutí\)/);
+    assert.match(start?.orientation ?? "", /\*\*Uživatel:\*\* první zadání/);
+    assert.equal(start?.brief, "pokračuj");
+  });
+
+  it("an archived thread still has no composer: the message is refused", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.closeSession(session.id);
+    await store.patchSession(session.id, { state: "archived" });
+
+    await assert.rejects(runtime.sendMessage(session.id, "haló"), /has no live run/);
+    assert.equal((await store.listRuns(session.id)).length, 1);
+  });
+});
+
 describe("instanceClaudeConfigDir (#508)", () => {
   it("is the instance's CLAUDE_CONFIG_DIR, and null for none or a blank one", () => {
     assert.equal(instanceClaudeConfigDir({ CLAUDE_CONFIG_DIR: "/Users/x/.claude-tempo" }), "/Users/x/.claude-tempo");
