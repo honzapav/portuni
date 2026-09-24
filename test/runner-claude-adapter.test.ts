@@ -2341,3 +2341,125 @@ describe("consumeSendUuids (#490)", () => {
     assert.equal(consumeSendUuids(pending, { user_message_uuid: "a" }), 0);
   });
 });
+
+// #502: a Stop during thinking left the block's start in the adapter, and
+// the next turn's "uvažoval N s" counted from it, idle time included. Each
+// turn's reasoning is timed on its own.
+describe("Claude adapter: reasoning time restarts with each turn (#502)", () => {
+  function thinkingDelta(text: string): SDKMessage {
+    return {
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: text } },
+      parent_tool_use_id: null,
+      uuid: `d-${text}`,
+      session_id: "s1",
+    } as unknown as SDKMessage;
+  }
+  function thinkingBlock(text: string): SDKMessage {
+    return {
+      type: "assistant",
+      message: { content: [{ type: "thinking", thinking: text, signature: "sig" }] },
+      parent_tool_use_id: null,
+      uuid: `a-${text}`,
+      session_id: "s1",
+    } as unknown as SDKMessage;
+  }
+  function result(subtype: "success" | "error_during_execution"): SDKMessage {
+    return {
+      type: "result",
+      subtype,
+      is_error: subtype !== "success",
+      num_turns: 1,
+      stop_reason: null,
+      total_cost_usd: 0.01,
+      usage: { input_tokens: 1, output_tokens: 2 },
+      modelUsage: {},
+      permission_denials: [],
+      duration_ms: 1,
+      duration_api_ms: 1,
+      uuid: `r-${subtype}`,
+      session_id: "s1",
+    } as unknown as SDKMessage;
+  }
+
+  // Runs one live run against an injected clock; `next(pred)` resolves on
+  // the first sunk event matching `pred` from now on -- a signal, no timer.
+  async function liveRun() {
+    const fake = makeFakeQuery([], { hold: true });
+    let clock = 1_000_000;
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const waiters: { pred: (e: CanonicalEvent | DeltaFrame) => boolean; resolve: () => void }[] = [];
+    const adapter = createClaudeAdapter({ query: fake.query, now: () => clock });
+    const handle = await adapter.start(makeRunStart(), (e) => {
+      events.push(e);
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        if (waiters[i].pred(e)) waiters.splice(i, 1)[0].resolve();
+      }
+    });
+    const next = (pred: (e: CanonicalEvent | DeltaFrame) => boolean): Promise<void> =>
+      new Promise<void>((resolve) => waiters.push({ pred, resolve }));
+    const isDelta = (e: CanonicalEvent | DeltaFrame) => "type" in e && e.type === "delta";
+    const isKind = (kind: string) => (e: CanonicalEvent | DeltaFrame) => "kind" in e && e.kind === kind;
+    return {
+      fake,
+      handle,
+      events,
+      setClock: (t: number) => {
+        clock = t;
+      },
+      delta: async (text: string) => {
+        const seen = next(isDelta);
+        fake.inject(thinkingDelta(text));
+        await seen;
+      },
+      endTurn: async (subtype: "success" | "error_during_execution") => {
+        const seen = next(isKind("turn_ended"));
+        fake.inject(result(subtype));
+        await seen;
+      },
+      block: async (text: string) => {
+        const seen = next(isKind("reasoning"));
+        fake.inject(thinkingBlock(text));
+        await seen;
+      },
+      durations: () =>
+        (events.filter(isKind("reasoning")) as Extract<CanonicalEvent, { kind: "reasoning" }>[]).map(
+          (e) => e.payload.duration_ms,
+        ),
+    };
+  }
+
+  it("thinking, Stop, a later turn with thinking: the duration is the second thinking only", async () => {
+    const run = await liveRun();
+    run.setClock(1_000_000);
+    await run.delta("first ");
+    await run.handle.interrupt();
+    await run.endTurn("error_during_execution");
+
+    // A long idle gap, then the next turn thinks for 2 s.
+    run.setClock(1_600_000);
+    await run.delta("second ");
+    run.setClock(1_602_000);
+    await run.block("second thought");
+
+    assert.deepEqual(run.durations(), [2_000], "the Stop's thinking and the idle gap do not count");
+    run.fake.release();
+    await run.handle.close();
+  });
+
+  it("a turn whose thinking never completed: the next turn's thinking is timed from its own first delta", async () => {
+    const run = await liveRun();
+    run.setClock(1_000_000);
+    await run.delta("cut off ");
+    await run.endTurn("success");
+
+    run.setClock(1_300_000);
+    await run.delta("next ");
+    run.setClock(1_305_000);
+    await run.block("next thought");
+
+    assert.deepEqual(run.durations(), [5_000]);
+    run.fake.release();
+    await run.handle.close();
+  });
+});

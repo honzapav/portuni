@@ -470,7 +470,9 @@ interface RunTranslationState {
   // once the compaction is done, emits the single marker.
   compactionTrigger: "manual" | "auto" | null;
   // When the first thinking delta of the current block arrived; the
-  // batched thinking block reads it as duration_ms and clears it.
+  // batched thinking block reads it as duration_ms and clears it. #502:
+  // every result and every interrupt() clears it too, so a thinking block
+  // a Stop cut off never dates the next turn's reasoning.
   reasoningStartedAt: number | null;
   pendingToolCalls: Map<string, PendingToolCall>;
   pendingPermissions: Map<string, PendingPermission>;
@@ -1176,6 +1178,8 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         // child that ignores the end of its stdin.
         const interrupted = state.interruptRequested && msg.subtype === "error_during_execution";
         state.interruptRequested = false;
+        // #502: the turn is over; the next turn's reasoning times itself.
+        state.reasoningStartedAt = null;
         state.lastResultWasInterrupt = interrupted;
         // #490: which of our sends this turn answered -- taken here, before
         // the failure branch, so a result that ends the run leaves no
@@ -1353,6 +1357,9 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       async interrupt(): Promise<void> {
         if (state.ended) return;
         state.interruptRequested = true;
+        // #502: the stopped turn's thinking never completes; its start must
+        // not carry over into the next turn's duration.
+        state.reasoningStartedAt = null;
         try {
           await q.interrupt();
         } catch {

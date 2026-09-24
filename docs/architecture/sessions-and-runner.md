@@ -515,8 +515,10 @@ human verification.
   preview and are never persisted. Delta frames carry the real `run_id`.
   The first `thinking_delta` of a block stamps `reasoningStartedAt`; the
   batched `reasoning` event carries `duration_ms` from that stamp to
-  itself and clears it. A thinking block without a streamed delta has no
-  `duration_ms`.
+  itself and clears it. Every `result` and every `interrupt()` clears it
+  too, so a thinking block a Stop cut off never dates the next turn's
+  reasoning: each turn's duration counts that turn's thinking only (#502).
+  A thinking block without a streamed delta has no `duration_ms`.
 - `detect()` runs `claude --version` and `claude auth status`, 5 s timeout
   each.
 - **`turn_ended` on every successful result.** The CLI stays alive between
