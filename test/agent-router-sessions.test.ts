@@ -858,7 +858,7 @@ describe("agent-router: sessions/tasks", () => {
   // #459 "Předat": the device ends the run, writes the summary into its own
   // mirror and registers it; the central server only learns the record
   // patch (suspended + handoff_path). The team-workspace half of the same
-  // operation test/runner-runtime.test.ts covers for a personal workspace.
+  // operation test/runner-runtime-handoff.test.ts covers for a personal workspace.
   it("POST /sessions/:id/handoff drains the run, writes the handoff file here and suspends the record on central", async () => {
     stubScript([{ wait: "message" }]);
     fake.registered = [];
@@ -969,7 +969,7 @@ describe("agent-router: sessions/tasks", () => {
   });
 
   // #460 "Navázat na handoff": the file and the run are this device's, the
-  // new record is central's. test/runner-runtime.test.ts covers the same
+  // new record is central's. test/runner-runtime-handoff.test.ts covers the same
   // body for a personal workspace.
   it("POST /sessions with handoff_path starts a new thread here from another thread's handoff file", async () => {
     const adapter = stubScript([{ wait: "message" }]);
