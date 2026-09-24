@@ -766,6 +766,8 @@ export async function handleSendSessionMessage(
     try {
       await getSessionRuntime().sendMessage(sessionId, body.text);
     } catch (err) {
+      // #497: a resume with nothing to continue from on this device.
+      if (respondHandoffRefusal(res, err)) return;
       if (err instanceof NoRunnerAvailableError) {
         respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
         return;

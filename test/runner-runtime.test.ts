@@ -1509,6 +1509,50 @@ describe("session runtime: handoff (#459 Předat)", () => {
     assert.equal(after?.handoff_path, null);
   });
 
+  // #497 item 4: a resume with no conversation, no Předat file, no
+  // transcript and no content here gives the same refusals Předat does,
+  // before any run is created.
+  it("writing into a suspended thread whose transcript is on another device is refused, naming the device", async () => {
+    const { db, nodeId, store, runtime } = await withoutMirror([{ wait: "message" }]);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: "druhy-mac",
+    });
+    await db.execute({ sql: "UPDATE sessions SET state = 'suspended' WHERE id = ?", args: [created.id] });
+
+    await assert.rejects(
+      () => runtime.sendMessage(created.id, "pokračuj"),
+      (err: unknown) =>
+        err instanceof SessionHandoffError &&
+        err.code === "HANDOFF_TRANSCRIPT_ELSEWHERE" &&
+        /druhy-mac/.test(err.message),
+    );
+    assert.equal((await store.getSession(created.id))?.state, "suspended");
+    assert.equal((await store.listRuns(created.id)).length, 0);
+    assert.equal((await content.listEvents(created.id)).length, 0);
+  });
+
+  it("writing into a suspended thread that ran here but whose content has not arrived is refused", async () => {
+    const { db, nodeId, store, runtime } = await withoutMirror([{ wait: "message" }]);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: null,
+    });
+    await db.execute({ sql: "UPDATE sessions SET state = 'suspended' WHERE id = ?", args: [created.id] });
+
+    await assert.rejects(
+      () => runtime.sendMessage(created.id, "pokračuj"),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NO_CONTENT",
+    );
+    assert.equal((await store.listRuns(created.id)).length, 0);
+  });
+
   it("a thread whose run is live on another device is refused and stays running", async () => {
     const { nodeId, store, runtime } = await withoutMirror([]);
     const mirrorRoot = join(workspace!, "mirror");

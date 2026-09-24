@@ -942,6 +942,32 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.runs.get(run.id)?.ended_at, null);
   });
 
+  // #497: writing into a suspended thread whose transcript is on another
+  // device, with no conversation or Předat file to continue from here, is
+  // refused the way Předat is -- and nothing is started or changed.
+  it("POST /sessions/:id/messages 409s for a suspended thread whose transcript is elsewhere", async () => {
+    const created = await fake.createSessionRecord({
+      node_id: NODE_ID,
+      user_id: SOLO_USER,
+      runner: "fake",
+      instance_id: null,
+      host_id: "druhy-mac",
+    });
+    await fake.patchSessionRecord(created.id, { state: "suspended" });
+
+    const res = await fetch(`${base}/sessions/${created.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "pokračuj" }),
+    });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string; code: string };
+    assert.equal(body.code, "HANDOFF_TRANSCRIPT_ELSEWHERE");
+    assert.match(body.error, /druhy-mac/);
+    assert.equal(fake.sessions.get(created.id)?.state, "suspended");
+    assert.equal([...fake.runs.values()].filter((r) => r.session_id === created.id).length, 0);
+  });
+
   // #460 "Navázat na handoff": the file and the run are this device's, the
   // new record is central's. test/runner-runtime.test.ts covers the same
   // body for a personal workspace.

@@ -1124,6 +1124,12 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       runStartResume = { agentSessionId: lastRun.agent_session_id };
     } else {
       const summary = await resumeSummary(session, provisioned.cwd);
+      // #497: nothing to continue from here -- no conversation, no Předat
+      // file, no transcript and no content at all on this device. The same
+      // refusals Předat gives: the transcript is on the device the thread
+      // last ran on, or its download to this one has not finished. Refused
+      // before any run is created or the record touched.
+      if (!summary && !(await contentIsHere(sessionId))) await refuseForMissingContent(session);
       if (summary) {
         runProvisioned = {
           ...provisioned,
@@ -1334,27 +1340,36 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       }
     } else {
       if (!(await contentIsHere(sessionId))) {
-        const host = await runHostOf(session);
-        if (host && host !== localHostId()) {
-          throw new SessionHandoffError(
-            "HANDOFF_TRANSCRIPT_ELSEWHERE",
-            `Transkript vlákna je na zařízení ${resolveHostLabel(host) ?? host}; předat ho lze jen tam.`,
-          );
-        }
-        // Ran here (or nowhere recorded) but nothing is here: the first-boot
-        // download from the central server has not finished or failed. A
-        // summary built now would be empty and would stand in for the real
-        // one, so refuse until the content arrives.
-        throw new SessionHandoffError(
-          "HANDOFF_NO_CONTENT",
-          "Obsah vlákna na tomto zařízení zatím není; zkus to znovu, až se stáhne.",
-        );
+        await refuseForMissingContent(session, "předat ho lze jen tam");
       }
       await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true });
     }
     const after = await mustGetSession(sessionId);
     if (!after.handoff_path) throw noMirrorHandoffError();
     return { session: after, handoff_path: after.handoff_path };
+  }
+
+  // The thread's content is not on this device. Always throws: the
+  // transcript is on the device the thread last ran on, or -- it ran here,
+  // or nowhere recorded -- the first-boot download from the central server
+  // has not finished or failed. A summary built now would be empty and
+  // would stand in for the real one, so nothing proceeds until the content
+  // arrives.
+  async function refuseForMissingContent(
+    session: SessionRow,
+    elsewhereTail = "pokračovat v něm lze jen tam",
+  ): Promise<never> {
+    const host = await runHostOf(session);
+    if (host && host !== localHostId()) {
+      throw new SessionHandoffError(
+        "HANDOFF_TRANSCRIPT_ELSEWHERE",
+        `Transkript vlákna je na zařízení ${resolveHostLabel(host) ?? host}; ${elsewhereTail}.`,
+      );
+    }
+    throw new SessionHandoffError(
+      "HANDOFF_NO_CONTENT",
+      "Obsah vlákna na tomto zařízení zatím není; zkus to znovu, až se stáhne.",
+    );
   }
 
   // Where the thread last ran: the host of its open run if it has one,

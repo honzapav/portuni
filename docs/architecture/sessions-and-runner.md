@@ -746,8 +746,14 @@ human verification.
   (`resumeSummary`, #497) is the file at `handoff_path` when Předat wrote
   one and it is here; else it is built at that moment from this device's
   transcript with the same builder a handoff uses, and stored nowhere;
-  else, with no transcript here, a `handoff_inline` an older sidecar left;
-  with none of them the run starts on its orientation alone. There is no `POST /sessions/:id/resume`,
+  else, with no transcript here, a `handoff_inline` an older sidecar left.
+  With none of them and no content of the thread on this device at all,
+  the send is refused before any run is created, with Předat's errors:
+  `HANDOFF_TRANSCRIPT_ELSEWHERE` naming the device the thread last ran on,
+  or `HANDOFF_NO_CONTENT` while the first-boot download has not arrived
+  (409 over REST, an error reply on the live channel). A thread whose
+  content row is here but holds none of them starts on its orientation
+  alone. There is no `POST /sessions/:id/resume`,
   `/suspend`, no mode picker and no `SUSPEND_INSTRUCTION` handshake.
 - **A conversation is looked for where its profile keeps it.** The
   transcript lives under the instance's `CLAUDE_CONFIG_DIR`, so

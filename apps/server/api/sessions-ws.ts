@@ -427,6 +427,12 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
         sendErrorReply(conn.ws, frame.id, "NO_LIVE_RUN", err.message);
         return;
       }
+      // #497: a resume with nothing to continue from on this device.
+      const refusal = handoffRefusal(err);
+      if (refusal) {
+        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message);
+        return;
+      }
       throw err;
     }
     await deps.audit(conn.identity, "session_message", sessionId, {});

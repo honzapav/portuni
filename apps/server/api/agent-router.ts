@@ -551,6 +551,8 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         await sessionRuntime.sendMessage(sessionId, body.text);
         respondJson(res, 202, { ok: true });
       } catch (err) {
+        // #497: a resume with nothing to continue from on this device.
+        if (respondHandoffRefusal(res, err)) return true;
         if (respondAgentSessionError(res, err)) return true;
         respondError(res, `POST /sessions/${sessionId}/messages`, err);
       }
