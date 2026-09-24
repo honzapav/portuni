@@ -445,8 +445,10 @@ human verification.
   approval allows on `true` only (`false` or text denies); an input
   question (AskUserQuestion) allows with
   `updatedInput: {...originalInput, answers}`, `answers` keyed by question
-  text -- the field the tool reads (`sdk-tools.d.ts`); anything else and
-  the model is told the user did not answer. The decision is a string (it
+  text -- the field the tool reads (`sdk-tools.d.ts`); `false` denies as
+  the user's refusal and a bare `true`, which carries no answer, denies
+  with "Uživatel na otázku neodpověděl." -- never an allow with nothing
+  answered. The decision is a string (it
   answers every dotaz) or a map `{ [question text]: answer }`
   (`askUserQuestionAnswers`); the `question` event carries every dotaz
   with its own options in `questions`, and the flat `options` only for a
@@ -462,7 +464,12 @@ human verification.
   is freed and the question is emitted again with a `system` decision,
   the same "closed without the user" path as an abandoned dialog, so the
   runtime clears `waiting_since` and the next turn's question shows at
-  once; an ask cancelled while it waits in line is never shown.
+  once; an ask cancelled while it waits in line is never shown and is
+  denied at once, not when the question in front of it is answered. The
+  abort listener is removed once the ask settles. That the SDK aborts
+  `canUseTool`'s `signal` on `interrupt()` is its type contract; no live
+  probe has confirmed it yet (the elicitation probe shows it does not
+  abort a dialog's `signal`).
 - **MCP elicitation** (`onElicitation`): a dialog whose form is exactly one
   boolean field (Portuni's scope and write confirmations) emits an
   `approval` question and waits on `RunHandle.answer()`: `true` accepts
@@ -475,7 +482,8 @@ human verification.
   SDK abandons it (its timeout) or Stop interrupts the turn, the adapter
   answers `cancel` and emits the question again with a `system` decision,
   which the runtime reads as "closed without the user" and clears
-  `waiting_since`; a dialog stopped while it waits in line is never shown.
+  `waiting_since`; a dialog stopped while it waits in line is never shown
+  and answers `cancel` at once.
   `interrupt()` cancels the dialogs itself: the SDK does not abort an
   elicitation's `signal` on an interrupt (`scripts/probe-sdk-elicitation.mjs`,
   a live probe that needs no login, shows the round trip and this). The

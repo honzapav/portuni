@@ -1471,6 +1471,84 @@ describe("Claude adapter: MCP elicitation", () => {
     await handle.close();
   });
 
+  // An ask the SDK gave up on while it waited in line settles right away:
+  // the SDK is waiting on it, and nothing about it depends on the question
+  // in front of it being answered.
+  it("a permission ask aborted while waiting in line settles at once, not when the open one is answered", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const questions = () => events.filter((e) => "kind" in e && e.kind === "question");
+    const open = options()!.canUseTool!("ExitPlanMode", { plan: "a" }, {
+      requestId: "perm-open",
+      signal: new AbortController().signal,
+    } as never);
+    const controller = new AbortController();
+    let queuedResult: PermissionResult | null = null;
+    void options()!.canUseTool!("ExitPlanMode", { plan: "b" }, {
+      requestId: "perm-queued",
+      signal: controller.signal,
+    } as never).then((r) => {
+      queuedResult = r as PermissionResult;
+    });
+    await flushMicrotasks();
+    controller.abort();
+    await flushMicrotasks();
+    assert.equal(queuedResult!?.behavior, "deny", "settled while perm-open is still open");
+    assert.equal(questions().length, 1);
+
+    await handle.answer("perm-open", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.equal(((await open) as PermissionResult).behavior, "allow");
+    // The line is free: the next ask is shown at once.
+    const next = options()!.canUseTool!("ExitPlanMode", { plan: "c" }, {
+      requestId: "perm-next",
+      signal: new AbortController().signal,
+    } as never);
+    await flushMicrotasks();
+    assert.equal(questions().length, 2);
+    await handle.answer("perm-next", { by: "U1", value: false, at: new Date().toISOString() });
+    await next;
+    release();
+    await handle.close();
+  });
+
+  it("an answered permission ask leaves no abort listener on the SDK's signal", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const listeners = new Set<unknown>();
+    const signal = {
+      aborted: false,
+      addEventListener: (_type: string, listener: unknown) => listeners.add(listener),
+      removeEventListener: (_type: string, listener: unknown) => listeners.delete(listener),
+    };
+    const pending = options()!.canUseTool!("ExitPlanMode", { plan: "a" }, { requestId: "perm-1", signal } as never);
+    assert.equal(listeners.size, 1);
+    await handle.answer("perm-1", { by: "U1", value: true, at: new Date().toISOString() });
+    await pending;
+    assert.equal(listeners.size, 0);
+    release();
+    await handle.close();
+  });
+
+  it("an AskUserQuestion answered with a bare true is denied as unanswered, never allowed empty", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const pending = options()!.canUseTool!(
+      "AskUserQuestion",
+      { questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }] },
+      { requestId: "req-true", signal: new AbortController().signal } as never,
+    );
+    await handle.answer("req-true", { by: "U1", value: true, at: new Date().toISOString() });
+    const result = (await pending) as PermissionResult;
+    assert.equal(result.behavior, "deny");
+    assert.equal((result as { message: string }).message, "Uživatel na otázku neodpověděl.");
+    release();
+    await handle.close();
+  });
+
   it("a dialog raised while a permission question is open waits for its turn", async () => {
     const { query, options, release } = makeFakeQuery([], { hold: true });
     const adapter = createClaudeAdapter({ query });

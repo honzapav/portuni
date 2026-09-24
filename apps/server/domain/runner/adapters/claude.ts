@@ -952,29 +952,31 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           // shown, so there is nothing to close in the chat either.
           if (options.signal.aborted) return Promise.resolve(cancelled);
           sink({ kind: "question", payload: { ...payload, decision: null } });
+          // Settling the ask frees the question line (askInTurn), and the
+          // question event carrying a decision tells the runtime the
+          // question closed without the user, the way an abandoned dialog
+          // does in onElicitation.
+          const onAbort = () => {
+            const pending = state.pendingPermissions.get(requestId);
+            if (!pending) return;
+            state.pendingPermissions.delete(requestId);
+            pending.resolve(cancelled);
+            sink({
+              kind: "question",
+              payload: { ...payload, decision: { by: "system", value: false, at: new Date(now()).toISOString() } },
+            });
+          };
+          options.signal.addEventListener("abort", onAbort, { once: true });
           return new Promise<PermissionResult>((resolve) => {
             state.pendingPermissions.set(requestId, { resolve, input, type: decision.question.type });
-            // Settling the ask frees the question line (askInTurn), and the
-            // question event carrying a decision tells the runtime the
-            // question closed without the user, the way an abandoned
-            // dialog does in onElicitation.
-            options.signal.addEventListener(
-              "abort",
-              () => {
-                const pending = state.pendingPermissions.get(requestId);
-                if (!pending) return;
-                state.pendingPermissions.delete(requestId);
-                pending.resolve(cancelled);
-                sink({
-                  kind: "question",
-                  payload: { ...payload, decision: { by: "system", value: false, at: new Date(now()).toISOString() } },
-                });
-              },
-              { once: true },
-            );
+          }).finally(() => {
+            // Answered, ended or aborted: the listener has nothing left to
+            // settle, and the signal may outlive the ask by a whole turn.
+            options.signal.removeEventListener("abort", onAbort);
           });
         },
         () => ended,
+        { signal: options.signal, result: () => cancelled },
       );
     }
 
@@ -983,8 +985,14 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     // question open it asks synchronously, so the pending entry exists
     // before the caller's promise is even returned (an answer can arrive
     // right away). A run that ends while an ask waits in line answers with
-    // `ifEnded` instead of asking.
-    function askInTurn<T>(ask: () => Promise<T>, ifEnded: () => T): Promise<T> {
+    // `ifEnded` instead of asking. An ask whose `cancel.signal` aborts
+    // while it waits in line leaves the line at once and answers with
+    // `cancel.result` -- it was never shown, and the SDK is waiting on it.
+    function askInTurn<T>(
+      ask: () => Promise<T>,
+      ifEnded: () => T,
+      cancel?: { signal: AbortSignal; result: () => T },
+    ): Promise<T> {
       const run = (): Promise<T> => {
         state.questionOpen = true;
         const settled = state.ended ? Promise.resolve(ifEnded()) : ask();
@@ -995,7 +1003,18 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       };
       if (!state.questionOpen) return run();
       return new Promise<T>((resolve, reject) => {
-        state.questionQueue.push(() => void run().then(resolve, reject));
+        const onAbort = () => {
+          const index = state.questionQueue.indexOf(entry);
+          if (index === -1) return;
+          state.questionQueue.splice(index, 1);
+          resolve(cancel!.result());
+        };
+        const entry = () => {
+          cancel?.signal.removeEventListener("abort", onAbort);
+          void run().then(resolve, reject);
+        };
+        state.questionQueue.push(entry);
+        cancel?.signal.addEventListener("abort", onAbort, { once: true });
       });
     }
 
@@ -1070,6 +1089,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           });
         },
         () => ({ action: "cancel" }),
+        { signal: stop.signal, result: () => ({ action: "cancel" }) },
       ).finally(() => {
         state.elicitationStops.delete(stopDialog);
         options.signal.removeEventListener("abort", stopDialog);
@@ -1365,17 +1385,22 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         const pending = state.pendingPermissions.get(requestId);
         if (!pending) return;
         state.pendingPermissions.delete(requestId);
-        if (decision.value === true) {
-          pending.resolve({ behavior: "allow", updatedInput: pending.input });
-        } else if (
-          pending.type === "input" &&
-          (typeof decision.value === "string" || (typeof decision.value === "object" && decision.value !== null))
-        ) {
+        if (pending.type === "input") {
           // AskUserQuestion (input-type ask, #492): the tool reads the
-          // user's reply from `answers`, keyed by question text -- anything
-          // else and the model is told the user did not answer.
-          const answers = askUserQuestionAnswers(pending.input, decision.value);
-          pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answers } });
+          // user's reply from `answers`, keyed by question text. `false` is
+          // the user's refusal; a bare `true` carries no answer, and the
+          // model is told so plainly instead of being handed an allow with
+          // nothing answered.
+          if (typeof decision.value === "string" || (typeof decision.value === "object" && decision.value !== null)) {
+            const answers = askUserQuestionAnswers(pending.input, decision.value);
+            pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answers } });
+          } else if (decision.value === false) {
+            pending.resolve({ behavior: "deny", message: "Zamítnuto uživatelem." });
+          } else {
+            pending.resolve({ behavior: "deny", message: "Uživatel na otázku neodpověděl." });
+          }
+        } else if (decision.value === true) {
+          pending.resolve({ behavior: "allow", updatedInput: pending.input });
         } else {
           // `false`, or text where an approval was asked: never an allow.
           pending.resolve({ behavior: "deny", message: "Zamítnuto uživatelem." });
