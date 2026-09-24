@@ -6,6 +6,7 @@
 // real (backed by in-memory maps) and throwing on anything else, since
 // these tests never touch file/sync routes.
 
+import { authFetch, authHeaders, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -325,11 +326,10 @@ let emptyDb: ReturnType<typeof createLibsqlDbClient>;
 
 describe("agent-router: sessions/tasks", () => {
   before(async () => {
-    // The token the desktop gives every sidecar; a run's provisioning hands
-    // it to the runner as its MCP bearer and refuses to start without it
-    // (#507). The bearer gate itself was frozen at middleware.ts's load,
-    // before this runs, so these requests still go without one.
-    process.env.PORTUNI_AUTH_TOKEN = "device-front-door-token";
+    // The token the desktop gives every sidecar: the front door requires
+    // it (#521) and a run's provisioning hands it to the runner as its MCP
+    // bearer (#507).
+    useTestBearer();
     // provisionRunCentral creates a real mirror directory on disk (same as
     // local mode's own provisionRun) -- a task can't start without one.
     workspace = await mkdtemp(join(tmpdir(), "portuni-agent-sessions-"));
@@ -387,7 +387,7 @@ describe("agent-router: sessions/tasks", () => {
   });
 
   it("POST /sessions records the session and its run on central, the events on this device", async () => {
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "Fix the bug", runner: "fake" }),
@@ -424,7 +424,7 @@ describe("agent-router: sessions/tasks", () => {
   // the UI creates a draft for EVERY new thread -- so in central mode no
   // task could be started at all until the record half learned this shape.
   it("POST /sessions with no brief creates a draft on central, no run", async () => {
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID }),
@@ -444,7 +444,7 @@ describe("agent-router: sessions/tasks", () => {
   });
 
   it("a draft's model/effort reach central, and its first message promotes it to running", async () => {
-    const created = await fetch(`${base}/sessions`, {
+    const created = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, model: "sonnet", effort: "medium" }),
@@ -454,7 +454,7 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(session.model, "sonnet");
     assert.equal(session.effort, "medium");
 
-    const sent = await fetch(`${base}/sessions/${session.id}/messages`, {
+    const sent = await authFetch(`${base}/sessions/${session.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: "Udělej to" }),
@@ -709,7 +709,7 @@ describe("agent-router: sessions/tasks", () => {
       { kind: "error", payload: { class: "provider", message: "You've hit your monthly spend limit" } },
       { end: "limit" },
     ]);
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
@@ -742,7 +742,7 @@ describe("agent-router: sessions/tasks", () => {
     stubScript([{ end: "completed" }]);
     fake.registered = [];
     fake.scopeReads = [];
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
@@ -769,14 +769,14 @@ describe("agent-router: sessions/tasks", () => {
     stubScript([{ wait: "message" }]);
     fake.registered = [];
     fake.scopeReads = [];
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     assert.equal(res.status, 201);
     const { session } = (await res.json()) as { session: SessionRow };
-    const handedOver = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    const handedOver = await authFetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
     assert.equal(handedOver.status, 200);
 
     const stored = fake.sessions.get(session.id);
@@ -808,13 +808,13 @@ describe("agent-router: sessions/tasks", () => {
       throw new CentralHttpError("scope unavailable", 500);
     };
     try {
-      const res = await fetch(`${base}/sessions`, {
+      const res = await authFetch(`${base}/sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
       });
       const { session } = (await res.json()) as { session: SessionRow };
-      const handedOver = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+      const handedOver = await authFetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
       assert.equal(handedOver.status, 200);
       const stored = fake.sessions.get(session.id);
       assert.equal(stored?.state, "suspended");
@@ -825,7 +825,7 @@ describe("agent-router: sessions/tasks", () => {
   });
 
   it("POST /sessions 404s for a draft on a node central does not know about", async () => {
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: "unknown-node" }),
@@ -835,7 +835,7 @@ describe("agent-router: sessions/tasks", () => {
   });
 
   it("POST /sessions 400s for an unknown runner without ever touching central", async () => {
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "nonexistent" }),
@@ -845,7 +845,7 @@ describe("agent-router: sessions/tasks", () => {
   });
 
   it("POST /sessions 404s for a node central does not know about", async () => {
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: "unknown-node", brief: "x", runner: "fake" }),
@@ -856,14 +856,14 @@ describe("agent-router: sessions/tasks", () => {
   it("continue closes the old session and starts a new, running one on central (#378)", async () => {
     stubScript([{ wait: "message" }]);
     fake.registered = [];
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
 
-    const continueRes = await fetch(`${base}/sessions/${session.id}/continue`, { method: "POST" });
+    const continueRes = await authFetch(`${base}/sessions/${session.id}/continue`, { method: "POST" });
     assert.equal(continueRes.status, 200);
     const { session: continued } = (await continueRes.json()) as { session: SessionRow };
     assert.notEqual(continued.id, session.id);
@@ -879,7 +879,7 @@ describe("agent-router: sessions/tasks", () => {
     assert.deepEqual(fake.registered, [{ nodeId: NODE_ID, relPath }]);
     const mirrorRoot = await getMirrorPath(fake.sessions.get(session.id)!.user_id, NODE_ID);
     assert.match(await readFile(join(mirrorRoot!, relPath), "utf8"), /server-handoff reason=continue/);
-    await fetch(`${base}/sessions/${continued.id}/close`, { method: "POST" });
+    await authFetch(`${base}/sessions/${continued.id}/close`, { method: "POST" });
   });
 
   // The four device-local session/runner routes is_device_local_path sends
@@ -887,7 +887,7 @@ describe("agent-router: sessions/tasks", () => {
   // only proves they are handled at all).
   it("POST /sessions/:id/interrupt cancels the current turn and leaves the session running", async () => {
     stubScript([{ wait: "message" }]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
@@ -895,13 +895,13 @@ describe("agent-router: sessions/tasks", () => {
     const { session } = (await start.json()) as { session: SessionRow };
     assert.equal(fake.sessions.get(session.id)?.state, "running");
 
-    const res = await fetch(`${base}/sessions/${session.id}/interrupt`, { method: "POST" });
+    const res = await authFetch(`${base}/sessions/${session.id}/interrupt`, { method: "POST" });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { session: SessionRow };
     assert.equal(body.session.id, session.id);
     assert.equal(fake.sessions.get(session.id)?.state, "running");
 
-    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
   });
 
   // #459 "Předat": the device ends the run, writes the summary into its own
@@ -911,7 +911,7 @@ describe("agent-router: sessions/tasks", () => {
   it("POST /sessions/:id/handoff drains the run, writes the handoff file here and suspends the record on central", async () => {
     stubScript([{ wait: "message" }]);
     fake.registered = [];
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
@@ -919,7 +919,7 @@ describe("agent-router: sessions/tasks", () => {
     const { session } = (await start.json()) as { session: SessionRow };
     assert.equal(fake.sessions.get(session.id)?.state, "running");
 
-    const res = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    const res = await authFetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { session: SessionRow; handoff_path: string };
     assert.equal(body.handoff_path, `wip/sessions/${session.id}-handoff.md`);
@@ -937,20 +937,20 @@ describe("agent-router: sessions/tasks", () => {
     assert.deepEqual(fake.registered, [{ nodeId: NODE_ID, relPath: body.handoff_path }]);
 
     // A second Předat is a no-op that answers the same path.
-    const again = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    const again = await authFetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
     assert.equal(again.status, 200);
     assert.equal(((await again.json()) as { handoff_path: string }).handoff_path, body.handoff_path);
   });
 
   it("POST /sessions/:id/handoff 409s on a draft", async () => {
-    const created = await fetch(`${base}/sessions`, {
+    const created = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID }),
     });
     const { session } = (await created.json()) as { session: SessionRow };
 
-    const res = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    const res = await authFetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
     assert.equal(res.status, 409);
     const body = (await res.json()) as { error: string; code: string };
     assert.equal(body.code, "HANDOFF_NOT_ALLOWED");
@@ -981,7 +981,7 @@ describe("agent-router: sessions/tasks", () => {
       host_id: "druhy-mac",
     });
 
-    const res = await fetch(`${base}/sessions/${created.id}/handoff`, { method: "POST" });
+    const res = await authFetch(`${base}/sessions/${created.id}/handoff`, { method: "POST" });
     assert.equal(res.status, 409);
     const body = (await res.json()) as { error: string; code: string };
     assert.equal(body.code, "HANDOFF_RUN_ELSEWHERE");
@@ -1004,7 +1004,7 @@ describe("agent-router: sessions/tasks", () => {
     });
     await fake.patchSessionRecord(created.id, { state: "suspended" });
 
-    const res = await fetch(`${base}/sessions/${created.id}/messages`, {
+    const res = await authFetch(`${base}/sessions/${created.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: "pokračuj" }),
@@ -1022,20 +1022,20 @@ describe("agent-router: sessions/tasks", () => {
   // body for a personal workspace.
   it("POST /sessions with handoff_path starts a new thread here from another thread's handoff file", async () => {
     const adapter = stubScript([{ wait: "message" }]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session: source } = (await start.json()) as { session: SessionRow };
-    const handedOver = await fetch(`${base}/sessions/${source.id}/handoff`, { method: "POST" });
+    const handedOver = await authFetch(`${base}/sessions/${source.id}/handoff`, { method: "POST" });
     const { handoff_path } = (await handedOver.json()) as { handoff_path: string };
     const sourceAfterHandoff = fake.sessions.get(source.id);
     const sourceEvents = await content.listEvents(source.id);
     const mirrorRoot = await getMirrorPath(source.user_id, NODE_ID);
     const fileContent = await readFile(join(mirrorRoot!, handoff_path), "utf8");
 
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, handoff_path }),
@@ -1060,14 +1060,14 @@ describe("agent-router: sessions/tasks", () => {
     assert.deepEqual(fake.sessions.get(source.id), sourceAfterHandoff);
     assert.deepEqual(await content.listEvents(source.id), sourceEvents);
 
-    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
   });
 
   it("POST /sessions with a handoff_path that has not synced here yet 409s and creates no record", async () => {
     stubScript([{ wait: "message" }]);
     const before = fake.sessions.size;
 
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, handoff_path: "wip/sessions/01JNOTHERE-handoff.md" }),
@@ -1085,7 +1085,7 @@ describe("agent-router: sessions/tasks", () => {
   // record half rides along through CentralSessionStore.
   it("POST /sessions/:id/model reaches the live run and the record on central", async () => {
     const adapter = stubScript([{ wait: "message" }]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
@@ -1093,7 +1093,7 @@ describe("agent-router: sessions/tasks", () => {
     const { session } = (await start.json()) as { session: SessionRow };
     assert.equal(adapter.getLastSetModel(), null);
 
-    const res = await fetch(`${base}/sessions/${session.id}/model`, {
+    const res = await authFetch(`${base}/sessions/${session.id}/model`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-sonnet-5", effort: "high" }),
@@ -1109,19 +1109,19 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.sessions.get(session.id)?.model, "claude-sonnet-5", "central holds the record half");
     assert.equal(fake.sessions.get(session.id)?.effort, "high");
 
-    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
   });
 
   it("POST /sessions/:id/rename writes the record on central through this device's runtime", async () => {
     stubScript([{ wait: "message" }]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
 
-    const res = await fetch(`${base}/sessions/${session.id}/rename`, {
+    const res = await authFetch(`${base}/sessions/${session.id}/rename`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "Nový název" }),
@@ -1132,28 +1132,28 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.sessions.get(session.id)?.name, "Nový název", "central holds the record half");
     assert.equal(fake.sessions.get(session.id)?.name_is_custom, 1);
 
-    const empty = await fetch(`${base}/sessions/${session.id}/rename`, {
+    const empty = await authFetch(`${base}/sessions/${session.id}/rename`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "  " }),
     });
     assert.equal(empty.status, 400);
 
-    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
   });
 
   // Effort has no live setter in the SDK, in either kind of workspace --
   // the route is still the one that writes it on central.
   it("POST /sessions/:id/model with effort alone writes central and leaves the live run alone", async () => {
     const adapter = stubScript([{ wait: "message" }]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
 
-    const res = await fetch(`${base}/sessions/${session.id}/model`, {
+    const res = await authFetch(`${base}/sessions/${session.id}/model`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ effort: "xhigh" }),
@@ -1162,19 +1162,19 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(adapter.getLastSetModel(), null, "effort has no live setter, unlike model");
     assert.equal(fake.sessions.get(session.id)?.effort, "xhigh");
 
-    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
   });
 
   it("POST /sessions/:id/close closes the session on central", async () => {
     stubScript([{ wait: "message" }]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
 
-    const res = await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    const res = await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { session: SessionRow };
     assert.equal(body.session.state, "closed");
@@ -1186,14 +1186,14 @@ describe("agent-router: sessions/tasks", () => {
 
   it("GET /sessions/:id/signals reads the live run's own in-memory state on this device", async () => {
     stubScript([{ wait: "message" }]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
 
-    const res = await fetch(`${base}/sessions/${session.id}/signals`);
+    const res = await authFetch(`${base}/sessions/${session.id}/signals`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       runAgeMs: number | null;
@@ -1206,8 +1206,8 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(typeof body.readSetSize, "number");
     assert.equal(body.expansionsSinceRunStart, 0);
 
-    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
-    const after = await fetch(`${base}/sessions/${session.id}/signals`);
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    const after = await authFetch(`${base}/sessions/${session.id}/signals`);
     assert.equal(after.status, 200);
     assert.equal(((await after.json()) as { runAgeMs: number | null }).runAgeMs, null);
   });
@@ -1223,7 +1223,7 @@ describe("agent-router: sessions/tasks", () => {
         ],
       }),
     );
-    const res = await fetch(`${base}/runners/fake/models`);
+    const res = await authFetch(`${base}/runners/fake/models`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { models: Array<{ id: string; supportsEffort: boolean }> };
     assert.deepEqual(
@@ -1234,20 +1234,20 @@ describe("agent-router: sessions/tasks", () => {
       ],
     );
 
-    const unknown = await fetch(`${base}/runners/nope/models`);
+    const unknown = await authFetch(`${base}/runners/nope/models`);
     assert.equal(unknown.status, 404);
     assert.equal(((await unknown.json()) as { code: string }).code, "UNKNOWN_RUNNER");
   });
 
   it("GET /sessions/:id/events replays exactly what central holds", async () => {
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
 
-    const res = await fetch(`${base}/sessions/${session.id}/events`);
+    const res = await authFetch(`${base}/sessions/${session.id}/events`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { events: Array<{ kind: string }> };
     assert.deepEqual(
@@ -1263,7 +1263,7 @@ describe("agent-router: sessions/tasks", () => {
   // THIS device's content.db -- the sidecar answers empty and names the
   // host the transcript is on, so the chat can say so.
   it("GET /sessions/:id/events names the host when the transcript is on another device", async () => {
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
@@ -1275,14 +1275,14 @@ describe("agent-router: sessions/tasks", () => {
     const elsewhere: SessionRow = { ...fake.sessions.get(session.id)!, id: ulid(), host_id: "jina-masina" };
     fake.sessions.set(elsewhere.id, elsewhere);
 
-    const res = await fetch(`${base}/sessions/${elsewhere.id}/events`);
+    const res = await authFetch(`${base}/sessions/${elsewhere.id}/events`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { events: unknown[]; transcript_host?: string };
     assert.deepEqual(body.events, []);
     assert.equal(body.transcript_host, "jina-masina");
 
     // The thread this device ran says nothing of the sort.
-    const own = (await (await fetch(`${base}/sessions/${session.id}/events`)).json()) as {
+    const own = (await (await authFetch(`${base}/sessions/${session.id}/events`)).json()) as {
       transcript_host?: string;
     };
     assert.equal(own.transcript_host, undefined);
@@ -1293,15 +1293,15 @@ describe("agent-router: sessions/tasks", () => {
   // this device's mirror, neither of which central has.
   it("GET /sessions/:id/resume-info is served by the sidecar, off this device's mirror and content store", async () => {
     stubScript([{ wait: "message" }]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
-    assert.equal((await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" })).status, 200);
+    assert.equal((await authFetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" })).status, 200);
 
-    const res = await fetch(`${base}/sessions/${session.id}/resume-info`);
+    const res = await authFetch(`${base}/sessions/${session.id}/resume-info`);
     assert.equal(res.status, 200);
     const info = (await res.json()) as {
       session_id: string;
@@ -1315,14 +1315,14 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(info.handoff_checkable, true, "the mirror is on this device, so the handoff is checkable here");
     assert.equal(info.generated_by, "server");
 
-    const unknown = await fetch(`${base}/sessions/nope/resume-info`);
+    const unknown = await authFetch(`${base}/sessions/nope/resume-info`);
     assert.equal(unknown.status, 404);
   });
 
   // The one-line proof of the spec's principle: after a whole run, central
   // holds a record with no content on it, and the transcript is here.
   it("a full run leaves no content on central: no events, no brief, no inline summary", async () => {
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "Fix the bug", runner: "fake" }),
@@ -1357,7 +1357,7 @@ describe("agent-router: sessions/tasks", () => {
       },
       { wait: "answer" },
     ]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
@@ -1365,7 +1365,7 @@ describe("agent-router: sessions/tasks", () => {
     const { session } = (await start.json()) as { session: SessionRow };
     assert.ok(fake.sessions.get(session.id)?.waiting_since);
 
-    const answerRes = await fetch(`${base}/sessions/${session.id}/questions/req-1`, {
+    const answerRes = await authFetch(`${base}/sessions/${session.id}/questions/req-1`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ decision: { value: true } }),
@@ -1426,7 +1426,7 @@ describe("agent-router: sessions/tasks", () => {
       });
     };
 
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
@@ -1439,7 +1439,7 @@ describe("agent-router: sessions/tasks", () => {
     const first = ask("perm-1");
     await waitingOnCentral(session.id);
 
-    const res = await fetch(`${base}/sessions/${session.id}/interrupt`, { method: "POST" });
+    const res = await authFetch(`${base}/sessions/${session.id}/interrupt`, { method: "POST" });
     assert.equal(res.status, 200);
     assert.equal((await first).behavior, "deny");
     assert.equal(fake.sessions.get(session.id)?.waiting_since, null, "Stop closed the question on central");
@@ -1447,7 +1447,7 @@ describe("agent-router: sessions/tasks", () => {
 
     const second = ask("perm-2");
     await waitingOnCentral(session.id);
-    const answerRes = await fetch(`${base}/sessions/${session.id}/questions/perm-2`, {
+    const answerRes = await authFetch(`${base}/sessions/${session.id}/questions/perm-2`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ decision: { value: true } }),
@@ -1456,7 +1456,7 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal((await second).behavior, "allow");
 
     release();
-    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
   });
 
   // #492: a multi-question AskUserQuestion is answered question by question;
@@ -1482,14 +1482,14 @@ describe("agent-router: sessions/tasks", () => {
       },
       { wait: "answer" },
     ]);
-    const start = await fetch(`${base}/sessions`, {
+    const start = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
     const value = { "Which environment?": "staging", "Dry run first?": "yes" };
-    const answerRes = await fetch(`${base}/sessions/${session.id}/questions/req-q`, {
+    const answerRes = await authFetch(`${base}/sessions/${session.id}/questions/req-q`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ decision: { value } }),
@@ -1505,7 +1505,7 @@ describe("agent-router: sessions/tasks", () => {
   });
   it("GET /sessions/ws is mounted in agent mode: a task started over REST streams on the socket", async () => {
     stubScript([{ wait: "message" }, { kind: "assistant_message", payload: { text: "done" } }]);
-    const ws = new WebSocket(`${base.replace(/^http/, "ws")}/sessions/ws`);
+    const ws = new WebSocket(`${base.replace(/^http/, "ws")}/sessions/ws`, { headers: authHeaders() });
     const frames: Array<{ id?: string; type: string; payload: unknown }> = [];
     const waiters: Array<{ pred: (f: (typeof frames)[number]) => boolean; resolve: () => void }> = [];
     ws.on("message", (data) => {
@@ -1523,7 +1523,7 @@ describe("agent-router: sessions/tasks", () => {
       ws.once("error", reject);
     });
 
-    const res = await fetch(`${base}/sessions`, {
+    const res = await authFetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "stream me", runner: "fake" }),

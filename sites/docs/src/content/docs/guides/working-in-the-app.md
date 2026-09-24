@@ -393,11 +393,11 @@ you start it, not only once its first tool call lands.
 It authenticates with the same token the sidecar's front door checks
 (`PORTUNI_AUTH_TOKEN`, which the app gives every workspace's sidecar), in a
 personal and a team workspace alike, so the chat has Portuni's tools
-(`mcp__portuni__*`) from its first turn. A sidecar without that token
-refuses to start the run with a clear error (`RUNNER_MCP_TOKEN_MISSING`,
-503 over REST) instead of connecting with an empty bearer, and creates
-nothing: no thread, no first message, a draft stays a draft and the thread
-you wanted to continue stays as it was.
+(`mcp__portuni__*`) from its first turn. A sidecar never runs without that
+token -- it refuses to start at all -- so a chat never connects with an
+empty bearer. A run that cannot be set up creates nothing: no thread, no
+first message, a draft stays a draft and the thread you wanted to continue
+stays as it was.
 
 ### Live channel: `GET /sessions/ws`
 

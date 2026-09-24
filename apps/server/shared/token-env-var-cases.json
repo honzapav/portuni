@@ -1,0 +1,11 @@
+{
+  "note": "Workspace id -> the client-side env var name per-mirror configs expand for the MCP bearer. Read by test/token-env-var-parity.test.ts (clientTokenEnvVar in apps/server/infra/auth-config.ts) and by the cargo test for workspace::token_env_var (apps/desktop/src/workspace.rs); both must agree with every row.",
+  "cases": [
+    { "ws_id": "honzapav", "env_var": "PORTUNI_MCP_TOKEN_HONZAPAV" },
+    { "ws_id": "honza-pav", "env_var": "PORTUNI_MCP_TOKEN_HONZA_PAV" },
+    { "ws_id": "tempo", "env_var": "PORTUNI_MCP_TOKEN_TEMPO" },
+    { "ws_id": "a-b-c", "env_var": "PORTUNI_MCP_TOKEN_A_B_C" },
+    { "ws_id": "ws2", "env_var": "PORTUNI_MCP_TOKEN_WS2" },
+    { "ws_id": "MiXeD-Case", "env_var": "PORTUNI_MCP_TOKEN_MIXED_CASE" }
+  ]
+}

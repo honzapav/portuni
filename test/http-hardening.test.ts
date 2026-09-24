@@ -4,8 +4,9 @@
 
 process.env.PORT = "14920";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { connect, type Socket } from "node:net";
@@ -57,7 +58,7 @@ describe("http hardening", () => {
     const res = await rawRequest("GET /health HTTP/1.1\r\nHost: [\r\nConnection: close\r\n\r\n");
     assert.match(res, /HTTP\/1\.1 (400|403)/, `expected a clean reject, got: ${res.slice(0, 120)}`);
     // The process is still alive and serving.
-    const health = await fetch(`${BASE}/health`);
+    const health = await authFetch(`${BASE}/health`);
     assert.equal(health.status, 200);
   });
 

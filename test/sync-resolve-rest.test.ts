@@ -8,8 +8,9 @@
 
 process.env.PORT = "14932";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
@@ -76,7 +77,7 @@ async function seedFile(name: string) {
 }
 
 async function syncClassFor(fileId: string): Promise<string> {
-  const res = await fetch(`${base}/nodes/${shared.nodeId}/sync-status`);
+  const res = await authFetch(`${base}/nodes/${shared.nodeId}/sync-status`);
   assert.equal(res.status, 200);
   const body = (await res.json()) as { files: Array<{ file_id: string; sync_class: string }> };
   const entry = body.files.find((f) => f.file_id === fileId);
@@ -91,7 +92,7 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
     await writeFile(join(shared.remoteRoot, stored.remote_path), "remote");
     await writeFile(stored.local_path, "local");
 
-    const r = await fetch(
+    const r = await authFetch(
       `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
       {
         method: "POST",
@@ -121,7 +122,7 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
     await writeFile(join(shared.remoteRoot, stored.remote_path), "remote");
     await writeFile(stored.local_path, "local");
 
-    const r = await fetch(
+    const r = await authFetch(
       `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
       {
         method: "POST",
@@ -149,7 +150,7 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
     // User deletes the local copy on purpose -- deleted_local.
     await rm(stored.local_path);
 
-    const r = await fetch(
+    const r = await authFetch(
       `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
       {
         method: "POST",
@@ -175,7 +176,7 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
       args: [stored.file_id],
     });
 
-    const r = await fetch(
+    const r = await authFetch(
       `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
       {
         method: "POST",
@@ -192,7 +193,7 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
     const stored = await seedFile("h");
     await rm(stored.local_path);
 
-    const r = await fetch(
+    const r = await authFetch(
       `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
       {
         method: "POST",
@@ -212,7 +213,7 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
 
   it("rejects an unknown action with 400", async () => {
     const stored = await seedFile("d");
-    const r = await fetch(
+    const r = await authFetch(
       `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
       {
         method: "POST",
@@ -230,7 +231,7 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
     // The organization is the file's node's PARENT -- its nodeRoot is a
     // prefix of the project's remote paths, so this specifically exercises
     // the case deriveLocalPath's prefix check alone would NOT have caught.
-    const r = await fetch(
+    const r = await authFetch(
       `${base}/nodes/${shared.orgId}/files/${stored.file_id}/resolve`,
       {
         method: "POST",
@@ -258,7 +259,7 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
     // already matches the remote, so pullFile's dirty guard must refuse.
     await writeFile(stored.local_path, "unpushed local edit");
 
-    const r = await fetch(
+    const r = await authFetch(
       `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
       {
         method: "POST",

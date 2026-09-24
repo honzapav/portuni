@@ -7,14 +7,8 @@
 //     uses instead of `mountMcp: false`).
 //   - an unauthenticated POST /mcp is rejected with 401, same as REST.
 //
-// PORTUNI_AUTH_TOKEN must be set before any of apps/server/http/middleware.ts
-// is evaluated: it freezes AUTH_ENABLED from process.env at module load
-// time. ES module `import` bindings evaluate their target modules before ANY
-// of the importing module's own top-level code runs -- even statements
-// textually preceding the import declarations -- so a plain assignment above
-// the static imports below would run too late. All apps/server modules whose
-// behavior depends on env are therefore loaded dynamically, after the
-// assignment actually executes.
+// The server reads the bearer live (#521); it only has to be set before
+// the server starts.
 process.env.PORTUNI_AUTH_TOKEN = "test-token";
 
 import { describe, it, before, after } from "node:test";
@@ -33,6 +27,14 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { HttpServerHandle } from "../apps/server/http/server.js";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
+import { startHttpServer } from "../apps/server/http/server.js";
+import { createAgentMcpTransport } from "../apps/server/mcp/agent-transport.js";
+import { createAgentRouter } from "../apps/server/api/agent-router.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { SOLO_USER } from "../apps/server/infra/schema.js";
+import { mkdir, writeFile } from "node:fs/promises";
 
 // Minimal CentralClient stub -- only the MCP plane is under test here, not
 // the REST plane the agent router also serves. Same no-op shape as
@@ -129,14 +131,6 @@ let handle: HttpServerHandle;
 let port: number;
 
 before(async () => {
-  // Dynamic import: must happen after the PORTUNI_AUTH_TOKEN assignment
-  // above has actually run (see the file-header comment) so middleware.ts's
-  // module-level AUTH_ENABLED const picks it up.
-  const { startHttpServer } = await import("../apps/server/http/server.js");
-  const { createAgentMcpTransport } = await import("../apps/server/mcp/agent-transport.js");
-  const { createAgentRouter } = await import("../apps/server/api/agent-router.js");
-  const { resetLocalDbForTests } = await import("../apps/server/domain/sync/local-db.js");
-  const { resetGateCachesForTesting } = await import("../apps/server/http/middleware.js");
 
   workspace = await mkdtemp(join(tmpdir(), "portuni-agent-mcp-e2e-"));
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
@@ -171,7 +165,6 @@ before(async () => {
 });
 
 after(async () => {
-  const { resetLocalDbForTests } = await import("../apps/server/domain/sync/local-db.js");
   await handle.shutdown();
   await central.close();
   resetLocalDbForTests();
@@ -207,9 +200,6 @@ describe("agent sidecar MCP front door", () => {
   });
 
   it("portuni_read_file enforces the central scope gate, not just mirror-presence", async () => {
-    const { registerMirror } = await import("../apps/server/domain/sync/mirror-registry.js");
-    const { SOLO_USER } = await import("../apps/server/infra/schema.js");
-    const { mkdir, writeFile } = await import("node:fs/promises");
     const mirror = join(workspace, "org", "projects", "p");
     await mkdir(join(mirror, "wip"), { recursive: true });
     await writeFile(join(mirror, "wip", "n.md"), "hello ad-hoc\n");

@@ -3,11 +3,15 @@
 // API; a single middleware chain keeps invariants in one place.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { ZodType } from "zod";
-import { authMode, checkAuthRequiredForConfig } from "../infra/server-config.js";
+import {
+  JWT_SECRET_MIN_LENGTH,
+  authMode,
+  verifyBearer,
+  type BearerCheck,
+} from "../infra/auth-config.js";
 import { LocalModeNoRemoteError } from "../domain/sync/types.js";
-import { RunnerMcpTokenMissingError } from "../domain/write-scope.js";
 import { getDb } from "../infra/db.js";
 import { constraintViolationMessage } from "../infra/sql.js";
 import { SOLO_USER } from "../infra/schema.js";
@@ -103,7 +107,7 @@ export function getIdentityContext(): IdentityContext {
     adapter: mode === "google" ? createGoogleAdapter() : new EnvAdapter(),
     soloUserId: SOLO_USER,
   };
-  if (mode === "google" && ctx.jwtSecret.length < 32) {
+  if (mode === "google" && ctx.jwtSecret.length < JWT_SECRET_MIN_LENGTH) {
     throw new Error("PORTUNI_JWT_SECRET (>=32 chars) is required in google auth mode");
   }
   identityCtxCache = ctx;
@@ -121,13 +125,11 @@ export function setIdentityContextForTesting(ctx: IdentityContext): void {
   identityCtxCache = ctx;
 }
 
-// Bearer-token auth. When PORTUNI_AUTH_TOKEN is set, every route except
-// /health (and CORS preflight) must present a matching Authorization
-// header — protects against malicious local processes that can reach
-// loopback ports on the same machine. Empty / unset token means auth is
-// disabled (single-user, single-process loopback dev mode).
-const AUTH_TOKEN = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim();
-export const AUTH_ENABLED = AUTH_TOKEN.length > 0;
+// Bearer-token auth (env mode). Every route except the public paths below
+// (and CORS preflight) must present PORTUNI_AUTH_TOKEN as its bearer --
+// protects against malicious local processes that can reach loopback ports
+// on the same machine. There is no "auth disabled" state: an env-mode
+// server without a token does not start (infra/auth-config.ts).
 // Paths admitted past the bearer-token gate. /mcp/info exposes only
 // non-secret metadata (URL, port, has_auth_token boolean) so the
 // Settings UI can render the MCP server status before the user has
@@ -144,19 +146,7 @@ const AUTH_PUBLIC_PATHS = new Set([
   "/auth/handoff/exchange",
 ]);
 
-export function timingSafeStringEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
-}
-
-export function assertAuthRequiredIfNotLoopback(host: string): void {
-  const result = checkAuthRequiredForConfig({
-    authEnabled: AUTH_ENABLED,
-    host,
-    tursoUrl: process.env.TURSO_URL ?? "",
-  });
-  if (!result.ok) throw new Error(result.message);
-}
+export { timingSafeStringEqual } from "../infra/auth-config.js";
 
 export class RequestBodyTooLargeError extends Error {
   constructor(public readonly limit: number) {
@@ -269,13 +259,6 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
     res.end(JSON.stringify({ error: err.message, code: err.code, request_id: id }));
     return;
   }
-  // #507: a run cannot start without the front door's token. The server is
-  // up but cannot do this; the caller learns why instead of a bare 500.
-  if (err instanceof RunnerMcpTokenMissingError) {
-    res.writeHead(503, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: err.message, code: err.code, request_id: id }));
-    return;
-  }
   const friendly = err instanceof Error ? constraintViolationMessage(err) : null;
   if (friendly !== null) {
     res.writeHead(409, { "Content-Type": "application/json" });
@@ -296,7 +279,14 @@ function bearer(req: IncomingMessage): string {
 // routes are actually reachable -- otherwise it would point clients at
 // discovery endpoints that 404. Claude requires the pointer on a 401; it
 // does not honor it on a 200, so it is not added anywhere else.
-function respondUnauthorized(res: ServerResponse, ctx: IdentityContext, pathname: string): void {
+// `reason` tells a missing bearer from a wrong one (env-mode gate) without
+// revealing anything about the token itself.
+function respondUnauthorized(
+  res: ServerResponse,
+  ctx: IdentityContext,
+  pathname: string,
+  reason?: Exclude<BearerCheck, "ok">,
+): void {
   const isMcp = pathname === "/mcp" || pathname === "/mcp/";
   const wwwAuthenticate =
     isMcp && isOAuthEnabled(ctx)
@@ -306,7 +296,15 @@ function respondUnauthorized(res: ServerResponse, ctx: IdentityContext, pathname
     "Content-Type": "application/json",
     "WWW-Authenticate": wwwAuthenticate,
   });
-  res.end(JSON.stringify({ error: "Unauthorized" }));
+  const body: Record<string, string> = { error: "Unauthorized" };
+  if (reason === "missing") {
+    body.code = "BEARER_MISSING";
+    body.detail = "No Authorization: Bearer header was presented.";
+  } else if (reason === "mismatch") {
+    body.code = "BEARER_MISMATCH";
+    body.detail = "The presented bearer does not match this server's token.";
+  }
+  res.end(JSON.stringify(body));
 }
 
 export interface UpgradeAuthResult {
@@ -330,11 +328,8 @@ export async function checkUpgradeAuth(req: IncomingMessage): Promise<UpgradeAut
   }
 
   const ctx = getIdentityContext();
-  if (ctx.mode === "env" && AUTH_ENABLED) {
-    const presented = bearer(req);
-    if (presented === "" || !timingSafeStringEqual(presented, AUTH_TOKEN)) {
-      return { ok: false, status: 401, identity: null };
-    }
+  if (ctx.mode === "env" && verifyBearer(bearer(req)) !== "ok") {
+    return { ok: false, status: 401, identity: null };
   }
   const identity = await resolveRequestIdentity(
     ctx,
@@ -404,10 +399,10 @@ export async function applyGates(
   const ctx = getIdentityContext();
 
   if (ctx.mode === "env") {
-    if (AUTH_ENABLED && !AUTH_PUBLIC_PATHS.has(url.pathname)) {
-      const presented = bearer(req);
-      if (presented === "" || !timingSafeStringEqual(presented, AUTH_TOKEN)) {
-        respondUnauthorized(res, ctx, url.pathname);
+    if (!AUTH_PUBLIC_PATHS.has(url.pathname)) {
+      const check = verifyBearer(bearer(req));
+      if (check !== "ok") {
+        respondUnauthorized(res, ctx, url.pathname, check);
         return "handled";
       }
     }

@@ -12,8 +12,9 @@
 // ALLOWED_HOSTS, so this has to be set first.
 process.env.PORT = "14910";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -67,12 +68,12 @@ after(async () => {
 
 describe("HTTP smoke", () => {
   it("GET /health returns 200", async () => {
-    const res = await fetch(`${BASE}/health`);
+    const res = await authFetch(`${BASE}/health`);
     assert.equal(res.status, 200);
   });
 
   it("GET /graph returns a payload with the seeded organization", async () => {
-    const res = await fetch(`${BASE}/graph`);
+    const res = await authFetch(`${BASE}/graph`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { nodes: Array<{ id: string; type: string }> };
     assert.ok(Array.isArray(body.nodes));
@@ -80,14 +81,14 @@ describe("HTTP smoke", () => {
   });
 
   it("GET / returns 404 for unknown paths", async () => {
-    const res = await fetch(`${BASE}/no-such-route`);
+    const res = await authFetch(`${BASE}/no-such-route`);
     assert.equal(res.status, 404);
   });
 });
 
 describe("POST /nodes regression: org-invariant", () => {
   it("creates an organization node without organization_id", async () => {
-    const res = await fetch(`${BASE}/nodes`, {
+    const res = await authFetch(`${BASE}/nodes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "organization", name: "Org Two" }),
@@ -98,7 +99,7 @@ describe("POST /nodes regression: org-invariant", () => {
   });
 
   it("rejects a non-organization node without organization_id (400)", async () => {
-    const res = await fetch(`${BASE}/nodes`, {
+    const res = await authFetch(`${BASE}/nodes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "project", name: "Orphan project" }),
@@ -109,7 +110,7 @@ describe("POST /nodes regression: org-invariant", () => {
   });
 
   it("creates a non-organization node with organization_id and attaches the belongs_to edge", async () => {
-    const res = await fetch(`${BASE}/nodes`, {
+    const res = await authFetch(`${BASE}/nodes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -133,7 +134,7 @@ describe("POST /nodes regression: org-invariant", () => {
   });
 
   it("rejects unknown node type with 400", async () => {
-    const res = await fetch(`${BASE}/nodes`, {
+    const res = await authFetch(`${BASE}/nodes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "fungus", name: "Nope", organization_id: orgId }),
@@ -147,7 +148,7 @@ describe("POST /nodes/:id/mirror", () => {
     // Seed a project under the existing Acme org so we have a non-org
     // node to mirror — orgs use a slightly different layout but mirror
     // creation works for both.
-    const createRes = await fetch(`${BASE}/nodes`, {
+    const createRes = await authFetch(`${BASE}/nodes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -159,7 +160,7 @@ describe("POST /nodes/:id/mirror", () => {
     assert.equal(createRes.status, 201);
     const node = (await createRes.json()) as { id: string };
 
-    const first = await fetch(`${BASE}/nodes/${node.id}/mirror`, {
+    const first = await authFetch(`${BASE}/nodes/${node.id}/mirror`, {
       method: "POST",
     });
     assert.equal(first.status, 201);
@@ -175,7 +176,7 @@ describe("POST /nodes/:id/mirror", () => {
       `mirror path ${firstBody.local_path} should be under workspace ${workspace}`,
     );
 
-    const second = await fetch(`${BASE}/nodes/${node.id}/mirror`, {
+    const second = await authFetch(`${BASE}/nodes/${node.id}/mirror`, {
       method: "POST",
     });
     assert.equal(second.status, 200);
@@ -188,7 +189,7 @@ describe("POST /nodes/:id/mirror", () => {
   });
 
   it("returns 404 for unknown node id", async () => {
-    const res = await fetch(`${BASE}/nodes/01ZZZZZZZZZZZZZZZZZZZZZZZZ/mirror`, {
+    const res = await authFetch(`${BASE}/nodes/01ZZZZZZZZZZZZZZZZZZZZZZZZ/mirror`, {
       method: "POST",
     });
     assert.equal(res.status, 404);

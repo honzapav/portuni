@@ -162,7 +162,8 @@ pub(crate) fn is_valid_workspace_id(id: &str) -> bool {
 }
 
 /// Env var per-mirror configs reference for this workspace's MCP token.
-/// Must match resolveTokenEnvVar() in apps/server/domain/write-scope.ts.
+/// Must match clientTokenEnvVar() in apps/server/infra/auth-config.ts; both
+/// are tested against apps/server/shared/token-env-var-cases.json.
 pub(crate) fn token_env_var(id: &str) -> String {
     format!(
         "PORTUNI_MCP_TOKEN_{}",
@@ -334,6 +335,24 @@ mod tests {
     fn token_env_var_uppercases_and_replaces_dashes() {
         assert_eq!(token_env_var("honzapav"), "PORTUNI_MCP_TOKEN_HONZAPAV");
         assert_eq!(token_env_var("honza-pav"), "PORTUNI_MCP_TOKEN_HONZA_PAV");
+    }
+
+    // Parity with clientTokenEnvVar() on the server (#521): both sides read
+    // the same fixture, so drifting one of them fails its own test.
+    #[test]
+    fn token_env_var_matches_shared_fixture() {
+        const CASES: &str = include_str!("../../server/shared/token-env-var-cases.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(CASES).expect("token-env-var-cases.json is valid JSON");
+        let cases = parsed["cases"]
+            .as_array()
+            .expect("token-env-var-cases.json has a cases array");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let id = case["ws_id"].as_str().expect("ws_id is a string");
+            let want = case["env_var"].as_str().expect("env_var is a string");
+            assert_eq!(token_env_var(id), want, "ws_id {id}");
+        }
     }
 
     #[test]

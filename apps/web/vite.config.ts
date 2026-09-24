@@ -1,13 +1,28 @@
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-// When the backend has PORTUNI_AUTH_TOKEN set, the same token must reach
-// it from the frontend. We inject it into the dev proxy server-side so
-// the secret never lands in the client bundle. Run vite under varlock
-// (or `PORTUNI_AUTH_TOKEN=... vite dev`) for this to pick up the value.
+// The backend always requires PORTUNI_AUTH_TOKEN in env mode (#521), so the
+// same token must reach it from the frontend. We inject it into the dev
+// proxy server-side so the secret never lands in the client bundle. Run
+// vite under varlock (or `PORTUNI_AUTH_TOKEN=... vite dev`) for this to
+// pick up the value; without it every proxied request is a 401.
 const AUTH_TOKEN = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim();
+
+// One warning line when the dev server starts without the token (dev only;
+// `vite build` never proxies and does not need it).
+const warnMissingAuthToken: Plugin = {
+  name: "portuni-warn-missing-auth-token",
+  apply: "serve",
+  configureServer(server) {
+    if (!AUTH_TOKEN) {
+      server.config.logger.warn(
+        "[portuni] PORTUNI_AUTH_TOKEN is not set: /api requests will get 401. Run the dev server under varlock (varlock run -- npm --prefix apps/web run dev).",
+      );
+    }
+  },
+};
 // Dev-mode stand-in for the desktop Tauri host's api_request proxy (#213):
 // proves a request came through this dev proxy, not a spawned agent
 // terminal holding the same PORTUNI_AUTH_TOKEN. In the packaged app the
@@ -20,7 +35,7 @@ const AUTH_TOKEN = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim();
 const WEBVIEW_PROXY_SECRET = (process.env.PORTUNI_WEBVIEW_PROXY_SECRET ?? "").trim();
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), warnMissingAuthToken],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

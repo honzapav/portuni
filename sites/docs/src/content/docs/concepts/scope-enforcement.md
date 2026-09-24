@@ -103,6 +103,7 @@ Behaviour at the edges is deliberate:
 - A non-write tool always allows.
 - A malformed JSON payload allows (we cannot tell what the harness wanted).
 - An unreachable Portuni server allows. The guard is a soft fallback, not the primary defense; the harness's own permission system is.
+- A server that refuses the token (401/403 from `/scope`) blocks the write, with a message saying the token is missing or does not match and naming the variable to export (`PORTUNI_MCP_TOKEN` or the workspace's `PORTUNI_MCP_TOKEN_<ID>`). A token mismatch never silently turns the guard off.
 
 This catches drift in the declarative config, harness bugs, and cases where the config was never written.
 

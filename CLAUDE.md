@@ -59,7 +59,11 @@ npm run build                                       # tsc -> dist/, ~2 s
 tmux send-keys -t portuni-mcp C-c Up Enter          # restart server
 ```
 
-Started once: `tmux new -d -s portuni-mcp 'varlock run -- node dist/index.js 2>&1 | tee /tmp/portuni-mcp.log'`.
+Started once: `tmux new -d -s portuni-mcp 'PORTUNI_AUTH_TOKEN="$(security find-generic-password -s mcp.portuni-dev.auth-token -w)" varlock run -- node dist/index.js 2>&1 | tee /tmp/portuni-mcp.log'`.
+The server never starts without `PORTUNI_AUTH_TOKEN` (#521); the dev token
+lives in the Keychain entry `mcp.portuni-dev.auth-token`, never in
+`.env.schema`, and your shell exports the same value as `PORTUNI_MCP_TOKEN`
+for Claude Code in mirror dirs.
 Logs at `/tmp/portuni-mcp.log` and in the tmux pane. This loop is a local
 workspace; set `PORTUNI_WATCH_MIRRORS=1` for the watcher. The central half of
 a change is proven against the fake `CentralClient` in the tests, not here.
@@ -67,7 +71,8 @@ a change is proven against the fake `CentralClient` in the tests, not here.
 ### Frontend (Vite, port 4010)
 
 ```bash
-varlock run -- npm --prefix apps/web run dev
+PORTUNI_AUTH_TOKEN="$(security find-generic-password -s mcp.portuni-dev.auth-token -w)" \
+  varlock run -- npm --prefix apps/web run dev
 ```
 
 Open `http://portuni.test` (localias) or `http://localhost:4010`. Vite proxies

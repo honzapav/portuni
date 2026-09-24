@@ -25,7 +25,12 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
   sequence).
 - Per-mirror MCP configs reference the token as `PORTUNI_MCP_TOKEN_<ID>`
   (the server learns its id from `PORTUNI_WORKSPACE_ID`; a standalone
-  server without one keeps `PORTUNI_MCP_TOKEN`). Global MCP entries are
+  server without one keeps `PORTUNI_MCP_TOKEN`). The name comes from
+  `workspace::token_env_var` in Rust and `clientTokenEnvVar()` on the
+  server; both are tested against `apps/server/shared/token-env-var-cases.json`
+  (#521). The sidecar itself verifies `PORTUNI_AUTH_TOKEN`, which the host
+  always passes: a sidecar without it refuses to start and the host shows
+  the `PORTUNI_BACKEND_ERROR=` line. Global MCP entries are
   named `portuni-<id>`; a workspace migrated from the single-workspace
   layout keeps the historical `portuni` entry.
 - **Every config.json load-modify-save goes through `ConfigLock`**, a

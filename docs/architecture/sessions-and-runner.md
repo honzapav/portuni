@@ -26,19 +26,19 @@ record/content split).
   existing row; it never creates a second one.
 - **The run's MCP bearer is the front door's own token** (#507).
   `provisionRun` and `createProvisionRunCentral` both take it from
-  `resolveRunnerMcpToken()` (`domain/write-scope.ts`), which reads
-  `PORTUNI_AUTH_TOKEN` -- the token `http/middleware.ts` verifies and the
-  desktop gives every sidecar -- never `resolveTokenEnvVar()`'s
-  `PORTUNI_MCP_TOKEN[_<WS>]`, which is only the name per-mirror configs
-  expand in a user's own shell and is never set in the sidecar. With no
-  token the provision throws `RunnerMcpTokenMissingError` before any mirror
-  work; a run never starts with an empty `Authorization: Bearer `. The
-  runtime provisions before it creates or changes anything: `startTask`
-  and Navázat na handoff before the record, a draft's first message
-  before the draft is promoted, Pokračovat v nové session before the old
-  thread is closed -- a refused run leaves no half-made thread. REST
-  answers the refusal with 503 `RUNNER_MCP_TOKEN_MISSING`
-  (`respondError`), the live channel with an error reply of that code.
+  `resolveRunnerMcpToken()` (`domain/write-scope.ts`), which returns
+  `serverBearerToken()` from `infra/auth-config.ts` -- the
+  `PORTUNI_AUTH_TOKEN` the front door verifies and the desktop gives every
+  sidecar -- never `clientTokenEnvVar()`'s `PORTUNI_MCP_TOKEN[_<WS>]`,
+  which is only the name per-mirror configs expand in a user's own shell
+  and is never set in the sidecar. An env-mode server does not start
+  without the token (#521), so a run never meets an empty one; the former
+  `RunnerMcpTokenMissingError` and its 503 are gone as unreachable. The
+  token is still read before any mirror work. The runtime provisions
+  before it creates or changes anything: `startTask` and Navázat na
+  handoff before the record, a draft's first message before the draft is
+  promoted, Pokračovat v nové session before the old thread is closed --
+  a refused run leaves no half-made thread.
   `test/runner-mcp-front-door.test.ts` connects a runner-style client with
   the provisioned URL and token to the real front door in both workspaces.
 - `createMcpServer` returns `bindSession(cli?)`; the caller invokes it at its

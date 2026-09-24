@@ -12,9 +12,10 @@
 
 process.env.PORT = "14930";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 process.env.PORTUNI_RATE_LIMIT_PER_MIN = "3";
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { openTestDb } from "./helpers/db.js";
@@ -162,7 +163,7 @@ describe("server rate-limit wiring", () => {
   it("enforces the limit: /graph gets a 429 after 3 requests", async () => {
     const statuses: number[] = [];
     for (let i = 0; i < 5; i++) {
-      const res = await fetch(`${BASE}/graph`);
+      const res = await authFetch(`${BASE}/graph`);
       statuses.push(res.status);
     }
     assert.ok(
@@ -175,7 +176,7 @@ describe("server rate-limit wiring", () => {
     // Hit the server many times to ensure the rate limit would trigger for
     // a normal path, then confirm /health still returns 200.
     for (let i = 0; i < 10; i++) {
-      const res = await fetch(`${BASE}/health`);
+      const res = await authFetch(`${BASE}/health`);
       assert.equal(res.status, 200, `/health must never return 429 (request ${i + 1})`);
     }
   });
@@ -185,7 +186,7 @@ describe("server rate-limit wiring", () => {
     // get a 429 (at most 5 more times).
     let tooManyRes: Response | null = null;
     for (let i = 0; i < 5; i++) {
-      const r = await fetch(`${BASE}/graph`);
+      const r = await authFetch(`${BASE}/graph`);
       if (r.status === 429) {
         tooManyRes = r;
         break;
