@@ -873,8 +873,11 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   session (`canSee`, the same one-line rule) through one server-lifetime
   `subscribe("*", ...)` per `WebSocketServer`, created lazily on the first
   connection, and a broadcast resolves visibility once per identity.
-  Broadcasts for one session run one at a time in event order, each reading
-  the row afresh, so a slow read never lands an older state last (#494).
+  Each broadcast reads the row afresh and takes a number in event order;
+  the newest one to finish its read claims the send, and an older one that
+  finishes later is dropped, so a slow read never lands an older state
+  last (#494) and a stuck read never holds back the frames after it. A
+  failed read is logged (`console.warn`), not swallowed.
   A suspend the runtime makes itself (idle, error, limit, the process
   ending) appends and publishes `state_changed {from: "running", to:
   "suspended"}` once the record is suspended, before the `handoff` event:

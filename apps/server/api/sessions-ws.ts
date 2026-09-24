@@ -274,35 +274,47 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     });
   }
 
-  // #494: one broadcast at a time per session, in the order the events
-  // fired. Each broadcast reads the row afresh, so two in flight at once (a
-  // run_ended and the suspend right after it) could otherwise land out of
-  // order -- a slow read against the central server finishing last -- and
-  // leave every window on the older state.
-  const broadcastChains = new Map<string, Promise<void>>();
-  function broadcastSessionState(sessionId: string): Promise<void> {
-    const prev = broadcastChains.get(sessionId) ?? Promise.resolve();
-    const next = prev.then(() => broadcastSessionStateNow(sessionId)).catch(() => undefined);
-    broadcastChains.set(sessionId, next);
-    void next.then(() => {
-      if (broadcastChains.get(sessionId) === next) broadcastChains.delete(sessionId);
-    });
-    return next;
-  }
-
-  async function broadcastSessionStateNow(sessionId: string): Promise<void> {
-    const row = await deps.runtime().getSession(sessionId);
-    if (!row) return;
-    // One visibility answer per distinct identity, not per connection: a
-    // user with three windows open costs one node-access query, not three.
-    const verdicts = new Map<string, Promise<boolean>>();
-    for (const conn of connections) {
-      let verdict = verdicts.get(conn.identity.userId);
-      if (!verdict) {
-        verdict = deps.canSee(conn.identity, row);
-        verdicts.set(conn.identity.userId, verdict);
+  // #494: every broadcast reads the row afresh, and two in flight at once
+  // (a run_ended and the suspend right after it) can finish out of order --
+  // a slow read against the central server landing last -- and leave every
+  // window on the older state. So the newest broadcast wins: each takes a
+  // number when its event fires, and a frame goes out only while no later
+  // broadcast of the same session has claimed the send. The reads still run
+  // side by side, so one stuck read never holds back the frames after it,
+  // and a failed read is logged, not swallowed.
+  const broadcastTurns = new Map<string, { issued: number; claimed: number; inFlight: number }>();
+  async function broadcastSessionState(sessionId: string): Promise<void> {
+    let turns = broadcastTurns.get(sessionId);
+    if (!turns) {
+      turns = { issued: 0, claimed: 0, inFlight: 0 };
+      broadcastTurns.set(sessionId, turns);
+    }
+    const mine = ++turns.issued;
+    turns.inFlight++;
+    try {
+      const row = await deps.runtime().getSession(sessionId);
+      if (!row || mine < turns.claimed) return;
+      turns.claimed = mine;
+      // One visibility answer per distinct identity, not per connection: a
+      // user with three windows open costs one node-access query, not three.
+      const verdicts = new Map<string, Promise<boolean>>();
+      for (const conn of connections) {
+        let verdict = verdicts.get(conn.identity.userId);
+        if (!verdict) {
+          verdict = deps.canSee(conn.identity, row);
+          verdicts.set(conn.identity.userId, verdict);
+        }
+        const visible = await verdict;
+        // A later broadcast took over while this one waited: its row is the
+        // newer one, and it sends to every connection itself.
+        if (turns.claimed !== mine) return;
+        if (visible) send(conn.ws, sessionStateFrame(row));
       }
-      if (await verdict) send(conn.ws, sessionStateFrame(row));
+    } catch (err) {
+      console.warn(`[portuni:sessions-ws] session_state for ${sessionId} was not sent:`, err);
+    } finally {
+      turns.inFlight--;
+      if (turns.inFlight === 0 && broadcastTurns.get(sessionId) === turns) broadcastTurns.delete(sessionId);
     }
   }
 
