@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.24.0](https://github.com/honzapav/portuni/compare/v0.23.1...v0.24.0) (2026-09-24)
+
+
+### Features
+
+* **runner,server,web:** the chat never loses work – run lifecycle, questions, thread state, handoff on demand ([#510](https://github.com/honzapav/portuni/issues/510)) ([3581004](https://github.com/honzapav/portuni/commit/35810040c1b1e3597eff360d30729b59cbacc75c))
+
+
+### Bug Fixes
+
+* **runner:** no suspend mid-work – Esc stops the turn, idle skips a working agent ([#486](https://github.com/honzapav/portuni/issues/486)) ([6a1e352](https://github.com/honzapav/portuni/commit/6a1e352a0c430a97373b1c74a819acadd49d89a5))
+* **web:** a runner thread stays in Práce once its agent connects to MCP ([#524](https://github.com/honzapav/portuni/issues/524)) ([2287348](https://github.com/honzapav/portuni/commit/22873485cdd8599903d1436a3fdec86180bb6db3))
+
 ## [0.23.1](https://github.com/honzapav/portuni/compare/v0.23.0...v0.23.1) (2026-09-23)
 
 
