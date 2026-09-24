@@ -423,6 +423,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // question waits on the user. run_ended zeroes the count: no turn of a
   // run that is over can still be in flight.
   const turnsInFlight = new Map<string, number>();
+  // #488: the run each session is starting or running, by run id -- set
+  // when startRun begins, cleared when that run's run_ended is handled (or
+  // its start fails). What isCurrentRun compares an event's run against.
+  const currentRuns = new Map<string, string>();
 
   function addTurnInFlight(sessionId: string): void {
     turnsInFlight.set(sessionId, (turnsInFlight.get(sessionId) ?? 0) + 1);
@@ -596,15 +600,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
   }
 
-  // #488: whether an adapter event belongs to the session's current live
-  // run. A late event from a run that has already been replaced (a
-  // run_ended arriving after the next run started) must not touch
-  // session-level state -- the live handle, the turn in flight, the
-  // suspend path -- even though the run's own row still records its end.
-  // No live run at all means nothing has replaced it: the ordinary case.
+  // #488: whether an adapter event belongs to the session's current run --
+  // the one being started or live, from startRun until its own run_ended
+  // is handled. A late event from any other run (a run_ended arriving
+  // after the next run started, or while it is still starting and has no
+  // live handle yet) must not touch session-level state -- the live
+  // handle, the turn in flight, the suspend path -- even though the run's
+  // own row still records its end.
   function isCurrentRun(sessionId: string, runId: string): boolean {
-    const live = liveRuns.get(sessionId);
-    return !live || live.runId === runId;
+    return currentRuns.get(sessionId) === runId;
   }
 
   async function handleAdapterEvent(
@@ -689,6 +693,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // #488: only the current run's end takes the session with it.
     const current = isCurrentRun(sessionId, runId);
     if (current) {
+      currentRuns.delete(sessionId);
       liveRuns.delete(sessionId);
       lastActivityAt.delete(sessionId);
       activityTicks.delete(sessionId);
@@ -801,6 +806,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // thread "working" for the idle sweep.
     let briefCounted = false;
     let handle: RunHandle;
+    currentRuns.set(session.id, run.id);
     try {
       await appendAndPublish(session.id, run.id, [
         {
@@ -846,6 +852,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     } catch (err) {
       if (briefCounted) dropTurnInFlight(session.id);
       runStartScopeSize.delete(run.id);
+      if (currentRuns.get(session.id) === run.id) currentRuns.delete(session.id);
       throw err;
     }
     liveRuns.set(session.id, { handle, runId: run.id, agentSessionIdSaved: false });

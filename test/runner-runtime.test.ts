@@ -1849,6 +1849,59 @@ describe("session runtime: one start per thread (#488)", () => {
     }
   });
 
+  it("a stray run_ended arriving while the next run is still starting leaves that start alone", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const sinks: ((event: CanonicalEvent) => void)[] = [];
+    const inner = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const first: RunnerAdapter = {
+      id: "fake",
+      detect: () => inner.detect(),
+      models: () => inner.models(),
+      async start(run, sink) {
+        sinks.push(sink);
+        return inner.start(run, sink);
+      },
+    };
+    const registry = { getAdapter: (id: string) => (id === "fake" ? first : null) };
+    const runtime = createSessionRuntime({ store, content, registry, provision: stubProvision() });
+
+    const { session, run: firstRun } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(0, Date.now() + 1);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
+
+    const gated = new GatedAdapter(new FakeRunnerAdapter({ script: [{ wait: "message" }] }));
+    registry.getAdapter = (id: string) => (id === "fake" ? (gated as RunnerAdapter) : null);
+    const send = runtime.sendMessage(session.id, "pokračuj");
+    await gated.entered;
+    // The resume run has a row and the thread says running, but no live
+    // handle yet: the dead first run's late run_ended lands in that window.
+    // The event queue is serial, so once a marker emitted after it is
+    // published, the run_ended has been handled in full -- still inside
+    // the window.
+    const marker = new Promise<void>((resolve) => {
+      const off = runtime.subscribe(session.id, (_id, event) => {
+        if ("kind" in event && event.kind === "turn_ended") {
+          off();
+          resolve();
+        }
+      });
+    });
+    sinks[0]({ kind: "run_ended", payload: { run_id: firstRun.id, reason: "completed", usage: null } });
+    sinks[0]({ kind: "turn_ended", payload: { run_id: firstRun.id } });
+    await marker;
+    gated.open();
+    await send;
+
+    assert.equal((await store.getSession(session.id))?.state, "running", "the start was not suspended under it");
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs.length, 2);
+    assert.equal(runs[1].ended_at, null, "the new run is still open");
+    await runtime.sendMessage(session.id, "ještě");
+    assert.equal((await store.listRuns(session.id)).length, 2, "the next message went to the live run");
+    await runtime.closeSession(session.id);
+  });
+
   it("a run_ended from a run that is no longer live leaves the live run alone", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);

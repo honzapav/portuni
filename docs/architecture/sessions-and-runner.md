@@ -667,9 +667,12 @@ human verification.
 - **A `run_ended` only ends the session's *current* run.** The handler
   records the run's own end (`ended_at`, `end_reason`, `usage`, its pid
   file) either way, but drops the live handle, clears the turn in flight
-  and takes the suspend path only when the id matches `liveRuns`'s entry
-  (or there is none). A late `run_ended` from a run that has already been
-  replaced neither suspends the thread that is going nor steals its handle.
+  and takes the suspend path only when the id is the session's current run
+  (`currentRuns`: the run `startRun` is starting or has started, until its
+  own `run_ended` is handled or its start fails). A late `run_ended` from
+  a run that has already been replaced -- also while the next run is still
+  starting and has no live handle yet -- neither suspends the thread that
+  is going nor steals its handle.
 - **The first message promotes.** `sendMessage` with no live run:
   `draft` -> `promoteDraftAndStart`; `suspended` -> `resumeByWriting`; any
   other state refuses. Promotion uses the draft's own `runner`/`instance_id`
