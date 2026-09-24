@@ -337,7 +337,13 @@ describe("scenario 6b: a draft deleted from any surface leaves the store at once
   });
 
   it("is the one deletion the sidebar, the chat header and Relace call", () => {
-    const src = (p: string) => readFileSync(new URL(`../apps/web/src/${p}`, import.meta.url), "utf8");
+    // Read as code: comments stripped, so a comment naming the old function
+    // neither fails nor satisfies an assertion. There is no component
+    // harness to mount these files in; this pins the wiring by its calls.
+    const src = (p: string) =>
+      readFileSync(new URL(`../apps/web/src/${p}`, import.meta.url), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
     for (const file of ["App.tsx", "components/SessionChat.tsx", "components/DetailPane.sessions.tsx"]) {
       const text = src(file);
       assert.match(text, /deleteDraftSession\(/, `${file} deletes a draft through deleteDraftSession`);

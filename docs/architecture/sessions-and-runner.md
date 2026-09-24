@@ -151,8 +151,9 @@ until an unrelated refetch. `POST /sessions/:id/state` is a bare column
 transition with no runtime behind it and is not device-local; the web never
 uses it to close.
 
-A server-side suspend (`suspendSessionServerSide`: boot sweep, dropped
-transport, lost host) ends every run row of the session still open
+A server-side suspend (`suspendSessionServerSide`: the boot sweep, a
+hand-opened CLI's dropped connection; the device's lost-host sweep in
+`run-sweep.ts` does the same itself) ends every run row of the session still open
 (`ended_at`, `end_reason` `suspended`, or `host_lost` for a lost host),
 appends `run_ended` for each and then `state_changed {to: "suspended"}`;
 without that the log ended on a `run_started` and every client replaying

@@ -1359,11 +1359,22 @@ describe("agent-router: sessions/tasks", () => {
       aborts.push(controller);
       return captured!.canUseTool!("ExitPlanMode", { plan: "p" }, { requestId, signal: controller.signal } as never);
     };
-    // The runtime records a question on its own serial dispatch; yield to
-    // it until the record changes (a condition, not a sleep).
-    const until = async (pred: () => boolean): Promise<void> => {
-      for (let i = 0; i < 1000 && !pred(); i++) await new Promise<void>((r) => setImmediate(r));
-      assert.ok(pred(), "condition never held");
+    // The runtime records a question on its own serial dispatch; this
+    // resolves on the central patch that sets waiting_since (a signal, not
+    // a poll or a sleep).
+    const waitingOnCentral = (sessionId: string): Promise<void> => {
+      if (fake.sessions.get(sessionId)?.waiting_since) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        const original = fake.patchSessionRecord.bind(fake);
+        fake.patchSessionRecord = async (id: string, patch: PatchSessionInput) => {
+          const row = await original(id, patch);
+          if (id === sessionId && row.waiting_since) {
+            fake.patchSessionRecord = original;
+            resolve();
+          }
+          return row;
+        };
+      });
     };
 
     const start = await fetch(`${base}/sessions`, {
@@ -1372,10 +1383,12 @@ describe("agent-router: sessions/tasks", () => {
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
-    await until(() => captured !== undefined);
+    // The adapter hands the SDK its options when the run starts, which is
+    // before POST /sessions answers.
+    assert.ok(captured, "the run started with the SDK's options");
 
     const first = ask("perm-1");
-    await until(() => Boolean(fake.sessions.get(session.id)?.waiting_since));
+    await waitingOnCentral(session.id);
 
     const res = await fetch(`${base}/sessions/${session.id}/interrupt`, { method: "POST" });
     assert.equal(res.status, 200);
@@ -1384,7 +1397,7 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.sessions.get(session.id)?.state, "running");
 
     const second = ask("perm-2");
-    await until(() => Boolean(fake.sessions.get(session.id)?.waiting_since));
+    await waitingOnCentral(session.id);
     const answerRes = await fetch(`${base}/sessions/${session.id}/questions/perm-2`, {
       method: "POST",
       headers: { "content-type": "application/json" },

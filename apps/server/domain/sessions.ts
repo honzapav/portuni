@@ -474,8 +474,9 @@ export async function closeSessionIfRunning(
 // there is no live transport that could possibly own any of these
 // connections anymore, so every 'running' row left over from a previous
 // life is stale by definition. Suspends (#329; previously closed) each one
-// with a server-generated handoff, so a session interrupted only by a
-// restart stays resumable. Not scoped to a single user: this is a
+// with no summary (#497): a session interrupted only by a restart stays
+// resumable from its conversation, or from a summary built from the
+// transcript when the next message resumes it. Not scoped to a single user: this is a
 // process-wide maintenance sweep, same as autoArchiveClosedSessions above.
 // On the central server (#458) it is record maintenance only: the rows it
 // suspends are the MCP-connection sessions that died with the process, with
