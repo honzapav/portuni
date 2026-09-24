@@ -277,8 +277,11 @@ export function picksComplete(prompts: readonly AskPrompt[], picks: AskPicks): b
 
 // The value to send, or null when there is nothing to send (an empty field
 // and no pick -- Enter in an empty field sends nothing). One dotaz (or none)
-// answers with a plain string; several answer question by question, the
-// typed text filling each one left without a pick.
+// answers with a plain string: a single-choice one with the typed text when
+// there is any (a click answers it at once, so the text is the user's own
+// answer), a multi-select one with its picks and the typed text after
+// them, so neither is lost. Several answer question by question, the typed
+// text filling each one left without a pick.
 export function askAnswer(prompts: readonly AskPrompt[], picks: AskPicks, text: string): string | Record<string, string> | null {
   const typed = text.trim();
   const picked = (p: AskPrompt): string | null => {
@@ -286,9 +289,11 @@ export function askAnswer(prompts: readonly AskPrompt[], picks: AskPicks, text: 
     return labels.length > 0 ? labels.join(", ") : null;
   };
   if (prompts.length <= 1) {
-    if (typed !== "") return typed;
     const only = prompts[0];
-    return only ? picked(only) : null;
+    const labels = only ? picked(only) : null;
+    if (only?.multi_select && labels !== null) return typed !== "" ? `${labels}, ${typed}` : labels;
+    if (typed !== "") return typed;
+    return labels;
   }
   const answers: Record<string, string> = {};
   for (const p of prompts) {

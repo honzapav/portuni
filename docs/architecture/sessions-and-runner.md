@@ -455,7 +455,8 @@ human verification.
   single one. The chat renders each dotaz's options as buttons above the
   free-text field: one single-choice dotaz answers on the click, several
   (or a multi-select, labels joined `, `) finish when all are picked or on
-  Odeslat, the typed text filling the dotazy left without a pick. An empty
+  Odeslat, the typed text filling the dotazy left without a pick; a single
+  multi-select dotaz sends its picks with the typed text after them. An empty
   field or an IME Enter sends nothing, and a second submit of the same
   question is dropped in the web (`createAnswerGate`). A question still
   open when the run ends is denied; one raised after the end is denied

@@ -617,6 +617,15 @@ describe("input questions (#492)", () => {
     assert.deepEqual(askAnswer([multi, dry], picks, "nevím"), { "Which features?": "c, b", "Dry run first?": "nevím" });
   });
 
+  it("a single multi-select question keeps its picks when a note is typed too", () => {
+    const multi = { question: "Which features?", options: ["a", "b", "c"], multi_select: true };
+    let picks = togglePick({}, multi, "a");
+    picks = togglePick(picks, multi, "c");
+    assert.equal(askAnswer([multi], picks, "a ještě d"), "a, c, a ještě d");
+    assert.equal(askAnswer([multi], picks, ""), "a, c");
+    assert.equal(askAnswer([multi], {}, "jen text"), "jen text");
+  });
+
   it("a second submit of the same question is dropped; a failed one can be retried", () => {
     const gate = createAnswerGate();
     assert.equal(gate.claim("q1"), true);
