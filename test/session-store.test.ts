@@ -184,13 +184,14 @@ describe("session store selectors", () => {
       row({ id: "suspended", state: "suspended", last_active_at: "2026-09-22 13:00:00" }),
       row({ id: "draft", state: "draft", last_active_at: "2026-09-22 14:00:00" }),
       row({ id: "closed", state: "closed" }),
-      row({ id: "cli", cli: "claude" }),
+      row({ id: "cli", cli: "claude", runner: null }),
+      row({ id: "runner-bound", cli: "claude", state: "suspended", last_active_at: "2026-09-22 10:00:00" }),
       row({ id: "chat", session_type: "interactive_chat" }),
       row({ id: "other-node", node_id: "node-b" }),
     ]);
     assert.deepEqual(
       selectNodeThreads(store, "node-a").map((s) => s.id),
-      ["waiting", "running-new", "running-old", "suspended", "draft"],
+      ["waiting", "running-new", "running-old", "suspended", "runner-bound", "draft"],
     );
     assert.deepEqual(selectNodeThreads(store, "node-z"), []);
     assert.deepEqual(selectNodeThreads(store, null), []);

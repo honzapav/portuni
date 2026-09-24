@@ -97,7 +97,7 @@ export default function WorkspaceNodeList(props: Props) {
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center gap-2 px-3 pt-4 pb-2">
+      <div className="flex items-center gap-2 px-4 pt-4 pb-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-dim)]">
           Otevřené
         </span>
