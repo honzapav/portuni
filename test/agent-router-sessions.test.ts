@@ -211,15 +211,6 @@ class FakeCentral implements CentralClient {
     throw new Error("the sidecar must not read session events from central (#456)");
   }
 
-  // The one-time legacy download runs at the sync agent's boot, not in
-  // these routes (test/content-import.test.ts covers it).
-  async listLegacySessionContent(): Promise<string[]> {
-    throw new Error("not used in this test");
-  }
-  async getLegacySessionContent(): ReturnType<CentralClient["getLegacySessionContent"]> {
-    throw new Error("not used in this test");
-  }
-
   async orientation(): Promise<OrientationSummary | null> {
     return this.orientationValue;
   }

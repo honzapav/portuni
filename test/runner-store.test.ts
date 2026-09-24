@@ -22,8 +22,8 @@ describe("DbSessionStore", () => {
     });
 
     assert.equal(session.session_type, "interactive_task");
-    // #456: the brief is content; the record carries none.
-    assert.equal(session.brief, null);
+    // #456, #462: the brief is content; the record has no such field.
+    assert.equal("brief" in session, false);
     assert.equal(session.runner, "claude");
     assert.equal(session.instance_id, "work");
     assert.equal(session.host_id, "this-machine");

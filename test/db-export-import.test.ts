@@ -55,10 +55,6 @@ async function seedRepresentativeData(db: DbClient): Promise<{ userId: string; n
     args: [run2, sessionId, run1],
   });
   await db.execute({
-    sql: "INSERT INTO session_events (id, session_id, run_id, seq, kind, payload) VALUES (?, ?, ?, 1, 'run_started', '{}')",
-    args: ["01EVENT0000000000000000001", sessionId, run1],
-  });
-  await db.execute({
     sql: `INSERT INTO actors (id, type, name) VALUES ('01ACTOR0000000000000000001', 'person', 'Actor')`,
   });
   return { userId, nodeId };

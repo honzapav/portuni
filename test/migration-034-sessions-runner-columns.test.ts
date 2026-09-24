@@ -3,7 +3,9 @@
 // and session_events are created). Mirrors the shape of
 // test/migration-030-sessions-node-set-null.test.ts and
 // test/schema-upgrade-ordering.test.ts (plant the legacy table, then run
-// ensureSchemaOn / runMigrations and assert the upgrade).
+// ensureSchemaOn / runMigrations and assert the upgrade). ensureSchemaOn
+// runs every later migration too, so the end state is the current shape:
+// brief and session_events are gone again after migration 040 (#462).
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient, type Client } from "@libsql/client";
@@ -51,7 +53,7 @@ async function buildPre034Db(): Promise<Client> {
 }
 
 describe("migration 034 sessions runner columns", () => {
-  it("upgrades a pre-034 database: renames profile_id, adds columns, creates the run/event tables", async () => {
+  it("upgrades a pre-034 database: renames profile_id, adds the record columns, creates the run table", async () => {
     const db = await buildPre034Db();
     await db.execute({
       sql: "INSERT INTO users (id, email, name) VALUES ('U1', 'a@b', 'A')",
@@ -67,16 +69,16 @@ describe("migration 034 sessions runner columns", () => {
     const colNames = new Set(cols.rows.map((r) => r.name as string));
     assert.ok(colNames.has("instance_id"), "profile_id must be renamed to instance_id");
     assert.ok(!colNames.has("profile_id"), "the old column name must be gone");
-    for (const col of ["brief", "runner", "host_id", "waiting_since"]) {
+    for (const col of ["runner", "host_id", "waiting_since"]) {
       assert.ok(colNames.has(col), `sessions must gain ${col}`);
     }
+    assert.ok(!colNames.has("brief"), "brief is content and leaves with migration 040");
 
     const row = await db.execute({
-      sql: "SELECT instance_id, brief, runner, host_id, waiting_since FROM sessions WHERE id = ?",
+      sql: "SELECT instance_id, runner, host_id, waiting_since FROM sessions WHERE id = ?",
       args: ["S0000000000000000000000001"],
     });
     assert.equal(row.rows[0].instance_id, "work", "the rename must preserve the existing value");
-    assert.equal(row.rows[0].brief, null);
     assert.equal(row.rows[0].runner, null);
     assert.equal(row.rows[0].host_id, null);
     assert.equal(row.rows[0].waiting_since, null);
@@ -86,7 +88,7 @@ describe("migration 034 sessions runner columns", () => {
     );
     assert.deepEqual(
       tables.rows.map((r) => r.name).sort(),
-      ["session_events", "session_runs"],
+      ["session_runs"],
     );
   });
 
@@ -98,19 +100,23 @@ describe("migration 034 sessions runner columns", () => {
     await runMigrations(db);
   });
 
-  it("a fresh install already has instance_id and the run/event tables", async () => {
+  it("a fresh install already has instance_id and the run table, and no session_events", async () => {
     const db = createClient({ url: ":memory:" });
     await ensureSchemaOn(db);
     const cols = await db.execute("PRAGMA table_info(sessions)");
     const colNames = new Set(cols.rows.map((r) => r.name as string));
     assert.ok(colNames.has("instance_id"));
     assert.ok(!colNames.has("profile_id"));
-    for (const col of ["brief", "runner", "host_id", "waiting_since"]) {
+    for (const col of ["runner", "host_id", "waiting_since"]) {
       assert.ok(colNames.has(col));
     }
+    assert.ok(!colNames.has("brief"));
     const tables = await db.execute(
       "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_runs','session_events')",
     );
-    assert.equal(tables.rows.length, 2);
+    assert.deepEqual(
+      tables.rows.map((r) => r.name),
+      ["session_runs"],
+    );
   });
 });
