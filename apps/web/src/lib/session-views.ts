@@ -121,9 +121,17 @@ export function requestChatSession(
 
 // v2 rule 7 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
 // a thread is a persistent task session the app opened; a hand-opened CLI
-// session (cli set) has no sub-row in Práce, Relace lists it.
-export function isThreadSession(s: { session_type: string; cli: string | null }): boolean {
-  return s.session_type === "interactive_task" && s.cli === null;
+// session has no sub-row in Práce, Relace lists it. The app opens a thread
+// through the runner, so `runner` is what tells them apart: `cli` does not,
+// because the thread's own agent fills it in when it connects to the MCP
+// server (bindExistingSessionHandshake), and the thread would drop out of
+// Práce on the next list refetch. A hand-opened session never has a runner.
+export function isThreadSession(s: {
+  session_type: string;
+  cli: string | null;
+  runner: string | null;
+}): boolean {
+  return s.session_type === "interactive_task" && (s.runner !== null || s.cli === null);
 }
 
 // v2 rule 6: the accent bar and the surface-2 fill mark exactly one row --
