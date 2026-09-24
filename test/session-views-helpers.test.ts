@@ -12,6 +12,7 @@ import {
   isThreadSession,
   nodeRowActive,
   shownChatSessionId,
+  threadCloseAction,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -232,5 +233,21 @@ describe("isChatSessionState", () => {
     assert.equal(isChatSessionState("draft"), true);
     assert.equal(isChatSessionState("closed"), false);
     assert.equal(isChatSessionState("archived"), false);
+  });
+});
+
+// #506: one answer for every surface that closes a thread -- the sidebar's
+// Uzly and Stav rows, the chat header and the Relace row all read it.
+describe("threadCloseAction", () => {
+  it("deletes a draft outright, on every surface", () => {
+    assert.equal(threadCloseAction("draft"), "delete");
+  });
+  it("asks first for a running or suspended thread", () => {
+    assert.equal(threadCloseAction("running"), "confirm");
+    assert.equal(threadCloseAction("suspended"), "confirm");
+  });
+  it("offers nothing for a closed or archived thread", () => {
+    assert.equal(threadCloseAction("closed"), null);
+    assert.equal(threadCloseAction("archived"), null);
   });
 });

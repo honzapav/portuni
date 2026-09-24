@@ -140,19 +140,22 @@ describe("central server: no content.db, no summary, no suspending a device's th
   });
 });
 
-describe("personal workspace: the same two suspends still write the device's summary", () => {
-  it("closeSessionIfRunning off the central server suspends a running thread with a summary", async () => {
+describe("personal workspace: the device's own suspend", () => {
+  it("closeSessionIfRunning off the central server suspends a running thread, with no summary (#497)", async () => {
     const db = await graphDb();
     const { installTestContentDb, clearTestContentDb } = await import("./helpers/content-db.js");
     const { content } = await installTestContentDb();
     setDbForTesting(db);
     try {
-      const task = await createSession(db, "U1", { node_id: NODE, session_type: "interactive_task", runner: "claude" });
+      // A hand-opened CLI: no runner, no run open -- the connection WAS the
+      // session, so this is the one shape a transport close still suspends
+      // (#487; a runner-driven thread is left to the runtime).
+      const task = await createSession(db, "U1", { node_id: NODE, session_type: "interactive_task", cli: "claude" });
       await closeSessionIfRunning(db, task.id, "disconnect", { central: false });
       const after = await getSession(db, task.id);
       assert.equal(after?.state, "suspended");
-      assert.ok(after?.handoff_hash, "the device wrote a summary");
-      assert.ok((await content.getContent(task.id))?.handoff_inline);
+      assert.equal(after?.handoff_hash, null, "a suspend writes no summary");
+      assert.equal((await content.getContent(task.id))?.handoff_inline ?? null, null);
     } finally {
       setDbForTesting(null);
       clearTestContentDb();

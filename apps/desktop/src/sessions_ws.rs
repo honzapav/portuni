@@ -12,15 +12,16 @@
 // lib.rs), not by an opaque per-call id -- the spec is explicit about one
 // connection per window, and every `ws:<id>` window maps 1:1 to a workspace.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::mpsc;
+use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
@@ -64,10 +65,66 @@ fn encode_session_event(frame: serde_json::Value) -> SessionEventPayload {
     SessionEventPayload { frame }
 }
 
+// The frames waiting for the live socket (#496). sessions_send pushes, the
+// background task pops and writes, sessions_cancel takes a still-queued
+// frame back out by its request id. A frame sent while the socket is down
+// waits here across the reconnect -- which is why it has to be cancellable:
+// the webview reports a request that got no reply in time as failed and
+// cancels it, and a failed request must never be delivered afterwards (a
+// resend would reach the agent twice). A frame already written is out of
+// reach; cancelling it is a no-op.
+#[derive(Default)]
+struct Outbox {
+    queue: Mutex<VecDeque<(Option<String>, String)>>,
+    notify: Notify,
+    closed: AtomicBool,
+}
+
+impl Outbox {
+    fn push(&self, frame: String) {
+        let id = frame_id(&frame);
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.push_back((id, frame));
+        }
+        self.notify.notify_one();
+    }
+
+    fn cancel(&self, id: &str) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.retain(|(frame_id, _)| frame_id.as_deref() != Some(id));
+        }
+    }
+
+    fn pop(&self) -> Option<String> {
+        self.queue.lock().ok()?.pop_front().map(|(_, frame)| frame)
+    }
+
+    // Wakes the background task for good: it closes its socket and exits.
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.notify.notify_one();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+}
+
+// The request id the webview put on a client frame (every request frame
+// carries one, apps/web/src/lib/sessions-client.ts); None for a frame
+// without one, which then cannot be cancelled.
+fn frame_id(frame: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(frame)
+        .ok()?
+        .get("id")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 struct Connection {
     // sessions_send writes frames in here; the background task reads them
     // and forwards each over the live socket.
-    outbox: mpsc::UnboundedSender<String>,
+    outbox: Arc<Outbox>,
     // Bumped on every sessions_connect/sessions_disconnect for this
     // workspace so a background task from a PRIOR connect (e.g. sleeping
     // out a reconnect backoff when a fresh connect or a disconnect
@@ -102,21 +159,28 @@ fn emit_connection_status(app: &AppHandle, ws_id: &str, status: &'static str) {
 #[tauri::command]
 pub(crate) async fn sessions_connect(app: AppHandle, window: tauri::Window) -> Result<(), String> {
     let ws_id = crate::ws_of(&window)?;
-    let (tx, rx) = mpsc::unbounded_channel::<String>();
+    let outbox = Arc::new(Outbox::default());
     let generation = {
         let state = app.state::<SessionsWsState>();
         let mut conns = state.connections.lock().map_err(|e| e.to_string())?;
         // Replacing an existing entry (a second sessions_connect for the
-        // same window, e.g. a remount) drops its Connection -- and with it
-        // the old outbox sender, which is exactly the signal the old
-        // background task's rx.recv() needs to close its socket and stop
-        // instead of running alongside the new one.
+        // same window, e.g. a remount) closes its outbox, which is exactly
+        // the signal the old background task needs to close its socket and
+        // stop instead of running alongside the new one.
         let generation = conns.get(&ws_id).map(|c| c.generation + 1).unwrap_or(0);
-        conns.insert(ws_id.clone(), Connection { outbox: tx, generation });
+        if let Some(old) = conns.insert(
+            ws_id.clone(),
+            Connection {
+                outbox: outbox.clone(),
+                generation,
+            },
+        ) {
+            old.outbox.close();
+        }
         generation
     };
 
-    tauri::async_runtime::spawn(run_connection_loop(app, ws_id, generation, rx));
+    tauri::async_runtime::spawn(run_connection_loop(app, ws_id, generation, outbox));
     Ok(())
 }
 
@@ -133,11 +197,12 @@ pub(crate) fn sessions_disconnect(app: AppHandle, window: tauri::Window) -> Resu
 pub(crate) fn disconnect_for_ws(app: &AppHandle, ws_id: &str) {
     if let Some(state) = app.try_state::<SessionsWsState>() {
         if let Ok(mut conns) = state.connections.lock() {
-            // Dropping the entry drops its outbox sender; the background
-            // task's rx.recv() returns None on its next poll, which is its
-            // own signal to close the socket and exit for good rather than
-            // reconnect.
-            conns.remove(ws_id);
+            // Closing the entry's outbox wakes the background task, which
+            // is its own signal to close the socket and exit for good
+            // rather than reconnect.
+            if let Some(conn) = conns.remove(ws_id) {
+                conn.outbox.close();
+            }
         }
     }
     emit_connection_status(app, ws_id, "closed");
@@ -151,16 +216,28 @@ pub(crate) fn sessions_send(app: AppHandle, window: tauri::Window, frame: String
     let conn = conns
         .get(&ws_id)
         .ok_or_else(|| "sessions_send: not connected".to_string())?;
-    conn.outbox
-        .send(frame)
-        .map_err(|_| "sessions_send: connection closed".to_string())
+    conn.outbox.push(frame);
+    Ok(())
+}
+
+// Takes a frame the webview gave up on out of the outbox, if it is still
+// queued (#496).
+#[tauri::command]
+pub(crate) fn sessions_cancel(app: AppHandle, window: tauri::Window, id: String) -> Result<(), String> {
+    let ws_id = crate::ws_of(&window)?;
+    let state = app.state::<SessionsWsState>();
+    let conns = state.connections.lock().map_err(|e| e.to_string())?;
+    if let Some(conn) = conns.get(&ws_id) {
+        conn.outbox.cancel(&id);
+    }
+    Ok(())
 }
 
 async fn run_connection_loop(
     app: AppHandle,
     ws_id: String,
     generation: u64,
-    mut rx: mpsc::UnboundedReceiver<String>,
+    outbox: Arc<Outbox>,
 ) {
     let mut backoff_ms = MIN_BACKOFF_MS;
     loop {
@@ -221,22 +298,22 @@ async fn run_connection_loop(
 
                 let (mut write, mut read) = stream.split();
                 let mut disconnected = false;
-                loop {
-                    tokio::select! {
-                        outgoing = rx.recv() => {
-                            match outgoing {
-                                Some(frame) => {
-                                    if write.send(Message::Text(frame.into())).await.is_err() {
-                                        break;
-                                    }
-                                }
-                                None => {
-                                    let _ = write.close().await;
-                                    disconnected = true;
-                                    break;
-                                }
-                            }
+                'socket: loop {
+                    if outbox.is_closed() {
+                        let _ = write.close().await;
+                        disconnected = true;
+                        break;
+                    }
+                    while let Some(frame) = outbox.pop() {
+                        if write.send(Message::Text(frame.into())).await.is_err() {
+                            break 'socket;
                         }
+                    }
+                    tokio::select! {
+                        // A push or a close since the last drain; Notify keeps
+                        // one permit, so a push between the drain and this
+                        // await is not lost.
+                        _ = outbox.notify.notified() => {}
                         incoming = read.next() => {
                             match incoming {
                                 Some(Ok(Message::Text(text))) => {
@@ -363,5 +440,48 @@ mod frame_codec_tests {
         let payload = encode_session_event(frame.clone());
         let round_tripped = serde_json::to_value(&payload).expect("serializes");
         assert_eq!(round_tripped["frame"], frame);
+    }
+}
+
+#[cfg(test)]
+mod outbox_tests {
+    use super::*;
+
+    #[test]
+    fn a_cancelled_frame_is_never_popped_and_the_rest_keep_their_order() {
+        let outbox = Outbox::default();
+        outbox.push(r#"{"id":"a","type":"subscribe","payload":{}}"#.to_string());
+        outbox.push(r#"{"id":"b","type":"message","payload":{}}"#.to_string());
+        outbox.push(r#"{"id":"c","type":"interrupt","payload":{}}"#.to_string());
+        outbox.cancel("b");
+        assert_eq!(frame_id(&outbox.pop().expect("a")).as_deref(), Some("a"));
+        assert_eq!(frame_id(&outbox.pop().expect("c")).as_deref(), Some("c"));
+        assert!(outbox.pop().is_none());
+    }
+
+    #[test]
+    fn cancelling_a_frame_already_popped_or_unknown_is_a_no_op() {
+        let outbox = Outbox::default();
+        outbox.push(r#"{"id":"a","type":"message","payload":{}}"#.to_string());
+        assert!(outbox.pop().is_some());
+        outbox.cancel("a");
+        outbox.cancel("nope");
+        outbox.push(r#"{"type":"unsubscribe","payload":{}}"#.to_string());
+        assert!(outbox.pop().is_some());
+    }
+
+    #[test]
+    fn frame_id_reads_the_request_id_and_nothing_else() {
+        assert_eq!(frame_id(r#"{"id":"x1","type":"message"}"#).as_deref(), Some("x1"));
+        assert_eq!(frame_id(r#"{"type":"unsubscribe"}"#), None);
+        assert_eq!(frame_id("{not json"), None);
+    }
+
+    #[test]
+    fn close_marks_the_outbox_closed() {
+        let outbox = Outbox::default();
+        assert!(!outbox.is_closed());
+        outbox.close();
+        assert!(outbox.is_closed());
     }
 }

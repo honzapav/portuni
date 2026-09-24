@@ -2,6 +2,7 @@
 // registered in production -- the registry issue decides where this is
 // wired up, and it is test-only there too.
 
+import { RunEndedError } from "../types.js";
 import type {
   CanonicalEvent,
   DeltaFrame,
@@ -147,6 +148,11 @@ export class FakeRunnerAdapter implements RunnerAdapter {
 
     return {
       async send(): Promise<void> {
+        // #489: mirrors the real adapter -- once the run has ended (the
+        // script ran out, an `end` step, close()) there is no one left to
+        // read the message, so the caller is told instead of the message
+        // vanishing into a script that will never resume.
+        if (ended || stopped) throw new RunEndedError("send: the fake run has ended");
         resolveWait("message");
       },
       async answer(): Promise<void> {

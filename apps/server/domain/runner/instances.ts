@@ -190,6 +190,17 @@ export async function getInstanceEnv(id: string, dataDir?: string): Promise<Reco
   return expanded;
 }
 
+// #508: where a provider instance's Claude CLI keeps its transcripts --
+// the instance's own CLAUDE_CONFIG_DIR (already tilde-expanded by
+// getInstanceEnv), or null for the CLI's default `~/.claude`. The one
+// resolution both session-runtime.ts's resumeByWriting (does the
+// conversation still exist?) and api/sessions.ts's resume-info answer use;
+// a blank value is the unset case, never a path relative to the cwd.
+export function instanceClaudeConfigDir(instanceEnv: Readonly<Record<string, string>>): string | null {
+  const dir = instanceEnv.CLAUDE_CONFIG_DIR?.trim();
+  return dir ? dir : null;
+}
+
 export async function createInstance(input: CreateInstanceInput, dataDir?: string): Promise<PublicInstance> {
   const name = input.name.trim();
   if (name === "") throw new Error("createInstance: name is required");

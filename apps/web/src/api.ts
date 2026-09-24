@@ -405,6 +405,18 @@ export function deletePersistentSession(id: string): Promise<void> {
   });
 }
 
+// #506: the one way a draft is deleted -- the × in the sidebar (Uzly and
+// Stav), the chat header's Uzavřít and the Relace row's all call this, with
+// no dialog (a draft has no message, so there is nothing to lose).
+// Optimistic: the record leaves the store now, so the row leaves every
+// selector and a chat showing the draft closes at once; the DELETE removes
+// it again when it lands. A refused DELETE is swallowed like before: the
+// node's next list carries the draft back if the server kept it.
+export function deleteDraftSession(id: string): void {
+  sessionStore?.remove(id);
+  void deletePersistentSession(id).catch(() => undefined);
+}
+
 // POST /sessions/:id/continue (#378) -- closes this session (its summary
 // seeds the new one, not a fresh suspend) and starts a new, running one on
 // the same node. "Pokračovat v nové session" (offered any time) and

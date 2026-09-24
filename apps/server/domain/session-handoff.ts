@@ -371,9 +371,12 @@ export interface SuspendRecordReader {
   patchRun(runId: string, patch: { ended_at: string; end_reason: RunEndReason }): Promise<unknown>;
 }
 
+// #497: all three null for a suspend that writes no summary (every reason
+// but Předat) -- the record only moves to suspended and drops any handoff an
+// earlier Předat left on it, which the transcript has outgrown since.
 export interface SuspendRecordInput {
   handoffPath: string | null;
-  handoffHash: string;
+  handoffHash: string | null;
   handoffTitle: string | null;
 }
 
@@ -406,13 +409,51 @@ export type SuspendServerSide = (
   opts?: SuspendServerSideOptions,
 ) => Promise<SessionRow | null>;
 
-// Suspends a 'running' session with a summary the SERVER writes, not the
-// agent -- a real file in the mirror when one exists on this device (same
-// path writeHandoffAndSuspend uses), or handoff_inline when it doesn't
-// (no mirror for the node here). A no-op (returns the row unchanged) for
-// any state other than 'running': already-suspended or terminal sessions
-// have nothing for this to do -- except a suspended one with no file when
-// the caller asks for it (writeFileIfSuspended).
+// The summary a thread's handoff carries, and the file it is written to.
+// #497: a handoff exists only because someone asked for it -- Předat (the
+// suspend below with reason "handoff") and Pokračovat v nové session
+// (SessionRuntime.continueSession, through writeFile) -- and a resume that
+// cannot reopen the conversation builds the summary on the spot
+// (summarize). Every other suspend writes nothing.
+export interface SessionHandoffs {
+  suspend: SuspendServerSide;
+  // The summary of the thread as this device's transcript has it now.
+  summarize(session: SessionRow, reason: ServerHandoffReason): Promise<string>;
+  // Writes `summary` as the thread's handoff file into this device's mirror
+  // of its node and tracks it. Null when there is no mirror here. Touches
+  // no record: the caller records the path with whatever else it writes.
+  writeFile(session: SessionRow, summary: string): Promise<HandoffFileWritten | null>;
+}
+
+export interface HandoffFileWritten {
+  handoffPath: string;
+  handoffHash: string;
+  handoffTitle: string | null;
+}
+
+export function createSessionHandoffs(deps: SuspendServerSideDeps): SessionHandoffs {
+  return {
+    suspend: createSuspendServerSide(deps),
+    summarize: (session, reason) => buildSuspendSummary(deps, session, reason),
+    writeFile: async (session, summary) => {
+      const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
+      if (!mirrorRoot || !session.node_id) return null;
+      return writeHandoffFile(deps, { ...session, node_id: session.node_id }, mirrorRoot, summary);
+    },
+  };
+}
+
+// Suspends a 'running' session. #497: only Předat (reason "handoff") writes
+// a summary -- a real file in the mirror when one exists on this device
+// (same path writeHandoffAndSuspend uses), or handoff_inline when it
+// doesn't. Every other reason (idle, a provider error or limit, the process
+// ending, a restart's boot sweep, a lost host) only moves the record to
+// suspended: the next message resumes the conversation, or builds the
+// summary from the transcript then (SessionRuntime's resumeByWriting). A
+// no-op (returns the row unchanged) for any state other than 'running':
+// already-suspended or terminal sessions have nothing for this to do --
+// except a suspended one with no file when the caller asks for it
+// (writeFileIfSuspended).
 export function createSuspendServerSide(deps: SuspendServerSideDeps): SuspendServerSide {
   return async function suspendServerSide(sessionId, reason, opts = {}) {
     const session = await deps.record.getSession(sessionId);
@@ -430,7 +471,10 @@ export function createSuspendServerSide(deps: SuspendServerSideDeps): SuspendSer
     // own run_ended does. A run the runtime already ended (ended_at set) is
     // left alone, so its path appends nothing twice.
     const endedRuns = await endDanglingRuns(deps, sessionId, reason);
-    const suspended = await suspendWithSummary(deps, session, reason);
+    const suspended =
+      reason === "handoff"
+        ? await suspendWithSummary(deps, session, reason)
+        : await deps.suspendRecord(session, { handoffPath: null, handoffHash: null, handoffTitle: null });
     // Only when THIS call ended a run: the runtime's own path (run_ended
     // already in the log, run row already ended) appends nothing here, so
     // its event sequence stays exactly what it was.
@@ -554,25 +598,20 @@ async function buildSuspendSummary(
   });
 }
 
-// Writes `summary` as the thread's handoff file into the node's mirror,
-// records it (state suspended, path, hash) and tracks the file. The inline
-// copy on the device is cleared: the file is now the handoff.
-async function writeSummaryFileAndRecord(
+// Writes `summary` as the thread's handoff file into the node's mirror and
+// tracks the file. The inline copy on the device is cleared: the file is
+// now the handoff.
+async function writeHandoffFile(
   deps: SuspendServerSideDeps,
   session: SessionRow & { node_id: string },
   mirrorRoot: string,
   summary: string,
-): Promise<SessionRow | null> {
+): Promise<HandoffFileWritten> {
   const relPath = handoffRelativePath(session.id);
   const absPath = join(mirrorRoot, relPath);
   await mkdir(dirname(absPath), { recursive: true });
   await writeFile(absPath, summary, "utf8");
   await deps.content.setContent(session.id, { handoff_inline: null });
-  const row = await deps.suspendRecord(session, {
-    handoffPath: relPath,
-    handoffHash: sha256Buffer(Buffer.from(summary, "utf8")),
-    handoffTitle: extractHandoffTitle(summary),
-  });
 
   // Record-only in a personal workspace, a push in a team one -- either
   // way best-effort: the file is on disk and the session IS suspended;
@@ -585,7 +624,22 @@ async function writeSummaryFileAndRecord(
       err,
     );
   }
-  return row;
+  return {
+    handoffPath: relPath,
+    handoffHash: sha256Buffer(Buffer.from(summary, "utf8")),
+    handoffTitle: extractHandoffTitle(summary),
+  };
+}
+
+// The file, then the record (state suspended, path, hash).
+async function writeSummaryFileAndRecord(
+  deps: SuspendServerSideDeps,
+  session: SessionRow & { node_id: string },
+  mirrorRoot: string,
+  summary: string,
+): Promise<SessionRow | null> {
+  const written = await writeHandoffFile(deps, session, mirrorRoot, summary);
+  return deps.suspendRecord(session, written);
 }
 
 async function suspendWithSummary(
@@ -610,10 +664,12 @@ async function suspendWithSummary(
 }
 
 // #459 Předat on a suspended thread with no handoff file. The summary is
-// the one its suspend already wrote when there was one (handoff_inline on
-// this device), otherwise the same summary a suspend writes, built from
-// this device's transcript now. No mirror here: nothing to write into, the
-// row comes back unchanged (the caller refuses before it gets here).
+// built from this device's transcript now -- the same summary a Předat on
+// a running thread writes. #497: nothing refreshes handoff_inline any more
+// (only a Předat with no mirror writes it, and later suspends leave it as
+// it was), so an inline summary is used only when there is no transcript
+// here to build from. No mirror here: nothing to write into, the row comes
+// back unchanged (the caller refuses before it gets here).
 async function writeFileForSuspended(
   deps: SuspendServerSideDeps,
   session: SessionRow,
@@ -621,7 +677,8 @@ async function writeFileForSuspended(
 ): Promise<SessionRow | null> {
   const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
   if (!mirrorRoot || !session.node_id) return session;
-  const inline = (await deps.content.getContent(session.id))?.handoff_inline ?? null;
+  const hasTranscript = (await deps.content.listEvents(session.id, { limit: 1 })).length > 0;
+  const inline = hasTranscript ? null : ((await deps.content.getContent(session.id))?.handoff_inline ?? null);
   const summary = inline ?? (await buildSuspendSummary(deps, session, reason));
   return writeSummaryFileAndRecord(deps, { ...session, node_id: session.node_id }, mirrorRoot, summary);
 }

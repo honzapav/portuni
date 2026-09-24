@@ -386,13 +386,34 @@ One typed client, two transports behind one `Transport` interface:
 Client rules:
 
 - Every request frame carries an id the server echoes; the caller awaits
-  the reply, and an unanswered request rejects on `REQUEST_TIMEOUT_MS`.
-  `disconnect()` rejects every pending request at once.
+  the reply. A request is delivered once, or reported as failed and never
+  sent afterwards (#496):
+  - an unanswered request rejects on `REQUEST_TIMEOUT_MS` (30 s) and its
+    frame is cancelled out of the transport's queue (`Transport.cancel`,
+    in Tauri `sessions_cancel` on the Rust outbox), so a message that
+    waited out a reconnect never reaches the agent after the chat showed
+    the error, and sending it again delivers it once;
+  - a `message` or `continue` on the wire (sent on an open connection, or
+    flushed by the open that followed) has no timeout: the server may take
+    longer than 30 s (a start waiting for the lifecycle lock, a
+    redelivery waiting for a run to end), and reporting it failed while it
+    is still delivered is what made a resend reach the agent twice. Its
+    reply or a drop settles it;
+  - when an open connection drops, every request already sent rejects at
+    once (`disconnected: ...`), since its reply cannot come on the next
+    connection; a request sent while the connection is down stays queued
+    until the next open or its timeout. A request that was on the wire at
+    the drop may or may not have reached the server; it is never resent;
+  - a subscribe never goes out while the connection is down, has no
+    timeout while it waits for it and survives a drop: each open sends one
+    subscribe per wanted session and settles every caller waiting on it,
+    so a first load that completes after a reconnect shows no load error;
+  - `disconnect()` rejects everything still outstanding.
 - The client tracks the highest `seq` seen **per session** from `event`
   frames only. `delta` frames carry no `seq` and are never persisted, so
   they never move it.
-- When the transport reports `open` after having been open before, the
-  client resubscribes every still-wanted session with `after: <last seq>`.
+- Every time the transport reports `open`, the client subscribes every
+  still-wanted session once, after a drop with `after: <last seq>`.
   The server's replay fills exactly that gap: nothing lost, nothing
   re-delivered.
 - `session_state` frames and the one `session_states` snapshot frame on
@@ -406,7 +427,9 @@ Client rules:
 
 `test/sessions-client.test.ts` drives the direct transport against a fake
 `ws` server (reply correlation, ordering, resubscribe-with-`after` across a
-forced drop, deltas not moving the seq). The Tauri transport has no runtime
+forced drop, deltas not moving the seq), and over an in-memory socket with
+mocked timers the #496 rules (timeout during an outage, drop in flight,
+subscribe across a long outage, a message on the wire past the timeout). The Tauri transport has no runtime
 to test against here.
 
 ## Event rendering
@@ -444,12 +467,15 @@ which also deduplicates a replay against a frame that raced it.
   as "N × <tool>". Expanded, one `ChainOfThoughtStep` per item with the
   `Tool` card inside; a historical group expands by hand, per mount; the
   live run's trailing group (`live: true`) stays open on the tool that is
-  running.
+  running. `live` needs a turn in flight (`turnInFlight`), not just the
+  live run: after `turn_ended` (a Stop mid-tool or mid-reasoning
+  included) the run is idle and no group looks live.
 - **The working row** (`WorkingRow`, `workingPhase`): while a turn is in
-  flight (`turnInFlight`: a `user_message` on the live run with no
-  `turn_ended` after it; the run start alone opens no turn, so a thread
-  started by Navázat or a resume waits idle for its first message) or a
-  send is in flight (`sentAt`), and
+  flight (`turnInFlight`: the live run's `user_message`s, counted from its
+  `run_started` plus the `carried_messages` that event names, outnumber
+  what its `turn_ended`s answered (`consumed_messages`); the run start
+  alone opens no turn, so a thread started by Navázat or a resume waits
+  idle for its first message) or a send is in flight (`sentAt`), and
   neither streaming text nor a running tool is on screen, a `Loader` with
   "Spouštím…" (until `run_started`), "Přemýšlím…" (until the first delta
   or tool) or "Pokračuji…" (after a tool finished) and a seconds counter.
@@ -459,11 +485,14 @@ which also deduplicates a replay against a frame that raced it.
   in flight only (`turnActive`), never to the idle run.
 - **Deltas**: two `DeltaBuffers` keyed by `run_id`, one for `channel:
   "text"`, one for `channel: "reasoning"`. Each is cleared by its own
-  persisted event (`assistant_message` / `reasoning`) and on `run_ended`.
-  The persisted event is the record; the delta is only its live preview.
-  Frames are coalesced first (`createDeltaCoalescer`): buffered per
-  (run, channel) and flushed once per `requestAnimationFrame`, so a burst
-  costs one render; `run_ended` flushes, unmount clears. The desktop
+  persisted event (`assistant_message` / `reasoning`) and both on
+  `turn_ended` and `run_ended` (`deltaBuffersAfter`): text streamed and
+  never finalized (a Stop mid-answer) ends with its turn and never
+  prefixes the next answer. The persisted event is the record; the delta
+  is only its live preview. Frames are coalesced first
+  (`createDeltaCoalescer`): buffered per (run, channel) and flushed once
+  per `requestAnimationFrame`, so a burst costs one render; `run_ended`
+  flushes, `turn_ended` drops the run's pending frames, unmount clears. The desktop
   bridge forwards frames unchanged.
 - **AI Elements** supply the transcript chrome under
   `src/components/ai-elements/` (`conversation`, `message`, `reasoning`,
@@ -536,11 +565,19 @@ which also deduplicates a replay against a frame that raced it.
 - **Question**: the latest `question` event renders as
   `QuestionConfirmation` above the composer while `isWaiting`; answers go
   through `sessionsClient.answer`.
-- **Close**: "Uzavřít" always asks first through a real `Dialog`
-  (`closeConfirmOpen` in `SessionChat`, `closeTaskConfirm` in `App.tsx` for
-  the sidebar `×`, `closeConfirm` in the Relace tab). `window.confirm` is a
-  no-op in the Tauri webview; never use it. A draft's `×` deletes outright
-  and is forgotten locally.
+- **Close**: every surface that closes a thread -- the sidebar's `×` in
+  Uzly (`TaskRow`) and in Stav (`TaskList`), Uzavřít in the chat header
+  (`SessionChat`) and on the Relace row (`DetailPane.sessions.tsx`) -- asks
+  `lib/session-views.ts`'s `threadCloseAction(state)` what it does (#506):
+  `delete` for a draft, `confirm` for running and suspended, nothing (no
+  control) for closed and archived. `confirm` is Uzavřít behind a real
+  `Dialog` (`closeConfirmOpen` in `SessionChat`, `closeTaskConfirm` in
+  `App.tsx` for the sidebar `×`, `closeConfirm` in the Relace tab);
+  `window.confirm` is a no-op in the Tauri webview, never use it. `delete`
+  has one implementation, `api.ts`'s `deleteDraftSession`: no dialog, the
+  record leaves the store at once (so the row leaves every selector and a
+  chat showing the draft closes), then `DELETE /sessions/:id`. The Relace
+  tab also drops the row from its own fetched list.
 - **Continue**: "Pokračovat v nové session" (open thread) and "Navázat"
   (closed row) both call `continueSession`; the caller switches to the
   returned session.

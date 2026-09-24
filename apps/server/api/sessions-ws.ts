@@ -40,6 +40,7 @@ import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../
 import { listSessions } from "../domain/sessions.js";
 import { scopeAtLeast } from "../auth/roles.js";
 import { handoffRefusal } from "./session-handoff-errors.js";
+import { RunnerMcpTokenMissingError } from "../domain/write-scope.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 import { logAudit } from "../infra/audit.js";
@@ -75,7 +76,7 @@ const ClientFrameSchema = z.discriminatedUnion("type", [
     payload: z.object({
       session_id: z.string(),
       request_id: z.string(),
-      decision: z.object({ value: z.union([z.string(), z.boolean()]) }),
+      decision: z.object({ value: z.union([z.string(), z.boolean(), z.record(z.string(), z.string())]) }),
     }),
   }),
   z.object({
@@ -273,19 +274,47 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     });
   }
 
+  // #494: every broadcast reads the row afresh, and two in flight at once
+  // (a run_ended and the suspend right after it) can finish out of order --
+  // a slow read against the central server landing last -- and leave every
+  // window on the older state. So the newest broadcast wins: each takes a
+  // number when its event fires, and a frame goes out only while no later
+  // broadcast of the same session has claimed the send. The reads still run
+  // side by side, so one stuck read never holds back the frames after it,
+  // and a failed read is logged, not swallowed.
+  const broadcastTurns = new Map<string, { issued: number; claimed: number; inFlight: number }>();
   async function broadcastSessionState(sessionId: string): Promise<void> {
-    const row = await deps.runtime().getSession(sessionId);
-    if (!row) return;
-    // One visibility answer per distinct identity, not per connection: a
-    // user with three windows open costs one node-access query, not three.
-    const verdicts = new Map<string, Promise<boolean>>();
-    for (const conn of connections) {
-      let verdict = verdicts.get(conn.identity.userId);
-      if (!verdict) {
-        verdict = deps.canSee(conn.identity, row);
-        verdicts.set(conn.identity.userId, verdict);
+    let turns = broadcastTurns.get(sessionId);
+    if (!turns) {
+      turns = { issued: 0, claimed: 0, inFlight: 0 };
+      broadcastTurns.set(sessionId, turns);
+    }
+    const mine = ++turns.issued;
+    turns.inFlight++;
+    try {
+      const row = await deps.runtime().getSession(sessionId);
+      if (!row || mine < turns.claimed) return;
+      turns.claimed = mine;
+      // One visibility answer per distinct identity, not per connection: a
+      // user with three windows open costs one node-access query, not three.
+      const verdicts = new Map<string, Promise<boolean>>();
+      for (const conn of connections) {
+        let verdict = verdicts.get(conn.identity.userId);
+        if (!verdict) {
+          verdict = deps.canSee(conn.identity, row);
+          verdicts.set(conn.identity.userId, verdict);
+        }
+        const visible = await verdict;
+        // A later broadcast took over while this one waited: its row is the
+        // newer one, and it sends to every connection itself.
+        if (turns.claimed !== mine) return;
+        if (visible) send(conn.ws, sessionStateFrame(row));
       }
-      if (await verdict) send(conn.ws, sessionStateFrame(row));
+    } catch (err) {
+      console.warn(`[portuni:sessions-ws] session_state for ${sessionId} was not sent:`, err);
+    } finally {
+      turns.inFlight--;
+      if (turns.inFlight === 0 && broadcastTurns.get(sessionId) === turns) broadcastTurns.delete(sessionId);
     }
   }
 
@@ -396,6 +425,12 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     } catch (err) {
       if (err instanceof Error && err.message.includes("has no live run")) {
         sendErrorReply(conn.ws, frame.id, "NO_LIVE_RUN", err.message);
+        return;
+      }
+      // #497: a resume with nothing to continue from on this device.
+      const refusal = handoffRefusal(err);
+      if (refusal) {
+        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message);
         return;
       }
       throw err;
@@ -542,6 +577,11 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       }
     } catch (err) {
       console.error("[portuni:sessions-ws] frame handling failed:", err);
+      // #507: a run that cannot start says why, the way REST's 503 does.
+      if (err instanceof RunnerMcpTokenMissingError) {
+        sendErrorReply(conn.ws, frame.id, err.code, err.message);
+        return;
+      }
       sendErrorReply(conn.ws, frame.id, "INTERNAL_ERROR", "internal error");
     }
   }

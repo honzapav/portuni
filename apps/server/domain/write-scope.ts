@@ -265,6 +265,30 @@ export function resolveTokenEnvVar(): string {
   return "PORTUNI_MCP_TOKEN_" + id.toUpperCase().replace(/-/g, "_");
 }
 
+// The bearer a runner-driven run's own MCP client presents to this
+// process's front door (#507): exactly the PORTUNI_AUTH_TOKEN the front
+// door verifies (http/middleware.ts), which the desktop hands every
+// sidecar. Not resolveTokenEnvVar()'s PORTUNI_MCP_TOKEN[_<WS>] -- that name
+// is only what per-mirror configs expand in a user's own shell, and nothing
+// sets it in the sidecar's env. A missing token is an error, never an
+// empty `Authorization: Bearer ` the front door answers with 401.
+export class RunnerMcpTokenMissingError extends Error {
+  // What REST (503) and the live channel answer with.
+  readonly code = "RUNNER_MCP_TOKEN_MISSING";
+  constructor() {
+    super(
+      "PORTUNI_AUTH_TOKEN is not set: the run's Portuni MCP connection would have no bearer for the front door",
+    );
+    this.name = "RunnerMcpTokenMissingError";
+  }
+}
+
+export function resolveRunnerMcpToken(): string {
+  const token = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim();
+  if (!token) throw new RunnerMcpTokenMissingError();
+  return token;
+}
+
 // Build the Claude Code project-scoped .mcp.json content. Claude Code
 // merges this over the user-scoped ~/.claude.json entry of the same name,
 // so inside a mirror the connection carries ?home_node_id=... and the MCP

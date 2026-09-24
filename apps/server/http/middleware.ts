@@ -7,6 +7,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ZodType } from "zod";
 import { authMode, checkAuthRequiredForConfig } from "../infra/server-config.js";
 import { LocalModeNoRemoteError } from "../domain/sync/types.js";
+import { RunnerMcpTokenMissingError } from "../domain/write-scope.js";
 import { getDb } from "../infra/db.js";
 import { constraintViolationMessage } from "../infra/sql.js";
 import { SOLO_USER } from "../infra/schema.js";
@@ -265,6 +266,13 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
   }
   if (err instanceof LocalModeNoRemoteError) {
     res.writeHead(409, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: err.message, code: err.code, request_id: id }));
+    return;
+  }
+  // #507: a run cannot start without the front door's token. The server is
+  // up but cannot do this; the caller learns why instead of a bare 500.
+  if (err instanceof RunnerMcpTokenMissingError) {
+    res.writeHead(503, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: err.message, code: err.code, request_id: id }));
     return;
   }

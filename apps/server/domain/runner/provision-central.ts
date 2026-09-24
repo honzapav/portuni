@@ -14,7 +14,7 @@ import {
   buildOrientationHint,
   resolvePortuniMcpUrl,
   resolvePortuniRoot,
-  resolveTokenEnvVar,
+  resolveRunnerMcpToken,
 } from "../write-scope.js";
 import type { CentralClient } from "../sync/central/client.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
@@ -23,6 +23,9 @@ export function createProvisionRunCentral(
   client: CentralClient,
 ): (input: ProvisionRunInput) => Promise<ProvisionRunResult> {
   return async function provisionRunCentral(input: ProvisionRunInput): Promise<ProvisionRunResult> {
+    // First, before any mirror work: a run without a front-door bearer
+    // cannot reach Portuni at all (#507).
+    const token = resolveRunnerMcpToken();
     // Idempotent, same as the local path: a node already mirrored on this
     // device returns the existing path without re-touching disk.
     const mirror = await createMirrorForNodeCentral(client, input.userId, { nodeId: input.nodeId });
@@ -48,7 +51,6 @@ export function createProvisionRunCentral(
     // local, graph/scope tools proxy to central, same as every other agent-
     // mode MCP connection.
     const url = appendHomeNodeIdToUrl(resolvePortuniMcpUrl(), input.nodeId);
-    const token = process.env[resolveTokenEnvVar()] ?? "";
 
     return { cwd, orientation, mcp: { url, token, homeNodeId: input.nodeId }, portuniRoot, mirrors: mirrorPaths };
   };

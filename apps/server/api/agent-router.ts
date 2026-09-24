@@ -95,7 +95,12 @@ import type {
 const NO_DB = null as unknown as DbClient;
 
 function respondCentral404(res: ServerResponse, err: unknown): boolean {
-  if (err instanceof CentralHttpError && err.status === 404) {
+  // A new thread is provisioned (its mirror made) before its record is
+  // created, so an unknown node can surface from the mirror step first.
+  const unknownNode =
+    (err instanceof CentralHttpError && err.status === 404) ||
+    (err instanceof MirrorCreateError && err.code === "NODE_NOT_FOUND");
+  if (unknownNode) {
     respondJson(res, 404, { error: "node not found" });
     return true;
   }
@@ -546,6 +551,8 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         await sessionRuntime.sendMessage(sessionId, body.text);
         respondJson(res, 202, { ok: true });
       } catch (err) {
+        // #497: a resume with nothing to continue from on this device.
+        if (respondHandoffRefusal(res, err)) return true;
         if (respondAgentSessionError(res, err)) return true;
         respondError(res, `POST /sessions/${sessionId}/messages`, err);
       }
@@ -560,7 +567,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       const body = await parseJsonBody(
         req,
         res,
-        z.object({ decision: z.object({ value: z.union([z.string(), z.boolean()]) }) }),
+        z.object({ decision: z.object({ value: z.union([z.string(), z.boolean(), z.record(z.string(), z.string())]) }) }),
       );
       if (!body) return true;
       const pending = sessionRuntime.pendingQuestion(sessionId);

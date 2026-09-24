@@ -13,14 +13,16 @@ import { isProcessAlive } from "../apps/server/domain/runner/process-liveness.js
 import {
   buildEnv,
   categorizeTool,
+  consumeSendUuids,
   createClaudeAdapter,
   resolveClaudeExecutable,
   toolTitle,
   waitForPidDeadOrTimeout,
   type CreateClaudeAdapterDeps,
 } from "../apps/server/domain/runner/adapters/claude.js";
+import { isRunEndedError } from "../apps/server/domain/runner/types.js";
 import type { CanonicalEvent, DeltaFrame, RunStart } from "../apps/server/domain/runner/types.js";
-import type { Options, PermissionResult, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
 function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
   return {
@@ -48,31 +50,68 @@ function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
 // `hold: true` keeps the iterator open after the script (the run stays
 // live, as it is while a real turn is in flight) until `release()` is
 // called -- canUseTool only means something on a live run.
+// `collectPrompt: true` additionally drains the prompt stream the way the
+// real CLI does, so a test can see the SDKUserMessages the adapter pushed
+// (#490: their uuids are what a result echoes back), and `inject()` feeds a
+// message into the live iterator after the script -- the only way to get a
+// result AFTER a send, which is what a queued message needs.
 function makeFakeQuery(
   script: readonly SDKMessage[],
   opts: {
     hold?: boolean;
+    collectPrompt?: boolean;
     supportedModels?: () => ReturnType<Query["supportedModels"]>;
     mcpServerStatus?: () => ReturnType<Query["mcpServerStatus"]>;
+    // What the CLI does on a Stop besides ending the turn (#493: it
+    // cancels the pending permission request, aborting canUseTool's signal).
+    onInterrupt?: () => void;
   } = {},
 ) {
   let capturedOptions: Options | undefined;
   const interruptCalls: number[] = [];
   const setModelCalls: (string | undefined)[] = [];
   const toggleCalls: [string, boolean][] = [];
-  let release: () => void = () => undefined;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const sent: SDKUserMessage[] = [];
+  const sentWaiters: { n: number; resolve: () => void }[] = [];
+  const inbox: SDKMessage[] = [];
+  let wake: (() => void) | null = null;
+  let released = false;
+  const wakeGen = (): void => {
+    const resolve = wake;
+    wake = null;
+    resolve?.();
+  };
+  const release = (): void => {
+    released = true;
+    wakeGen();
+  };
   const fakeQuery = ((_params: { prompt: unknown; options?: Options }) => {
     capturedOptions = _params.options;
+    if (opts.collectPrompt) {
+      void (async () => {
+        for await (const m of _params.prompt as AsyncIterable<SDKUserMessage>) {
+          sent.push(m);
+          for (let i = sentWaiters.length - 1; i >= 0; i--) {
+            if (sentWaiters[i].n <= sent.length) sentWaiters.splice(i, 1)[0].resolve();
+          }
+        }
+      })();
+    }
     async function* gen(): AsyncGenerator<SDKMessage, void> {
       for (const msg of script) yield msg;
-      if (opts.hold) await held;
+      if (!opts.hold) return;
+      for (;;) {
+        while (inbox.length > 0) yield inbox.shift() as SDKMessage;
+        if (released) return;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
     }
     const iterator = gen() as unknown as Query;
     (iterator as unknown as { interrupt: () => Promise<undefined> }).interrupt = async () => {
       interruptCalls.push(1);
+      opts.onInterrupt?.();
       return undefined;
     };
     (iterator as unknown as { setModel: (model?: string) => Promise<undefined> }).setModel = async (
@@ -100,6 +139,15 @@ function makeFakeQuery(
     setModelCalls,
     toggleCalls,
     release: () => release(),
+    sent,
+    // Resolves once the adapter has pushed at least `n` messages into the
+    // prompt stream -- the stream's own signal, never a timer.
+    waitForSent: (n: number): Promise<void> =>
+      sent.length >= n ? Promise.resolve() : new Promise<void>((resolve) => sentWaiters.push({ n, resolve })),
+    inject: (msg: SDKMessage): void => {
+      inbox.push(msg);
+      wakeGen();
+    },
   };
 }
 
@@ -400,42 +448,104 @@ describe("Claude adapter: message translation", () => {
     assert.equal(reasoningEvents[0].payload.duration_ms, 1_500, "first delta to the batched block");
   });
 
-  it("system/compact_boundary translates to a compaction event", async () => {
-    const script: SDKMessage[] = [
+  // #501: the PreCompact hook and compact_boundary describe the same
+  // compaction; only the boundary emits, with the real trigger, and the ring
+  // shows the size after compaction.
+  function compactScript(trigger: "manual" | "auto", postTokens: number | undefined): SDKMessage[] {
+    return [
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [{ type: "text", text: "hi" }],
+          usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 150_000, output_tokens: 5 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
       {
         type: "system",
         subtype: "compact_boundary",
-        compact_metadata: { trigger: "auto", pre_tokens: 100 },
+        compact_metadata: { trigger, pre_tokens: 150_010, ...(postTokens !== undefined ? { post_tokens: postTokens } : {}) },
         uuid: "u1",
         session_id: "s1",
       } as unknown as SDKMessage,
+      {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        result: "",
+        stop_reason: null,
+        total_cost_usd: 0.05,
+        usage: { input_tokens: 10, output_tokens: 7, cache_creation_input_tokens: 0, cache_read_input_tokens: 150_000 },
+        modelUsage: { "claude-opus-5": { contextWindow: 200_000, inputTokens: 10, outputTokens: 7 } },
+        permission_denials: [],
+        duration_ms: 1,
+        duration_api_ms: 1,
+        uuid: "u2",
+        session_id: "s1",
+      } as unknown as SDKMessage,
     ];
-    const { query } = makeFakeQuery(script);
+  }
+
+  async function runCompaction(
+    trigger: "manual" | "auto",
+    postTokens: number | undefined,
+    hookTrigger: "manual" | "auto" | null,
+  ): Promise<(CanonicalEvent | DeltaFrame)[]> {
+    const fake = makeFakeQuery([], { hold: true });
     const events: (CanonicalEvent | DeltaFrame)[] = [];
-    const adapter = createClaudeAdapter({ query });
-    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const handle = await createClaudeAdapter({ query: fake.query }).start(makeRunStart(), (e) => events.push(e));
+    if (hookTrigger !== null) {
+      const hook = fake.options()?.hooks?.PreCompact?.[0]?.hooks?.[0];
+      assert.ok(hook, "PreCompact hook must be registered");
+      await hook!(
+        { hook_event_name: "PreCompact", trigger: hookTrigger, custom_instructions: null, session_id: "s1", transcript_path: "", cwd: "/tmp" } as never,
+        undefined,
+        { signal: new AbortController().signal },
+      );
+    }
+    for (const m of compactScript(trigger, postTokens)) fake.inject(m);
+    fake.release();
     await handle.close();
-    const compactions = events.filter((e) => "kind" in e && e.kind === "compaction");
-    assert.equal(compactions.length, 1);
-    assert.deepEqual((compactions[0] as Extract<CanonicalEvent, { kind: "compaction" }>).payload, { trigger: "auto" });
+    return events;
+  }
+
+  function compactionsOf(events: (CanonicalEvent | DeltaFrame)[]) {
+    return events.filter((e): e is Extract<CanonicalEvent, { kind: "compaction" }> => "kind" in e && e.kind === "compaction");
+  }
+
+  function ringsOf(events: (CanonicalEvent | DeltaFrame)[]) {
+    return events.filter((e): e is Extract<CanonicalEvent, { kind: "context_usage" }> => "kind" in e && e.kind === "context_usage");
+  }
+
+  it("/compact (manual): one compaction marker with trigger manual, the ring shows the size after compaction", async () => {
+    const events = await runCompaction("manual", 12_000, "manual");
+    assert.deepEqual(compactionsOf(events).map((e) => e.payload), [{ trigger: "manual" }]);
+    assert.deepEqual(ringsOf(events).map((e) => e.payload.used_tokens), [150_010, 12_000, 12_000]);
+    const atTurnEnd = ringsOf(events)[2].payload;
+    assert.equal(atTurnEnd.max_tokens, 200_000);
+    assert.equal(atTurnEnd.cached_tokens, 0);
   });
 
-  it("the PreCompact hook emits a compaction event with the real trigger", async () => {
-    const { query, options } = makeFakeQuery([]);
-    const events: (CanonicalEvent | DeltaFrame)[] = [];
-    const adapter = createClaudeAdapter({ query });
-    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
-    const hook = options()?.hooks?.PreCompact?.[0]?.hooks?.[0];
-    assert.ok(hook, "PreCompact hook must be registered");
-    await hook!(
-      { hook_event_name: "PreCompact", trigger: "manual", custom_instructions: null, session_id: "s1", transcript_path: "", cwd: "/tmp" } as never,
-      undefined,
-      { signal: new AbortController().signal },
-    );
-    await handle.close();
-    const compactions = events.filter((e) => "kind" in e && e.kind === "compaction");
-    assert.equal(compactions.length, 1);
-    assert.deepEqual((compactions[0] as Extract<CanonicalEvent, { kind: "compaction" }>).payload, { trigger: "manual" });
+  it("automatic compaction: one compaction marker with trigger auto, the ring shows the size after compaction", async () => {
+    const events = await runCompaction("auto", 30_000, "auto");
+    assert.deepEqual(compactionsOf(events).map((e) => e.payload), [{ trigger: "auto" }]);
+    assert.deepEqual(ringsOf(events).map((e) => e.payload.used_tokens), [150_010, 30_000, 30_000]);
+  });
+
+  it("compact_boundary alone still emits one marker with its own trigger", async () => {
+    const events = await runCompaction("manual", 12_000, null);
+    assert.deepEqual(compactionsOf(events).map((e) => e.payload), [{ trigger: "manual" }]);
+  });
+
+  it("a boundary without post_tokens never lets the turn's end report the size before compaction", async () => {
+    const events = await runCompaction("auto", undefined, "auto");
+    assert.deepEqual(compactionsOf(events).map((e) => e.payload), [{ trigger: "auto" }]);
+    assert.deepEqual(ringsOf(events).map((e) => e.payload.used_tokens), [150_010]);
   });
 
   // A successful result is the turn-complete signal: the CLI stays alive
@@ -465,7 +575,12 @@ describe("Claude adapter: message translation", () => {
       await handle.close();
       const ends = events.filter((e) => "kind" in e && e.kind === "turn_ended");
       assert.equal(ends.length, 1);
-      assert.deepEqual((ends[0] as Extract<CanonicalEvent, { kind: "turn_ended" }>).payload, { run_id: "R1" });
+      // #490: the run's brief is its first message, and this turn answered
+      // it -- one message, the SDK's own one-result-per-turn default.
+      assert.deepEqual((ends[0] as Extract<CanonicalEvent, { kind: "turn_ended" }>).payload, {
+        run_id: "R1",
+        consumed_messages: 1,
+      });
     }
     {
       const failed = [{ ...(success[0] as object), is_error: true, result: "Not logged in" }] as unknown as SDKMessage[];
@@ -584,6 +699,120 @@ describe("Claude adapter: message translation", () => {
       cached_tokens: 164_483,
       output_tokens: 7_873,
     });
+  });
+
+  // #499: frames with parent_tool_use_id come from a subagent the main
+  // agent started; none of them is the thread's reply, activity or context.
+  it("a subagent's frames stay out of the transcript, the model and the context ring", async () => {
+    const sub = { parent_tool_use_id: "task-1", session_id: "s1" };
+    const script: SDKMessage[] = [
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [{ type: "tool_use", id: "task-1", name: "Task", input: { description: "prozkoumej", prompt: "..." } }],
+          usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 40_000, output_tokens: 5 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "sub hmm" } },
+        uuid: "se1",
+        ...sub,
+      } as unknown as SDKMessage,
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "sub te" } },
+        uuid: "se2",
+        ...sub,
+      } as unknown as SDKMessage,
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-haiku-4-5",
+          content: [
+            { type: "thinking", thinking: "sub hmm" },
+            { type: "text", text: "subagent text" },
+            { type: "tool_use", id: "sub-w", name: "Write", input: { file_path: "/tmp/sub.txt", content: "x" } },
+          ],
+          usage: { input_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 150_000, output_tokens: 9 },
+        },
+        uuid: "a2",
+        ...sub,
+      } as unknown as SDKMessage,
+      {
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "sub-w", content: "ok" }] },
+        uuid: "u2",
+        ...sub,
+      } as unknown as SDKMessage,
+      {
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "task-1", content: "hotovo" }] },
+        parent_tool_use_id: null,
+        uuid: "u3",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [{ type: "text", text: "main reply" }],
+          usage: { input_tokens: 20, cache_creation_input_tokens: 100, cache_read_input_tokens: 40_000, output_tokens: 6 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a3",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 2,
+        result: "done",
+        stop_reason: null,
+        total_cost_usd: 0.1,
+        usage: { input_tokens: 33, output_tokens: 20, cache_creation_input_tokens: 100, cache_read_input_tokens: 230_000 },
+        modelUsage: {
+          "claude-haiku-4-5": { contextWindow: 200_000, inputTokens: 3, outputTokens: 9 },
+          "claude-opus-5": { contextWindow: 1_000_000, inputTokens: 30, outputTokens: 11 },
+        },
+        permission_denials: [],
+        duration_ms: 1,
+        duration_api_ms: 1,
+        uuid: "r1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+    ];
+    const { query } = makeFakeQuery(script);
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await createClaudeAdapter({ query }).start(makeRunStart(), (e) => events.push(e));
+    await handle.close();
+    const canonical = events.filter((e): e is CanonicalEvent => "kind" in e);
+    const texts = canonical.flatMap((e) => (e.kind === "assistant_message" ? [e.payload.text] : []));
+    assert.deepEqual(texts, ["main reply"]);
+    assert.equal(canonical.filter((e) => e.kind === "reasoning").length, 0);
+    assert.equal(canonical.filter((e) => e.kind === "file_change").length, 0);
+    const tools = canonical.flatMap((e) => (e.kind === "tool_call" ? [`${e.payload.tool_use_id}:${e.payload.status}`] : []));
+    assert.deepEqual(tools, ["task-1:started", "task-1:completed"]);
+    assert.equal(events.filter((e) => !("kind" in e)).length, 0, "no subagent delta reaches the chat");
+    const usages = canonical.filter(
+      (e): e is Extract<CanonicalEvent, { kind: "context_usage" }> => e.kind === "context_usage",
+    );
+    assert.deepEqual(
+      usages.map((u) => [u.payload.model, u.payload.used_tokens, u.payload.max_tokens]),
+      [
+        ["claude-opus-5", 40_010, null],
+        ["claude-opus-5", 40_120, null],
+        ["claude-opus-5", 40_120, 1_000_000],
+      ],
+    );
   });
 
   it("a result message's usage/cost folds into the run_ended event", async () => {
@@ -760,6 +989,74 @@ describe("Claude adapter: a provider limit/error ends the run (#411)", () => {
       "exactly one error event",
     );
   });
+  it("an API error shows once and keeps the context ring (#500)", async () => {
+    const usage = { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 40_000, output_tokens: 5 };
+    const script: SDKMessage[] = [
+      {
+        type: "assistant",
+        message: { role: "assistant", model: "claude-opus-5", content: [{ type: "text", text: "Hotovo." }], usage },
+        parent_tool_use_id: null,
+        uuid: "a1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      resultMessage({ usage, modelUsage: { "claude-opus-5": { contextWindow: 200_000 } } }),
+      // The SDK's synthetic assistant message for an API failure, then the
+      // result carrying the same text.
+      {
+        type: "assistant",
+        error: "overloaded",
+        message: {
+          role: "assistant",
+          model: "<synthetic>",
+          content: [{ type: "text", text: "API Error: Overloaded" }],
+          usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+        },
+        parent_tool_use_id: null,
+        uuid: "a2",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      resultMessage({
+        is_error: true,
+        result: "API Error: Overloaded",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        modelUsage: {},
+        uuid: "u2",
+      }),
+    ];
+    const { query, release } = makeFakeQuery(script, { hold: true });
+    const c = collector();
+    const adapter = createClaudeAdapter({
+      query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart(), c.sink);
+    await c.ended;
+
+    const kinds = (kind: string) => c.events.filter((e) => "kind" in e && e.kind === kind) as CanonicalEvent[];
+    const replies = kinds("assistant_message") as Extract<CanonicalEvent, { kind: "assistant_message" }>[];
+    assert.deepEqual(
+      replies.map((r) => r.payload.text),
+      ["Hotovo."],
+      "the synthetic error message is no reply",
+    );
+    const errors = kinds("error") as Extract<CanonicalEvent, { kind: "error" }>[];
+    assert.equal(errors.length, 1, "the error shows once");
+    assert.match(errors[0].payload.message, /Overloaded/);
+
+    const rings = kinds("context_usage") as Extract<CanonicalEvent, { kind: "context_usage" }>[];
+    assert.ok(rings.length > 0);
+    for (const ring of rings) {
+      assert.equal(ring.payload.used_tokens, 40_010, "the ring never drops to the synthetic zero");
+      assert.equal(ring.payload.model, "claude-opus-5", "the model is never <synthetic>");
+    }
+    assert.equal(rings[rings.length - 1].payload.max_tokens, 200_000);
+
+    await handle.close();
+    release();
+  });
 });
 
 describe("Claude adapter: Stop (Esc) ends the turn, not the run", () => {
@@ -927,6 +1224,61 @@ describe("Claude adapter: canUseTool", () => {
     await handle.close();
   });
 
+  // #492: the tool reads `answers: { [question text]: answer }`
+  // (sdk-tools.d.ts AskUserQuestionInput); an `answer` field is ignored and
+  // the model is told the user did not answer.
+  it("an AskUserQuestion answer reaches the tool as answers keyed by question text", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const input = { questions: [{ question: "Continue?", header: "Go", options: [{ label: "Yes" }, { label: "No" }], multiSelect: false }] };
+    const pending = options()!.canUseTool!("AskUserQuestion", input, {
+      requestId: "req-a",
+      signal: new AbortController().signal,
+    } as never);
+    const question = events.find((e) => "kind" in e && e.kind === "question") as
+      | Extract<CanonicalEvent, { kind: "question" }>
+      | undefined;
+    assert.deepEqual(question?.payload.options, ["Yes", "No"]);
+    assert.deepEqual(question?.payload.questions, [{ question: "Continue?", options: ["Yes", "No"], multi_select: false }]);
+
+    await handle.answer("req-a", { by: "U1", value: "Yes", at: new Date().toISOString() });
+    const result = (await pending) as { behavior: string; updatedInput: Record<string, unknown> };
+    assert.equal(result.behavior, "allow");
+    assert.deepEqual(result.updatedInput.answers, { "Continue?": "Yes" });
+    assert.equal("answer" in result.updatedInput, false);
+    release();
+    await handle.close();
+  });
+
+  it("a multi-question AskUserQuestion answered with a map passes one answer per question", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const input = {
+      questions: [
+        { question: "Which environment?", header: "Env", options: [{ label: "staging" }, { label: "production" }], multiSelect: false },
+        { question: "Dry run first?", header: "Mode", options: [{ label: "yes" }, { label: "no" }], multiSelect: false },
+      ],
+    };
+    const pending = options()!.canUseTool!("AskUserQuestion", input, {
+      requestId: "req-m",
+      signal: new AbortController().signal,
+    } as never);
+    await handle.answer("req-m", {
+      by: "U1",
+      value: { "Which environment?": "production", "Dry run first?": "no" },
+      at: new Date().toISOString(),
+    });
+    const result = (await pending) as { behavior: string; updatedInput: Record<string, unknown> };
+    assert.equal(result.behavior, "allow");
+    assert.deepEqual(result.updatedInput.answers, { "Which environment?": "production", "Dry run first?": "no" });
+    assert.deepEqual(result.updatedInput.questions, input.questions);
+    release();
+    await handle.close();
+  });
+
   it("rejecting an ask denies with the Czech refusal message", async () => {
     const { query, options, release } = makeFakeQuery([], { hold: true });
     const adapter = createClaudeAdapter({ query });
@@ -1037,6 +1389,166 @@ describe("Claude adapter: MCP elicitation", () => {
     await handle.close();
   });
 
+  // #493: a Stop cancels the turn, and the SDK aborts the signal of the
+  // permission request that turn was waiting on. The question must close
+  // (a decided question event the runtime reads as "stop waiting") and
+  // free the line, so the next turn's question shows at once.
+  it("Stop while a permission question is open closes it and the next question shows at once", async () => {
+    const aborts: AbortController[] = [];
+    const { query, options, release } = makeFakeQuery([], {
+      hold: true,
+      onInterrupt: () => {
+        for (const controller of aborts.splice(0)) controller.abort();
+      },
+    });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const questions = () =>
+      events.filter((e) => "kind" in e && e.kind === "question") as Extract<CanonicalEvent, { kind: "question" }>[];
+    const ask = (requestId: string) => {
+      const controller = new AbortController();
+      aborts.push(controller);
+      return options()!.canUseTool!("ExitPlanMode", { plan: "the plan" }, {
+        requestId,
+        signal: controller.signal,
+      } as never);
+    };
+
+    const first = ask("perm-stop");
+    await flushMicrotasks();
+    assert.equal(questions().length, 1);
+
+    await handle.interrupt();
+    const result = (await first) as PermissionResult;
+    assert.equal(result.behavior, "deny");
+    assert.equal(questions().length, 2, "the chat learns the question closed");
+    assert.equal(questions()[1].payload.request_id, "perm-stop");
+    assert.deepEqual(
+      { by: questions()[1].payload.decision?.by, value: questions()[1].payload.decision?.value },
+      { by: "system", value: false },
+    );
+    assert.equal(questions()[1].payload.tool, "ExitPlanMode");
+
+    // The next turn's question is not stuck behind the dead one.
+    const second = ask("perm-next");
+    await flushMicrotasks();
+    assert.equal(questions().length, 3, "the next question is shown at once");
+    assert.equal(questions()[2].payload.request_id, "perm-next");
+    assert.equal(questions()[2].payload.decision, null);
+    await handle.answer("perm-next", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.equal(((await second) as PermissionResult).behavior, "allow");
+
+    // A late click on the closed question changes nothing.
+    await handle.answer("perm-stop", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.equal(questions().length, 3);
+    release();
+    await handle.close();
+  });
+
+  it("a permission ask cancelled while waiting in line is never shown", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const questions = () => events.filter((e) => "kind" in e && e.kind === "question");
+    const open = options()!.canUseTool!("ExitPlanMode", { plan: "a" }, {
+      requestId: "perm-open",
+      signal: new AbortController().signal,
+    } as never);
+    const controller = new AbortController();
+    const queued = options()!.canUseTool!("ExitPlanMode", { plan: "b" }, {
+      requestId: "perm-queued",
+      signal: controller.signal,
+    } as never);
+    await flushMicrotasks();
+    controller.abort();
+    await handle.answer("perm-open", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.equal(((await open) as PermissionResult).behavior, "allow");
+    assert.equal(((await queued) as PermissionResult).behavior, "deny");
+    assert.equal(questions().length, 1, "the cancelled ask never reached the chat");
+    release();
+    await handle.close();
+  });
+
+  // An ask the SDK gave up on while it waited in line settles right away:
+  // the SDK is waiting on it, and nothing about it depends on the question
+  // in front of it being answered.
+  it("a permission ask aborted while waiting in line settles at once, not when the open one is answered", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const questions = () => events.filter((e) => "kind" in e && e.kind === "question");
+    const open = options()!.canUseTool!("ExitPlanMode", { plan: "a" }, {
+      requestId: "perm-open",
+      signal: new AbortController().signal,
+    } as never);
+    const controller = new AbortController();
+    let queuedResult: PermissionResult | null = null;
+    void options()!.canUseTool!("ExitPlanMode", { plan: "b" }, {
+      requestId: "perm-queued",
+      signal: controller.signal,
+    } as never).then((r) => {
+      queuedResult = r as PermissionResult;
+    });
+    await flushMicrotasks();
+    controller.abort();
+    await flushMicrotasks();
+    assert.equal((queuedResult as PermissionResult | null)?.behavior, "deny", "settled while perm-open is still open");
+    assert.equal(questions().length, 1);
+
+    await handle.answer("perm-open", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.equal(((await open) as PermissionResult).behavior, "allow");
+    // The line is free: the next ask is shown at once.
+    const next = options()!.canUseTool!("ExitPlanMode", { plan: "c" }, {
+      requestId: "perm-next",
+      signal: new AbortController().signal,
+    } as never);
+    await flushMicrotasks();
+    assert.equal(questions().length, 2);
+    await handle.answer("perm-next", { by: "U1", value: false, at: new Date().toISOString() });
+    await next;
+    release();
+    await handle.close();
+  });
+
+  it("an answered permission ask leaves no abort listener on the SDK's signal", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const listeners = new Set<unknown>();
+    const signal = {
+      aborted: false,
+      addEventListener: (_type: string, listener: unknown) => listeners.add(listener),
+      removeEventListener: (_type: string, listener: unknown) => listeners.delete(listener),
+    };
+    const pending = options()!.canUseTool!("ExitPlanMode", { plan: "a" }, { requestId: "perm-1", signal } as never);
+    assert.equal(listeners.size, 1);
+    await handle.answer("perm-1", { by: "U1", value: true, at: new Date().toISOString() });
+    await pending;
+    assert.equal(listeners.size, 0);
+    release();
+    await handle.close();
+  });
+
+  it("an AskUserQuestion answered with a bare true is denied as unanswered, never allowed empty", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const pending = options()!.canUseTool!(
+      "AskUserQuestion",
+      { questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }] },
+      { requestId: "req-true", signal: new AbortController().signal } as never,
+    );
+    await handle.answer("req-true", { by: "U1", value: true, at: new Date().toISOString() });
+    const result = (await pending) as PermissionResult;
+    assert.equal(result.behavior, "deny");
+    assert.equal((result as { message: string }).message, "Uživatel na otázku neodpověděl.");
+    release();
+    await handle.close();
+  });
+
   it("a dialog raised while a permission question is open waits for its turn", async () => {
     const { query, options, release } = makeFakeQuery([], { hold: true });
     const adapter = createClaudeAdapter({ query });
@@ -1086,6 +1598,72 @@ describe("Claude adapter: MCP elicitation", () => {
     assert.equal(questions[1].payload.decision?.value, false);
     // A late click on the closed question changes nothing.
     await handle.answer("el-abort", { by: "U1", value: true, at: new Date().toISOString() });
+    release();
+    await handle.close();
+  });
+
+  // #509: the SDK does not abort a dialog's signal on interrupt() (live
+  // probe: scripts/probe-sdk-elicitation.mjs PROBE_ANSWER=interrupt), so
+  // the adapter closes it itself; the fake query's interrupt aborts nothing.
+  it("Stop while a dialog is open cancels it, closes the question and drops the dialog waiting in line", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const questions = () =>
+      events.filter((e) => "kind" in e && e.kind === "question") as Extract<CanonicalEvent, { kind: "question" }>[];
+    const open = options()!.onElicitation!(PORTUNI_CONFIRM, {
+      signal: new AbortController().signal,
+      requestId: "el-stop",
+    });
+    const queued = options()!.onElicitation!(PORTUNI_CONFIRM, {
+      signal: new AbortController().signal,
+      requestId: "el-stop-queued",
+    });
+    await flushMicrotasks();
+    assert.equal(questions().length, 1);
+
+    await handle.interrupt();
+    assert.deepEqual(await open, { action: "cancel" });
+    assert.deepEqual(await queued, { action: "cancel" });
+    await flushMicrotasks();
+    assert.equal(questions().length, 2, "the chat learns the open question closed; the queued one is never shown");
+    assert.equal(questions()[1].payload.request_id, "el-stop");
+    assert.deepEqual(
+      { by: questions()[1].payload.decision?.by, value: questions()[1].payload.decision?.value },
+      { by: "system", value: false },
+    );
+
+    // The next turn's dialog shows at once, and a late click on the closed
+    // one changes nothing.
+    await handle.answer("el-stop", { by: "U1", value: true, at: new Date().toISOString() });
+    const next = options()!.onElicitation!(PORTUNI_CONFIRM, {
+      signal: new AbortController().signal,
+      requestId: "el-next",
+    });
+    await flushMicrotasks();
+    assert.equal(questions().length, 3);
+    assert.equal(questions()[2].payload.request_id, "el-next");
+    await handle.answer("el-next", { by: "U1", value: true, at: new Date().toISOString() });
+    assert.deepEqual(await next, { action: "accept", content: { confirm: true } });
+    release();
+    await handle.close();
+  });
+
+  it("a URL dialog is declined without a question, and the transcript names the server", async () => {
+    const { query, options, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const result = await options()!.onElicitation!(
+      { serverName: "tempo", message: "Sign in", mode: "url", url: "https://example.test/login", elicitationId: "e1" },
+      { signal: new AbortController().signal, requestId: "el-url" },
+    );
+    assert.deepEqual(result, { action: "decline" });
+    assert.equal(events.filter((e) => "kind" in e && e.kind === "question").length, 0);
+    const errors = events.filter((e) => "kind" in e && e.kind === "error") as Extract<CanonicalEvent, { kind: "error" }>[];
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].payload.message, /tempo/);
     release();
     await handle.close();
   });
@@ -1659,5 +2237,373 @@ describe("Claude adapter: pid-death race (#325)", () => {
     // close()'s own race) so no pending promise chain outlives this test.
     releaseIterator?.();
     await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+});
+
+// #489: a message handed to a run that is over (or tearing down) used to be
+// pushed into a prompt stream nobody reads any more -- the chat showed it,
+// the agent never saw it. The handle now says so and the runtime delivers
+// it to the next run.
+describe("Claude adapter: send() into a run that is ending (#489)", () => {
+  function resultMsg(overrides: Record<string, unknown>): SDKMessage {
+    return {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      stop_reason: null,
+      total_cost_usd: 0.01,
+      usage: { input_tokens: 1, output_tokens: 2 },
+      modelUsage: {},
+      permission_denials: [],
+      duration_ms: 1,
+      duration_api_ms: 1,
+      uuid: "u1",
+      session_id: "s1",
+      ...overrides,
+    } as unknown as SDKMessage;
+  }
+
+  it("a live run still takes the message; close() ending the prompt stream makes the next one throw", async () => {
+    const { query, release } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({
+      query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+
+    // The ordinary case is untouched.
+    await handle.send("keep going");
+
+    const closing = handle.close();
+    await assert.rejects(
+      () => handle.send("too late"),
+      (err: unknown) => {
+        assert.equal(isRunEndedError(err), true);
+        return true;
+      },
+    );
+    release();
+    await closing;
+  });
+
+  it("a message during a provider-limit teardown is refused, not buffered", async () => {
+    const script: SDKMessage[] = [
+      resultMsg({ is_error: true, result: "You've hit your monthly spend limit" }),
+    ];
+    // hold: true -- the CLI is still alive while the teardown runs, which is
+    // exactly when a user who just read the error writes the next message.
+    const { query, release } = makeFakeQuery(script, { hold: true });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    let markEnded: () => void = () => undefined;
+    const ended = new Promise<void>((resolve) => {
+      markEnded = resolve;
+    });
+    const adapter = createClaudeAdapter({
+      query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart(), (e) => {
+      events.push(e);
+      if ("kind" in e && e.kind === "error") {
+        // The provider error is the signal the teardown has begun.
+        markEnded();
+      }
+    });
+    await ended;
+
+    await assert.rejects(
+      () => handle.send("a co teď?"),
+      (err: unknown) => {
+        assert.equal(isRunEndedError(err), true);
+        return true;
+      },
+    );
+    release();
+    await handle.close();
+  });
+});
+
+// #490: a turn is not a message. The SDK's own contract (sdk.d.ts of
+// @anthropic-ai/claude-agent-sdk 0.3.270) says the CLI "emits exactly one
+// result message per turn" and that "queued sends may coalesce into fewer
+// turns", echoing in `user_message_uuids` "client uuids of every user
+// message whose prompt this turn consumed" -- so a second message written
+// mid-turn can be answered by the SAME result as the first. The adapter
+// tags every send with a uuid and reports on turn_ended how many of them
+// the turn answered; the runtime and the chat count with that number.
+describe("Claude adapter: how many messages a turn answered (#490)", () => {
+  function resultMessage(overrides: Record<string, unknown>): SDKMessage {
+    return {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      stop_reason: null,
+      total_cost_usd: 0.01,
+      usage: { input_tokens: 1, output_tokens: 2 },
+      modelUsage: {},
+      permission_denials: [],
+      duration_ms: 1,
+      duration_api_ms: 1,
+      uuid: "u1",
+      session_id: "s1",
+      ...overrides,
+    } as unknown as SDKMessage;
+  }
+
+  // Collects events and hands out a promise per turn_ended, so nothing here
+  // waits a fixed time for the adapter to translate an injected result.
+  function turnCollector() {
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const waiters: (() => void)[] = [];
+    const turns = (): Extract<CanonicalEvent, { kind: "turn_ended" }>[] =>
+      events.filter((e) => "kind" in e && e.kind === "turn_ended") as Extract<
+        CanonicalEvent,
+        { kind: "turn_ended" }
+      >[];
+    return {
+      events,
+      turns,
+      sink(e: CanonicalEvent | DeltaFrame): void {
+        events.push(e);
+        if ("kind" in e && e.kind === "turn_ended") {
+          for (const w of waiters.splice(0)) w();
+        }
+      },
+      nextTurn(seen: number): Promise<void> {
+        return turns().length > seen ? Promise.resolve() : new Promise<void>((resolve) => waiters.push(resolve));
+      },
+    };
+  }
+
+  it("one result that answered both sends reports both: the turn is over for two messages", async () => {
+    const fake = makeFakeQuery([], { hold: true, collectPrompt: true });
+    const c = turnCollector();
+    const adapter = createClaudeAdapter({
+      query: fake.query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart({ brief: "první" }), c.sink);
+    await fake.waitForSent(1);
+    await handle.send("druhá");
+    await fake.waitForSent(2);
+
+    const uuids = fake.sent.map((m) => String(m.uuid));
+    assert.equal(new Set(uuids).size, 2, "every send carries a uuid of its own");
+    assert.deepEqual(
+      fake.sent.map((m) => m.message.content),
+      ["první", "druhá"],
+    );
+
+    // The CLI folded the queued message into the running turn: one result,
+    // both uuids, nothing left in the queue.
+    fake.inject(
+      resultMessage({ user_message_uuids: uuids, user_message_uuid: uuids[1], queued_turn_count: 0 }),
+    );
+    await c.nextTurn(0);
+    assert.equal(c.turns().length, 1);
+    assert.equal(c.turns()[0].payload.consumed_messages, 2);
+
+    fake.release();
+    await handle.close();
+  });
+
+  it("a result that answered only the first send leaves the second in flight", async () => {
+    const fake = makeFakeQuery([], { hold: true, collectPrompt: true });
+    const c = turnCollector();
+    const adapter = createClaudeAdapter({
+      query: fake.query,
+      closePollIntervalMs: 5,
+      closeGraceMs: 10,
+      closeTermMs: 10,
+      closeTimeoutMs: 10,
+    });
+    const handle = await adapter.start(makeRunStart({ brief: "první" }), c.sink);
+    await fake.waitForSent(1);
+    await handle.send("druhá");
+    await fake.waitForSent(2);
+    const uuids = fake.sent.map((m) => String(m.uuid));
+
+    fake.inject(resultMessage({ user_message_uuids: [uuids[0]], user_message_uuid: uuids[0], queued_turn_count: 1 }));
+    await c.nextTurn(0);
+    assert.equal(c.turns()[0].payload.consumed_messages, 1, "one message answered, one still queued");
+
+    fake.inject(resultMessage({ user_message_uuids: [uuids[1]], user_message_uuid: uuids[1], queued_turn_count: 0 }));
+    await c.nextTurn(1);
+    assert.equal(c.turns()[1].payload.consumed_messages, 1);
+
+    fake.release();
+    await handle.close();
+  });
+});
+
+describe("consumeSendUuids (#490)", () => {
+  it("takes every send the turn echoed, in any order", () => {
+    const pending = ["a", "b", "c"];
+    assert.equal(consumeSendUuids(pending, { user_message_uuids: ["a", "b"], user_message_uuid: "b" }), 2);
+    assert.deepEqual(pending, ["c"]);
+  });
+
+  it("a coalesced turn that echoes only its last member takes everything before it too", () => {
+    const pending = ["a", "b", "c"];
+    assert.equal(consumeSendUuids(pending, { user_message_uuid: "b" }), 2);
+    assert.deepEqual(pending, ["c"]);
+  });
+
+  it("no echo at all is one message: one result per turn", () => {
+    const pending = ["a", "b"];
+    assert.equal(consumeSendUuids(pending, {}), 1);
+    assert.deepEqual(pending, ["b"]);
+  });
+
+  it("the queue count resyncs what no echo reported: an interrupt that dropped the backlog", () => {
+    const pending = ["a", "b", "c"];
+    // The interrupted turn answered "a"; the CLI reports an empty queue, so
+    // nothing is waiting any more -- b and c are gone with it.
+    assert.equal(consumeSendUuids(pending, { user_message_uuid: "a", queued_turn_count: 0 }), 3);
+    assert.deepEqual(pending, []);
+  });
+
+  it("a turn that consumed none of ours takes nothing", () => {
+    const pending = ["a"];
+    assert.equal(consumeSendUuids(pending, { user_message_uuids: ["x"], user_message_uuid: "x", queued_turn_count: 1 }), 0);
+    assert.deepEqual(pending, ["a"]);
+  });
+
+  it("nothing pending is nothing consumed", () => {
+    const pending: string[] = [];
+    assert.equal(consumeSendUuids(pending, { user_message_uuid: "a" }), 0);
+  });
+});
+
+// #502: a Stop during thinking left the block's start in the adapter, and
+// the next turn's "uvažoval N s" counted from it, idle time included. Each
+// turn's reasoning is timed on its own.
+describe("Claude adapter: reasoning time restarts with each turn (#502)", () => {
+  function thinkingDelta(text: string): SDKMessage {
+    return {
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: text } },
+      parent_tool_use_id: null,
+      uuid: `d-${text}`,
+      session_id: "s1",
+    } as unknown as SDKMessage;
+  }
+  function thinkingBlock(text: string): SDKMessage {
+    return {
+      type: "assistant",
+      message: { content: [{ type: "thinking", thinking: text, signature: "sig" }] },
+      parent_tool_use_id: null,
+      uuid: `a-${text}`,
+      session_id: "s1",
+    } as unknown as SDKMessage;
+  }
+  function result(subtype: "success" | "error_during_execution"): SDKMessage {
+    return {
+      type: "result",
+      subtype,
+      is_error: subtype !== "success",
+      num_turns: 1,
+      stop_reason: null,
+      total_cost_usd: 0.01,
+      usage: { input_tokens: 1, output_tokens: 2 },
+      modelUsage: {},
+      permission_denials: [],
+      duration_ms: 1,
+      duration_api_ms: 1,
+      uuid: `r-${subtype}`,
+      session_id: "s1",
+    } as unknown as SDKMessage;
+  }
+
+  // Runs one live run against an injected clock; `next(pred)` resolves on
+  // the first sunk event matching `pred` from now on -- a signal, no timer.
+  async function liveRun() {
+    const fake = makeFakeQuery([], { hold: true });
+    let clock = 1_000_000;
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const waiters: { pred: (e: CanonicalEvent | DeltaFrame) => boolean; resolve: () => void }[] = [];
+    const adapter = createClaudeAdapter({ query: fake.query, now: () => clock });
+    const handle = await adapter.start(makeRunStart(), (e) => {
+      events.push(e);
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        if (waiters[i].pred(e)) waiters.splice(i, 1)[0].resolve();
+      }
+    });
+    const next = (pred: (e: CanonicalEvent | DeltaFrame) => boolean): Promise<void> =>
+      new Promise<void>((resolve) => waiters.push({ pred, resolve }));
+    const isDelta = (e: CanonicalEvent | DeltaFrame) => "type" in e && e.type === "delta";
+    const isKind = (kind: string) => (e: CanonicalEvent | DeltaFrame) => "kind" in e && e.kind === kind;
+    return {
+      fake,
+      handle,
+      events,
+      setClock: (t: number) => {
+        clock = t;
+      },
+      delta: async (text: string) => {
+        const seen = next(isDelta);
+        fake.inject(thinkingDelta(text));
+        await seen;
+      },
+      endTurn: async (subtype: "success" | "error_during_execution") => {
+        const seen = next(isKind("turn_ended"));
+        fake.inject(result(subtype));
+        await seen;
+      },
+      block: async (text: string) => {
+        const seen = next(isKind("reasoning"));
+        fake.inject(thinkingBlock(text));
+        await seen;
+      },
+      durations: () =>
+        (events.filter(isKind("reasoning")) as Extract<CanonicalEvent, { kind: "reasoning" }>[]).map(
+          (e) => e.payload.duration_ms,
+        ),
+    };
+  }
+
+  it("thinking, Stop, a later turn with thinking: the duration is the second thinking only", async () => {
+    const run = await liveRun();
+    run.setClock(1_000_000);
+    await run.delta("first ");
+    await run.handle.interrupt();
+    await run.endTurn("error_during_execution");
+
+    // A long idle gap, then the next turn thinks for 2 s.
+    run.setClock(1_600_000);
+    await run.delta("second ");
+    run.setClock(1_602_000);
+    await run.block("second thought");
+
+    assert.deepEqual(run.durations(), [2_000], "the Stop's thinking and the idle gap do not count");
+    run.fake.release();
+    await run.handle.close();
+  });
+
+  it("a turn whose thinking never completed: the next turn's thinking is timed from its own first delta", async () => {
+    const run = await liveRun();
+    run.setClock(1_000_000);
+    await run.delta("cut off ");
+    await run.endTurn("success");
+
+    run.setClock(1_300_000);
+    await run.delta("next ");
+    run.setClock(1_305_000);
+    await run.block("next thought");
+
+    assert.deepEqual(run.durations(), [5_000]);
+    run.fake.release();
+    await run.handle.close();
   });
 });

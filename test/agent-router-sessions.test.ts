@@ -8,7 +8,7 @@
 
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
@@ -43,9 +43,16 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { getMirrorPath, registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { installTestContentDb } from "./helpers/content-db.js";
+import { createInstance } from "../apps/server/domain/runner/instances.js";
+import { claudeProjectSlug } from "../apps/server/domain/session-handoff.js";
+import { TeardownAdapter } from "./helpers/teardown-adapter.js";
+import { GatedAdapter } from "./helpers/gated-adapter.js";
+import { createClaudeAdapter, type CreateClaudeAdapterDeps } from "../apps/server/domain/runner/adapters/claude.js";
+import type { Options, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 
 const NODE_ID = "N1";
+const TURN_DONE_STEP: FakeScriptStep = { kind: "turn_ended", payload: { run_id: "fake" } };
 const NODE_SYNC_INFO: NodeSyncInfo = {
   node: { id: NODE_ID, name: "Proj", type: "project", sync_key: "proj", org_sync_key: "workflow" },
   remote_name: null,
@@ -318,7 +325,11 @@ let emptyDb: ReturnType<typeof createLibsqlDbClient>;
 
 describe("agent-router: sessions/tasks", () => {
   before(async () => {
-    delete process.env.PORTUNI_AUTH_TOKEN;
+    // The token the desktop gives every sidecar; a run's provisioning hands
+    // it to the runner as its MCP bearer and refuses to start without it
+    // (#507). The bearer gate itself was frozen at middleware.ts's load,
+    // before this runs, so these requests still go without one.
+    process.env.PORTUNI_AUTH_TOKEN = "device-front-door-token";
     // provisionRunCentral creates a real mirror directory on disk (same as
     // local mode's own provisionRun) -- a task can't start without one.
     workspace = await mkdtemp(join(tmpdir(), "portuni-agent-sessions-"));
@@ -402,8 +413,9 @@ describe("agent-router: sessions/tasks", () => {
         [2, "user_message"],
         [3, "run_ended"],
         // #378: nobody closed this run explicitly, so it falls through to
-        // the auto-summary/suspend path and gets its handoff event too.
-        [4, "handoff"],
+        // the suspend path -- the transition the suspend made (#494), and
+        // no handoff event: only Předat writes a summary (#497).
+        [4, "state_changed"],
       ],
     );
   });
@@ -458,6 +470,189 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.runs.size, 1);
   });
 
+  // #489: the same redelivery, in the primary runtime -- a team
+  // workspace's sync agent, whose record store is CentralSessionStore over
+  // the fake central server. Driven through the runtime rather than over
+  // HTTP: the teardown window only exists while the adapter holds it open.
+  it("a message a run that is ending refuses starts the next run (#489)", async () => {
+    clearRegistryForTests();
+    const adapter = new TeardownAdapter();
+    registerAdapter(adapter);
+    const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+    const { session } = await runtime.startTask({
+      userId: SOLO_USER,
+      nodeId: NODE_ID,
+      brief: "x",
+      runner: "fake",
+    });
+    const first = adapter.last;
+    first.emit({ kind: "error", payload: { class: "provider", message: "You've hit your monthly spend limit" } });
+    first.beginTeardown();
+
+    const send = runtime.sendMessage(session.id, "tak co teď?");
+    await first.refused;
+    first.endRun("limit");
+    await send;
+
+    // The message reached the agent as the next run's first message, and
+    // the record central holds is a second run on a running thread.
+    assert.equal(adapter.runs.length, 2);
+    assert.equal(adapter.runs[1].start.brief, "tak co teď?");
+    assert.equal(fake.runs.size, 2);
+    assert.equal(fake.sessions.get(session.id)?.state, "running");
+    const texts = (await content.listEvents(session.id))
+      .filter((e) => e.kind === "user_message")
+      .map((e) => JSON.parse(e.payload).text as string);
+    assert.deepEqual(texts, ["x", "tak co teď?"]);
+  });
+
+  // #494: a run that ends on its own is suspended by the runtime, and the
+  // live channel (api/sessions-ws.ts) learns it from a published
+  // state_changed -- in the primary runtime, a team workspace's sync agent
+  // whose record store is CentralSessionStore over the fake central server.
+  it("a run that ends on its own publishes running -> suspended after the record is suspended (#494)", async () => {
+    clearRegistryForTests();
+    const adapter = new TeardownAdapter();
+    registerAdapter(adapter);
+    const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+    const { session } = await runtime.startTask({
+      userId: SOLO_USER,
+      nodeId: NODE_ID,
+      brief: "první",
+      runner: "fake",
+    });
+    const suspendedSeen = new Promise<string | undefined>((resolve) => {
+      runtime.subscribe(session.id, (_id, event) => {
+        if ("kind" in event && event.kind === "state_changed" && event.payload.to === "suspended") {
+          // What sessions-ws.ts reads the moment it sees the event.
+          resolve(fake.sessions.get(session.id)?.state);
+        }
+      });
+    });
+    adapter.last.endRun("completed");
+    assert.equal(await suspendedSeen, "suspended");
+    clearRegistryForTests();
+  });
+
+  // #490: the same count of unanswered messages, in the primary runtime --
+  // a team workspace's sync agent, whose record store is CentralSessionStore
+  // over the fake central server. The runtime is shared domain code, so
+  // what the count protects (the idle sweep) must hold here too.
+  it("the idle sweep leaves a run whose second message is still unanswered (#490)", async () => {
+    clearRegistryForTests();
+    const adapter = new TeardownAdapter();
+    registerAdapter(adapter);
+    const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+    const { session } = await runtime.startTask({
+      userId: SOLO_USER,
+      nodeId: NODE_ID,
+      brief: "první",
+      runner: "fake",
+    });
+    const run = adapter.last;
+    await runtime.sendMessage(session.id, "druhá");
+
+    run.emit({ kind: "turn_ended", payload: { run_id: run.start.runId } });
+    // interrupt() is a no-op on this adapter and drains the event queue.
+    await runtime.interrupt(session.id);
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal(fake.sessions.get(session.id)?.state, "running");
+
+    run.emit({ kind: "turn_ended", payload: { run_id: run.start.runId } });
+    await runtime.interrupt(session.id);
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal(fake.sessions.get(session.id)?.state, "suspended");
+    clearRegistryForTests();
+  });
+
+  // #508: the resume under a profile, in the primary runtime -- a team
+  // workspace's sync agent, whose record store is CentralSessionStore over
+  // the fake central server. Central never learns the CLI here (its record
+  // keeps cli null), the instance and its env are this device's
+  // runners.json, and the transcript is only in the instance's
+  // CLAUDE_CONFIG_DIR.
+  it("writing into a suspended thread resumes the conversation from the instance's CLAUDE_CONFIG_DIR (#508)", async () => {
+    clearRegistryForTests();
+    const dir = await mkdtemp(join(tmpdir(), "portuni-agent-profile-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      const configDir = join(dir, "claude-tempo");
+      const instance = await createInstance({ name: "Tempo", runner: "claude", env: { CLAUDE_CONFIG_DIR: configDir } });
+      const inner = new FakeRunnerAdapter({ script: [TURN_DONE_STEP, { wait: "message" }], agentSessionId: "conv-tempo" });
+      registerAdapter({
+        id: "claude",
+        detect: () => inner.detect(),
+        start: (run, sink) => inner.start(run, sink),
+        models: () => inner.models(),
+      });
+      const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+      const { session } = await runtime.startTask({
+        userId: SOLO_USER,
+        nodeId: NODE_ID,
+        brief: "zadání",
+        runner: "claude",
+        instanceId: instance.id,
+      });
+      const cwd = inner.getLastRunStart()!.cwd;
+      await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+      await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-tempo.jsonl"), "{}\n", "utf8");
+      await runtime.checkIdleRunsOnce(0, Date.now() + 1);
+      assert.equal(fake.sessions.get(session.id)?.state, "suspended");
+      assert.equal(fake.sessions.get(session.id)?.cli, null);
+
+      await runtime.sendMessage(session.id, "pokračuj");
+
+      assert.deepEqual(inner.getLastRunStart()?.resume, { agentSessionId: "conv-tempo" });
+      const runs = [...fake.runs.values()].filter((r) => r.session_id === session.id);
+      assert.equal(runs.length, 2);
+      assert.equal(fake.sessions.get(session.id)?.state, "running");
+      await runtime.closeSession(session.id);
+    } finally {
+      clearRegistryForTests();
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #488: the same lifecycle lock, in the primary runtime -- a team
+  // workspace's sync agent, whose record store is CentralSessionStore over
+  // the fake central server. Driven through the runtime rather than over
+  // HTTP, so the second message is provably in flight while the start is:
+  // two fetches give no signal for when the second one reached sendMessage.
+  it("a second message sent while a draft's first run is starting reaches that run (#488)", async () => {
+    clearRegistryForTests();
+    const gated = new GatedAdapter(new FakeRunnerAdapter({ script: [{ wait: "message" }] }));
+    registerAdapter(gated);
+    const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+    const draft = await runtime.createDraft({ userId: SOLO_USER, nodeId: NODE_ID });
+    const first = runtime.sendMessage(draft.id, "one");
+    const second = runtime.sendMessage(draft.id, "two");
+    await gated.entered;
+    gated.open();
+    await first;
+    // Not "has no live run": the second message waited for the start.
+    await second;
+
+    // One process, one run on the record central holds.
+    assert.equal(gated.startCount, 1);
+    assert.equal(fake.runs.size, 1);
+    assert.equal(fake.sessions.get(draft.id)?.state, "running");
+    const events = await content.listEvents(draft.id);
+    assert.deepEqual(
+      events.filter((e) => e.kind === "user_message").map((e) => JSON.parse(e.payload).text),
+      ["one", "two"],
+    );
+    await runtime.closeSession(draft.id);
+    clearRegistryForTests();
+  });
+
   it("a run ending on a provider limit suspends the thread on central too (#411)", async () => {
     // What the Claude adapter reports when the CLI answers with a spend
     // limit: one provider error, then the run ends with reason "limit".
@@ -473,12 +668,11 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(res.status, 201);
     const { session } = (await res.json()) as { session: SessionRow };
 
-    // #458: the one server-side suspend, agent-mode seams -- the summary
-    // lands in the device's own mirror, the state patch goes to central
-    // over REST.
+    // #458: the one server-side suspend, agent-mode seams -- the state
+    // patch goes to central over REST; #497: no summary with it.
     const stored = fake.sessions.get(session.id);
     assert.equal(stored?.state, "suspended");
-    assert.ok(stored?.handoff_path, "a server-written summary must be recorded on central");
+    assert.equal(stored?.handoff_path ?? null, null, "a suspend records no handoff on central");
 
     const run = [...fake.runs.values()][0];
     assert.equal(run.end_reason, "limit");
@@ -489,14 +683,13 @@ describe("agent-router: sessions/tasks", () => {
     const payload = JSON.parse(error!.payload) as { class: string; message: string };
     assert.equal(payload.class, "provider");
     assert.match(payload.message, /spend limit/);
-    assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
+    assert.equal(events.some((e) => e.kind === "handoff"), false, "no handoff event (#497)");
   });
 
-  // #427: the sync agent's suspend fallback writes the SAME summary the
-  // personal-workspace path writes -- scope sections filled from central --
-  // and registers the file record-only so it shows under Files at once
-  // instead of waiting for the next sync run's untracked discovery.
-  it("the suspend fallback fills the write/read set from central and registers the handoff", async () => {
+  // #497: a suspend the runtime does on its own (here the run ending by
+  // itself) writes no file, so nothing is registered on central and no
+  // scope is read for a summary.
+  it("a suspend registers no handoff on central and reads no scope for a summary (#497)", async () => {
     stubScript([{ end: "completed" }]);
     fake.registered = [];
     fake.scopeReads = [];
@@ -510,8 +703,37 @@ describe("agent-router: sessions/tasks", () => {
 
     const stored = fake.sessions.get(session.id);
     assert.equal(stored?.state, "suspended");
-    assert.ok(stored?.handoff_path, "a server-written summary must be recorded on central");
-    assert.deepEqual(fake.scopeReads, [session.id], "the fallback must read the session's scope from central");
+    assert.equal(stored?.handoff_path ?? null, null);
+    assert.equal(stored?.handoff_hash ?? null, null);
+    assert.deepEqual(fake.registered, [], "nothing registered on central");
+    assert.deepEqual(fake.scopeReads, [], "no summary, so no scope read");
+    const mirrorRoot = await getMirrorPath(stored!.user_id, NODE_ID);
+    assert.ok(mirrorRoot, "the task's mirror exists on this device");
+    await assert.rejects(() => readFile(join(mirrorRoot!, `wip/sessions/${session.id}-handoff.md`), "utf8"));
+  });
+
+  // #427: Předat in a sync agent writes the SAME summary the
+  // personal-workspace path writes -- scope sections filled from central --
+  // and registers the file record-only so it shows under Files at once
+  // instead of waiting for the next sync run's untracked discovery.
+  it("Předat fills the write/read set from central and registers the handoff (#497)", async () => {
+    stubScript([{ wait: "message" }]);
+    fake.registered = [];
+    fake.scopeReads = [];
+    const res = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    assert.equal(res.status, 201);
+    const { session } = (await res.json()) as { session: SessionRow };
+    const handedOver = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    assert.equal(handedOver.status, 200);
+
+    const stored = fake.sessions.get(session.id);
+    assert.equal(stored?.state, "suspended");
+    assert.ok(stored?.handoff_path, "Předat records the handoff on central");
+    assert.deepEqual(fake.scopeReads, [session.id], "the summary reads the session's scope from central");
 
     const mirrorRoot = await getMirrorPath(stored!.user_id, NODE_ID);
     assert.ok(mirrorRoot, "the task's mirror must exist on this device");
@@ -528,10 +750,10 @@ describe("agent-router: sessions/tasks", () => {
     );
   });
 
-  // A central that refuses the scope read must not cost the thread its
-  // suspend: the summary is still written, only without its scope sections.
-  it("a failing scope read still suspends the thread with a handoff", async () => {
-    stubScript([{ end: "completed" }]);
+  // A central that refuses the scope read must not cost Předat its file:
+  // the summary is still written, only without its scope sections.
+  it("a failing scope read still hands the thread over with a file", async () => {
+    stubScript([{ wait: "message" }]);
     const realScope = fake.sessionScopeRecord.bind(fake);
     fake.sessionScopeRecord = async () => {
       throw new CentralHttpError("scope unavailable", 500);
@@ -543,6 +765,8 @@ describe("agent-router: sessions/tasks", () => {
         body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
       });
       const { session } = (await res.json()) as { session: SessionRow };
+      const handedOver = await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+      assert.equal(handedOver.status, 200);
       const stored = fake.sessions.get(session.id);
       assert.equal(stored?.state, "suspended");
       assert.ok(stored?.handoff_path);
@@ -582,6 +806,7 @@ describe("agent-router: sessions/tasks", () => {
 
   it("continue closes the old session and starts a new, running one on central (#378)", async () => {
     stubScript([{ wait: "message" }]);
+    fake.registered = [];
     const start = await fetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -597,6 +822,15 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.sessions.get(session.id)?.state, "closed");
     assert.equal(fake.sessions.get(continued.id)?.state, "running");
     assert.equal(fake.runs.size, 2, "continue must create a second run record on central");
+
+    // #497: Pokračovat v nové session writes the old thread's handoff file
+    // here, records it on central and registers it there.
+    const relPath = `wip/sessions/${session.id}-handoff.md`;
+    assert.equal(fake.sessions.get(session.id)?.handoff_path, relPath);
+    assert.deepEqual(fake.registered, [{ nodeId: NODE_ID, relPath }]);
+    const mirrorRoot = await getMirrorPath(fake.sessions.get(session.id)!.user_id, NODE_ID);
+    assert.match(await readFile(join(mirrorRoot!, relPath), "utf8"), /server-handoff reason=continue/);
+    await fetch(`${base}/sessions/${continued.id}/close`, { method: "POST" });
   });
 
   // The four device-local session/runner routes is_device_local_path sends
@@ -624,7 +858,7 @@ describe("agent-router: sessions/tasks", () => {
   // #459 "Předat": the device ends the run, writes the summary into its own
   // mirror and registers it; the central server only learns the record
   // patch (suspended + handoff_path). The team-workspace half of the same
-  // operation test/runner-runtime.test.ts covers for a personal workspace.
+  // operation test/runner-runtime-handoff.test.ts covers for a personal workspace.
   it("POST /sessions/:id/handoff drains the run, writes the handoff file here and suspends the record on central", async () => {
     stubScript([{ wait: "message" }]);
     fake.registered = [];
@@ -708,8 +942,34 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.runs.get(run.id)?.ended_at, null);
   });
 
+  // #497: writing into a suspended thread whose transcript is on another
+  // device, with no conversation or Předat file to continue from here, is
+  // refused the way Předat is -- and nothing is started or changed.
+  it("POST /sessions/:id/messages 409s for a suspended thread whose transcript is elsewhere", async () => {
+    const created = await fake.createSessionRecord({
+      node_id: NODE_ID,
+      user_id: SOLO_USER,
+      runner: "fake",
+      instance_id: null,
+      host_id: "druhy-mac",
+    });
+    await fake.patchSessionRecord(created.id, { state: "suspended" });
+
+    const res = await fetch(`${base}/sessions/${created.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "pokračuj" }),
+    });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string; code: string };
+    assert.equal(body.code, "HANDOFF_TRANSCRIPT_ELSEWHERE");
+    assert.match(body.error, /druhy-mac/);
+    assert.equal(fake.sessions.get(created.id)?.state, "suspended");
+    assert.equal([...fake.runs.values()].filter((r) => r.session_id === created.id).length, 0);
+  });
+
   // #460 "Navázat na handoff": the file and the run are this device's, the
-  // new record is central's. test/runner-runtime.test.ts covers the same
+  // new record is central's. test/runner-runtime-handoff.test.ts covers the same
   // body for a personal workspace.
   it("POST /sessions with handoff_path starts a new thread here from another thread's handoff file", async () => {
     const adapter = stubScript([{ wait: "message" }]);
@@ -944,8 +1204,9 @@ describe("agent-router: sessions/tasks", () => {
     assert.deepEqual(
       body.events.map((e) => e.kind),
       // #378: nobody closed this run explicitly, so it falls through to the
-      // auto-summary/suspend path and gets its handoff event too.
-      ["run_started", "user_message", "run_ended", "handoff"],
+      // suspend path; #494: the suspend itself is in the log, so the chat
+      // learns of it; #497: and no handoff event, only Předat writes one.
+      ["run_started", "user_message", "run_ended", "state_changed"],
     );
   });
 
@@ -982,12 +1243,14 @@ describe("agent-router: sessions/tasks", () => {
   // reports on is content (content.db) and the handoff file it hashes is in
   // this device's mirror, neither of which central has.
   it("GET /sessions/:id/resume-info is served by the sidecar, off this device's mirror and content store", async () => {
+    stubScript([{ wait: "message" }]);
     const start = await fetch(`${base}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
     });
     const { session } = (await start.json()) as { session: SessionRow };
+    assert.equal((await fetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" })).status, 200);
 
     const res = await fetch(`${base}/sessions/${session.id}/resume-info`);
     assert.equal(res.status, 200);
@@ -998,8 +1261,7 @@ describe("agent-router: sessions/tasks", () => {
       generated_by: string | null;
     };
     assert.equal(info.session_id, session.id);
-    // The empty script auto-completes, so the run ends into the suspend
-    // path and writes its summary as a real file in this device's mirror.
+    // Předat wrote the summary as a real file in this device's mirror.
     assert.equal(info.handoff_path, `wip/sessions/${session.id}-handoff.md`);
     assert.equal(info.handoff_checkable, true, "the mirror is on this device, so the handoff is checkable here");
     assert.equal(info.generated_by, "server");
@@ -1023,7 +1285,7 @@ describe("agent-router: sessions/tasks", () => {
     const stored = fake.sessions.get(session.id);
     assert.equal(stored?.brief, null);
     assert.equal(stored?.handoff_inline, null);
-    assert.ok(stored?.handoff_hash, "the record still carries the handoff's hash");
+    assert.equal(stored?.handoff_hash ?? null, null, "an ordinary suspend records no handoff (#497)");
 
     const events = await content.listEvents(session.id);
     assert.ok(events.length > 0, "the transcript is on this device");
@@ -1061,6 +1323,136 @@ describe("agent-router: sessions/tasks", () => {
     });
     assert.equal(answerRes.status, 202);
     assert.equal(fake.sessions.get(session.id)?.waiting_since, null);
+  });
+  // #493, team workspace: the real Claude adapter over a fake SDK query that
+  // does what the CLI does on a Stop -- it cancels the pending permission
+  // request, aborting canUseTool's signal. The record on central stops
+  // waiting, and the next turn's question sets it waiting again at once.
+  it("Stop while a permission question is open clears waiting on central and frees the next question (#493)", async () => {
+    let captured: Options | undefined;
+    const aborts: AbortController[] = [];
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const query = ((params: { prompt: unknown; options?: Options }) => {
+      captured = params.options;
+      // Holds the run live (a turn in flight) until release(); yields
+      // nothing -- the test drives canUseTool itself.
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        await held;
+        yield* [];
+      }
+      const iterator = gen() as unknown as Query;
+      (iterator as unknown as { interrupt: () => Promise<undefined> }).interrupt = async () => {
+        for (const controller of aborts.splice(0)) controller.abort();
+        return undefined;
+      };
+      return iterator;
+    }) as CreateClaudeAdapterDeps["query"];
+    clearRegistryForTests();
+    const claude = createClaudeAdapter({ query, resolveExecutable: async () => null, portuniOrigins: () => [] });
+    registerAdapter({ ...claude, id: "fake" });
+
+    const ask = (requestId: string) => {
+      const controller = new AbortController();
+      aborts.push(controller);
+      return captured!.canUseTool!("ExitPlanMode", { plan: "p" }, { requestId, signal: controller.signal } as never);
+    };
+    // The runtime records a question on its own serial dispatch; this
+    // resolves on the central patch that sets waiting_since (a signal, not
+    // a poll or a sleep).
+    const waitingOnCentral = (sessionId: string): Promise<void> => {
+      if (fake.sessions.get(sessionId)?.waiting_since) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        const original = fake.patchSessionRecord.bind(fake);
+        fake.patchSessionRecord = async (id: string, patch: PatchSessionInput) => {
+          const row = await original(id, patch);
+          if (id === sessionId && row.waiting_since) {
+            fake.patchSessionRecord = original;
+            resolve();
+          }
+          return row;
+        };
+      });
+    };
+
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    // The adapter hands the SDK its options when the run starts, which is
+    // before POST /sessions answers.
+    assert.ok(captured, "the run started with the SDK's options");
+
+    const first = ask("perm-1");
+    await waitingOnCentral(session.id);
+
+    const res = await fetch(`${base}/sessions/${session.id}/interrupt`, { method: "POST" });
+    assert.equal(res.status, 200);
+    assert.equal((await first).behavior, "deny");
+    assert.equal(fake.sessions.get(session.id)?.waiting_since, null, "Stop closed the question on central");
+    assert.equal(fake.sessions.get(session.id)?.state, "running");
+
+    const second = ask("perm-2");
+    await waitingOnCentral(session.id);
+    const answerRes = await fetch(`${base}/sessions/${session.id}/questions/perm-2`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: { value: true } }),
+    });
+    assert.equal(answerRes.status, 202);
+    assert.equal((await second).behavior, "allow");
+
+    release();
+    await fetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+  });
+
+  // #492: a multi-question AskUserQuestion is answered question by question;
+  // the sync agent's route takes the map and the answered row keeps it.
+  it("an AskUserQuestion with several questions is answered with a map over POST /sessions/:id/questions/:request_id", async () => {
+    const questions = [
+      { question: "Which environment?", options: ["staging", "production"], multi_select: false },
+      { question: "Dry run first?", options: ["yes", "no"], multi_select: false },
+    ];
+    stubScript([
+      {
+        kind: "question",
+        payload: {
+          request_id: "req-q",
+          type: "input",
+          tool: "AskUserQuestion",
+          title: "Otázka od agenta",
+          detail: "Which environment?\n\nDry run first?",
+          options: null,
+          questions,
+          decision: null,
+        },
+      },
+      { wait: "answer" },
+    ]);
+    const start = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    const value = { "Which environment?": "staging", "Dry run first?": "yes" };
+    const answerRes = await fetch(`${base}/sessions/${session.id}/questions/req-q`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: { value } }),
+    });
+    assert.equal(answerRes.status, 202);
+    assert.equal(fake.sessions.get(session.id)?.waiting_since, null);
+    const answered = (await content.listEvents(session.id))
+      .filter((e) => e.kind === "question")
+      .map((e) => JSON.parse(e.payload))
+      .find((p) => p.decision !== null);
+    assert.deepEqual(answered?.decision.value, value);
+    assert.deepEqual(answered?.questions, questions);
   });
   it("GET /sessions/ws is mounted in agent mode: a task started over REST streams on the socket", async () => {
     stubScript([{ wait: "message" }, { kind: "assistant_message", payload: { text: "done" } }]);

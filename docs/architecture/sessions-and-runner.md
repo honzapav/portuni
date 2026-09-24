@@ -24,6 +24,23 @@ record/content split).
   a run whose MCP connection carries the row id in `X-Portuni-Spawn-Id`
   (`RunStart.mcp.headers`). The handshake of that connection binds to the
   existing row; it never creates a second one.
+- **The run's MCP bearer is the front door's own token** (#507).
+  `provisionRun` and `createProvisionRunCentral` both take it from
+  `resolveRunnerMcpToken()` (`domain/write-scope.ts`), which reads
+  `PORTUNI_AUTH_TOKEN` -- the token `http/middleware.ts` verifies and the
+  desktop gives every sidecar -- never `resolveTokenEnvVar()`'s
+  `PORTUNI_MCP_TOKEN[_<WS>]`, which is only the name per-mirror configs
+  expand in a user's own shell and is never set in the sidecar. With no
+  token the provision throws `RunnerMcpTokenMissingError` before any mirror
+  work; a run never starts with an empty `Authorization: Bearer `. The
+  runtime provisions before it creates or changes anything: `startTask`
+  and Navázat na handoff before the record, a draft's first message
+  before the draft is promoted, Pokračovat v nové session before the old
+  thread is closed -- a refused run leaves no half-made thread. REST
+  answers the refusal with 503 `RUNNER_MCP_TOKEN_MISSING`
+  (`respondError`), the live channel with an error reply of that code.
+  `test/runner-mcp-front-door.test.ts` connects a runner-style client with
+  the provisioned URL and token to the real front door in both workspaces.
 - `createMcpServer` returns `bindSession(cli?)`; the caller invokes it at its
   own post-handshake signal (`transport.ts` `onsessioninitialized`,
   `stdio-entry.ts` `server.server.oninitialized`). A hand-opened CLI has no
@@ -117,7 +134,12 @@ below) and `archived` only by the auto-archive sweep
 process that owns the graph db: closed for more than 30 days moves to
 archived, an archived session's event log is dropped after 90 days; the
 row, runs, audit and handoff stay). Everything else that ends a run
-suspends.
+suspends. A suspend writes no handoff (#497): idle, a provider error or
+limit, the process ending, a restart's boot sweep and a lost host only move
+the record to `suspended` (and clear any `handoff_path`/`handoff_hash` an
+earlier Předat left, which the transcript has outgrown since). A handoff
+file exists only because someone asked for one: Předat and Pokračovat v
+nové session.
 
 Every Uzavřít goes through `SessionRuntime.closeSession` (the socket's
 `close` frame from the chat header, `POST /sessions/:id/close` from the
@@ -129,8 +151,9 @@ until an unrelated refetch. `POST /sessions/:id/state` is a bare column
 transition with no runtime behind it and is not device-local; the web never
 uses it to close.
 
-A server-side suspend (`suspendSessionServerSide`: boot sweep, dropped
-transport, lost host) ends every run row of the session still open
+A server-side suspend (`suspendSessionServerSide`: the boot sweep, a
+hand-opened CLI's dropped connection; the device's lost-host sweep in
+`run-sweep.ts` does the same itself) ends every run row of the session still open
 (`ended_at`, `end_reason` `suspended`, or `host_lost` for a lost host),
 appends `run_ended` for each and then `state_changed {to: "suspended"}`;
 without that the log ended on a `run_started` and every client replaying
@@ -145,17 +168,19 @@ only while the session is `running`.
 same answer `{ session, handoff_path }`): the owner hands the thread to
 another machine through its handoff file. On a `running` thread it
 interrupts the current turn, waits for the queue to drain and then ends the
-run with `pendingEndReason` `handoff`, so the same auto-summary path a limit
-or an idle end takes writes `wip/sessions/<id>-handoff.md` into the node's
-mirror, registers the file and patches the record to `suspended` -- one
-suspend implementation, the reason marker being the only difference
-(`portuni:server-handoff reason=handoff`, the one reason a person chose).
+run with `pendingEndReason` `handoff`, so the one suspend path every run end
+takes writes, for this reason only, `wip/sessions/<id>-handoff.md` into the
+node's mirror, registers the file, patches the record to `suspended` and
+appends the `handoff` event (the chat's "Shrnutí uloženo" row) -- one
+suspend implementation (`portuni:server-handoff reason=handoff`, the one
+reason a person chose).
 On an already `suspended` thread with its file, it is a no-op answering the
-same path. On a `suspended` thread without a file (suspended where the node
-had no mirror), the same suspend code writes the file now
-(`createSuspendServerSide`'s `writeFileIfSuspended`): its inline summary
-from `content.db` when there is one, else the summary built from the
-transcript here. Every refusal is a `SessionHandoffError` (REST 409, Czech
+same path. On a `suspended` thread without a file (every suspend but
+Předat leaves one), the same suspend code writes the file now
+(`createSuspendServerSide`'s `writeFileIfSuspended`): the summary built
+from the transcript here, or, only when there is no transcript here, the
+inline summary in `content.db` (nothing refreshes it at suspend, so it can
+be older than the transcript). Every refusal is a `SessionHandoffError` (REST 409, Czech
 message; `api/session-handoff-errors.ts` is the one mapping the local
 router, the agent router and the socket share) and comes before any side
 effect -- nothing is interrupted, ended or suspended:
@@ -249,7 +274,7 @@ orientation, translates events, ends and suspends) is one implementation,
 | `store` (the record) | `DbSessionStore` on this server's db (`boot/session-runtime.ts` `getSessionRuntime()`) | `CentralSessionStore` (`domain/runner/store-central.ts`), built by `createAgentSessionRuntime` for `createAgentRouter(client, { sessionRuntime })` |
 | `content` (the transcript, the brief, the inline summary) | `SessionContentStore` over this device's `content.db` (`deviceSessionContentStore()`) | the same object, over the same file -- content never differs between workspaces and never reaches the central server |
 | provisioning | `provision.ts`: `createMirrorForNode`, `orientationForNode` (direct db read) | `provision-central.ts`: `createMirrorForNodeCentral`, `CentralClient.orientation` (`GET /nodes/:id/orientation`) |
-| `suspendFallback` | `suspendSessionServerSide(db, content, id, reason)` -- `createSuspendServerSide(localSuspendDeps(db, content))` | the same `createSuspendServerSide`, built in `boot/session-runtime.ts` with four seams: `record` = `CentralSessionStore`, `scope` = `CentralClient.sessionScopeRecord`, `suspendRecord` = a record `PATCH` over REST, `trackHandoff` = `registerLocalFileCentral`. Everything else -- the summary, the file in the device mirror, the name enrichment, the no-mirror case -- is the same code (#458). Without a mirror for the node the record gets `handoff_path: null` plus the hash, and the summary itself goes to `session_content.handoff_inline` on the device (#434, #456), so `getResumeInfo` hands the next run that text |
+| `suspendFallback` | `suspendSessionServerSide(db, content, id, reason)` -- `createSuspendServerSide(localSuspendDeps(db, content))` | the same `createSuspendServerSide`, built in `boot/session-runtime.ts` with four seams: `record` = `CentralSessionStore`, `scope` = `CentralClient.sessionScopeRecord`, `suspendRecord` = a record `PATCH` over REST, `trackHandoff` = `registerLocalFileCentral`. Everything else -- the summary, the file in the device mirror, the name enrichment, the no-mirror case -- is the same code (#458). Only Předat writes a summary (#497); every other reason patches `state` alone. `createSessionHandoffs` builds the suspend together with `summarize` and `writeFile` from the same four seams, and the runtime takes the pair as its `handoffs` dep for Pokračovat v nové session and a resume without a conversation |
 | `resolveNodeOrgId` | `belongs_to` graph query (a failed lookup is distinguishable from "no organization") | `CentralClient.nodeOrganizationId` (`GET /nodes/:id`, the outgoing `belongs_to` peer that is an organization) |
 | `session_scope` reads (`getSessionScope` in `startRun`/`sessionSignals`) | real | degrade to an empty scope, never throw |
 
@@ -269,9 +294,9 @@ orientation, translates events, ends and suspends) is one implementation,
 - Where each write goes: `promoteDraftAndStart` puts the first message in
   `session_content.brief` and the `user_message` event in the device's
   `session_events`, then patches the record (`state`, `name`, `runner`,
-  `instance_id`); a suspend writes the summary to the handoff file in the
-  node and `handoff_path`/`handoff_hash` to the record, with
-  `handoff_inline` on the device when there is no mirror here;
+  `instance_id`); Předat and Pokračovat v nové session write the summary
+  to the handoff file in the node and `handoff_path`/`handoff_hash` to the
+  record, and any other suspend patches the state alone (#497);
   `getResumeInfo` and the live channel's replay read the content store.
 - `PATCH /sessions/:id` has two shapes: `{name}` alone is a rename and
   returns `SessionSummary`; any other field (`state`, `waiting_since`,
@@ -281,8 +306,9 @@ orientation, translates events, ends and suspends) is one implementation,
   never fails a promotion; it logs one warning naming the node, only when
   the fallback is visible (two or more instances for that runner and some
   org default configured).
-- The team-workspace suspend writes the same summary the personal one does
-  because it is the same function (#427, #458). `session_scope` and the node's name are graph-db reads,
+- Předat in a team workspace writes the same summary the personal one does
+  because it is the same function (#427, #458); an automatic suspend reads
+  no scope and registers nothing on the central server (#497). `session_scope` and the node's name are graph-db reads,
   so they come from `GET /sessions/:id/scope`
   (`CentralClient.sessionScopeRecord`, a record-half route like the rest);
   a scope read that fails logs and degrades to empty sections rather than
@@ -368,28 +394,39 @@ live action, `sessions-ws.ts` in the same change.
 - Server-side suspend (`domain/session-handoff.ts`
   `suspendSessionServerSide(db, content, sessionId, reason)`,
   `ServerHandoffReason` = `disconnect | idle | terminal_exit | boot_sweep |
-  suspend_timeout | host_lost | run_ended | continue`) writes a minimal
-  handoff into the session's home mirror when this device has one, else
-  into the content store's `handoff_inline`; the record keeps
-  `handoff_path`/`handoff_hash` only, and `getResumeInfo` reads whichever
-  of the two is populated. The summary itself is built from the device's
-  transcript, so it is the same text in both workspaces.
-  The content carries a marker with its reason; `parseServerHandoffReason`
-  reads it back so `GET /sessions/:id/resume-info` reports
-  `generated_by: "server"` and the reason ("pozastaveno serverem
-  (nečinnost 30 min)").
+  suspend_timeout | host_lost | run_ended | continue | handoff`) writes a
+  summary only for `handoff` (#497): into the session's home mirror when
+  this device has one, else into the content store's `handoff_inline`;
+  the record keeps `handoff_path`/`handoff_hash` only, and `getResumeInfo`
+  reads whichever of the two is populated. Every other reason writes
+  neither and nulls both columns. The summary itself is built from the
+  device's transcript (`buildRunSummaryContent`), so it is the same text in
+  both workspaces. The content carries a marker with its reason;
+  `parseServerHandoffReason` reads it back so `GET /sessions/:id/resume-info`
+  reports `generated_by: "server"` and the reason for a handoff that has one.
 - A hand-opened CLI's row is suspended, never closed, by a dropped
   connection or the transport's idle GC (`mcp/transport.ts` decides
   `disconnect` vs `idle` in the same `onclose`) and by
   `boot/session-sweep.ts` finding a `running` row from a dead process.
   On a device both delegate to `suspendSessionServerSide`;
-  `closeSessionIfRunning` still carries its pre-#329 name. On the central
-  server (#458) they suspend only a session no device drives (no runner, no
-  open run: a hand-opened CLI or connector whose connection was to that
-  process), record only and with no summary, and never touch a task thread:
-  its run lives on a device, and a dropped proxied MCP connection or a
-  central restart says nothing about it. `portuni_session_suspend` is
-  the only channel such a CLI has to write its own handoff.
+  `closeSessionIfRunning` still carries its pre-#329 name.
+  **An MCP connection closing never ends a thread a device drives** (#487),
+  in either workspace: `closeSessionIfRunning` checks
+  `isDeviceDrivenSession` (a `runner` set, or a run still open) before it
+  suspends anything, on the device exactly as on the central server (#458),
+  and what is left for it is a hand-opened CLI or a connector session whose
+  only life was that connection. An agent that spent half an hour on files
+  without calling a Portuni tool, or whose connection dropped, keeps its
+  thread, its run and its transcript -- and because the row stays
+  `running`, its client's next connection binds to it again through
+  `lookupSpawnSessionForBind` instead of being refused with
+  `SESSION_BIND_REFUSED`. Only the runtime ends such a thread: idle with no
+  turn in flight, a provider error or limit, or the device's own boot
+  sweep. The sync agent's front door (`mcp/agent-transport.ts`) has no
+  suspend path at all -- its `onclose` closes the upstream client, and the
+  suspend that could follow is the central branch's, which skips the same
+  threads. `portuni_session_suspend` is the only channel such a CLI has to
+  write its own handoff.
 
 ## The Claude adapter
 
@@ -407,20 +444,56 @@ human verification.
   mirror by `startRun`). An "ask" decision emits a `question` event and
   leaves the `canUseTool` promise open until `RunHandle.answer()`: an
   approval allows on `true` only (`false` or text denies); an input
-  question (AskUserQuestion) takes a string as
-  `{behavior: "allow", updatedInput: {...originalInput, answer}}`. A
-  question still open when the run ends is denied; one raised after the
-  end is denied outright.
+  question (AskUserQuestion) allows with
+  `updatedInput: {...originalInput, answers}`, `answers` keyed by question
+  text -- the field the tool reads (`sdk-tools.d.ts`); `false` denies as
+  the user's refusal and a bare `true`, which carries no answer, denies
+  with "Uživatel na otázku neodpověděl." -- never an allow with nothing
+  answered. The decision is a string (it
+  answers every dotaz) or a map `{ [question text]: answer }`
+  (`askUserQuestionAnswers`); the `question` event carries every dotaz
+  with its own options in `questions`, and the flat `options` only for a
+  single one. The chat renders each dotaz's options as buttons above the
+  free-text field: one single-choice dotaz answers on the click, several
+  (or a multi-select, labels joined `, `) finish when all are picked or on
+  Odeslat, the typed text filling the dotazy left without a pick; a single
+  multi-select dotaz sends its picks with the typed text after them. An empty
+  field or an IME Enter sends nothing, and a second submit of the same
+  question is dropped in the web (`createAnswerGate`). A question still
+  open when the run ends is denied; one raised after the end is denied
+  outright. When the SDK aborts `canUseTool`'s `signal` (Stop or Esc
+  cancels the turn, #493) the open question is denied, the question line
+  is freed and the question is emitted again with a `system` decision,
+  the same "closed without the user" path as an abandoned dialog, so the
+  runtime clears `waiting_since` and the next turn's question shows at
+  once; an ask cancelled while it waits in line is never shown and is
+  denied at once, not when the question in front of it is answered. The
+  abort listener is removed once the ask settles. That the SDK aborts
+  `canUseTool`'s `signal` on `interrupt()` is its type contract; no live
+  probe has confirmed it yet (the elicitation probe shows it does not
+  abort a dialog's `signal`).
 - **MCP elicitation** (`onElicitation`): a dialog whose form is exactly one
   boolean field (Portuni's scope and write confirmations) emits an
   `approval` question and waits on `RunHandle.answer()`: `true` accepts
-  with that field `true`, anything else declines. A form with more fields,
-  any non-boolean field or a `url` dialog is declined without a question:
-  the chat shows only the dialog's message, so a second field would be
-  granted unseen. An open dialog is cancelled when the run ends; when the
-  SDK abandons it (its timeout, an interrupted turn) the adapter also
-  emits the question again with a `system` decision, which the runtime
-  reads as "closed without the user" and clears `waiting_since`.
+  with that field `true`, anything else declines. A form with more fields
+  or any non-boolean field is declined without a question: the chat shows
+  only the dialog's message, so a second field would be granted unseen. A
+  `url` dialog (a browser sign-in) is declined too and emits an `error`
+  event naming the server, so the transcript says why the agent was
+  refused (#509). An open dialog is cancelled when the run ends; when the
+  SDK abandons it (its timeout) or Stop interrupts the turn, the adapter
+  answers `cancel` and emits the question again with a `system` decision,
+  which the runtime reads as "closed without the user" and clears
+  `waiting_since`; a dialog stopped while it waits in line is never shown
+  and answers `cancel` at once.
+  `interrupt()` cancels the dialogs itself: the SDK does not abort an
+  elicitation's `signal` on an interrupt (`scripts/probe-sdk-elicitation.mjs`,
+  a live probe that needs no login, shows the round trip and this). The
+  CLI declares the `elicitation` capability only because `onElicitation`
+  is set; a request it receives before it has installed its handler, just
+  after the handshake, is answered `cancel` unseen. In a team workspace
+  the dialog comes from the central server through the sync agent's MCP
+  front door (`agent-transport.ts` relays it), the adapter is the same.
 - **One question at a time** (`askInTurn`): the runtime keeps a single
   pending question per session, so a permission ask or a dialog raised
   while another question is open waits in line and is emitted once that
@@ -466,9 +539,14 @@ human verification.
   (`emitRunEnded`, idempotent). `endAfterProviderFailure` reuses
   `shutdownProcess` as the bound. The runtime then suspends the thread as
   for any other non-close end.
-- `hooks.PreCompact` and `system/compact_boundary` both translate to a
-  `compaction` event (possible double emission of a cosmetic marker,
-  accepted).
+- One compaction is one `compaction` event (#501): `system/compact_boundary`
+  emits it with `compact_metadata.trigger` (`manual` for `/compact`,
+  `auto`), the `hooks.PreCompact` hook only records its trigger as the
+  fallback. The boundary is followed by a `context_usage` carrying
+  `compact_metadata.post_tokens`, and that value replaces the prompt kept
+  for the turn's end, so the result closing the turn never reports the size
+  from before compaction; a boundary without `post_tokens` drops the kept
+  prompt and the next assistant message sets the ring.
 - `translateStreamEvent` streams both channels: `text_delta` and
   `thinking_delta` become `DeltaFrame`s with `channel: "text"` /
   `"reasoning"` (`domain/runner/types.ts`). The persisted record stays the
@@ -476,14 +554,30 @@ human verification.
   preview and are never persisted. Delta frames carry the real `run_id`.
   The first `thinking_delta` of a block stamps `reasoningStartedAt`; the
   batched `reasoning` event carries `duration_ms` from that stamp to
-  itself and clears it. A thinking block without a streamed delta has no
-  `duration_ms`.
+  itself and clears it. Every `result` and every `interrupt()` clears it
+  too, so a thinking block a Stop cut off never dates the next turn's
+  reasoning: each turn's duration counts that turn's thinking only (#502).
+  A thinking block without a streamed delta has no `duration_ms`.
 - `detect()` runs `claude --version` and `claude auth status`, 5 s timeout
   each.
 - **`turn_ended` on every successful result.** The CLI stays alive between
   turns, so this is the only signal that the agent stopped working; the
   web's working row, stop button and Escape key on a turn in flight
   (`turnInFlight`). A failed result ends the run instead and emits none.
+- **A turn is not a message (#490).** The SDK's contract (`sdk.d.ts`,
+  `@anthropic-ai/claude-agent-sdk` 0.3.270): the CLI "emits exactly one
+  result message per turn", `user_message_uuids` echoes "client uuids of
+  every user message whose prompt this turn consumed" -- a batch the host
+  merged, plus any queued message folded into the running turn between
+  tool rounds -- and `queued_turn_count` counts the sends still waiting,
+  with "queued sends may coalesce into fewer turns". So the adapter tags
+  every pushed message with a uuid, keeps the unanswered ones in
+  `state.pendingSends`, and `consumeSendUuids` takes off what each result
+  answered: the uuid echo first (exact), then the queue count as the
+  resync for what it did not report (an interrupt that dropped the
+  backlog, a producer too old to echo), then one message as the
+  one-result-per-turn default. What it took is `turn_ended`'s
+  `consumed_messages`.
 - **`context_usage` after every assistant message and every result.**
   `contextUsageFrom` reads the message's `usage`: `used_tokens` =
   `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`
@@ -496,6 +590,27 @@ human verification.
   `PatchSessionInput`, central `PatchSessionBody`), so a list row and the
   chat header render the ring without reading the log. `run_ended.usage`
   stays as it was.
+- **A subagent's frames are not the thread's (#499).** An assistant,
+  user or stream_event message with `parent_tool_use_id` set was produced
+  inside a subagent the main agent started (Agent/Task tool);
+  `isSubagentFrame` drops it before translation. None of it becomes an
+  `assistant_message`, `reasoning`, `tool_call`, `file_change`,
+  `context_usage` or a delta, and it never sets `state.model`, so the ring
+  and the window lookup in `modelUsage` follow the main agent only. The
+  main agent's own Task `tool_use` and its `tool_result` are top-level
+  frames and translate as any tool. What the subagent does in the
+  background stays the agent's business; Portuni neither shows nor
+  watches it.
+- **An API error is reported once, by its `result` (#500).** An API
+  failure (model unavailable, overloaded after retries, prompt too long,
+  a limit) arrives as a synthetic assistant message -- `error` set,
+  `model: "<synthetic>"`, zero usage -- followed by a `result` with the
+  same text. `isSyntheticErrorMessage` drops the first before
+  translation: no `assistant_message`, no `context_usage`, and
+  `state.model` keeps the real model. The `result` alone reports the
+  failure (the #411 path, one `error` event), and the ring's turn-end
+  reading still comes from the last real message's prompt, so
+  `sessions.context_used_tokens` keeps its last real value instead of 0.
 - **`models()` never starts a process.** A module-wide `modelsCache`
   starts `null` and is filled from the first live run's
   `Query.supportedModels()` (called inside the promise chain so a missing
@@ -521,6 +636,44 @@ human verification.
   while `state = 'draft'`; on any other state, without a `state` field in
   the same body, the route answers 409 `SESSION_NOT_DRAFT`. The promotion
   patch (`state: "running"` together with them) passes.
+- **One start per thread** (#488). Starting a run takes as long as the
+  adapter needs to spawn its process, and the live handle only reaches
+  `liveRuns` once `adapter.start()` returns. `sendMessage`, `closeSession`,
+  `handoff` and `continueSession` therefore run under a per-session
+  lifecycle lock (`withLifecycleLock`, a chain separate from the event
+  queue `enqueue`/`drain` uses): a second message that arrives while a
+  start is in flight waits for it and then goes to the run that start
+  produced as an ordinary message, Uzavřít and Předat wait and then end
+  that run. `interrupt` and `answer` take it too, so Stop and an answer
+  during a start act on the run the start produced (Předat's own
+  interrupt runs inside its lock). Nothing else takes the lock -- an
+  adapter event handler must never wait on a start, and a start drains
+  the event queue while holding it.
+- **No message written into the chat is lost** (#489). `RunHandle.send`
+  throws `RunEndedError` (`domain/runner/types.ts`) instead of pushing into
+  a prompt stream nobody reads any more: the Claude adapter refuses once
+  the run ended, once a provider failure set its end reason, or once
+  `shutdownProcess` ended the prompt queue; the fake adapter refuses once
+  its script ended or `close()` stopped it. `sendMessage` catches that,
+  waits for the run to end and for the suspend that follows it
+  (`runSettling`, resolved by the `run_ended` handler itself -- never a
+  clock, and the event queue never takes the lifecycle lock the waiter
+  holds), and then delivers the message the ordinary way, as the next run's
+  first message (`resumeByWriting`). The message is written to the
+  transcript once: `startRun`'s `logBrief: false` skips the second
+  `user_message`. The same wait covers the window between `run_ended` and
+  the finished suspend -- no live handle, the row still `running` -- which
+  used to be refused with „has no live run". Three retries in, the send
+  fails rather than chasing a runner that cannot start.
+- **A `run_ended` only ends the session's *current* run.** The handler
+  records the run's own end (`ended_at`, `end_reason`, `usage`, its pid
+  file) either way, but drops the live handle, clears the turn in flight
+  and takes the suspend path only when the id is the session's current run
+  (`currentRuns`: the run `startRun` is starting or has started, until its
+  own `run_ended` is handled or its start fails). A late `run_ended` from
+  a run that has already been replaced -- also while the next run is still
+  starting and has no live handle yet -- neither suspends the thread that
+  is going nor steals its handle.
 - **The first message promotes.** `sendMessage` with no live run:
   `draft` -> `promoteDraftAndStart`; `suspended` -> `resumeByWriting`; any
   other state refuses. Promotion uses the draft's own `runner`/`instance_id`
@@ -548,12 +701,14 @@ human verification.
   at boot of the process that owns the graph db (`index.ts`, `desktop.ts`
   local branch; on the central server for team-workspace rows). A thread's `×` deletes
   an empty draft immediately.
-- **Every non-close end suspends with a summary the DEVICE writes.**
-  `closingSessions: Set<string>` marks an explicit close (`closeSession`,
-  `continueSession`). In `handleAdapterEvent`'s `run_ended` branch, a run
-  ending without that mark calls `suspendFallback` with `pendingEndReason`
-  (`"run_ended"`, or `"idle"` from the idle sweep) and then appends the
-  `handoff` event (`{path, hash}` off the suspended row).
+- **Every non-close end suspends; only Předat writes a summary, and the
+  DEVICE writes it.** `closingSessions: Set<string>` marks an explicit close
+  (`closeSession`, `continueSession`). In `handleAdapterEvent`'s `run_ended`
+  branch, a run ending without that mark calls `suspendFallback` with
+  `pendingEndReason` (`"run_ended"`, `"idle"` from the idle sweep,
+  `"handoff"` from Předat) and appends `state_changed`; only for
+  `"handoff"` does it also append the `handoff` event (`{path, hash}` off
+  the suspended row), since no other reason writes a summary (#497).
   `withSuspendReason` rewrites an adapter-reported `"completed"` to
   `"suspended"` unless the session is closing; `error`/`limit`/`host_lost`
   pass through. `HandoffEvent.payload` is `{path, hash}` only. The central
@@ -567,30 +722,68 @@ human verification.
 - **Idle is the server's.** `boot/session-sweep.ts` `startIdleRunSweep`
   (60 s, unref'd; `PORTUNI_RUN_IDLE_MS`, default 30 min) drives
   `checkIdleRunsOnce`; `endIdleRun` sets `pendingEndReason: "idle"` and
-  calls `close()` on the live handle. A run mid-turn (a `user_message`
-  with no `turn_ended` yet) is never idle, unless an open question waits
-  on the user; every adapter event counts as activity. Wired in `index.ts` and in both
+  calls `close()` on the live handle. A run that still owes an answer is
+  never idle, unless an open question waits on the user; every adapter
+  event counts as activity. What "still owes" means is a count, not a flag
+  (#490): the runtime adds one per message sent into the live run (the
+  brief included) and subtracts what each `turn_ended` reports it answered
+  (`consumed_messages`, one when absent), so a message written while the
+  agent works keeps the run working until its own turn ends. `run_ended`
+  zeroes the count, and a message a run that is ending refused gives its
+  own back. The web counts the same way over the transcript
+  (`turnInFlight`), forward from the live run's `run_started` and never
+  below zero. The one message of a run logged before its `run_started` is
+  a redelivery (#489): the ending run it was written for refused it, the
+  next run takes it as its first message without logging it again, and
+  that run's `run_started` carries `carried_messages: 1`, which the web's
+  count starts from. The sweep picks its list once but checks every session again
+  the moment before ending it (#491): ending one takes seconds, so a
+  session that has been touched since it was picked -- a message, an
+  answer, an adapter event -- or whose run is already gone is skipped, and
+  the sweep never ends a thread the user went back to mid-sweep. Wired in `index.ts` and in both
   branches of `desktop.ts` against the runtime instance that actually runs
   tasks there.
 - **Resume is writing.** `resumeByWriting` uses `checkConversationResumable`
   to continue the CLI's own conversation when still valid; otherwise it
-  reads `handoff_path`/`handoff_inline` and starts a fresh run with it as
-  orientation (`resume: "handoff"` on `run_started`, `resumed_from_run_id`
-  linking the runs). There is no `POST /sessions/:id/resume`,
+  starts a fresh run with a summary as orientation (`resume: "handoff"` on
+  `run_started`, `resumed_from_run_id` linking the runs). The summary
+  (`resumeSummary`, #497) is the file at `handoff_path` when Předat wrote
+  one and it is here; else it is built at that moment from this device's
+  transcript with the same builder a handoff uses, and stored nowhere;
+  else, with no transcript here, a `handoff_inline` an older sidecar left.
+  With none of them and no content of the thread on this device at all,
+  the send is refused before any run is created, with Předat's errors:
+  `HANDOFF_TRANSCRIPT_ELSEWHERE` naming the device the thread last ran on,
+  or `HANDOFF_NO_CONTENT` while the first-boot download has not arrived
+  (409 over REST, an error reply on the live channel). A thread whose
+  content row is here but holds none of them starts on its orientation
+  alone. There is no `POST /sessions/:id/resume`,
   `/suspend`, no mode picker and no `SUSPEND_INSTRUCTION` handshake.
 - **A conversation is looked for where its profile keeps it.** The
   transcript lives under the instance's `CLAUDE_CONFIG_DIR`, so
   `resumeByWriting` and `GET /sessions/:id/resume-info` both resolve it
-  from `session.instance_id` (`getInstanceEnv`) before checking; the
-  default location answers only for a session with no instance.
+  from `session.instance_id` (`getInstanceEnv`) through the one
+  `instanceClaudeConfigDir` (#508) before checking; the default location
+  (`~/.claude`) answers only for a session whose instance names none.
+  `resumeByWriting` takes the CLI that wrote the transcript from
+  `sessions.cli`, else the last run's `runner`: `cli` is filled in only by
+  the run's own MCP handshake, which a run whose Portuni connection failed
+  never completes, and a null there once meant a summary start every time.
 - **The conversation id is recorded while the run runs**, from the first
   event the adapter reports (`captureAgentSessionId`, one write per run) --
   a run the host loses never reaches its own `run_ended`, and reading the
   id only there left every such run resumable from the summary alone.
 - **`POST /sessions/:id/continue`** (`continueSession`; `resume` access
   tier; also a `continue` WS frame) closes this session with its own
-  log-derived summary and starts a fresh running one on the same node,
-  returning `{session, run}` (the WS reply carries `toSummary`'s
+  log-derived summary and starts a fresh running one on the same node.
+  When this device has a mirror of the node, the summary is written as the
+  old thread's handoff file (`handoffs.writeFile`, registered like
+  Předat's; `handoff_path`/`handoff_hash` go on the old record with the
+  close) and the new thread's orientation names that file the way
+  Navázat na handoff's does (#497); without a mirror, or when writing the
+  file fails (logged; the old run is already ended by then), the summary
+  goes into the orientation only. The new run is provisioned before the
+  old thread is touched. It answers `{session, run}` (the WS reply carries `toSummary`'s
   `SessionSummary`). Web labels: "Pokračovat v nové session" on an open
   thread, "Navázat" on a closed one.
 - No context-usage ring exists: `RunEndedEvent.payload.usage` is
@@ -691,7 +884,17 @@ in the codebase. The desktop bridge is documented with the desktop shell.
 - `session_state` fans out to every connection whose identity owns the
   session (`canSee`, the same one-line rule) through one server-lifetime
   `subscribe("*", ...)` per `WebSocketServer`, created lazily on the first
-  connection, and a broadcast resolves visibility once per identity. A test
+  connection, and a broadcast resolves visibility once per identity.
+  Each broadcast reads the row afresh and takes a number in event order;
+  the newest one to finish its read claims the send, and an older one that
+  finishes later is dropped, so a slow read never lands an older state
+  last (#494) and a stuck read never holds back the frames after it. A
+  failed read is logged (`console.warn`), not swallowed.
+  A suspend the runtime makes itself (idle, error, limit, the process
+  ending) appends and publishes `state_changed {from: "running", to:
+  "suspended"}` once the record is suspended, before the `handoff` event:
+  the `run_ended` broadcast reads the row before that suspend is written.
+  A test
   must keep one runtime and re-register the fake adapter between cases
   (`test/api-sessions-ws.test.ts`), or that subscription sticks to an
   abandoned instance. `SessionRuntime.subscriberCount(target)` exists for

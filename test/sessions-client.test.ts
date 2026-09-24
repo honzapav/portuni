@@ -3,11 +3,16 @@
 // the direct-WS transport (the dev-mode path -- there is no Tauri runtime
 // in this test environment) against a small fake `ws` server standing in
 // for apps/server/api/sessions-ws.ts.
-import { describe, it, after } from "node:test";
+import { describe, it, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from "ws";
 import type { AddressInfo } from "node:net";
-import { createSessionsClient, createDirectWsTransport } from "../apps/web/src/lib/sessions-client.js";
+import {
+  createSessionsClient,
+  createDirectWsTransport,
+  type Transport,
+  type WebSocketInstance,
+} from "../apps/web/src/lib/sessions-client.js";
 import { createSessionStore } from "../apps/web/src/lib/session-store.js";
 import { selectMountedThreads, selectNodeRecordIds } from "../apps/web/src/lib/session-selectors.js";
 import type { SessionState, SessionSummary } from "../apps/web/src/types.js";
@@ -382,5 +387,248 @@ describe("sessions-client: the mounted-thread set (#429)", () => {
     assert.equal(subscribesFor("A"), 1);
 
     client.disconnect();
+  });
+});
+
+// #496: a request is delivered once, or reported as failed and never sent
+// afterwards. Driven over the real direct-WS transport with an in-memory
+// socket class and mocked timers, so a 30 s timeout and a reconnect happen
+// without waiting for either.
+describe("sessions-client: a timed-out or dropped request is never delivered later (#496)", () => {
+  class FakeSocket implements WebSocketInstance {
+    static readonly OPEN = 1;
+    static instances: FakeSocket[] = [];
+    readyState = 0;
+    readonly sent: Array<{ id?: string; type: string; payload: { session_id?: string; after?: number } }> = [];
+    onopen: ((ev: unknown) => void) | null = null;
+    onmessage: ((ev: { data: unknown }) => void) | null = null;
+    onclose: ((ev: unknown) => void) | null = null;
+    onerror: ((ev: unknown) => void) | null = null;
+    constructor(readonly url: string) {
+      FakeSocket.instances.push(this);
+    }
+    send(data: string): void {
+      if (this.readyState !== FakeSocket.OPEN) throw new Error("send on a socket that is not open");
+      this.sent.push(JSON.parse(data));
+    }
+    close(): void {
+      this.readyState = 3;
+    }
+    open(): void {
+      this.readyState = FakeSocket.OPEN;
+      this.onopen?.({});
+    }
+    drop(): void {
+      this.readyState = 3;
+      this.onclose?.({});
+    }
+    reply(id: string | undefined): void {
+      this.onmessage?.({ data: JSON.stringify({ id, type: "reply", payload: { ok: true } }) });
+    }
+    static last(): FakeSocket {
+      return FakeSocket.instances[FakeSocket.instances.length - 1];
+    }
+    static allSent(type: string) {
+      return FakeSocket.instances.flatMap((s) => s.sent.filter((f) => f.type === type));
+    }
+  }
+
+  // Settles pending promise callbacks; setImmediate is not mocked.
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  function settle<T>(p: Promise<T>) {
+    const state: { done: boolean; error: Error | null } = { done: false, error: null };
+    p.then(
+      () => (state.done = true),
+      (e: Error) => {
+        state.done = true;
+        state.error = e;
+      },
+    );
+    return state;
+  }
+
+  function fakeClient() {
+    FakeSocket.instances = [];
+    const transport = createDirectWsTransport("ws://fake/sessions/ws", {
+      WebSocket: FakeSocket,
+      minBackoffMs: 10,
+      maxBackoffMs: 10,
+      connectTimeoutMs: 600_000,
+    });
+    const client = createSessionsClient({ transport });
+    clients.push(client);
+    return client;
+  }
+
+  it("a message that times out during an outage is not sent after the reconnect; the resend arrives once", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      FakeSocket.last().drop();
+
+      const first = settle(client.message("S1", "ahoj"));
+      mock.timers.tick(10);
+      const reconnecting = FakeSocket.last();
+      assert.equal(FakeSocket.instances.length, 2);
+
+      mock.timers.tick(30_000);
+      await flush();
+      assert.equal(first.done, true);
+      assert.match(String(first.error), /request_timeout/);
+
+      reconnecting.open();
+      assert.deepEqual(FakeSocket.allSent("message"), []);
+
+      const resend = settle(client.message("S1", "ahoj"));
+      const sent = FakeSocket.allSent("message");
+      assert.equal(sent.length, 1);
+      reconnecting.reply(sent[0].id);
+      await flush();
+      assert.deepEqual(resend, { done: true, error: null });
+      assert.equal(FakeSocket.allSent("message").length, 1);
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("a message in flight when the connection drops rejects at once and is not sent again", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      const inFlight = settle(client.message("S1", "ahoj"));
+      assert.equal(FakeSocket.allSent("message").length, 1);
+
+      FakeSocket.last().drop();
+      await flush();
+      assert.equal(inFlight.done, true);
+      assert.match(String(inFlight.error), /disconnected/);
+
+      mock.timers.tick(10);
+      FakeSocket.last().open();
+      mock.timers.tick(60_000);
+      await flush();
+      assert.equal(FakeSocket.allSent("message").length, 1);
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("a subscribe that finishes after a long outage resolves without an error, subscribing once per connection", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      // Subscribed before the first open: nothing goes out until it opens.
+      const load = settle(client.subscribe("S1", 0));
+      assert.deepEqual(FakeSocket.allSent("subscribe"), []);
+      FakeSocket.last().open();
+      assert.equal(FakeSocket.allSent("subscribe").length, 1);
+
+      // The connection drops before the reply and stays down past the
+      // request timeout.
+      FakeSocket.last().drop();
+      mock.timers.tick(10);
+      mock.timers.tick(120_000);
+      await flush();
+      assert.equal(load.done, false);
+
+      const reopened = FakeSocket.last();
+      reopened.open();
+      assert.equal(reopened.sent.filter((f) => f.type === "subscribe").length, 1);
+      assert.equal(FakeSocket.allSent("subscribe").length, 2);
+      reopened.reply(reopened.sent[0].id);
+      await flush();
+      assert.deepEqual(load, { done: true, error: null });
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  // A message on the wire may take the server longer than the request
+  // timeout (a start waiting for the lifecycle lock, a redelivery waiting
+  // for a run to end). Reporting it failed while it is delivered is what
+  // made a resend reach the agent twice.
+  it("a message on the wire waits past the request timeout for its reply", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      const slow = settle(client.message("S1", "ahoj"));
+      const sent = FakeSocket.allSent("message");
+      assert.equal(sent.length, 1);
+
+      mock.timers.tick(45_000);
+      await flush();
+      assert.equal(slow.done, false, "not reported failed while the server works on it");
+
+      FakeSocket.last().reply(sent[0].id);
+      await flush();
+      assert.deepEqual(slow, { done: true, error: null });
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("a message queued during an outage and flushed by the reconnect waits for its reply", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      FakeSocket.last().drop();
+      const queued = settle(client.message("S1", "ahoj"));
+      mock.timers.tick(10);
+      const reopened = FakeSocket.last();
+      reopened.open();
+      const sent = reopened.sent.filter((f) => f.type === "message");
+      assert.equal(sent.length, 1);
+
+      mock.timers.tick(45_000);
+      await flush();
+      assert.equal(queued.done, false);
+      reopened.reply(sent[0].id);
+      await flush();
+      assert.deepEqual(queued, { done: true, error: null });
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("a timed-out request cancels its own frame on the transport (the Tauri outbox's cancel path)", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const sent: string[] = [];
+      const cancelled: string[] = [];
+      let status: ((s: "open" | "reconnecting" | "closed") => void) | null = null;
+      const noop = () => undefined;
+      const transport: Transport = {
+        send: (frame) => sent.push(frame.id),
+        cancel: (id) => cancelled.push(id),
+        onFrame: () => noop,
+        onStatus: (cb) => {
+          status = cb;
+          return noop;
+        },
+        connect: noop,
+        disconnect: noop,
+      };
+      const client = createSessionsClient({ transport });
+      clients.push(client);
+      (status as unknown as (s: string) => void)("open");
+      const req = settle(client.interrupt("S1"));
+      mock.timers.tick(30_000);
+      await flush();
+      assert.match(String(req.error), /request_timeout/);
+      assert.deepEqual(cancelled, sent);
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
   });
 });

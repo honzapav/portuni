@@ -30,8 +30,8 @@ async function setupServer() {
   const { ensureSchema } = await import("../apps/server/infra/schema.js");
   const { getDb, setDbForTesting } = await import("../apps/server/infra/db.js");
   const { resetGateCachesForTesting } = await import("../apps/server/http/middleware.js");
-  // #456: the suspend's summary is content and lands in this device's
-  // content.db, so the test needs one installed before the server runs.
+  // #456: the thread's content lives in this device's content.db, so the
+  // test needs one installed before the server runs.
   const { installTestContentDb, clearTestContentDb } = await import("./helpers/content-db.js");
   const { content } = await installTestContentDb();
 
@@ -66,12 +66,14 @@ async function setupServer() {
   };
 }
 
-async function connectClient(base: string): Promise<Client> {
+async function connectClient(base: string, spawnSessionId?: string): Promise<Client> {
   const client = new Client({ name: "claude-code", version: "1.2.3" });
+  const headers: Record<string, string> = { authorization: "Bearer test-token" };
+  // What a run's own MCP connection carries (RunStart.mcp.headers): the id
+  // of the row the session runtime created before the runner started.
+  if (spawnSessionId) headers["X-Portuni-Spawn-Id"] = spawnSessionId;
   await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
-      requestInit: { headers: { authorization: "Bearer test-token" } },
-    }),
+    new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers } }),
   );
   return client;
 }
@@ -85,12 +87,11 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number): Pr
   return false;
 }
 
-test("a client disconnecting on its own suspends its session with reason 'disconnect'", async (t) => {
+test("a client disconnecting on its own suspends its session, with no summary (#497)", async (t) => {
   const { base, db, content, teardown } = await setupServer();
   t.after(teardown);
 
   const { listSessions } = await import("../apps/server/domain/sessions.js");
-  const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
 
   const before = await listSessions(db);
   const client = await connectClient(base);
@@ -103,28 +104,21 @@ test("a client disconnecting on its own suspends its session with reason 'discon
   // Give the transport's own onclose path (a genuine disconnect signal) a
   // head start over the idle GC, then let the wait run comfortably past
   // the TTL too -- if the disconnect signal never reaches the server for
-  // whatever reason, the idle GC is the backstop that must still catch it
-  // (see the "reason" assertion below, which accepts either outcome for
-  // exactly that reason).
+  // whatever reason, the idle GC is the backstop that must still catch it.
   const suspended = await waitFor(async () => {
     const rows = await listSessions(db);
     return rows.find((s) => s.id === created!.id)?.state === "suspended";
   }, 5000);
   assert.ok(suspended, "the session must reach 'suspended', not 'closed'");
 
-  const reason = parseServerHandoffReason((await content.getContent(created!.id))?.handoff_inline ?? null);
-  assert.ok(
-    reason === "disconnect" || reason === "idle",
-    `expected a server-suspend reason for a dropped connection, got ${reason}`,
-  );
+  assert.equal((await content.getContent(created!.id))?.handoff_inline ?? null, null, "a suspend writes no summary");
 });
 
-test("the transport's own idle GC suspends a stale session with reason 'idle'", async (t) => {
+test("the transport's own idle GC suspends a stale session, with no summary (#497)", async (t) => {
   const { base, db, content, teardown } = await setupServer();
   t.after(teardown);
 
   const { listSessions } = await import("../apps/server/domain/sessions.js");
-  const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
 
   const before = await listSessions(db);
   // Deliberately never closed by the test -- left to the transport's own
@@ -141,5 +135,71 @@ test("the transport's own idle GC suspends a stale session with reason 'idle'", 
   }, 5000);
   assert.ok(suspended, "the idle GC must suspend the session, not leave it running forever");
 
-  assert.equal(parseServerHandoffReason((await content.getContent(created!.id))?.handoff_inline ?? null), "idle");
+  assert.equal((await content.getContent(created!.id))?.handoff_inline ?? null, null, "a suspend writes no summary");
+});
+
+// #487: the same two close paths on a thread the RUNNER drives -- its agent
+// process is alive and its run is open, so neither a dropped connection nor
+// the idle GC may end it, and the agent's MCP client must be able to
+// reconnect to the very same thread afterwards (which a suspended row
+// refuses with SESSION_BIND_REFUSED).
+test("a runner-driven thread survives its MCP connection closing, and the agent reconnects to it", async (t) => {
+  const { base, db, content, teardown } = await setupServer();
+  t.after(teardown);
+
+  const { createSession, getSession, listSessions } = await import("../apps/server/domain/sessions.js");
+  const { SOLO_USER } = await import("../apps/server/infra/schema.js");
+  const { ulid } = await import("ulid");
+
+  // The row exists before the runner (Rule 2), with a run the runtime holds.
+  const task = await createSession(db, SOLO_USER, {
+    node_id: null,
+    session_type: "interactive_task",
+    runner: "claude",
+    host_id: "this-device",
+  });
+  const runId = ulid();
+  await db.execute({
+    sql: `INSERT INTO session_runs (id, session_id, runner, instance_id, host_id, started_at)
+          VALUES (?, ?, 'claude', NULL, 'this-device', ?)`,
+    args: [runId, task.id, new Date().toISOString()],
+  });
+
+  const agent = await connectClient(base, task.id);
+  // A hand-opened CLI alongside it: its own suspend is this test's signal
+  // that the server has finished processing BOTH closes -- it connects
+  // second and is closed second, so by the time its row is suspended the
+  // task's onclose has long since run. Nothing here waits a fixed time.
+  const before = await listSessions(db);
+  const cli = await connectClient(base);
+  const cliRow = (await listSessions(db)).find((s) => !before.some((b) => b.id === s.id));
+  assert.ok(cliRow, "the hand-opened CLI's own session row must exist");
+
+  await agent.close();
+  await cli.close();
+
+  const cliSuspended = await waitFor(async () => {
+    const rows = await listSessions(db);
+    return rows.find((s) => s.id === cliRow.id)?.state === "suspended";
+  }, 5000);
+  assert.ok(cliSuspended, "a hand-opened CLI still suspends when its connection goes");
+
+  const after = await getSession(db, task.id);
+  assert.equal(after?.state, "running", "the runner's thread is untouched by its connection closing");
+  assert.equal(after?.handoff_hash, null);
+  const run = await db.execute({ sql: "SELECT ended_at FROM session_runs WHERE id = ?", args: [runId] });
+  assert.equal(run.rows[0]?.ended_at, null, "the run stays open");
+  assert.deepEqual(
+    (await content.listEvents(task.id)).map((e) => e.kind),
+    [],
+    "no run_ended and no state_changed reached the log",
+  );
+
+  // The agent reconnects with the same X-Portuni-Spawn-Id: it must bind to
+  // the same row, not be refused with SESSION_BIND_REFUSED.
+  const reconnected = await connectClient(base, task.id);
+  t.after(() => reconnected.close());
+  const tools = await reconnected.listTools();
+  assert.ok(tools.tools.length > 0, "the reconnected agent has its Portuni tools back");
+  assert.equal((await getSession(db, task.id))?.state, "running");
 });

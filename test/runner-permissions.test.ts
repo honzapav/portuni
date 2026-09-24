@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decidePermission } from "../apps/server/domain/runner/permissions.js";
+import { askUserQuestionAnswers, decidePermission } from "../apps/server/domain/runner/permissions.js";
 
 async function setup() {
   const portuniRoot = await mkdtemp(join(tmpdir(), "portuni-runner-perms-"));
@@ -133,7 +133,7 @@ describe("decidePermission: mcp__portuni__portuni_expand_scope", () => {
 });
 
 describe("decidePermission: AskUserQuestion", () => {
-  it("maps Claude Code's questions[] shape: first question's text and option labels", async () => {
+  it("maps Claude Code's questions[] shape: every question with its own option labels", async () => {
     const { portuniRoot, mirrorA, mirrors } = await setup();
     const decision = decidePermission({
       tool: "AskUserQuestion",
@@ -160,7 +160,33 @@ describe("decidePermission: AskUserQuestion", () => {
     if (decision.kind === "ask") {
       assert.equal(decision.question.type, "input");
       assert.equal(decision.question.detail, "Which environment?\n\nDry run first?");
-      assert.deepEqual(decision.question.options, ["staging", "production"]);
+      // #492: no flat list for two questions -- each keeps its own options.
+      assert.equal(decision.question.options, null);
+      assert.deepEqual(decision.question.questions, [
+        { question: "Which environment?", options: ["staging", "production"], multi_select: false },
+        { question: "Dry run first?", options: ["yes", "no"], multi_select: false },
+      ]);
+    }
+  });
+
+  it("a single question keeps its option labels flat as well", async () => {
+    const { portuniRoot, mirrorA, mirrors } = await setup();
+    const decision = decidePermission({
+      tool: "AskUserQuestion",
+      input: {
+        questions: [
+          { question: "Which features?", header: "F", options: [{ label: "a" }, { label: "b" }], multiSelect: true },
+        ],
+      },
+      cwd: mirrorA,
+      portuniRoot,
+      mirrors,
+      policy: "default",
+    });
+    assert.equal(decision.kind, "ask");
+    if (decision.kind === "ask") {
+      assert.deepEqual(decision.question.options, ["a", "b"]);
+      assert.deepEqual(decision.question.questions, [{ question: "Which features?", options: ["a", "b"], multi_select: true }]);
     }
   });
 
@@ -231,5 +257,33 @@ describe("decidePermission: everything else", () => {
       policy: "default",
     });
     assert.deepEqual(decision, { kind: "allow" });
+  });
+});
+
+describe("askUserQuestionAnswers (#492)", () => {
+  const input = {
+    questions: [
+      { question: "Which environment?", options: [{ label: "staging" }, { label: "production" }] },
+      { question: "Dry run first?", options: [{ label: "yes" }, { label: "no" }] },
+    ],
+  };
+
+  it("keys each answer by its question text", () => {
+    assert.deepEqual(
+      askUserQuestionAnswers(input, { "Which environment?": "production", "Dry run first?": "no", "Unasked?": "x" }),
+      { "Which environment?": "production", "Dry run first?": "no" },
+    );
+  });
+
+  it("a string answers every question", () => {
+    assert.deepEqual(askUserQuestionAnswers(input, "whatever you think"), {
+      "Which environment?": "whatever you think",
+      "Dry run first?": "whatever you think",
+    });
+  });
+
+  it("an empty answer and an inherited key answer nothing", () => {
+    assert.deepEqual(askUserQuestionAnswers(input, "  "), {});
+    assert.deepEqual(askUserQuestionAnswers({ questions: [{ question: "constructor", options: [] }] }, {}), {});
   });
 });
