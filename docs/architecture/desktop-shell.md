@@ -133,6 +133,14 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   means this window's own), and `auth.rs`'s `auth_status`,
   `google_login`, `auth_refresh`, `auth_logout`, `central_request`
   (`load_auth_config` takes an explicit `ws_id`).
+- `regenerate_mcp_token` writes the fresh token to Keychain and
+  `AuthTokens`, then restarts that workspace's sidecar (in a team
+  workspace, its sync agent) with it through the same kill + spawn as
+  `restart_sidecar` (#522): the sidecar checks the `PORTUNI_AUTH_TOKEN` it
+  was spawned with, so without the restart every proxied request answers
+  401 until the app restarts. A failed respawn reaches the window as
+  `backend-error`, like a failed start; the live channel reconnects with the
+  new token on its own.
 - App-global commands keep `AppHandle` and never call `ws_of`, because a
   `bootstrap` window legitimately calls them: workspace list and CRUD,
   updater, clipboard, `open_external`, exit, `workspace_migration_status`,
