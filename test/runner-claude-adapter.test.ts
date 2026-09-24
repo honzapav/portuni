@@ -1495,7 +1495,7 @@ describe("Claude adapter: MCP elicitation", () => {
     await flushMicrotasks();
     controller.abort();
     await flushMicrotasks();
-    assert.equal(queuedResult!?.behavior, "deny", "settled while perm-open is still open");
+    assert.equal((queuedResult as PermissionResult | null)?.behavior, "deny", "settled while perm-open is still open");
     assert.equal(questions().length, 1);
 
     await handle.answer("perm-open", { by: "U1", value: true, at: new Date().toISOString() });
