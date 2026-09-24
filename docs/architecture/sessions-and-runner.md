@@ -719,8 +719,13 @@ human verification.
 - **A conversation is looked for where its profile keeps it.** The
   transcript lives under the instance's `CLAUDE_CONFIG_DIR`, so
   `resumeByWriting` and `GET /sessions/:id/resume-info` both resolve it
-  from `session.instance_id` (`getInstanceEnv`) before checking; the
-  default location answers only for a session with no instance.
+  from `session.instance_id` (`getInstanceEnv`) through the one
+  `instanceClaudeConfigDir` (#508) before checking; the default location
+  (`~/.claude`) answers only for a session whose instance names none.
+  `resumeByWriting` takes the CLI that wrote the transcript from
+  `sessions.cli`, else the last run's `runner`: `cli` is filled in only by
+  the run's own MCP handshake, which a run whose Portuni connection failed
+  never completes, and a null there once meant a summary start every time.
 - **The conversation id is recorded while the run runs**, from the first
   event the adapter reports (`captureAgentSessionId`, one write per run) --
   a run the host loses never reaches its own `run_ended`, and reading the

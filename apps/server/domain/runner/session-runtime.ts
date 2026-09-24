@@ -33,7 +33,7 @@ import type { SessionRunRow, SessionStore } from "./store.js";
 import type { ListEventsOptions, SessionContentStore } from "./store-content.js";
 import type { SessionEventRow } from "../../shared/api-types.js";
 import { detectAll } from "./registry.js";
-import { getInstanceDefaults, getInstanceEnv, listInstances, type InstanceDefaults } from "./instances.js";
+import { getInstanceDefaults, getInstanceEnv, instanceClaudeConfigDir, listInstances, type InstanceDefaults } from "./instances.js";
 import { localHostId, resolveHostLabel } from "./hosts.js";
 import { getMirrorPath } from "../sync/mirror-registry.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
@@ -1058,16 +1058,24 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // its transcripts; without it the check reads the default location,
     // finds nothing for a session run under any other profile, and every
     // resume silently becomes a fresh agent holding only the summary.
+    // instanceClaudeConfigDir is the same resolution the resume-info route
+    // answers with (#508).
     const instanceId = session.instance_id;
     const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
+    // #508: the CLI that wrote the transcript is the last run's runner.
+    // `sessions.cli` is filled in only once the run's own MCP connection
+    // completes its handshake, which a run whose Portuni connection failed
+    // (#507) or never reached this graph db never does -- a null there
+    // turned every such resume into a summary start.
+    const transcriptCli = session.cli ?? lastRun?.runner ?? null;
     const canResumeConversation =
       lastRun?.agent_session_id != null &&
       (await checkConversationResumable(
-        session.cli,
+        transcriptCli,
         lastRun.agent_session_id,
         provisioned.cwd,
         undefined,
-        instanceEnv.CLAUDE_CONFIG_DIR ?? null,
+        instanceClaudeConfigDir(instanceEnv),
       ));
 
     let runStartResume: RunStart["resume"] = null;

@@ -100,7 +100,7 @@ import { getSessionRuntime } from "../boot/session-runtime.js";
 import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
 import { respondHandoffRefusal } from "./session-handoff-errors.js";
 import { getAdapter } from "../domain/runner/registry.js";
-import { getInstanceEnv } from "../domain/runner/instances.js";
+import { getInstanceEnv, instanceClaudeConfigDir } from "../domain/runner/instances.js";
 import { resolveHostLabel, transcriptHostLabel } from "../domain/runner/hosts.js";
 import { DbSessionStore } from "../domain/runner/store.js";
 import { LegacyGraphContentStore, sessionContentStoreForProcess } from "../domain/runner/store-content.js";
@@ -496,7 +496,7 @@ export async function sessionResumeInfoPayload(
   // profile's CLI keeps its transcripts there (#469). The instance registry
   // is this device's runners.json, which is why this route is device-local.
   const instanceEnv = session.instance_id ? ((await getInstanceEnv(session.instance_id)) ?? {}) : {};
-  const configDir = requestedConfigDir || instanceEnv.CLAUDE_CONFIG_DIR || null;
+  const configDir = requestedConfigDir || instanceClaudeConfigDir(instanceEnv);
   const inline = (await sessionContentStoreForProcess().getContent(session.id))?.handoff_inline ?? null;
   const info = await getResumeInfo(session, mirrorRoot, { configDir, handoffInline: inline });
   return {

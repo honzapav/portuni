@@ -17,7 +17,7 @@ import {
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
-import { createInstance, setOrgDefault } from "../apps/server/domain/runner/instances.js";
+import { createInstance, instanceClaudeConfigDir, setOrgDefault } from "../apps/server/domain/runner/instances.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
 import type { CanonicalEvent, RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
@@ -432,6 +432,79 @@ describe("session runtime: resume by writing (#378)", () => {
     }
   });
 
+  // #508: the resume under a profile when `sessions.cli` was never filled
+  // in -- the run's own MCP handshake is what writes it, and a run whose
+  // Portuni connection failed (#507) never did. The runner that wrote the
+  // transcript is the last run's, so a "claude" runner is enough.
+  async function profileResume(opts: { transcript: boolean }) {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const dir = await mkdtemp(join(tmpdir(), "portuni-profile-resume-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      // Outside ~/.claude on purpose: the default location has nothing.
+      const configDir = join(dir, "claude-tempo");
+      const cwd = join(dir, "mirror");
+      const instance = await createInstance({ name: "Tempo", runner: "claude", env: { CLAUDE_CONFIG_DIR: configDir } });
+      if (opts.transcript) {
+        await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+        await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-tempo.jsonl"), "{}\n", "utf8");
+      }
+      const fake = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }], agentSessionId: "conv-tempo" });
+      // The fake adapter under the claude runner's id.
+      const claude: RunnerAdapter = {
+        id: "claude",
+        detect: () => fake.detect(),
+        start: (run, sink) => fake.start(run, sink),
+        models: () => fake.models(),
+      };
+      const runtime = createSessionRuntime({
+        store,
+        content,
+        registry: registryOf(claude),
+        provision: stubProvision({ cwd, mirrors: [cwd] }),
+      });
+      const { session } = await runtime.startTask({
+        userId: "U1",
+        nodeId,
+        brief: "zadání",
+        runner: "claude",
+        instanceId: instance.id,
+      });
+      assert.equal((await store.getSession(session.id))?.cli ?? null, null, "no handshake ever named the CLI");
+      await runtime.checkIdleRunsOnce(0, Date.now() + 1);
+      assert.equal((await store.getSession(session.id))?.state, "suspended");
+
+      await runtime.sendMessage(session.id, "pokračuj");
+
+      const runs = await store.listRuns(session.id);
+      const events = await content.listEvents(session.id);
+      const started = events.find((e) => e.run_id === runs[1]?.id && e.kind === "run_started");
+      return { runs, lastStart: fake.getLastRunStart(), resumeMode: JSON.parse(started!.payload).resume };
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("a resume finds the transcript in the instance's CLAUDE_CONFIG_DIR with no cli on the record (#508)", async () => {
+    const { runs, lastStart, resumeMode } = await profileResume({ transcript: true });
+    assert.equal(runs.length, 2);
+    assert.deepEqual(lastStart?.resume, { agentSessionId: "conv-tempo" });
+    assert.equal(runs[1].agent_session_id, "conv-tempo", "the new run continues the same conversation");
+    assert.equal(resumeMode, "conversation");
+  });
+
+  it("a resume with no transcript anywhere starts from the summary (#508)", async () => {
+    const { runs, lastStart, resumeMode } = await profileResume({ transcript: false });
+    assert.equal(runs.length, 2);
+    assert.equal(lastStart?.resume, null);
+    assert.match(lastStart?.orientation ?? "", /Předání \(obnovení ze shrnutí\)/);
+    assert.equal(resumeMode, "handoff");
+  });
+
   it("a resume without the conversation gets a summary built from the transcript then (#497)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
@@ -492,6 +565,14 @@ describe("session runtime: resume by writing (#378)", () => {
     // Built from this device's transcript at resume: the first run's brief.
     assert.match(capturedOrientation!, /\*\*Uživatel:\*\* x/);
     assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "and nothing is stored");
+  });
+});
+
+describe("instanceClaudeConfigDir (#508)", () => {
+  it("is the instance's CLAUDE_CONFIG_DIR, and null for none or a blank one", () => {
+    assert.equal(instanceClaudeConfigDir({ CLAUDE_CONFIG_DIR: "/Users/x/.claude-tempo" }), "/Users/x/.claude-tempo");
+    assert.equal(instanceClaudeConfigDir({}), null);
+    assert.equal(instanceClaudeConfigDir({ CLAUDE_CONFIG_DIR: "  " }), null);
   });
 });
 

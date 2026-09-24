@@ -300,7 +300,9 @@ before, it does **not** disable while suspended: a suspended thread shows
 a dismissible notice above the composer instead ("the process was ended;
 the next message replays the whole conversation into the model") and
 stays fully usable — sending is exactly what resumes it, `--resume` on
-the last run's conversation while that's still valid, otherwise from a
+the last run's conversation while its transcript is still on this device
+(looked for under the thread's instance `CLAUDE_CONFIG_DIR`, `~/.claude`
+when the instance names none), otherwise from a
 summary: the handoff file Předat wrote, or else one built from this
 device's transcript at that moment; the server decides, there is no mode
 picker any more.

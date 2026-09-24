@@ -8,7 +8,7 @@
 
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
@@ -43,6 +43,8 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { getMirrorPath, registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { installTestContentDb } from "./helpers/content-db.js";
+import { createInstance } from "../apps/server/domain/runner/instances.js";
+import { claudeProjectSlug } from "../apps/server/domain/session-handoff.js";
 import { TeardownAdapter } from "./helpers/teardown-adapter.js";
 import { GatedAdapter } from "./helpers/gated-adapter.js";
 import { createClaudeAdapter, type CreateClaudeAdapterDeps } from "../apps/server/domain/runner/adapters/claude.js";
@@ -50,6 +52,7 @@ import type { Options, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 
 const NODE_ID = "N1";
+const TURN_DONE_STEP: FakeScriptStep = { kind: "turn_ended", payload: { run_id: "fake" } };
 const NODE_SYNC_INFO: NodeSyncInfo = {
   node: { id: NODE_ID, name: "Proj", type: "project", sync_key: "proj", org_sync_key: "workflow" },
   remote_name: null,
@@ -563,6 +566,58 @@ describe("agent-router: sessions/tasks", () => {
     await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
     assert.equal(fake.sessions.get(session.id)?.state, "suspended");
     clearRegistryForTests();
+  });
+
+  // #508: the resume under a profile, in the primary runtime -- a team
+  // workspace's sync agent, whose record store is CentralSessionStore over
+  // the fake central server. Central never learns the CLI here (its record
+  // keeps cli null), the instance and its env are this device's
+  // runners.json, and the transcript is only in the instance's
+  // CLAUDE_CONFIG_DIR.
+  it("writing into a suspended thread resumes the conversation from the instance's CLAUDE_CONFIG_DIR (#508)", async () => {
+    clearRegistryForTests();
+    const dir = await mkdtemp(join(tmpdir(), "portuni-agent-profile-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      const configDir = join(dir, "claude-tempo");
+      const instance = await createInstance({ name: "Tempo", runner: "claude", env: { CLAUDE_CONFIG_DIR: configDir } });
+      const inner = new FakeRunnerAdapter({ script: [TURN_DONE_STEP, { wait: "message" }], agentSessionId: "conv-tempo" });
+      registerAdapter({
+        id: "claude",
+        detect: () => inner.detect(),
+        start: (run, sink) => inner.start(run, sink),
+        models: () => inner.models(),
+      });
+      const runtime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
+
+      const { session } = await runtime.startTask({
+        userId: SOLO_USER,
+        nodeId: NODE_ID,
+        brief: "zadání",
+        runner: "claude",
+        instanceId: instance.id,
+      });
+      const cwd = inner.getLastRunStart()!.cwd;
+      await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+      await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-tempo.jsonl"), "{}\n", "utf8");
+      await runtime.checkIdleRunsOnce(0, Date.now() + 1);
+      assert.equal(fake.sessions.get(session.id)?.state, "suspended");
+      assert.equal(fake.sessions.get(session.id)?.cli, null);
+
+      await runtime.sendMessage(session.id, "pokračuj");
+
+      assert.deepEqual(inner.getLastRunStart()?.resume, { agentSessionId: "conv-tempo" });
+      const runs = [...fake.runs.values()].filter((r) => r.session_id === session.id);
+      assert.equal(runs.length, 2);
+      assert.equal(fake.sessions.get(session.id)?.state, "running");
+      await runtime.closeSession(session.id);
+    } finally {
+      clearRegistryForTests();
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   // #488: the same lifecycle lock, in the primary runtime -- a team
