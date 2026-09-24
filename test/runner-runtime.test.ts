@@ -1841,6 +1841,77 @@ describe("session runtime: a message queued mid-turn (#490)", () => {
   });
 });
 
+// #490: the count of messages a run owes an answer is given back when the
+// message never reached the run -- a send or a start that failed -- so the
+// idle sweep still ends the run once its real turns are answered.
+describe("session runtime: a failed send or start owes no turn (#490)", () => {
+  it("a send that fails for another reason than a run end gives its count back", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const inner = new TeardownAdapter();
+    const adapter: RunnerAdapter = {
+      id: "fake",
+      detect: () => inner.detect(),
+      models: () => inner.models(),
+      async start(run, sink) {
+        const handle = await inner.start(run, sink);
+        return {
+          ...handle,
+          send: async () => {
+            throw new Error("the prompt pipe is broken");
+          },
+        };
+      },
+    };
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    inner.last.emit({ kind: "turn_ended", payload: { run_id: inner.last.start.runId } });
+    await assert.rejects(runtime.sendMessage(session.id, "druhá"), /prompt pipe/);
+
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "suspended", "no turn is owed for a message the run never took");
+  });
+
+  it("a start that fails gives the brief's count back, so the next run of the thread can go idle", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const inner = new TeardownAdapter();
+    let failNextStart = false;
+    const adapter: RunnerAdapter = {
+      id: "fake",
+      detect: () => inner.detect(),
+      models: () => inner.models(),
+      async start(run, sink) {
+        if (failNextStart) {
+          failNextStart = false;
+          throw new Error("the CLI would not start");
+        }
+        return inner.start(run, sink);
+      },
+    };
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    inner.last.endRun("error");
+    await runtime.interrupt(session.id);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
+
+    // The resume's start fails: its brief never reached a run.
+    failNextStart = true;
+    await assert.rejects(runtime.sendMessage(session.id, "pokračuj"), /would not start/);
+    // Whatever suspends the stranded thread (a Předat, the boot sweep),
+    // the next message resumes it and its turn ends.
+    await createSuspendServerSide(localSuspendDeps(getDb(), content))(session.id, "boot_sweep");
+    await runtime.sendMessage(session.id, "znovu");
+    inner.last.emit({ kind: "turn_ended", payload: { run_id: inner.last.start.runId } });
+    await runtime.interrupt(session.id);
+
+    await runtime.checkIdleRunsOnce(0, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
+  });
+});
+
 describe("session runtime: a message into a run that is ending (#489)", () => {
   // The run that is ending never takes the message; the runtime waits for
   // its end (and the suspend that follows), then delivers the message as

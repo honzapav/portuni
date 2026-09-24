@@ -787,55 +787,67 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const adapter = registry.getAdapter(run.runner);
     if (!adapter) throw new Error(`startRun: unknown runner '${run.runner}'`);
 
-    // session_scope is a local graph-db table; agent mode has none, so the
-    // restart indicator's "expansions since run start" signal degrades to 0
-    // there rather than failing the whole run start.
-    runStartScopeSize.set(run.id, await readSessionScopeSize(session.id));
-
     // #375: resolved once here, so the adapter never reads config itself.
     const instanceDefaults = run.instance_id ? await getInstanceDefaults(run.instance_id) : null;
     const { model, effort } = resolveModelAndEffort(session, instanceDefaults);
 
-    await appendAndPublish(session.id, run.id, [
-      {
-        kind: "run_started",
-        payload: {
-          run_id: run.id,
-          runner: run.runner,
-          instance_id: run.instance_id,
-          resume: opts.resumeMode,
-          // #489: the brief is a redelivered message the log already
-          // holds (before this event); the web counts it from here.
-          ...(opts.brief !== null && opts.logBrief === false ? { carried_messages: 1 } : {}),
+    // session_scope is a local graph-db table; agent mode has none, so the
+    // restart indicator's "expansions since run start" signal degrades to 0
+    // there rather than failing the whole run start.
+    runStartScopeSize.set(run.id, await readSessionScopeSize(session.id));
+    // #490: the brief's turn is counted before the adapter can answer it.
+    // A start that fails gives the count and the baseline back -- no run
+    // of it is live, and a leftover count would keep the next run of this
+    // thread "working" for the idle sweep.
+    let briefCounted = false;
+    let handle: RunHandle;
+    try {
+      await appendAndPublish(session.id, run.id, [
+        {
+          kind: "run_started",
+          payload: {
+            run_id: run.id,
+            runner: run.runner,
+            instance_id: run.instance_id,
+            resume: opts.resumeMode,
+            // #489: the brief is a redelivered message the log already
+            // holds (before this event); the web counts it from here.
+            ...(opts.brief !== null && opts.logBrief === false ? { carried_messages: 1 } : {}),
+          },
         },
-      },
-    ]);
-    if (opts.brief !== null) {
-      if (opts.logBrief !== false) {
-        await appendAndPublish(session.id, run.id, [
-          { kind: "user_message", payload: { text: opts.brief, source: "chat" } },
-        ]);
+      ]);
+      if (opts.brief !== null) {
+        if (opts.logBrief !== false) {
+          await appendAndPublish(session.id, run.id, [
+            { kind: "user_message", payload: { text: opts.brief, source: "chat" } },
+          ]);
+        }
+        addTurnInFlight(session.id);
+        briefCounted = true;
       }
-      addTurnInFlight(session.id);
+
+      const runStart: RunStart = {
+        sessionId: session.id,
+        runId: run.id,
+        cwd: provisioned.cwd,
+        brief: opts.brief,
+        resume: opts.runStartResume,
+        orientation: provisioned.orientation,
+        instance: { id: run.instance_id, env: instanceEnv },
+        mcp: { ...provisioned.mcp, headers: { "X-Portuni-Spawn-Id": session.id } },
+        policy: opts.policy,
+        portuniRoot: provisioned.portuniRoot,
+        mirrors: provisioned.mirrors,
+        model,
+        effort,
+      };
+
+      handle = await adapter.start(runStart, makeSink(session.id, run.id));
+    } catch (err) {
+      if (briefCounted) dropTurnInFlight(session.id);
+      runStartScopeSize.delete(run.id);
+      throw err;
     }
-
-    const runStart: RunStart = {
-      sessionId: session.id,
-      runId: run.id,
-      cwd: provisioned.cwd,
-      brief: opts.brief,
-      resume: opts.runStartResume,
-      orientation: provisioned.orientation,
-      instance: { id: run.instance_id, env: instanceEnv },
-      mcp: { ...provisioned.mcp, headers: { "X-Portuni-Spawn-Id": session.id } },
-      policy: opts.policy,
-      portuniRoot: provisioned.portuniRoot,
-      mirrors: provisioned.mirrors,
-      model,
-      effort,
-    };
-
-    const handle = await adapter.start(runStart, makeSink(session.id, run.id));
     liveRuns.set(session.id, { handle, runId: run.id, agentSessionIdSaved: false });
     // #489: from here until this run's end is fully accounted for, a
     // message that the run refuses waits for that end rather than failing.
@@ -933,15 +945,19 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const live = liveRuns.get(sessionId);
     if (live) {
       touchActivity(sessionId);
+      // Counted before the adapter can answer it; given back on any
+      // failure below, so a message the run never took never keeps the
+      // run "working" for the idle sweep (#490).
       addTurnInFlight(sessionId);
-      if (!logged) {
-        await enqueue(sessionId, () =>
-          appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
-        );
-      }
       try {
+        if (!logged) {
+          await enqueue(sessionId, () =>
+            appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
+          );
+        }
         await live.handle.send(text);
       } catch (err) {
+        dropTurnInFlight(sessionId);
         if (!isRunEndedError(err)) throw err;
         // #489: the run was already tearing down (a provider error or
         // limit, the idle sweep, Předat) and never took the message. It is
@@ -949,7 +965,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         // end and for the suspend that follows, then deliver it the way a
         // message into a suspended thread is delivered -- as the next
         // run's first message, written once.
-        dropTurnInFlight(sessionId);
         await deliverAfterRunEnd(sessionId, text, attempt, true);
       }
       return;
