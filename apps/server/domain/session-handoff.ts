@@ -664,10 +664,12 @@ async function suspendWithSummary(
 }
 
 // #459 Předat on a suspended thread with no handoff file. The summary is
-// the one its suspend already wrote when there was one (handoff_inline on
-// this device), otherwise the same summary a suspend writes, built from
-// this device's transcript now. No mirror here: nothing to write into, the
-// row comes back unchanged (the caller refuses before it gets here).
+// built from this device's transcript now -- the same summary a Předat on
+// a running thread writes. #497: nothing refreshes handoff_inline any more
+// (only a Předat with no mirror writes it, and later suspends leave it as
+// it was), so an inline summary is used only when there is no transcript
+// here to build from. No mirror here: nothing to write into, the row comes
+// back unchanged (the caller refuses before it gets here).
 async function writeFileForSuspended(
   deps: SuspendServerSideDeps,
   session: SessionRow,
@@ -675,7 +677,8 @@ async function writeFileForSuspended(
 ): Promise<SessionRow | null> {
   const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
   if (!mirrorRoot || !session.node_id) return session;
-  const inline = (await deps.content.getContent(session.id))?.handoff_inline ?? null;
+  const hasTranscript = (await deps.content.listEvents(session.id, { limit: 1 })).length > 0;
+  const inline = hasTranscript ? null : ((await deps.content.getContent(session.id))?.handoff_inline ?? null);
   const summary = inline ?? (await buildSuspendSummary(deps, session, reason));
   return writeSummaryFileAndRecord(deps, { ...session, node_id: session.node_id }, mirrorRoot, summary);
 }

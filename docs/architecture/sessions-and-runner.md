@@ -170,9 +170,10 @@ reason a person chose).
 On an already `suspended` thread with its file, it is a no-op answering the
 same path. On a `suspended` thread without a file (every suspend but
 Předat leaves one), the same suspend code writes the file now
-(`createSuspendServerSide`'s `writeFileIfSuspended`): its inline summary
-from `content.db` when there is one, else the summary built from the
-transcript here. Every refusal is a `SessionHandoffError` (REST 409, Czech
+(`createSuspendServerSide`'s `writeFileIfSuspended`): the summary built
+from the transcript here, or, only when there is no transcript here, the
+inline summary in `content.db` (nothing refreshes it at suspend, so it can
+be older than the transcript). Every refusal is a `SessionHandoffError` (REST 409, Czech
 message; `api/session-handoff-errors.ts` is the one mapping the local
 router, the agent router and the socket share) and comes before any side
 effect -- nothing is interrupted, ended or suspended:

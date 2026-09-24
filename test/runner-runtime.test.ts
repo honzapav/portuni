@@ -1265,6 +1265,25 @@ describe("session runtime: handoff (#459 Předat)", () => {
     assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
   });
 
+  // #497: nothing refreshes handoff_inline at suspend any more, so an inline
+  // summary on the device can be older than the transcript. Předat builds
+  // the file from the transcript whenever it is here.
+  it("Předat on a suspended thread builds the file from the transcript, not from an older inline summary", async () => {
+    const { nodeId, runtime } = await withoutMirror([TURN_DONE, { wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(-1);
+    await content.setContent(session.id, { handoff_inline: "# Staré shrnutí\n\nZ doby před další prací." });
+
+    const mirrorRoot = join(workspace!, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const result = await runtime.handoff(session.id);
+
+    const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
+    assert.doesNotMatch(onDisk, /Staré shrnutí/);
+    assert.match(onDisk, /\*\*Uživatel:\*\* x/);
+  });
+
   it("an idle suspend with a mirror here writes no file, tracks nothing and appends no handoff event (#497)", async () => {
     const { db, nodeId, store, runtime, mirrorRoot } = await withMirror([TURN_DONE, { wait: "message" }]);
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
