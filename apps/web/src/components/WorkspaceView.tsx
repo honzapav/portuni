@@ -39,7 +39,7 @@ import { lazyWithNamespaces } from "../i18n";
 // open -- lazy-loaded so it lands in its own chunk instead of every
 // window's startup bundle.
 const SessionChat = lazyWithNamespaces(() => import("./SessionChat"), ["chat"]);
-const DetailPane = lazyWithNamespaces(() => import("./DetailPane"), ["node", "files"]);
+const DetailPane = lazyWithNamespaces(() => import("./DetailPane"), ["node", "files", "settings"]);
 
 type Props = {
   graph: GraphPayload | null;

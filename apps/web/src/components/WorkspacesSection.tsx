@@ -1,4 +1,4 @@
-// Nastavení > Workspaces -- desktop-only tab: list every configured
+// Settings > Workspaces -- desktop-only tab: list every configured
 // workspace (local + central), let the user activate/enable/disable/delete
 // them, and create new ones. Mirrors the shape of SettingsPage.users.tsx
 // (list state machine + inline form) but drives Tauri commands instead of
@@ -12,6 +12,8 @@
 
 import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,17 +36,23 @@ type ListState =
   | { kind: "error"; reason: string }
   | { kind: "ok"; workspaces: WorkspaceInfo[] };
 
-const DELETE_CONFIRM_MESSAGE =
-  "Workspace se odebere z appky, sidecar se zastaví a tokeny se smažou z Keychain. Data na disku (mirror složky a databáze) zůstávají — smaž je ručně, pokud je nechceš.";
+const DATA_MODE_TEXT: Record<
+  WorkspaceInfo["data_mode"],
+  (t: TFunction<"settings">) => string
+> = {
+  central: (t) => t(($) => $.workspaces.list.kind_team, { ns: "settings" }),
+  local: (t) => t(($) => $.workspaces.list.kind_personal, { ns: "settings" }),
+};
 
 export default function WorkspacesSection() {
+  const { t } = useTranslation("settings");
   const [state, setState] = useState<ListState>({ kind: "loading" });
   const [rowError, setRowError] = useState<string | null>(null);
   const [pending, setPending] = useState<Set<string>>(() => new Set());
   // Inline two-step delete confirm: window.confirm is a silent no-op in the
   // Tauri webview on macOS (see DetailPane.tsx). Holds the id of the row whose
-  // delete is awaiting confirmation; the row swaps its Smazat button for the
-  // warning + Potvrdit/Zrušit while set.
+  // delete is awaiting confirmation; the row swaps its Delete button for the
+  // warning + Really delete/Cancel while set.
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
@@ -56,7 +64,7 @@ export default function WorkspacesSection() {
 
   const load = useCallback(async () => {
     if (!mountedRef.current) return;
-    // Whenever the list reloads, an armed "Opravdu smazat" must not survive
+    // Whenever the list reloads, an armed "Really delete" must not survive
     // -- the row set it belonged to may have just changed underneath it.
     setConfirmDeleteId(null);
     setState({ kind: "loading" });
@@ -172,14 +180,10 @@ export default function WorkspacesSection() {
     <section className="flex flex-col gap-5">
       <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
         <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-          Workspaces
+          {t(($) => $.workspaces.list.title)}
         </div>
         <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          Každý workspace má vlastní sidecar, port a data (osobní workspace
-          vlastní Turso databázi, týmový workspace centrální server). Zdraví
-          workspace bez otevřeného okna se dá
-          zjistit jen tady – stavové eventy backendu chodí jen do okna daného
-          workspace.
+          {t(($) => $.workspaces.list.intro)}
         </p>
 
         {rowError && (
@@ -193,7 +197,7 @@ export default function WorkspacesSection() {
                 onClick={() => setRowError(null)}
                 className="shrink-0 text-destructive"
               >
-                Zavřít
+                {t(($) => $.workspaces.list.dismiss_error)}
               </Button>
             </AlertDescription>
           </Alert>
@@ -201,7 +205,7 @@ export default function WorkspacesSection() {
 
         {state.kind === "loading" && (
           <div className="text-[13px] text-[var(--color-text-dim)]">
-            Načítám workspaces…
+            {t(($) => $.workspaces.list.loading)}
           </div>
         )}
 
@@ -216,7 +220,7 @@ export default function WorkspacesSection() {
                 onClick={() => void load()}
                 className="shrink-0 text-destructive"
               >
-                Zkusit znovu
+                {t(($) => $.workspaces.list.retry)}
               </Button>
             </AlertDescription>
           </Alert>
@@ -224,7 +228,7 @@ export default function WorkspacesSection() {
 
         {state.kind === "ok" && state.workspaces.length === 0 && (
           <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
-            Zatím žádné workspaces.
+            {t(($) => $.workspaces.list.empty)}
           </div>
         )}
 
@@ -233,11 +237,11 @@ export default function WorkspacesSection() {
             <table className="w-full border-collapse text-[12.5px]">
               <thead>
                 <tr className="border-b border-[var(--color-border)] text-left text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
-                  <th className="pb-2 pr-4 font-semibold">Název</th>
-                  <th className="pb-2 pr-4 font-semibold">ID</th>
-                  <th className="pb-2 pr-4 font-semibold">Druh</th>
-                  <th className="pb-2 pr-4 font-semibold">Port</th>
-                  <th className="pb-2 pr-4 font-semibold">Stav</th>
+                  <th className="pb-2 pr-4 font-semibold">{t(($) => $.workspaces.list.col_name)}</th>
+                  <th className="pb-2 pr-4 font-semibold">{t(($) => $.workspaces.list.col_id)}</th>
+                  <th className="pb-2 pr-4 font-semibold">{t(($) => $.workspaces.list.col_kind)}</th>
+                  <th className="pb-2 pr-4 font-semibold">{t(($) => $.workspaces.list.col_port)}</th>
+                  <th className="pb-2 pr-4 font-semibold">{t(($) => $.workspaces.list.col_status)}</th>
                   <th className="pb-2 font-semibold"></th>
                 </tr>
               </thead>
@@ -260,7 +264,7 @@ export default function WorkspacesSection() {
                               variant="outline"
                               className="border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] font-mono uppercase tracking-wide text-[var(--color-accent)]"
                             >
-                              aktivní
+                              {t(($) => $.workspaces.list.badge_active)}
                             </Badge>
                           )}
                           {w.window_open && (
@@ -268,7 +272,7 @@ export default function WorkspacesSection() {
                               variant="outline"
                               className="font-mono uppercase tracking-wide text-[var(--color-text-dim)]"
                             >
-                              okno otevřené
+                              {t(($) => $.workspaces.list.badge_window_open)}
                             </Badge>
                           )}
                         </div>
@@ -277,22 +281,28 @@ export default function WorkspacesSection() {
                         {w.id}
                       </td>
                       <td className="py-2 pr-4 font-mono text-[var(--color-text-muted)]">
-                        {w.data_mode === "central" ? "týmový" : "osobní"}
+                        {DATA_MODE_TEXT[w.data_mode](t)}
                       </td>
                       <td className="py-2 pr-4 font-mono text-[var(--color-text-muted)]">
                         {w.mcp_port ?? "—"}
                       </td>
                       <td className="py-2 pr-4">
                         {w.running ? (
-                          <span className="text-green-400">běží</span>
+                          <span className="text-green-400">
+                            {t(($) => $.workspaces.list.status_running)}
+                          </span>
                         ) : w.deferred ? (
                           <span className="text-[var(--color-text-dim)]">
-                            čeká na přihlášení
+                            {t(($) => $.workspaces.list.status_awaiting_sign_in)}
                           </span>
                         ) : w.enabled ? (
-                          <span className="text-[var(--color-text-dim)]">neběží</span>
+                          <span className="text-[var(--color-text-dim)]">
+                            {t(($) => $.workspaces.list.status_stopped)}
+                          </span>
                         ) : (
-                          <span className="text-[var(--color-text-dim)]">vypnutý</span>
+                          <span className="text-[var(--color-text-dim)]">
+                            {t(($) => $.workspaces.list.status_disabled)}
+                          </span>
                         )}
                       </td>
                       <td className="py-2">
@@ -304,7 +314,9 @@ export default function WorkspacesSection() {
                             disabled={busy || !w.enabled}
                             onClick={() => void handleOpen(w.id)}
                           >
-                            {w.window_open ? "Přepnout na okno" : "Otevřít"}
+                            {w.window_open
+                              ? t(($) => $.workspaces.list.switch_to_window)
+                              : t(($) => $.workspaces.list.open)}
                           </Button>
                           {canRestart && (
                             <Button
@@ -314,7 +326,7 @@ export default function WorkspacesSection() {
                               disabled={busy}
                               onClick={() => void handleRestart(w.id)}
                             >
-                              Restartovat
+                              {t(($) => $.workspaces.list.restart)}
                             </Button>
                           )}
                           <Button
@@ -324,7 +336,9 @@ export default function WorkspacesSection() {
                             disabled={busy}
                             onClick={() => void handleToggleEnabled(w.id, !w.enabled)}
                           >
-                            {w.enabled ? "Vypnout" : "Zapnout"}
+                            {w.enabled
+                              ? t(($) => $.workspaces.list.disable)
+                              : t(($) => $.workspaces.list.enable)}
                           </Button>
                           {confirmDeleteId === w.id ? (
                             <Button
@@ -334,7 +348,7 @@ export default function WorkspacesSection() {
                               disabled={busy}
                               onClick={() => void handleDelete(w)}
                             >
-                              Opravdu smazat
+                              {t(($) => $.workspaces.list.confirm_delete)}
                             </Button>
                           ) : (
                             <Button
@@ -344,7 +358,7 @@ export default function WorkspacesSection() {
                               disabled={busy}
                               onClick={() => setConfirmDeleteId(w.id)}
                             >
-                              Smazat
+                              {t(($) => $.workspaces.list.delete)}
                             </Button>
                           )}
                           {confirmDeleteId === w.id && (
@@ -355,13 +369,13 @@ export default function WorkspacesSection() {
                               disabled={busy}
                               onClick={() => setConfirmDeleteId(null)}
                             >
-                              Zrušit
+                              {t(($) => $.workspaces.list.cancel_delete)}
                             </Button>
                           )}
                         </div>
                         {confirmDeleteId === w.id && (
                           <div className="mt-1.5 max-w-[420px] text-[11px] leading-snug text-[var(--color-text-dim)]">
-                            {DELETE_CONFIRM_MESSAGE}
+                            {t(($) => $.workspaces.list.delete_warning)}
                           </div>
                         )}
                       </td>
@@ -385,6 +399,7 @@ const FIELD_LABEL =
   "mb-1 text-[12.5px] uppercase tracking-wider text-[var(--color-text-dim)]";
 
 function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
+  const { t } = useTranslation("settings");
   const [name, setName] = useState("");
   const [mode, setMode] = useState<"local" | "central">("local");
   const [tursoUrl, setTursoUrl] = useState("");
@@ -422,7 +437,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
 
   async function handleCreate() {
     if (!id) {
-      setError("Zadej platné jméno workspace.");
+      setError(t(($) => $.workspaces.create.invalid_name));
       return;
     }
     setBusy(true);
@@ -454,13 +469,13 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
   return (
     <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
       <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        Přidat workspace
+        {t(($) => $.workspaces.create.title)}
       </div>
 
       <div className="flex flex-col gap-3">
         <div>
           <Label htmlFor="ws-create-name" className={FIELD_LABEL}>
-            Jméno
+            {t(($) => $.workspaces.create.name_label)}
           </Label>
           <Input
             id="ws-create-name"
@@ -468,30 +483,46 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
-            placeholder="Např. Osobní"
+            placeholder={t(($) => $.workspaces.create.name_placeholder)}
           />
           <div className="mt-1 text-[11.5px] text-[var(--color-text-dim)]">
-            ID: <span className="font-mono">{id || "(neplatné)"}</span> –
-            po vytvoření už nejde změnit.
+            {id ? (
+              <Trans
+                t={t}
+                ns="settings"
+                i18nKey={($) => $.workspaces.create.id_hint}
+                values={{ id }}
+                components={{ mono: <span className="font-mono" /> }}
+              />
+            ) : (
+              <Trans
+                t={t}
+                ns="settings"
+                i18nKey={($) => $.workspaces.create.id_hint_invalid}
+                components={{ mono: <span className="font-mono" /> }}
+              />
+            )}
           </div>
         </div>
 
         <div>
-          <Label className={FIELD_LABEL}>Druh workspace</Label>
+          <Label className={FIELD_LABEL}>
+            {t(($) => $.workspaces.create.kind_label)}
+          </Label>
           <RadioGroup
             value={mode}
             onValueChange={(v) => setMode(v as typeof mode)}
             disabled={busy}
             className="flex gap-4"
-            aria-label="Druh workspace"
+            aria-label={t(($) => $.workspaces.create.kind_aria_label)}
           >
             <Label className="gap-1.5 font-normal text-[13px] text-[var(--color-text-muted)]">
               <RadioGroupItem value="local" />
-              Osobní workspace
+              {t(($) => $.workspaces.create.kind_personal)}
             </Label>
             <Label className="gap-1.5 font-normal text-[13px] text-[var(--color-text-muted)]">
               <RadioGroupItem value="central" />
-              Týmový workspace
+              {t(($) => $.workspaces.create.kind_team)}
             </Label>
           </RadioGroup>
         </div>
@@ -499,7 +530,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
         {mode === "local" && (
           <div>
             <Label htmlFor="ws-create-turso-url" className={FIELD_LABEL}>
-              Turso URL (volitelné)
+              {t(($) => $.workspaces.create.turso_url_label)}
             </Label>
             <Input
               id="ws-create-turso-url"
@@ -512,8 +543,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
               className="font-mono"
             />
             <div className="mt-1 text-[11.5px] text-[var(--color-text-dim)]">
-              Necháš-li prázdné, workspace startuje s lokální SQLite – token
-              se vkládá až po přepnutí do workspace v Settings.
+              {t(($) => $.workspaces.create.turso_url_hint)}
             </div>
           </div>
         )}
@@ -522,7 +552,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
           <div className="flex flex-col gap-3">
             <div>
               <Label htmlFor="ws-create-server-url" className={FIELD_LABEL}>
-                Server URL
+                {t(($) => $.workspaces.create.server_url_label)}
               </Label>
               <Input
                 id="ws-create-server-url"
@@ -537,7 +567,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
             </div>
             <div>
               <Label htmlFor="ws-create-google-client-id" className={FIELD_LABEL}>
-                Google Client ID
+                {t(($) => $.workspaces.create.google_client_id_label)}
               </Label>
               <Input
                 id="ws-create-google-client-id"
@@ -551,7 +581,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
             </div>
             <div>
               <Label htmlFor="ws-create-google-client-secret" className={FIELD_LABEL}>
-                Google Client Secret
+                {t(($) => $.workspaces.create.google_client_secret_label)}
               </Label>
               <Input
                 id="ws-create-google-client-secret"
@@ -568,7 +598,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
 
         <div>
           <Label htmlFor="ws-create-root" className={FIELD_LABEL}>
-            Workspace root
+            {t(($) => $.workspaces.create.workspace_root_label)}
           </Label>
           <Input
             id="ws-create-root"
@@ -593,15 +623,16 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
         {createdHint && (
           <Alert className="border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]">
             <AlertDescription className="text-[var(--color-accent)]">
-              Workspace vytvořen. Turso token vlož po přepnutí do workspace v
-              Settings.
+              {t(($) => $.workspaces.create.created_hint)}
             </AlertDescription>
           </Alert>
         )}
 
         <div>
           <Button type="button" disabled={busy || !id} onClick={() => void handleCreate()}>
-            {busy ? "Vytvářím…" : "Vytvořit workspace"}
+            {busy
+              ? t(($) => $.workspaces.create.submit_busy)
+              : t(($) => $.workspaces.create.submit)}
           </Button>
         </div>
       </div>

@@ -8,6 +8,7 @@
 import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,9 +46,6 @@ type ListState =
   | { kind: "error"; reason: string }
   | { kind: "ok"; instances: RunnerInstanceSummary[] };
 
-const DELETE_CONFIRM_MESSAGE =
-  "Instance se smaže z registru a přestane se nabízet při zakládání úkolu. Výchozí volby organizací, které na ni mířily, se zruší.";
-
 // Radix Select refuses an empty-string item value, so "no default instance"
 // travels as this sentinel and is mapped back to null at the call site.
 const NO_INSTANCE = "__none__";
@@ -74,6 +72,7 @@ function useMountedRef(): MutableRefObject<boolean> {
 }
 
 export default function RunnersSection() {
+  const { t } = useTranslation("settings");
   const locale = useLocale();
   const [runners, setRunners] = useState<RunnerInfo[] | null>(null);
   const [runnersError, setRunnersError] = useState<string | null>(null);
@@ -171,12 +170,10 @@ export default function RunnersSection() {
     <section className="flex flex-col gap-5">
       <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
         <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-          Runnery
+          {t(($) => $.runners.detected.title)}
         </div>
         <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          Runner je nástroj (např. Claude Code), který server spustí a řídí
-          přes kanonický protokol událostí. Přihlášení zůstává na CLI
-          samotném — Portuni nikdy nenabízí vlastní přihlášení.
+          {t(($) => $.runners.detected.intro)}
         </p>
 
         {runnersError && (
@@ -185,11 +182,11 @@ export default function RunnersSection() {
           </Alert>
         )}
         {runners === null && !runnersError && (
-          <div className="text-[13px] text-[var(--color-text-dim)]">Zjišťuji dostupné runnery…</div>
+          <div className="text-[13px] text-[var(--color-text-dim)]">{t(($) => $.runners.detected.loading)}</div>
         )}
         {runners && runners.length === 0 && (
           <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
-            Zatím žádný runner není na tomto zařízení zaregistrovaný.
+            {t(($) => $.runners.detected.empty)}
           </div>
         )}
         {runners && runners.length > 0 && (
@@ -210,12 +207,12 @@ export default function RunnersSection() {
                   </div>
                   {!r.availability.installed && (
                     <div className="mt-0.5 text-[12px] text-[var(--color-text-dim)]">
-                      Nenainstalováno na tomto zařízení.
+                      {t(($) => $.runners.detected.not_installed)}
                     </div>
                   )}
                   {r.availability.installed && !r.availability.logged_in && (
                     <div className="mt-0.5 text-[12px] text-[var(--color-text-dim)]">
-                      Nainstalováno, ale nepřihlášeno — přihlas se přímo v {r.id} CLI.
+                      {t(($) => $.runners.detected.not_signed_in, { runner: r.id })}
                     </div>
                   )}
                 </div>
@@ -227,7 +224,9 @@ export default function RunnersSection() {
                       : "bg-[var(--color-bg)] text-[var(--color-text-dim)]"
                   }`}
                 >
-                  {r.availability.installed && r.availability.logged_in ? "připraveno" : "nedostupné"}
+                  {r.availability.installed && r.availability.logged_in
+                    ? t(($) => $.runners.detected.badge_ready)
+                    : t(($) => $.runners.detected.badge_unavailable)}
                 </Badge>
               </div>
             ))}
@@ -237,13 +236,15 @@ export default function RunnersSection() {
 
       <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
         <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-          Instance
+          {t(($) => $.runners.instances.title)}
         </div>
         <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          Instance popisuje, co se má vložit do prostředí spuštěného úkolu —
-          typicky <code className="font-mono">CLAUDE_CONFIG_DIR=…</code> pro
-          přepnutí účtu. Hodnoty se z bezpečnostních důvodů nikdy nenačítají
-          zpět z registru.
+          <Trans
+            t={t}
+            ns="settings"
+            i18nKey={($) => $.runners.instances.intro}
+            components={{ code: <code className="font-mono" /> }}
+          />
         </p>
 
         {rowError && (
@@ -257,14 +258,14 @@ export default function RunnersSection() {
                 onClick={() => setRowError(null)}
                 className="shrink-0 text-destructive"
               >
-                Zavřít
+                {t(($) => $.runners.instances.dismiss_error)}
               </Button>
             </AlertDescription>
           </Alert>
         )}
 
         {state.kind === "loading" && (
-          <div className="text-[13px] text-[var(--color-text-dim)]">Načítám instance…</div>
+          <div className="text-[13px] text-[var(--color-text-dim)]">{t(($) => $.runners.instances.loading)}</div>
         )}
 
         {state.kind === "error" && (
@@ -278,7 +279,7 @@ export default function RunnersSection() {
                 onClick={() => void load()}
                 className="shrink-0 text-destructive"
               >
-                Zkusit znovu
+                {t(($) => $.runners.instances.retry)}
               </Button>
             </AlertDescription>
           </Alert>
@@ -286,7 +287,7 @@ export default function RunnersSection() {
 
         {state.kind === "ok" && instances.length === 0 && (
           <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
-            Zatím žádné instance.
+            {t(($) => $.runners.instances.empty)}
           </div>
         )}
 
@@ -320,11 +321,10 @@ export default function RunnersSection() {
       {state.kind === "ok" && instances.length > 0 && orgs.length > 0 && (
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
           <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-            Výchozí instance podle organizace
+            {t(($) => $.runners.org_defaults.title)}
           </div>
           <p className="mb-3 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-            Při založení úkolu z uzlu se jako výchozí nabídne instance
-            nastavená pro jeho organizaci.
+            {t(($) => $.runners.org_defaults.intro)}
           </p>
           <div className="flex flex-col gap-2">
             {orgs.map((org) => {
@@ -339,11 +339,11 @@ export default function RunnersSection() {
                       void handleSetDefault(org.id, v === NO_INSTANCE ? null : v)
                     }
                   >
-                    <SelectTrigger size="sm" aria-label={`Výchozí instance pro ${org.name}`}>
+                    <SelectTrigger size="sm" aria-label={t(($) => $.runners.org_defaults.select_aria_label, { orgName: org.name })}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value={NO_INSTANCE}>(žádná)</SelectItem>
+                      <SelectItem value={NO_INSTANCE}>{t(($) => $.runners.org_defaults.none)}</SelectItem>
                       {instances.map((i) => (
                         <SelectItem key={i.id} value={i.id}>
                           {i.name}
@@ -388,6 +388,7 @@ function InstanceRow({
   onCancelDelete: () => void;
   onDelete: () => void;
 }) {
+  const { t } = useTranslation("settings");
   const [name, setName] = useState(instance.name);
   const [runner, setRunner] = useState(instance.runner);
   const [envText, setEnvText] = useState(envKeysToText(instance.env_keys));
@@ -403,11 +404,11 @@ function InstanceRow({
 
   async function handleSave() {
     if (!name.trim()) {
-      onError("Název instance je povinný.");
+      onError(t(($) => $.runners.row.name_required));
       return;
     }
     const env = parseEnvText(envText);
-    const envIssue = validateEnvKeys(env);
+    const envIssue = validateEnvKeys(env, t);
     if (envIssue) {
       onError(envIssue);
       return;
@@ -429,7 +430,7 @@ function InstanceRow({
         <div className="flex flex-col gap-2">
           <div>
             <Label htmlFor={`instance-${instance.id}-name`} className={ROW_FIELD_LABEL}>
-              Název
+              {t(($) => $.runners.row.name_label)}
             </Label>
             <Input
               id={`instance-${instance.id}-name`}
@@ -441,7 +442,7 @@ function InstanceRow({
           </div>
           <div>
             <Label htmlFor={`instance-${instance.id}-runner`} className={ROW_FIELD_LABEL}>
-              Runner
+              {t(($) => $.runners.row.runner_label)}
             </Label>
             <Input
               id={`instance-${instance.id}-runner`}
@@ -455,17 +456,15 @@ function InstanceRow({
           </div>
           <div>
             <Label htmlFor={`instance-${instance.id}-env`} className={ROW_FIELD_LABEL}>
-              Proměnné prostředí (jedna na řádek, KLÍČ=hodnota)
+              {t(($) => $.runners.row.env_label)}
             </Label>
             {instance.env_keys.length > 0 && (
               <p className="mb-1 font-mono text-[11px] leading-snug text-[var(--color-text-dim)]">
-                {instance.env_keys.map((k) => `${k} (nastaveno)`).join(", ")}
+                {instance.env_keys.map((key) => t(($) => $.runners.row.env_key_set, { key })).join(", ")}
               </p>
             )}
             <p className="mb-1 text-[11px] leading-snug text-[var(--color-text-dim)]">
-              Hodnoty se z bezpečnostních důvodů nikdy nenačítají zpět — u
-              existujícího klíče zůstane prázdná hodnota beze změny, zadej ji
-              znovu jen pokud ji chceš přepsat.
+              {t(($) => $.runners.row.env_values_hint)}
             </p>
             <Textarea
               id={`instance-${instance.id}-env`}
@@ -474,13 +473,13 @@ function InstanceRow({
               disabled={saving}
               rows={3}
               spellCheck={false}
-              placeholder="CLAUDE_CONFIG_DIR=/Users/vy/.claude-work"
+              placeholder={t(($) => $.runners.row.env_placeholder)}
               className="font-mono"
             />
           </div>
           <div className="flex gap-1.5">
             <Button type="button" size="sm" disabled={saving} onClick={() => void handleSave()}>
-              {saving ? "Ukládám…" : "Uložit"}
+              {saving ? t(($) => $.runners.row.saving) : t(($) => $.runners.row.save)}
             </Button>
             <Button
               type="button"
@@ -489,7 +488,7 @@ function InstanceRow({
               disabled={saving}
               onClick={onCancelEdit}
             >
-              Zrušit
+              {t(($) => $.runners.row.cancel_edit)}
             </Button>
           </div>
         </div>
@@ -506,12 +505,14 @@ function InstanceRow({
             <span className="font-mono text-[11px] text-[var(--color-text-dim)]">{instance.runner}</span>
           </div>
           <div className="mt-0.5 truncate font-mono text-[11.5px] text-[var(--color-text-dim)]">
-            {instance.env_keys.length > 0 ? `proměnné: ${instance.env_keys.join(", ")}` : "(bez env)"}
+            {instance.env_keys.length > 0
+              ? t(($) => $.runners.row.env_summary, { keys: instance.env_keys.join(", ") })
+              : t(($) => $.runners.row.no_env)}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onEdit}>
-            Upravit
+            {t(($) => $.runners.row.edit)}
           </Button>
           {confirmDelete ? (
             <Button
@@ -521,7 +522,7 @@ function InstanceRow({
               disabled={busy}
               onClick={onDelete}
             >
-              Opravdu smazat
+              {t(($) => $.runners.row.confirm_delete)}
             </Button>
           ) : (
             <Button
@@ -531,7 +532,7 @@ function InstanceRow({
               disabled={busy}
               onClick={onAskDelete}
             >
-              Smazat
+              {t(($) => $.runners.row.delete)}
             </Button>
           )}
           {confirmDelete && (
@@ -542,14 +543,14 @@ function InstanceRow({
               disabled={busy}
               onClick={onCancelDelete}
             >
-              Zrušit
+              {t(($) => $.runners.row.cancel_delete)}
             </Button>
           )}
         </div>
       </div>
       {confirmDelete && (
         <div className="mt-1.5 max-w-[420px] text-[11px] leading-snug text-[var(--color-text-dim)]">
-          {DELETE_CONFIRM_MESSAGE}
+          {t(($) => $.runners.row.delete_confirm_message)}
         </div>
       )}
     </div>
@@ -565,6 +566,7 @@ function CreateInstanceForm({
   runners: RunnerInfo[];
   onCreated: () => void;
 }) {
+  const { t } = useTranslation("settings");
   const [name, setName] = useState("");
   const [runner, setRunner] = useState("");
   const [envText, setEnvText] = useState("");
@@ -575,15 +577,15 @@ function CreateInstanceForm({
 
   async function handleCreate() {
     if (!name.trim()) {
-      setError("Zadej název instance.");
+      setError(t(($) => $.runners.create.name_required));
       return;
     }
     if (!runner.trim()) {
-      setError("Zadej runner (např. claude).");
+      setError(t(($) => $.runners.create.runner_required));
       return;
     }
     const env = parseEnvText(envText);
-    const envIssue = validateEnvKeys(env);
+    const envIssue = validateEnvKeys(env, t);
     if (envIssue) {
       setError(envIssue);
       return;
@@ -606,12 +608,12 @@ function CreateInstanceForm({
   return (
     <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
       <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        Přidat instanci
+        {t(($) => $.runners.create.title)}
       </div>
       <div className="flex flex-col gap-3">
         <div>
           <Label htmlFor="instance-create-name" className={FIELD_LABEL}>
-            Název
+            {t(($) => $.runners.create.name_label)}
           </Label>
           <Input
             id="instance-create-name"
@@ -619,13 +621,13 @@ function CreateInstanceForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
-            placeholder="Např. Práce"
+            placeholder={t(($) => $.runners.create.name_placeholder)}
           />
         </div>
 
         <div>
           <Label htmlFor="instance-create-runner" className={FIELD_LABEL}>
-            Runner
+            {t(($) => $.runners.create.runner_label)}
           </Label>
           <Input
             id="instance-create-runner"
@@ -647,7 +649,7 @@ function CreateInstanceForm({
 
         <div>
           <Label htmlFor="instance-create-env" className={FIELD_LABEL}>
-            Proměnné prostředí (jedna na řádek, KLÍČ=hodnota)
+            {t(($) => $.runners.create.env_label)}
           </Label>
           <Textarea
             id="instance-create-env"
@@ -656,7 +658,7 @@ function CreateInstanceForm({
             disabled={busy}
             rows={3}
             spellCheck={false}
-            placeholder="CLAUDE_CONFIG_DIR=/Users/vy/.claude-work"
+            placeholder={t(($) => $.runners.create.env_placeholder)}
             className="font-mono"
           />
         </div>
@@ -669,7 +671,7 @@ function CreateInstanceForm({
 
         <div>
           <Button type="button" disabled={busy} onClick={() => void handleCreate()}>
-            {busy ? "Vytvářím…" : "Vytvořit instanci"}
+            {busy ? t(($) => $.runners.create.submitting) : t(($) => $.runners.create.submit)}
           </Button>
         </div>
       </div>

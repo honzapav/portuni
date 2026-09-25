@@ -682,8 +682,10 @@ message may use are fixed in its `glossary.md`; translator notes are in
   (`GraphView` → `graph`, `SessionChat` → `chat` -- the AI Elements kit
   lives only in that chunk, so its texts load with it -- `DetailPane` → `node`
   and `files`, in both `App.tsx` and `WorkspaceView.tsx`; `SyncOverview`
-  in `App.tsx` and Settings › Sync (`SyncSection`) → `files`). Settings
-  load `settings` when their texts move into the catalog. A `Record` of
+  in `App.tsx` and Settings › Sync (`SyncSection`) → `files`;
+  `SettingsPage` → `settings`, and `DetailPane` loads `settings` too, since
+  its access request control and list come from `AccessRequests.tsx`,
+  which reads `settings`). A `Record` of
   selectors at module level passes `{ ns: "<namespace>" }` on each call:
   the extractor cannot infer the namespace from a `t` parameter.
 - **Refusals are codes.** The Files tab's plan, drag and folder-action

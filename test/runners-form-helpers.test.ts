@@ -1,8 +1,10 @@
-// Pure form-validation helpers behind Nastavení › Runnery
+// Pure form-validation helpers behind Settings › Runners
 // (apps/web/src/lib/runners.ts) -- mirrors apps/server/domain/runner/
 // instances.ts's key-refusal rules and env text parsing.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createI18n } from "../apps/server/shared/i18n/create.js";
+import { RESOURCES } from "../apps/server/shared/i18n/resources.js";
 import {
   envKeysToText,
   isPortuniEnvKey,
@@ -10,6 +12,14 @@ import {
   parseEnvText,
   validateEnvKeys,
 } from "../apps/web/src/lib/runners.js";
+
+const { i18n } = createI18n({
+  lng: "en",
+  resources: { en: RESOURCES.en, cs: RESOURCES.cs },
+  escapeValue: false,
+  initAsync: false,
+});
+const tEn = i18n.getFixedT("en", "settings");
 
 describe("isSecretShapedEnvKey", () => {
   it("flags *_TOKEN/*_KEY/*_SECRET/*PASSWORD* case-insensitively", () => {
@@ -38,17 +48,20 @@ describe("isPortuniEnvKey", () => {
 
 describe("validateEnvKeys", () => {
   it("returns null when every key is fine", () => {
-    assert.equal(validateEnvKeys({ CLAUDE_CONFIG_DIR: "/x" }), null);
+    assert.equal(validateEnvKeys({ CLAUDE_CONFIG_DIR: "/x" }, tEn), null);
   });
 
   it("returns a message naming the first secret-shaped key", () => {
-    const message = validateEnvKeys({ CLAUDE_CONFIG_DIR: "/x", API_KEY: "sk-1" });
-    assert.match(message ?? "", /API_KEY/);
+    const message = validateEnvKeys({ CLAUDE_CONFIG_DIR: "/x", API_KEY: "sk-1" }, tEn);
+    assert.equal(
+      message,
+      "“API_KEY” looks like a secret (*_TOKEN/*_KEY/*_SECRET/*PASSWORD*); store it in the OS keychain, not here.",
+    );
   });
 
   it("returns a message naming a PORTUNI_* key", () => {
-    const message = validateEnvKeys({ PORTUNI_MCP_TOKEN: "v" });
-    assert.match(message ?? "", /PORTUNI_MCP_TOKEN/);
+    const message = validateEnvKeys({ PORTUNI_ROOT: "v" }, tEn);
+    assert.equal(message, "“PORTUNI_ROOT”: PORTUNI_* variables cannot be set from the instance registry.");
   });
 });
 

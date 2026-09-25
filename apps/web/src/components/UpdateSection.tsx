@@ -1,10 +1,11 @@
-// "Aktualizace" section on Settings -> Obecné. Shows the current version,
+// "Updates" section on Settings -> General. Shows the current version,
 // lets the user check on demand, download + install and restart. Desktop
 // only; see AppUpdate.updateInfo comment in lib/updater.ts for why
 // downloading/ready reuse the last "available" info instead of carrying
 // their own.
 
 import { Download, ExternalLink, RotateCw } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { AppUpdate } from "../lib/updater";
 import { isTauri, openExternal } from "../lib/backend-url";
@@ -17,6 +18,7 @@ type Props = {
 
 export default function UpdateSection({ appUpdate }: Props) {
   const locale = useLocale();
+  const { t } = useTranslation("settings");
   const { state, currentVersion, updateInfo, hasChecked, lastCheckedAt, checkNow, install, restart } =
     appUpdate;
 
@@ -24,10 +26,10 @@ export default function UpdateSection({ appUpdate }: Props) {
     return (
       <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
         <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-          Aktualizace
+          {t(($) => $.update.title)}
         </div>
         <p className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          Aktualizace jsou dostupné jen v desktopové aplikaci.
+          {t(($) => $.update.desktop_only)}
         </p>
       </section>
     );
@@ -42,23 +44,25 @@ export default function UpdateSection({ appUpdate }: Props) {
   return (
     <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
       <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        Aktualizace
+        {t(($) => $.update.title)}
       </div>
 
       <div className="mb-3 text-[13.5px] text-[var(--color-text-muted)]">
-        Verze {currentVersion ?? "…"}
+        {t(($) => $.update.version, { version: currentVersion ?? "…" })}
       </div>
 
       <div className="mb-4 text-[13.5px] text-[var(--color-text-muted)]">
         {state.kind === "idle" &&
           (hasChecked
-            ? "Aktuální verze je nejnovější."
-            : "Zatím nezkontrolováno.")}
-        {state.kind === "checking" && "Kontroluji aktualizace…"}
-        {state.kind === "available" && `K dispozici ${state.info.version}.`}
+            ? t(($) => $.update.status.up_to_date)
+            : t(($) => $.update.status.not_checked))}
+        {state.kind === "checking" && t(($) => $.update.status.checking)}
+        {state.kind === "available" && t(($) => $.update.status.available, { version: state.info.version })}
         {state.kind === "downloading" &&
-          `Stahuji a instaluji${state.pct != null ? ` (${state.pct} %)` : "…"}`}
-        {state.kind === "ready" && "Aktualizace nainstalována – restartuj pro dokončení."}
+          (state.pct != null
+            ? t(($) => $.update.status.downloading_pct, { pct: state.pct })
+            : t(($) => $.update.status.downloading))}
+        {state.kind === "ready" && t(($) => $.update.status.ready)}
         {state.kind === "error" && (
           <span className="text-[var(--color-danger)]">{state.message}</span>
         )}
@@ -70,8 +74,7 @@ export default function UpdateSection({ appUpdate }: Props) {
         // makes the schedule's own liveness visible, updated on every
         // completed attempt including a failed one.
         <div className="mb-4 text-[12px] text-[var(--color-text-dim)]">
-          Naposledy zkontrolováno:{" "}
-          {formatDateTime(locale, lastCheckedAt)}
+          {t(($) => $.update.last_checked, { when: formatDateTime(locale, lastCheckedAt) })}
         </div>
       )}
 
@@ -87,19 +90,19 @@ export default function UpdateSection({ appUpdate }: Props) {
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" variant="outline" onClick={checkNow} disabled={busy}>
           <RotateCw />
-          Zkontrolovat nyní
+          {t(($) => $.update.check_now)}
         </Button>
 
         {(state.kind === "available" || (state.kind === "error" && updateInfo)) && (
           <Button type="button" onClick={install}>
             <Download />
-            Stáhnout a nainstalovat
+            {t(($) => $.update.install)}
           </Button>
         )}
 
         {state.kind === "ready" && (
           <Button type="button" onClick={() => void restart()}>
-            Restartovat
+            {t(($) => $.update.restart)}
           </Button>
         )}
 
@@ -114,7 +117,7 @@ export default function UpdateSection({ appUpdate }: Props) {
             }
             className="text-muted-foreground"
           >
-            Co je nového
+            {t(($) => $.update.whats_new)}
             <ExternalLink />
           </Button>
         )}

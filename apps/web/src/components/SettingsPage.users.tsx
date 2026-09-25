@@ -1,10 +1,11 @@
-// Nastavení > Uživatelé -- admin-only tab: full account list (GET
+// Settings > Users -- admin-only tab: full account list (GET
 // /auth/users/admin) plus an invite form (POST /auth/users/invite). Visible
 // gating (global_scope === "admin") happens in SettingsPage.tsx; this
 // component assumes it's only ever rendered for an admin.
 
 import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function SettingsUsersPanel() {
   const locale = useLocale();
+  const { t } = useTranslation("settings");
   const [state, setState] = useState<UsersState>({ kind: "loading" });
   const [email, setEmail] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -66,7 +68,7 @@ export default function SettingsUsersPanel() {
     const trimmed = email.trim();
     if (!trimmed) return;
     if (!EMAIL_RE.test(trimmed)) {
-      setInviteError("Zadej platný e-mail.");
+      setInviteError(t(($) => $.users.invite.invalid_email));
       return;
     }
     setInviteBusy(true);
@@ -80,7 +82,7 @@ export default function SettingsUsersPanel() {
       if (mountedRef.current) {
         setInviteError(
           e instanceof UserExistsError
-            ? "Uživatel už existuje"
+            ? t(($) => $.users.invite.user_exists)
             : displayError(e),
         );
       }
@@ -92,12 +94,10 @@ export default function SettingsUsersPanel() {
   return (
     <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
       <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        Uživatelé
+        {t(($) => $.users.title)}
       </div>
       <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-        Účty s přístupem k tomuto Portuni serveru. Pozvaní uživatelé ještě
-        nikdy nepřihlásili -- placeholder účet jde sdílet a přiřazovat
-        rovnou.
+        {t(($) => $.users.description)}
       </p>
 
       <div className="mb-4 flex items-center gap-2">
@@ -111,7 +111,7 @@ export default function SettingsUsersPanel() {
           onKeyDown={(e) => {
             if (e.key === "Enter") void handleInvite();
           }}
-          placeholder="email@example.com"
+          placeholder={t(($) => $.users.invite.placeholder)}
           disabled={inviteBusy}
           className="flex-1"
         />
@@ -121,7 +121,7 @@ export default function SettingsUsersPanel() {
           onClick={() => void handleInvite()}
           className="shrink-0"
         >
-          {inviteBusy ? "Zvu…" : "Pozvat"}
+          {inviteBusy ? t(($) => $.users.invite.submitting) : t(($) => $.users.invite.submit)}
         </Button>
       </div>
 
@@ -133,7 +133,7 @@ export default function SettingsUsersPanel() {
 
       {state.kind === "loading" && (
         <div className="text-[13px] text-[var(--color-text-dim)]">
-          Načítám uživatele…
+          {t(($) => $.users.loading)}
         </div>
       )}
 
@@ -148,7 +148,7 @@ export default function SettingsUsersPanel() {
               onClick={() => void load()}
               className="shrink-0 text-destructive"
             >
-              Zkusit znovu
+              {t(($) => $.users.retry)}
             </Button>
           </AlertDescription>
         </Alert>
@@ -156,7 +156,7 @@ export default function SettingsUsersPanel() {
 
       {state.kind === "ok" && state.users.length === 0 && (
         <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
-          Zatím žádní uživatelé.
+          {t(($) => $.users.empty)}
         </div>
       )}
 
@@ -165,10 +165,10 @@ export default function SettingsUsersPanel() {
           <table className="w-full border-collapse text-[12.5px]">
             <thead>
               <tr className="border-b border-[var(--color-border)] text-left text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
-                <th className="pb-2 pr-4 font-semibold">Jméno</th>
-                <th className="pb-2 pr-4 font-semibold">E-mail</th>
-                <th className="pb-2 pr-4 font-semibold">Role</th>
-                <th className="pb-2 font-semibold">Poslední přihlášení</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.users.columns.name)}</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.users.columns.email)}</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.users.columns.role)}</th>
+                <th className="pb-2 font-semibold">{t(($) => $.users.columns.last_sign_in)}</th>
               </tr>
             </thead>
             <tbody>
@@ -198,7 +198,7 @@ export default function SettingsUsersPanel() {
                           variant="outline"
                           className="bg-[var(--color-bg)] font-mono uppercase tracking-wide text-[var(--color-text-dim)]"
                         >
-                          Pozvaný
+                          {t(($) => $.users.invited_badge)}
                         </Badge>
                       )}
                     </div>
@@ -207,10 +207,10 @@ export default function SettingsUsersPanel() {
                     {u.email}
                   </td>
                   <td className="py-2 pr-4 font-mono text-[var(--color-text-muted)]">
-                    {u.global_scope ?? "—"}
+                    {u.global_scope ?? t(($) => $.users.none)}
                   </td>
                   <td className="py-2 text-[var(--color-text-muted)]">
-                    {u.last_login_at ? formatDateTime(locale, u.last_login_at) : "—"}
+                    {u.last_login_at ? formatDateTime(locale, u.last_login_at) : t(($) => $.users.none)}
                   </td>
                 </tr>
               ))}

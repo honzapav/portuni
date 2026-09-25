@@ -2,7 +2,6 @@ import { displayError } from "./errors";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Sidebar, { type AppView } from "./components/Sidebar";
-import SettingsPage from "./components/SettingsPage";
 import WorkspaceView from "./components/WorkspaceView";
 import OverviewView from "./components/OverviewView";
 import EditorFullscreen from "./components/EditorFullscreen";
@@ -56,8 +55,11 @@ import {
 const GraphView = lazyWithNamespaces(() => import("./components/GraphView"), ["graph"]);
 // The detail pane loads with its namespaces (node, files), so its first
 // frame never shows a bare key.
-const DetailPane = lazyWithNamespaces(() => import("./components/DetailPane"), ["node", "files"]);
+const DetailPane = lazyWithNamespaces(() => import("./components/DetailPane"), ["node", "files", "settings"]);
 const SyncOverview = lazyWithNamespaces(() => import("./components/SyncOverview"), ["files"]);
+// Settings load with the `settings` namespace. The detail pane loads it too:
+// its access request control and list (AccessRequests.tsx) read `settings`.
+const SettingsPage = lazyWithNamespaces(() => import("./components/SettingsPage"), ["settings"]);
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
@@ -1120,7 +1122,9 @@ export default function App() {
           </div>
         )}
         {view === "settings" && (
-          <SettingsPage appUpdate={appUpdate} />
+          <Suspense fallback={null}>
+            <SettingsPage appUpdate={appUpdate} />
+          </Suspense>
         )}
       </main>
 

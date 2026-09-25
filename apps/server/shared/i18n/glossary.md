@@ -102,3 +102,8 @@ never Title Case. Czech keeps its own casing and „…“ quotes.
 | token | token | |
 | připojená aplikace | connected app | An OAuth grant. |
 | přepis | transcript | A thread's conversation on the device. |
+| zástupná osoba / placeholder | placeholder | A person actor not yet backed by a real person. |
+| odhlásit se | sign out | Not "log out". |
+| odpojit | disconnect | A connected app. |
+| revokovat | revoke | A token. |
+| proměnná prostředí | environment variable | A runner instance's `env`. |

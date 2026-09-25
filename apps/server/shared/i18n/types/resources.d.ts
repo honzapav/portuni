@@ -1306,8 +1306,407 @@ export default interface Resources {
     }
   },
   "settings": {
+    "access_requests": {
+      "list": {
+        "approve": "Approve",
+        "approving": "…",
+        "deny": "Deny",
+        "resolve_failed": "Resolving the request failed. Try again."
+      },
+      "panel": {
+        "description": "Pending requests for access to nodes in the “On request” mode. Approving adds the requester to the node's sharing recipients (for an inherited restriction, to the parent node's).",
+        "empty": "No pending requests.",
+        "loading": "Loading requests…",
+        "retry": "Try again",
+        "title": "Access requests"
+      },
+      "request": {
+        "already_visible": "You already have access – refresh the detail",
+        "button": "Request access",
+        "cancel_title": "Cancel",
+        "message_placeholder": "Message (optional)",
+        "send_failed": "Sending failed.",
+        "send_title": "Send request",
+        "sent": "Request sent"
+      }
+    },
+    "account": {
+      "connected_apps": {
+        "columns": {
+          "app": "App",
+          "connected": "Connected",
+          "last_used": "Last used"
+        },
+        "disconnect": {
+          "button": "Disconnect",
+          "confirm": "Disconnect the app “{{appName}}”? It will have to sign in again.",
+          "title": "Disconnect app"
+        },
+        "empty": "No connected apps yet. Add Portuni as a connector in claude.ai or in Claude Code and sign in with Google.",
+        "loading": "Loading connected apps…",
+        "retry": "Try again",
+        "title": "Connected apps"
+      },
+      "error_box": {
+        "dismiss": "Close"
+      },
+      "intro": "Sign-in to the central Portuni server with Google OAuth.",
+      "loading": "Checking sign-in status…",
+      "not_configured": {
+        "body": "Add <code>server_url</code> and <code>google_client_id</code> to the config file:",
+        "title": "The central server is not configured."
+      },
+      "not_desktop": "Available only in the desktop app.",
+      "sign_in": {
+        "busy": "Signing in…",
+        "button": "Sign in with Google"
+      },
+      "title": "Account",
+      "tokens": {
+        "cancel": "Cancel",
+        "columns": {
+          "created": "Created",
+          "expires": "Expires",
+          "last_used": "Last used",
+          "name": "Name",
+          "status": "Status"
+        },
+        "create": "Create",
+        "created": {
+          "close": "Close",
+          "copied": "Copied",
+          "copy": "Copy",
+          "title": "Token created",
+          "warning": "The token is shown only once. Copy it and keep it somewhere safe."
+        },
+        "creating": "Creating…",
+        "empty": "No device tokens yet.",
+        "label_placeholder": "Token name (e.g. dev-laptop)",
+        "loading": "Loading tokens…",
+        "new_token": "New token",
+        "retry": "Try again",
+        "revoke": {
+          "button": "Revoke",
+          "confirm": "Revoke the token “{{tokenLabel}}”? This cannot be undone.",
+          "title": "Revoke token"
+        },
+        "status": {
+          "active": "active",
+          "revoked": "revoked"
+        },
+        "title": "Device tokens"
+      },
+      "user": {
+        "role": "Role:",
+        "sign_out": "Sign out"
+      },
+      "workspace_kind": {
+        "label": "Workspace type:",
+        "personal": "personal",
+        "team": "team"
+      }
+    },
+    "actors": {
+      "modal": {
+        "cancel": "Cancel",
+        "create": "Create",
+        "name_label": "Name",
+        "name_placeholder_automation": "Daily CRM report",
+        "name_placeholder_person": "Jane Doe",
+        "name_required": "Name is required.",
+        "notes_label": "Notes",
+        "notes_placeholder": "Internal notes…",
+        "placeholder_automation": "An automation cannot be a placeholder.",
+        "placeholder_checkbox": "Stand-in person (to be replaced by a real one)",
+        "placeholder_label": "Placeholder",
+        "save_changes": "Save changes",
+        "saving": "Saving…",
+        "title_create": "New actor",
+        "title_edit": "Edit actor",
+        "type_automation": "Automation",
+        "type_label": "Type",
+        "type_locked": "The type cannot be changed after creation.",
+        "type_person": "Person",
+        "user_label": "User account",
+        "user_none": "— Not linked —",
+        "user_unknown": "{{userId}} (unknown)",
+        "users_empty": "No registered users available.",
+        "users_load_failed": "Could not load users: {{error}}",
+        "users_loading": "Loading users…"
+      },
+      "page": {
+        "add": "Add actor",
+        "delete": "Delete",
+        "edit": "Edit",
+        "empty_filtered": "No actors match the filters.",
+        "empty_none": "No actors yet. Add the first one.",
+        "loading": "Loading actors…",
+        "search_label": "Search actors",
+        "search_placeholder": "Search actors…",
+        "title": "Actors"
+      },
+      "placeholder_filter": {
+        "all": "All",
+        "placeholder": "Placeholders",
+        "real": "Real"
+      },
+      "status": {
+        "automation": "Automation",
+        "placeholder": "Placeholder",
+        "real_person": "Real person",
+        "registered_user": "Registered user"
+      },
+      "table": {
+        "actions": "Actions",
+        "name": "Name",
+        "notes": "Notes",
+        "status": "Status",
+        "type": "Type"
+      },
+      "type_badge": {
+        "automation": "Automation",
+        "person": "Person"
+      },
+      "type_filter": {
+        "all": "All",
+        "automation": "Automations",
+        "person": "People"
+      }
+    },
+    "mcp": {
+      "actions": {
+        "install_claude": "Add to Claude Code (~/.claude.json)",
+        "install_codex": "Add to Codex (~/.codex/config.toml)",
+        "install_vibe": "Add to Vibe (~/.vibe/config.toml)",
+        "regenerate": "Generate new token"
+      },
+      "browser_only_note": "The actions above only work in the desktop app; they are disabled in browser dev mode.",
+      "central_note": {
+        "with_url": "Front door on this device: graph tools are proxied to <mono>{{serverUrl}}</mono>, file and folder tools run on this device. The token belongs to the front door on this device; the device token for the central server is managed in the Account section.",
+        "without_url": "Front door on this device: graph tools are proxied to the central server, file and folder tools run on this device. The token belongs to the front door on this device; the device token for the central server is managed in the Account section."
+      },
+      "env_hint": {
+        "body": "{{agent}} reads the bearer token from an environment variable — it won't use a token in config.toml. Add this line to the end of <code>~/.zshrc</code> (or your shell rc) and open a new terminal:",
+        "copy_export": "Copy export",
+        "dismiss": "Hide",
+        "export_copied": "Export line copied to clipboard",
+        "loading_token": "Loading token…",
+        "written": "Written to {{path}}"
+      },
+      "fields": {
+        "copy_token": "Copy token",
+        "copy_url": "Copy URL",
+        "hide_token": "Hide token",
+        "no_auth": "(server without auth)",
+        "show_token": "Show token",
+        "token": "Token",
+        "url": "URL"
+      },
+      "flash": {
+        "copy_failed": "Copying failed: {{error}}",
+        "install_desktop_only": "Installing the configuration only works from the desktop app.",
+        "install_failed": "Error: {{error}}",
+        "install_written": "Written to {{path}}",
+        "regenerate_desktop_only": "Token rotation is only available from the desktop app.",
+        "regenerate_failed": "Error: {{error}}",
+        "regenerated": "New token generated. Remember to run the install again for Claude Code, Codex and Vibe.",
+        "token_copied": "Token copied to clipboard",
+        "token_desktop_only": "The token is only available in the desktop app.",
+        "token_load_failed": "Could not load the token: {{error}}",
+        "url_copied": "URL copied to clipboard"
+      },
+      "intro": "The endpoint Claude Code, Codex and Mistral Vibe connect to. The token lives in the macOS Keychain and survives app restarts.",
+      "status": {
+        "loading": "Checking server status…",
+        "no_port": "the active workspace has no MCP port assigned",
+        "unavailable": "MCP server is unavailable: <mono>{{reason}}</mono>"
+      },
+      "title": "MCP server"
+    },
+    "page": {
+      "actors_loading": "Loading actors…",
+      "autosave": "Changes are saved automatically.",
+      "integrations": {
+        "showtime": {
+          "description": "A <code>.showtime</code> file opens as a presentation preview (the preview Showtime writes into the file on every save). When Showtime is installed, the preview offers “Open in Showtime”: the deck opens in Showtime, and the agent Showtime starts gets a connection to Portuni with this node as its home node and the node's mirror as a second working folder.",
+          "desktop_only": "Opening in Showtime is only available in the desktop app.",
+          "found": "Showtime.app found.",
+          "label": "Showtime",
+          "not_found": "Showtime.app not found (looked in /Applications and ~/Applications).",
+          "searching": "Looking for Showtime.app…"
+        },
+        "title": "Integrations"
+      },
+      "loading": "Loading…",
+      "tabs": {
+        "access_requests": "Access requests",
+        "account": "Account",
+        "actors": "Actors",
+        "general": "General",
+        "runners": "Runners",
+        "sync": "Sync",
+        "users": "Users",
+        "workspaces": "Workspaces"
+      },
+      "title": "Settings"
+    },
+    "runners": {
+      "create": {
+        "env_label": "Environment variables (one per line, KEY=value)",
+        "env_placeholder": "CLAUDE_CONFIG_DIR=/Users/you/.claude-work",
+        "name_label": "Name",
+        "name_placeholder": "E.g. Work",
+        "name_required": "Enter an instance name.",
+        "runner_label": "Runner",
+        "runner_required": "Enter a runner (e.g. claude).",
+        "submit": "Create instance",
+        "submitting": "Creating…",
+        "title": "Add instance"
+      },
+      "detected": {
+        "badge_ready": "ready",
+        "badge_unavailable": "unavailable",
+        "empty": "No runner is registered on this device yet.",
+        "intro": "A runner is a tool (e.g. Claude Code) that the server starts and drives over the canonical event protocol. Sign-in stays with the CLI itself; Portuni never offers its own sign-in.",
+        "loading": "Detecting available runners…",
+        "not_installed": "Not installed on this device.",
+        "not_signed_in": "Installed but not signed in; sign in directly in the {{runner}} CLI.",
+        "title": "Runners"
+      },
+      "env_keys": {
+        "portuni_key": "“{{key}}”: PORTUNI_* variables cannot be set from the instance registry.",
+        "secret_shaped": "“{{key}}” looks like a secret (*_TOKEN/*_KEY/*_SECRET/*PASSWORD*); store it in the OS keychain, not here."
+      },
+      "instances": {
+        "dismiss_error": "Close",
+        "empty": "No instances yet.",
+        "intro": "An instance describes what goes into the environment of a started task, typically <code>CLAUDE_CONFIG_DIR=…</code> to switch accounts. For security reasons, values are never read back from the registry.",
+        "loading": "Loading instances…",
+        "retry": "Try again",
+        "title": "Instances"
+      },
+      "org_defaults": {
+        "intro": "When a task is created from a node, the instance set for its organization is offered as the default.",
+        "none": "(none)",
+        "select_aria_label": "Default instance for {{orgName}}",
+        "title": "Default instance per organization"
+      },
+      "row": {
+        "cancel_delete": "Cancel",
+        "cancel_edit": "Cancel",
+        "confirm_delete": "Delete for good",
+        "delete": "Delete",
+        "delete_confirm_message": "The instance is deleted from the registry and is no longer offered when creating a task. Organization defaults that pointed to it are cleared.",
+        "edit": "Edit",
+        "env_key_set": "{{key}} (set)",
+        "env_label": "Environment variables (one per line, KEY=value)",
+        "env_placeholder": "CLAUDE_CONFIG_DIR=/Users/you/.claude-work",
+        "env_summary": "variables: {{keys}}",
+        "env_values_hint": "For security reasons, values are never read back. An empty value on an existing key stays unchanged; enter it again only if you want to overwrite it.",
+        "name_label": "Name",
+        "name_required": "The instance name is required.",
+        "no_env": "(no env)",
+        "runner_label": "Runner",
+        "save": "Save",
+        "saving": "Saving…"
+      }
+    },
     "sample": {
       "message": "Settings of {{workspaceName}}."
+    },
+    "update": {
+      "check_now": "Check now",
+      "desktop_only": "Updates are only available in the desktop app.",
+      "install": "Download and install",
+      "last_checked": "Last checked: {{when}}",
+      "restart": "Restart",
+      "status": {
+        "available": "{{version}} is available.",
+        "checking": "Checking for updates…",
+        "downloading": "Downloading and installing…",
+        "downloading_pct": "Downloading and installing ({{pct}} %)",
+        "not_checked": "Not checked yet.",
+        "ready": "Update installed – restart to finish.",
+        "up_to_date": "You have the latest version."
+      },
+      "title": "Updates",
+      "version": "Version {{version}}",
+      "whats_new": "What's new"
+    },
+    "users": {
+      "columns": {
+        "email": "Email",
+        "last_sign_in": "Last sign-in",
+        "name": "Name",
+        "role": "Role"
+      },
+      "description": "Accounts with access to this Portuni server. Invited users have never signed in yet – you can share with and assign a placeholder account right away.",
+      "empty": "No users yet.",
+      "invite": {
+        "invalid_email": "Enter a valid email.",
+        "placeholder": "email@example.com",
+        "submit": "Invite",
+        "submitting": "Inviting…",
+        "user_exists": "The user already exists"
+      },
+      "invited_badge": "Invited",
+      "loading": "Loading users…",
+      "none": "—",
+      "retry": "Try again",
+      "title": "Users"
+    },
+    "workspaces": {
+      "create": {
+        "created_hint": "Workspace created. Enter the Turso token after you switch to the workspace, in Settings.",
+        "google_client_id_label": "Google Client ID",
+        "google_client_secret_label": "Google Client Secret",
+        "id_hint": "ID: <mono>{{id}}</mono> – cannot be changed after creation.",
+        "id_hint_invalid": "ID: <mono>(invalid)</mono> – cannot be changed after creation.",
+        "invalid_name": "Enter a valid workspace name.",
+        "kind_aria_label": "Workspace type",
+        "kind_label": "Workspace type",
+        "kind_personal": "Personal workspace",
+        "kind_team": "Team workspace",
+        "name_label": "Name",
+        "name_placeholder": "e.g. Personal",
+        "server_url_label": "Server URL",
+        "submit": "Create workspace",
+        "submit_busy": "Creating…",
+        "title": "Add workspace",
+        "turso_url_hint": "If you leave it empty, the workspace starts with a local SQLite database – the token is entered after you switch to the workspace, in Settings.",
+        "turso_url_label": "Turso URL (optional)",
+        "workspace_root_label": "Workspace root"
+      },
+      "list": {
+        "badge_active": "active",
+        "badge_window_open": "window open",
+        "cancel_delete": "Cancel",
+        "col_id": "ID",
+        "col_kind": "Type",
+        "col_name": "Name",
+        "col_port": "Port",
+        "col_status": "Status",
+        "confirm_delete": "Really delete",
+        "delete": "Delete",
+        "delete_warning": "The workspace is removed from the app, its sidecar stops and its tokens are deleted from the Keychain. Data on disk (mirror folders and databases) stays – delete it by hand if you don't want it.",
+        "disable": "Disable",
+        "dismiss_error": "Close",
+        "empty": "No workspaces yet.",
+        "enable": "Enable",
+        "intro": "Each workspace has its own sidecar, port and data (a personal workspace has its own Turso database, a team workspace a central server). The health of a workspace without an open window can only be seen here – backend status events only reach that workspace's own window.",
+        "kind_personal": "personal",
+        "kind_team": "team",
+        "loading": "Loading workspaces…",
+        "open": "Open",
+        "restart": "Restart",
+        "retry": "Try again",
+        "status_awaiting_sign_in": "waiting for sign-in",
+        "status_disabled": "disabled",
+        "status_running": "running",
+        "status_stopped": "not running",
+        "switch_to_window": "Switch to window",
+        "title": "Workspaces"
+      }
     }
   }
 }

@@ -1,5 +1,6 @@
 import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, Pencil, Trash2, Users, Search } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -42,6 +43,7 @@ type PlaceholderFilter = "all" | "real" | "placeholder";
 const NO_USER = "__none__";
 
 export default function ActorsPage(_props: Props) {
+  const { t } = useTranslation("settings");
   const [actors, setActors] = useState<Actor[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,11 +126,11 @@ export default function ActorsPage(_props: Props) {
             <Users size={16} className="text-[var(--color-accent)]" />
           </div>
           <h1 className="flex-1 text-[22px] font-semibold leading-tight tracking-tight text-[var(--color-text)]">
-            Aktéři
+            {t(($) => $.actors.page.title)}
           </h1>
           <Button onClick={openCreate}>
             <Plus />
-            Přidat aktéra
+            {t(($) => $.actors.page.add)}
           </Button>
         </div>
 
@@ -142,8 +144,8 @@ export default function ActorsPage(_props: Props) {
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Hledat aktéry..."
-              aria-label="Hledat aktéry"
+              placeholder={t(($) => $.actors.page.search_placeholder)}
+              aria-label={t(($) => $.actors.page.search_label)}
               className="w-[240px] pl-8"
             />
           </div>
@@ -152,9 +154,12 @@ export default function ActorsPage(_props: Props) {
             value={typeFilter}
             onChange={(v) => setTypeFilter(v as TypeFilter)}
             options={[
-              { value: "all", label: "Vše" },
-              { value: "person", label: "Lidé" },
-              { value: "automation", label: "Automatizace" },
+              { value: "all", label: t(($) => $.actors.type_filter.all) },
+              { value: "person", label: t(($) => $.actors.type_filter.person) },
+              {
+                value: "automation",
+                label: t(($) => $.actors.type_filter.automation),
+              },
             ]}
           />
 
@@ -162,9 +167,12 @@ export default function ActorsPage(_props: Props) {
             value={placeholderFilter}
             onChange={(v) => setPlaceholderFilter(v as PlaceholderFilter)}
             options={[
-              { value: "all", label: "Vše" },
-              { value: "real", label: "Reálné" },
-              { value: "placeholder", label: "Placeholders" },
+              { value: "all", label: t(($) => $.actors.placeholder_filter.all) },
+              { value: "real", label: t(($) => $.actors.placeholder_filter.real) },
+              {
+                value: "placeholder",
+                label: t(($) => $.actors.placeholder_filter.placeholder),
+              },
             ]}
           />
 
@@ -184,15 +192,15 @@ export default function ActorsPage(_props: Props) {
 
         {loading && !actors && (
           <div className="flex h-40 items-center justify-center text-[13.5px] text-[var(--color-text-dim)]">
-            Načítám aktéry...
+            {t(($) => $.actors.page.loading)}
           </div>
         )}
 
         {!loading && actors && filtered.length === 0 && (
           <div className="flex h-40 items-center justify-center text-[13.5px] text-[var(--color-text-dim)]">
             {actors.length === 0
-              ? "Zatím žádní aktéři. Přidejte prvního."
-              : "Žádní aktéři neodpovídají filtrům."}
+              ? t(($) => $.actors.page.empty_none)
+              : t(($) => $.actors.page.empty_filtered)}
           </div>
         )}
 
@@ -200,11 +208,13 @@ export default function ActorsPage(_props: Props) {
           <table className="w-full border-separate border-spacing-0 text-[13.5px]">
             <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
               <tr className="text-left text-[10px] uppercase tracking-widest text-[var(--color-text-dim)]">
-                <Th>Jméno</Th>
-                <Th>Typ</Th>
-                <Th>Stav</Th>
-                <Th>Poznámky</Th>
-                <Th className="w-[96px] text-right">Akce</Th>
+                <Th>{t(($) => $.actors.table.name)}</Th>
+                <Th>{t(($) => $.actors.table.type)}</Th>
+                <Th>{t(($) => $.actors.table.status)}</Th>
+                <Th>{t(($) => $.actors.table.notes)}</Th>
+                <Th className="w-[96px] text-right">
+                  {t(($) => $.actors.table.actions)}
+                </Th>
               </tr>
             </thead>
             <tbody>
@@ -239,13 +249,13 @@ export default function ActorsPage(_props: Props) {
                   <Td className="text-right">
                     <div className="inline-flex items-center gap-1">
                       <IconButton
-                        title="Upravit"
+                        title={t(($) => $.actors.page.edit)}
                         onClick={() => openEdit(a)}
                       >
                         <Pencil />
                       </IconButton>
                       <IconButton
-                        title="Smazat"
+                        title={t(($) => $.actors.page.delete)}
                         onClick={() => handleDelete(a)}
                         danger
                       >
@@ -330,7 +340,11 @@ function Td({
 }
 
 function TypeBadge({ type }: { type: "person" | "automation" }) {
-  const label = type === "person" ? "Osoba" : "Automatizace";
+  const { t } = useTranslation("settings");
+  const label =
+    type === "person"
+      ? t(($) => $.actors.type_badge.person)
+      : t(($) => $.actors.type_badge.automation);
   const color =
     type === "person" ? "var(--color-accent)" : "var(--color-node-process)";
   return (
@@ -353,19 +367,20 @@ function TypeBadge({ type }: { type: "person" | "automation" }) {
 }
 
 function StatusBadge({ actor }: { actor: Actor }) {
+  const { t } = useTranslation("settings");
   let label: string;
   let color: string;
   if (actor.type === "automation") {
-    label = "Automatizace";
+    label = t(($) => $.actors.status.automation);
     color = "var(--color-node-process)";
   } else if (actor.is_placeholder) {
-    label = "Placeholder";
+    label = t(($) => $.actors.status.placeholder);
     color = "var(--color-text-dim)";
   } else if (actor.user_id) {
-    label = "Registrovaný uživatel";
+    label = t(($) => $.actors.status.registered_user);
     color = "var(--color-accent)";
   } else {
-    label = "Reálná osoba";
+    label = t(($) => $.actors.status.real_person);
     color = "var(--color-text-muted)";
   }
   return (
@@ -425,6 +440,7 @@ function ActorModal({
   onClose,
   onSaved,
 }: ActorModalProps) {
+  const { t } = useTranslation("settings");
   const isEdit = actor !== null;
 
   const [type, setType] = useState<"person" | "automation">(
@@ -471,7 +487,7 @@ function ActorModal({
 
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setFormError("Jméno je povinné.");
+      setFormError(t(($) => $.actors.modal.name_required));
       return;
     }
 
@@ -515,44 +531,54 @@ function ActorModal({
     >
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[520px]">
         <DialogHeader>
-          <DialogTitle>{isEdit ? "Upravit aktéra" : "Nový aktér"}</DialogTitle>
+          <DialogTitle>
+            {isEdit
+              ? t(($) => $.actors.modal.title_edit)
+              : t(($) => $.actors.modal.title_create)}
+          </DialogTitle>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="space-y-4">
-            <Field label="Typ" required>
+            <Field label={t(($) => $.actors.modal.type_label)} required>
               <div className="flex gap-2">
                 <TypeRadio
-                  label="Osoba"
+                  label={t(($) => $.actors.modal.type_person)}
                   checked={type === "person"}
                   onChange={() => setType("person")}
                   disabled={isEdit}
                 />
                 <TypeRadio
-                  label="Automatizace"
+                  label={t(($) => $.actors.modal.type_automation)}
                   checked={type === "automation"}
                   onChange={() => setType("automation")}
                   disabled={isEdit}
                 />
               </div>
               {isEdit && (
-                <FieldHint>Typ nelze po vytvoření změnit.</FieldHint>
+                <FieldHint>{t(($) => $.actors.modal.type_locked)}</FieldHint>
               )}
             </Field>
 
-            <Field label="Jméno" required htmlFor="actor-name">
+            <Field
+              label={t(($) => $.actors.modal.name_label)}
+              required
+              htmlFor="actor-name"
+            >
               <Input
                 id="actor-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 autoFocus
                 placeholder={
-                  type === "person" ? "Jan Novák" : "Denní report z CRM"
+                  type === "person"
+                    ? t(($) => $.actors.modal.name_placeholder_person)
+                    : t(($) => $.actors.modal.name_placeholder_automation)
                 }
               />
             </Field>
 
-            <Field label="Placeholder">
+            <Field label={t(($) => $.actors.modal.placeholder_label)}>
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="actor-placeholder"
@@ -568,54 +594,64 @@ function ActorModal({
                       : "cursor-pointer"
                   }`}
                 >
-                  Zástupná osoba (bude nahrazena reálnou)
+                  {t(($) => $.actors.modal.placeholder_checkbox)}
                 </Label>
               </div>
               {type === "automation" && (
-                <FieldHint>Automatizace nemůže být placeholder.</FieldHint>
+                <FieldHint>
+                  {t(($) => $.actors.modal.placeholder_automation)}
+                </FieldHint>
               )}
             </Field>
 
             {type === "person" && !isPlaceholder && (
-              <Field label="Uživatelský účet">
+              <Field label={t(($) => $.actors.modal.user_label)}>
                 <Select
                   value={userId || NO_USER}
                   onValueChange={(v) => setUserId(v === NO_USER ? "" : v)}
                   disabled={users === null && !usersError}
                 >
-                  <SelectTrigger className="w-full" aria-label="Uživatelský účet">
+                  <SelectTrigger className="w-full" aria-label={t(($) => $.actors.modal.user_label)}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={NO_USER}>— Nepropojeno —</SelectItem>
+                    <SelectItem value={NO_USER}>
+                      {t(($) => $.actors.modal.user_none)}
+                    </SelectItem>
                     {users?.map((u) => (
                       <SelectItem key={u.id} value={u.id}>
                         {u.name} ({u.email})
                       </SelectItem>
                     ))}
                     {userId && !users?.some((u) => u.id === userId) && (
-                      <SelectItem value={userId}>{userId} (neznámý)</SelectItem>
+                      <SelectItem value={userId}>
+                        {t(($) => $.actors.modal.user_unknown, { userId })}
+                      </SelectItem>
                     )}
                   </SelectContent>
                 </Select>
                 {usersError ? (
-                  <FieldHint>Nepodařilo se načíst uživatele: {usersError}</FieldHint>
+                  <FieldHint>
+                    {t(($) => $.actors.modal.users_load_failed, {
+                      error: usersError,
+                    })}
+                  </FieldHint>
                 ) : users === null ? (
-                  <FieldHint>Načítám uživatele…</FieldHint>
+                  <FieldHint>{t(($) => $.actors.modal.users_loading)}</FieldHint>
                 ) : users.length === 0 ? (
-                  <FieldHint>Žádní registrovaní uživatelé k dispozici.</FieldHint>
+                  <FieldHint>{t(($) => $.actors.modal.users_empty)}</FieldHint>
                 ) : null}
               </Field>
             )}
 
-            <Field label="Poznámky" htmlFor="actor-notes">
+            <Field label={t(($) => $.actors.modal.notes_label)} htmlFor="actor-notes">
               <Textarea
                 id="actor-notes"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 rows={2}
                 className="resize-y leading-relaxed"
-                placeholder="Interní poznámky..."
+                placeholder={t(($) => $.actors.modal.notes_placeholder)}
               />
             </Field>
           </div>
@@ -628,10 +664,14 @@ function ActorModal({
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
-              Zrušit
+              {t(($) => $.actors.modal.cancel)}
             </Button>
             <Button type="submit" disabled={saving}>
-              {saving ? "Ukládám..." : isEdit ? "Uložit změny" : "Vytvořit"}
+              {saving
+                ? t(($) => $.actors.modal.saving)
+                : isEdit
+                  ? t(($) => $.actors.modal.save_changes)
+                  : t(($) => $.actors.modal.create)}
             </Button>
           </DialogFooter>
         </form>
