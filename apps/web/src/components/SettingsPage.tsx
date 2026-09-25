@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -11,12 +11,15 @@ import SettingsAccessRequestsPanel from "./AccessRequests";
 import AccountSection from "./AccountSection";
 import WorkspacesSection from "./WorkspacesSection";
 import RunnersSection from "./RunnersSection";
-import SyncSection from "./SyncSection";
 import UpdateSection from "./UpdateSection";
 import { fetchAccessRequestCount, fetchMe } from "../api";
 import { isTauri } from "../lib/backend-url";
 import { showtimeInstalled } from "../lib/showtime";
 import type { AppUpdate } from "../lib/updater";
+import { lazyWithNamespaces } from "../i18n";
+
+// Settings › Sync reads the `files` namespace; it loads with the chunk.
+const SyncSection = lazyWithNamespaces(() => import("./SyncSection"), ["files"]);
 
 type Props = {
   appUpdate: AppUpdate;
@@ -159,7 +162,11 @@ export default function SettingsPage({ appUpdate }: Props) {
 
         {tab === "runners" && <RunnersSection />}
 
-        {tab === "sync" && <SyncSection />}
+        {tab === "sync" && (
+          <Suspense fallback={null}>
+            <SyncSection />
+          </Suspense>
+        )}
 
         {tab === "users" && isAdmin && <SettingsUsersPanel />}
 

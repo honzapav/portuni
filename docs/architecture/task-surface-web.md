@@ -665,10 +665,18 @@ message may use are fixed in its `glossary.md`; translator notes are in
   own namespace is created with `lazyWithNamespaces(() => import("./X"),
   ["x"])`, which loads the chunk and the namespace together
   (`GraphView` → `graph`, `SessionChat` → `chat`, `DetailPane` → `node`
-  and `files`, in both `App.tsx` and `WorkspaceView.tsx`). Settings load
-  `settings` when their texts move into the catalog. A `Record` of
+  and `files`, in both `App.tsx` and `WorkspaceView.tsx`; `SyncOverview`
+  in `App.tsx` and Settings › Sync (`SyncSection`) → `files`). Settings
+  load `settings` when their texts move into the catalog. A `Record` of
   selectors at module level passes `{ ns: "<namespace>" }` on each call:
   the extractor cannot infer the namespace from a `t` parameter.
+- **Refusals are codes.** The Files tab's plan, drag and folder-action
+  helpers (`lib/file-plan.ts`, `lib/file-drag.ts`, `lib/new-file-menu.ts`)
+  return a `PlanReason` (`{ code, name? }`), never text;
+  `planReasonText(reason, t)` renders it from `files` `plan_reason.*`.
+  A folder's sync dot carries a `FolderSyncState` (`folderSyncTitle`), the
+  sync-run line and the remote watcher line take `t` (`summarizeSyncRun`,
+  `remoteWatchLine`), and a watcher's `last_error` is a placeholder value.
 - **Shared labels and enums.** A label shown on several surfaces lives
   in the catalog once: the POPP node types in `common` `node_type.*`
   through `lib/node-type-labels.ts` (`nodeTypeLabel(type, t)`), the

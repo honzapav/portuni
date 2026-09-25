@@ -40,7 +40,6 @@ import { isTauri } from "./lib/backend-url";
 import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
 import { pullNodeCount } from "./lib/remote-watch-view";
-import SyncOverview from "./components/SyncOverview";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -58,6 +57,7 @@ const GraphView = lazyWithNamespaces(() => import("./components/GraphView"), ["g
 // The detail pane loads with its namespaces (node, files), so its first
 // frame never shows a bare key.
 const DetailPane = lazyWithNamespaces(() => import("./components/DetailPane"), ["node", "files"]);
+const SyncOverview = lazyWithNamespaces(() => import("./components/SyncOverview"), ["files"]);
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
@@ -1270,6 +1270,7 @@ export default function App() {
         </Dialog>
       )}
       {syncOverviewOpen && (
+        <Suspense fallback={null}>
         <SyncOverview
           pending={syncPending}
           onClose={() => setSyncOverviewOpen(false)}
@@ -1283,6 +1284,7 @@ export default function App() {
             overviewSelectNode(id);
           }}
         />
+        </Suspense>
       )}
       {syncQuitGuard && (
         <Dialog

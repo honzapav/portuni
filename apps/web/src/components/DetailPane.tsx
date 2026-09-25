@@ -321,6 +321,7 @@ function DetailPaneBody({
   liveSessionStates?: Readonly<Record<string, SessionStateMessage>>;
 }) {
   const { t } = useTranslation("node");
+  const { t: tFiles } = useTranslation("files");
 
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -1234,7 +1235,7 @@ function DetailPaneBody({
                     onNewSubfolder={(folderPath) =>
                       setFolderForm({ prefill: newFolderPrefill(folderPath) })
                     }
-                    runErrors={syncRunErrorsByFile(syncRunResult)}
+                    runErrors={syncRunErrorsByFile(syncRunResult, tFiles)}
                     isCentralMode={isCentralMode}
                   />
                 ) : (

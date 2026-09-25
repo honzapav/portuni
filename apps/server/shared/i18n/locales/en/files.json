@@ -1,17 +1,230 @@
 {
+  "banner": {
+    "create_mirror": "Create mirror",
+    "creating_mirror": "Creating…",
+    "error": "Error: {{error}}",
+    "no_mirror": "This node has no mirror on this computer – its files are only on the remote so far.",
+    "personal_workspace": "Files are stored on this computer only and are not shared. Sharing files needs a team workspace (joining a team).",
+    "watcher_errors_one": "File watching reports an error for this node:",
+    "watcher_errors_other": "File watching reports errors for this node:"
+  },
+  "form": {
+    "cancel": "Cancel"
+  },
+  "new_file": {
+    "button": "New file",
+    "create": "Create",
+    "creating": "Creating…",
+    "menu_item": "New file",
+    "more_options": "More options",
+    "placeholder": "Name of the new file (e.g. notes.md)",
+    "presentation": "New presentation",
+    "presentation_title": "Starts a new Showtime presentation in this node's wip/ folder"
+  },
+  "new_folder": {
+    "button": "New folder",
+    "create": "Create",
+    "placeholder": "Path of the new folder (e.g. wip/archive)"
+  },
+  "new_task": {
+    "button": "New task",
+    "title": "Opens an empty thread where you give the agent a task."
+  },
   "plan_bar": {
+    "apply": "Apply",
+    "apply_again": "Apply again",
+    "apply_disabled_title": "A new folder appears with the first file you move into it",
+    "applying": "Moving <b>{{current}} / {{total}}</b>",
+    "applying_button": "Applying",
+    "discard": "Discard",
     "failed_one": "Applying stopped at <b>{{filename}}</b>. <b>{{count}} change</b> remains in the plan.",
     "failed_other": "Applying stopped at <b>{{filename}}</b>. <b>{{count}} changes</b> remain in the plan.",
     "pending_one": "<b>{{count}} change</b> waiting to be applied",
     "pending_other": "<b>{{count}} changes</b> waiting to be applied"
   },
+  "plan_reason": {
+    "drag_outside_sections": "Only files in the wip, outputs and resources folders can be moved",
+    "file_exists": "The folder already has a file {{name}}",
+    "file_gone": "The file no longer exists",
+    "folder_exists": "The folder {{name}} already exists",
+    "folder_has_untracked": "The folder holds an unregistered file {{name}}",
+    "into_itself": "A folder cannot be moved into itself",
+    "invalid_folder_name": "Invalid folder name",
+    "no_mirror": "Create the node's mirror first",
+    "not_a_folder": "This folder cannot be moved",
+    "path_empty": "Enter the folder's path",
+    "path_needs_name": "Enter a folder name inside the section",
+    "path_outside_sections": "The path must start with the wip/, outputs/ or resources/ section",
+    "section_move": "A section cannot be moved",
+    "section_rename": "A section cannot be renamed",
+    "target_outside_sections": "The target must be in the wip, outputs or resources folder",
+    "untracked": "The file is not registered yet"
+  },
+  "remote_watch": {
+    "error": "{{remote}}: watching reports an error – {{error}}",
+    "retry": "next attempt {{when}}",
+    "unwatched": {
+      "sweep_error": "{{remote}}: no change watching, the periodic check reports an error – {{error}}",
+      "sweep_last": "{{remote}}: no change watching, periodic check only (last {{when}})",
+      "sweep_only": "{{remote}}: no change watching, periodic check only"
+    },
+    "watched": {
+      "last_change": "{{remote}} watched, last change {{when}}",
+      "last_change_sweep_error": "{{remote}} watched, last change {{when}}; the periodic check reports an error – {{error}}",
+      "no_change": "{{remote}} watched, no change yet, checked {{when}}",
+      "no_change_sweep_error": "{{remote}} watched, no change yet, checked {{when}}; the periodic check reports an error – {{error}}",
+      "not_checked": "{{remote}} watched, not checked yet",
+      "not_checked_sweep_error": "{{remote}} watched, not checked yet; the periodic check reports an error – {{error}}"
+    }
+  },
+  "row": {
+    "busy": {
+      "delete": "deleting",
+      "keep_local": "uploading",
+      "move": "moving",
+      "rename": "renaming",
+      "restore": "restoring",
+      "take_remote": "downloading"
+    },
+    "copy_drive_link": "Copy Drive link",
+    "copy_path": "Copy the file path",
+    "delete": "Delete",
+    "delete_confirm": "Really delete?",
+    "delete_confirm_title": "Deletes the file from the remote too",
+    "drive_link_none": "The file is not on Drive yet",
+    "keep_local": "Keep local",
+    "keep_local_title": "Push the local version to the remote",
+    "not_editable": "This file cannot be edited",
+    "open_in_editor": "Open in the editor",
+    "open_on_disk": "Show on disk",
+    "open_presentation": "Open the presentation preview",
+    "plan_badge": {
+      "error": "error",
+      "error_title": "The move failed",
+      "move": "move",
+      "move_title": "The move is waiting to be applied"
+    },
+    "rename": "Rename",
+    "restore": "Restore",
+    "restore_title": "Pull it from the remote again",
+    "take_remote": "Take from remote",
+    "take_remote_title": "Overwrite the local copy with the remote version",
+    "untracked": "unregistered",
+    "untracked_title": "The file is on disk but not registered yet. It is registered on the next sync."
+  },
   "sample": {
     "message": "Files of the node {{nodeName}}."
   },
+  "sync_bar": {
+    "check_on_remote": "Check on the remote",
+    "check_remote": "Check the remote",
+    "conflicts_one": "{{count}} conflict",
+    "conflicts_other": "{{count}} conflicts",
+    "conflicts_title": "Conflict: pick a version on the file (Keep local / Take from remote).",
+    "deleted_local_one": "{{count}} deleted locally",
+    "deleted_local_other": "{{count}} deleted locally",
+    "deleted_local_title": "Deleted locally: Restore pulls a copy again, Delete removes the file everywhere.",
+    "error": "Error: {{error}}",
+    "hide": "Hide",
+    "hide_label": "Hide the sync result",
+    "pending_repair": "Unfinished ({{op}}): {{error}}",
+    "running": "Syncing...",
+    "sync_files": "Sync files",
+    "sync_pending_one": "Sync ({{count}} file to sync)",
+    "sync_pending_other": "Sync ({{count}} files to sync)"
+  },
+  "sync_class": {
+    "clean": "synced",
+    "conflict": "conflict",
+    "deleted_local": "missing",
+    "native": "native",
+    "pull": "pull",
+    "push": "push",
+    "remote_error": "remote unavailable",
+    "remote_missing": "missing on remote"
+  },
   "sync_overview": {
+    "all_synced": "Everything is synced.",
+    "count": {
+      "conflict": "Conflict — needs a decision",
+      "deleted_local": "Deleted locally — needs a decision",
+      "pull": "New on the remote — to pull",
+      "push": "To push",
+      "remote_missing": "Missing on the remote",
+      "untracked": "Unregistered"
+    },
+    "decide": "Decide",
+    "decide_title": "A sync run does not resolve conflicts — open the node and decide",
+    "decisions_one": "<count>{{count}}</count> to decide",
+    "decisions_other": "<count>{{count}}</count> to decide",
+    "decisions_title": "Conflicts and locally deleted files. A sync run never touches them by design — open the node and decide.",
+    "go_to_node": "Go to the node",
+    "node_done": "Synced",
+    "node_failed": "Failed",
     "pull_nodes_one": "<count>{{count}}</count> node with updates from the remote",
     "pull_nodes_other": "<count>{{count}}</count> nodes with updates from the remote",
+    "pull_nodes_title": "Nodes where the remote watcher registered a newer version than this computer has. A sync run pulls them.",
+    "sync_all": "Sync all",
+    "sync_node": "Sync",
+    "title": "Not synced",
     "to_sync_one": "<count>{{count}}</count> file to sync",
     "to_sync_other": "<count>{{count}}</count> files to sync"
+  },
+  "sync_run": {
+    "adopted_one": "{{count}} registered",
+    "adopted_other": "{{count}} registered",
+    "adopted_remote_one": "{{count}} new from the remote",
+    "adopted_remote_other": "{{count}} new from the remote",
+    "all_synced": "All synced",
+    "conflicts_one": "{{count}} conflict",
+    "conflicts_other": "{{count}} conflicts",
+    "deleted_local_one": "{{count}} deleted locally",
+    "deleted_local_other": "{{count}} deleted locally",
+    "deleted_on_remote_one": "{{count}} deleted on the remote",
+    "deleted_on_remote_other": "{{count}} deleted on the remote",
+    "deleted_remote_one": "{{count}} cleaned up",
+    "deleted_remote_other": "{{count}} cleaned up",
+    "errors_one": "{{count}} error",
+    "errors_other": "{{count}} errors",
+    "pending_repairs_one": "{{count}} unfinished",
+    "pending_repairs_other": "{{count}} unfinished",
+    "pulled_one": "{{count}} pulled",
+    "pulled_other": "{{count}} pulled",
+    "pushed_one": "{{count}} pushed",
+    "pushed_other": "{{count}} pushed",
+    "repaired_one": "{{count}} repaired",
+    "repaired_other": "{{count}} repaired",
+    "sweep_errors_one": "remote check failed ({{count}})",
+    "sweep_errors_other": "remote check failed ({{count}})"
+  },
+  "sync_section": {
+    "central": "File sync to Google Drive is managed by the central server <server>{{server}}</server>.",
+    "heading": "Sync",
+    "more_errors_one": "… and {{count}} more.",
+    "more_errors_other": "… and {{count}} more.",
+    "personal": "This is a personal workspace – files are stored on this computer only and are not shared. Sharing files needs a team workspace (joining a team).",
+    "watcher_errors_nodes_one": "File watching reports {{count}} error in {{nodes}} nodes.",
+    "watcher_errors_nodes_other": "File watching reports {{count}} errors in {{nodes}} nodes.",
+    "watcher_errors_one_node_one": "File watching reports {{count}} error in 1 node.",
+    "watcher_errors_one_node_other": "File watching reports {{count}} errors in 1 node."
+  },
+  "tree": {
+    "collapse": "Collapse",
+    "expand": "Expand",
+    "folder_sync": {
+      "clean": "All synced",
+      "conflict": "Conflict inside",
+      "pending": "Files waiting to sync",
+      "remote_missing": "Some files are missing on the remote"
+    },
+    "new_subfolder": "New subfolder",
+    "rename_folder": "Rename",
+    "section_desc": {
+      "outputs": "outputs",
+      "resources": "resources",
+      "wip": "in progress"
+    },
+    "virtual_folder_tag": "new",
+    "virtual_folder_title": "The folder exists only in the plan so far. It is created once it holds a file after applying."
   }
 }
