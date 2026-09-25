@@ -2,15 +2,14 @@
 // of docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md):
 // the persistent sessions anchored to this node -- running (open the
 // chat), suspended (resume: continuation vs handoff, per the server's
-// conversation-existence check), closed/archived (browse; archived behind
-// a filter). Self-fetches on mount and whenever nodeId changes, same
+// conversation-existence check), closed (open the chat; writing reopens
+// it, #498), archived (browse, behind a filter). Self-fetches on mount and whenever nodeId changes, same
 // pattern as DetailPane.access.tsx's AccessSection.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, Redo2, X } from "lucide-react";
+import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, X } from "lucide-react";
 import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
 import {
-  continueSession,
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
   closePersistentSession,
@@ -19,20 +18,18 @@ import {
   startSessionFromHandoff,
 } from "../api";
 import { handoffFileEntries, type HandoffFileEntry } from "../lib/handoff-files";
-import { hostDisplayName, mergeLiveSessionStates, sessionRowChip, threadCloseAction } from "../lib/session-views";
+import {
+  hostDisplayName,
+  mergeLiveSessionStates,
+  sessionRowChip,
+  sessionRowOpensChat,
+  threadCloseAction,
+} from "../lib/session-views";
 import type { SessionStateMessage } from "../lib/sessions-client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 
 // #329: labels for a session the server suspended (dropped connection,
 // idle GC, terminal exit, boot sweep) rather than the agent's own
@@ -80,10 +77,10 @@ type Props = {
   // the selector (App.tsx's requestedChatSession). Absent in contexts
   // with no chat surface.
   onOpenChat?: (sessionId: string) => void;
-  // #412: "Navázat" starts a real, running thread -- handed to the app the
-  // same way "Nový úkol" hands over the draft it opens, so the Práce
-  // sidebar gets the row at once instead of waiting for something else to
-  // refetch the node.
+  // #412/#460: "Navázat na handoff" starts a real, running thread --
+  // handed to the app the same way "Nový úkol" hands over the draft it
+  // opens, so the Práce sidebar gets the row at once instead of waiting
+  // for something else to refetch the node.
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
   // The window's live session_state map (App.tsx, from the socket) --
   // overlaid onto the REST rows so state and "Čeká na mě" update without
@@ -142,34 +139,13 @@ export function SessionsSection({
     setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
   };
 
-  // Uzavřít is the one irreversible action here (#378) -- confirmed via
-  // closeConfirm below rather than window.confirm, which is a no-op in the
-  // Tauri webview (see App.tsx's editorGuard for the same reasoning).
-  const [closeConfirm, setCloseConfirm] = useState<SessionSummary | null>(null);
+  // Uzavřít asks nothing (#498): a closed thread reopens by writing into it.
   const handleClose = async (id: string) => {
     try {
       const updated = await closePersistentSession(id);
       updateOne(updated);
     } catch (e) {
       setError(String(e));
-    }
-  };
-
-  // "Navázat" (#378): the same POST /sessions/:id/continue as "Pokračovat v
-  // nové session" in the chat header, minus a prior close -- this session
-  // is already closed. Jumps straight to the new thread.
-  const handleContinue = async (id: string) => {
-    try {
-      const { session, run } = await continueSession(id);
-      // Before opening the chat: the new thread has to be in the app's own
-      // per-node map, or the sidebar row it should be highlighting is not
-      // there yet (#412).
-      onSessionStarted?.({ session, run });
-      onOpenChat?.(session.id);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      await load();
     }
   };
 
@@ -273,11 +249,10 @@ export function SessionsSection({
                   deleteDraftSession(s.id);
                   setSessions((prev) => prev.filter((x) => x.id !== s.id));
                 } else {
-                  setCloseConfirm(s);
+                  void handleClose(s.id);
                 }
               }}
               onOpenChat={onOpenChat}
-              onContinue={() => void handleContinue(s.id)}
               onOpenHandoff={
                 onOpenFile && s.handoff_path
                   ? () => onOpenFile(nodeId, s.handoff_path!)
@@ -288,33 +263,6 @@ export function SessionsSection({
         </div>
       )}
 
-      {closeConfirm && (
-        <Dialog open onOpenChange={(open) => !open && setCloseConfirm(null)}>
-          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
-            <DialogHeader>
-              <DialogTitle>Uzavřít relaci?</DialogTitle>
-              <DialogDescription>
-                Relace „{closeConfirm.name}“ se uzavře. Server napřed uloží shrnutí konverzace.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCloseConfirm(null)}>
-                Zpět
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  const id = closeConfirm.id;
-                  setCloseConfirm(null);
-                  void handleClose(id);
-                }}
-              >
-                Uzavřít
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
     </div>
   );
 }
@@ -324,15 +272,12 @@ function SessionRow({
   onRenamed,
   onClose,
   onOpenChat,
-  onContinue,
   onOpenHandoff,
 }: {
   session: SessionSummary;
   onRenamed: (updated: SessionSummary) => void;
   onClose: () => void;
   onOpenChat?: (sessionId: string) => void;
-  // "Navázat" (#378): POST /sessions/:id/continue on a closed session.
-  onContinue: () => void;
   onOpenHandoff?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -382,11 +327,12 @@ function SessionRow({
 
   // Row actions are icon buttons on the right of the title line, shown on
   // hover or keyboard focus (the list stays quiet); rename is one of them.
-  // Uzavřít, the one irreversible action, sits last behind a separator.
-  const showChat = (session.state === "running" || session.state === "suspended") && !!onOpenChat;
+  // Uzavřít sits last behind a separator. #498: a closed thread opens its
+  // chat like a suspended one -- writing into it reopens it, so there is no
+  // Navázat anymore.
   // #457: the list carries the caller's own threads only, so every action
   // here is the owner's and nothing is gated beyond the state.
-  const showContinue = session.state === "closed";
+  const showChat = sessionRowOpensChat(session.state) && !!onOpenChat;
   // #506: a draft gets the same Uzavřít, which deletes it without asking.
   const showClose = threadCloseAction(session.state) !== null;
 
@@ -454,14 +400,7 @@ function SessionRow({
               <RowIcon onClick={() => setEditing(true)} title="Přejmenovat">
                 <Pencil />
               </RowIcon>
-              {(showContinue || showClose) && (
-                <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
-              )}
-              {showContinue && (
-                <RowIcon onClick={onContinue} title="Navázat" className="text-[var(--color-accent)]">
-                  <Redo2 />
-                </RowIcon>
-              )}
+              {showClose && <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />}
               {showClose && (
                 <RowIcon
                   onClick={onClose}

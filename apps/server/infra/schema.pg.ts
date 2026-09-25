@@ -28,12 +28,10 @@
 // - CHECK(length(id) = 26) is unchanged -- length() means the same thing
 //   in both dialects for a TEXT column.
 //
-// One deliberate schema difference, per the issue: session_events' primary
-// key is (session_id, seq) here, not a bare `id` column -- efficient
-// per-session retention deletes and the natural read order the live
-// channel and event-retention sweep both want. `id` stays a plain NOT NULL
-// column (ulid()-generated, read by SessionEventRow, never looked up by
-// itself) rather than the primary key.
+// No session_events table and no sessions.brief / sessions.handoff_inline:
+// a thread's content lives on the device (#456), and libsql migration 040
+// (#462) drops them from the graph db. The Postgres cutover has not run, so
+// the baseline carries the current shape directly (no pg-002).
 
 import {
   NODE_TYPES,
@@ -182,14 +180,12 @@ export const PG_BASELINE_DDL: string[] = [
     instance_id TEXT,
     agent_session_id TEXT,
     terminal_id TEXT,
-    brief TEXT,
     runner TEXT,
     host_id TEXT,
     waiting_since TEXT,
     state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived','draft')),
     handoff_path TEXT,
     handoff_hash TEXT,
-    handoff_inline TEXT,
     name TEXT NOT NULL DEFAULT '',
     name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
     model TEXT,
@@ -219,19 +215,6 @@ export const PG_BASELINE_DDL: string[] = [
     usage TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_session_runs_session ON session_runs(session_id)`,
-
-  // (session_id, seq) primary key -- see the file header. `id` stays a
-  // plain, non-unique-constrained NOT NULL column.
-  `CREATE TABLE IF NOT EXISTS session_events (
-    id TEXT NOT NULL CHECK(length(id) = 26),
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    run_id TEXT REFERENCES session_runs(id) ON DELETE SET NULL,
-    seq INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (session_id, seq)
-  )`,
 
   `CREATE TABLE IF NOT EXISTS session_scope (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

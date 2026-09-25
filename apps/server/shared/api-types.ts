@@ -590,7 +590,8 @@ export type SessionScopeRecord = {
 };
 
 // Runner batch (docs/superpowers/specs/2026-09-12-runner-and-session-design.md):
-// session_runs / session_events row shapes, defined here (rather than only in
+// session_runs / session_events row shapes (session_events lives in the
+// device's content.db since #456), defined here (rather than only in
 // apps/server/domain/runner/store.ts, which re-exports them) so the web can
 // type the REST responses without importing server domain code. RunEndReason
 // duplicates domain/runner/types.ts's own union rather than importing it --
@@ -619,24 +620,6 @@ export type SessionEventRow = {
   kind: string;
   payload: string;
   created_at: string;
-};
-
-// GET /sessions/legacy-content?host_id=… and GET /sessions/:id/legacy-content
-// (central, #456 follow-up): the content an older sidecar sent to the
-// central server, which a sync agent downloads into its content.db once.
-// The list carries the ids of the caller's own threads that ran on the
-// given host and still have legacy content; a page carries one thread's
-// brief, inline summary and a page of its events, raw (payload as stored).
-export type LegacySessionContentList = {
-  sessions: string[];
-};
-
-export type LegacySessionContentPage = {
-  session_id: string;
-  brief: string | null;
-  handoff_inline: string | null;
-  events: SessionEventRow[];
-  next_after: number | null;
 };
 
 // GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the

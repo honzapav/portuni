@@ -19,7 +19,7 @@
 // suspend/resume, handoffs, access control -- stays ours.
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hostDisplayName, threadCloseAction } from "../lib/session-views";
+import { composerStatePlaceholder, hostDisplayName, threadAcceptsMessages, threadCloseAction } from "../lib/session-views";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
 import { useSessionStore } from "../lib/use-session-store";
@@ -68,14 +68,6 @@ import { contextRingState, latestContextUsage } from "../lib/context-ring";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectGroup, SelectLabel } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { BrainIcon, Check, CircleX, Pencil, Redo2, Share2, X } from "lucide-react";
 import {
   Conversation,
@@ -207,10 +199,6 @@ export default function SessionChat({
   // node, the run or the transcript on another device), the action is not
   // offered again in this view; the reason stays on screen.
   const [handoffUnavailable, setHandoffUnavailable] = useState(false);
-  // #378: "Uzavřít" is the one irreversible action, so it's the only one
-  // that asks -- confirmed via this dialog, not window.confirm (a no-op in
-  // the Tauri webview).
-  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   // Inline rename in the header (same affordance as the Relace row): the
   // rename goes through POST /sessions/:id/rename, and api.ts writes the
   // row it answers with into the store -- the sidebar, this header and the
@@ -520,8 +508,8 @@ export default function SessionChat({
     }
   };
 
-  // "Pokračovat v nové session" (offered any time) / "Navázat" (a closed
-  // thread): POST /sessions/:id/continue closes this session (its summary
+  // "Pokračovat v nové session" (running or suspended): POST
+  // /sessions/:id/continue closes this session (its summary
   // seeds the new one) and starts a fresh, running one on the same node --
   // the new row goes into the store, which is what makes it this node's
   // shown thread (the old one is closed, so it leaves the selectors).
@@ -574,8 +562,8 @@ export default function SessionChat({
 
   // #457: every thread the app can show is the caller's own, so there is no
   // access echo left here -- only the state decides.
-  const composerDisabled =
-    session.state === "closed" || session.state === "archived" || isWaiting || elsewhere !== null;
+  // #498: a closed thread takes a message too -- it reopens on it.
+  const composerDisabled = !threadAcceptsMessages(session.state) || isWaiting || elsewhere !== null;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -701,8 +689,10 @@ export default function SessionChat({
                   <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
                   <HeaderIcon
                     onClick={() => {
+                      // #498: Uzavřít asks nothing -- a closed thread
+                      // reopens by writing into it.
                       if (threadCloseAction(session.state) === "delete") deleteDraftSession(session.id);
-                      else setCloseConfirmOpen(true);
+                      else void runAction("close");
                     }}
                     disabled={actionPending !== null}
                     title={actionPending === "close" ? "Zavírám…" : "Uzavřít"}
@@ -741,33 +731,6 @@ export default function SessionChat({
             <X className="size-3.5" />
           </button>
         </div>
-      )}
-
-      {closeConfirmOpen && (
-        <Dialog open onOpenChange={(open) => !open && setCloseConfirmOpen(false)}>
-          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
-            <DialogHeader>
-              <DialogTitle>Uzavřít vlákno?</DialogTitle>
-              <DialogDescription>
-                Vlákno „{session.name}“ se uzavře. Server napřed uloží shrnutí konverzace.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCloseConfirmOpen(false)}>
-                Zpět
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  setCloseConfirmOpen(false);
-                  void runAction("close");
-                }}
-              >
-                Uzavřít
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
       )}
 
       {error && (
@@ -838,9 +801,7 @@ export default function SessionChat({
                   ? `Transkript je na zařízení ${elsewhere.host}; pokračuj tam, nebo si vlákno nech předat.`
                   : isWaiting
                     ? "Relace čeká na odpověď na otázku výše."
-                    : session.state === "closed" || session.state === "archived"
-                      ? "Relace je uzavřená."
-                      : "Napiš zprávu…"
+                    : composerStatePlaceholder(session.state)
               }
             />
           </PromptInputBody>

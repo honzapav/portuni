@@ -180,9 +180,9 @@ information only. It quotes nothing: the thread's first message is content
 and lives in the device's `content.db`, so `SessionSummary` has no `brief`
 to show (#461) and the row names the thread instead. There is no owner
 column either -- every row is the caller's own (#457). Actions: "Otevřít
-chat" (`onOpenChat`), "Uzavřít" behind a confirm `Dialog` (`closeConfirm`),
-and on a closed row "Navázat" (`continueSession` from `api.ts`, then
-`onSessionStarted` and `onOpenChat` with the new session). Above the rows
+chat" (`onOpenChat`) on a running, suspended or closed row
+(`sessionRowOpensChat`, #498 -- a closed thread has a composer, so there is
+no Navázat), and "Uzavřít" without a dialog. Above the rows
 the tab lists the node's handoff files (`lib/handoff-files.ts`), each with
 **Navázat na handoff** (#460): `startSessionFromHandoff`, which is
 `POST /sessions` with the file's node-relative path. There is no live
@@ -353,7 +353,7 @@ this bound.
   lands on the node surface as `workspaceDetailError`.
 - **`registerSessionStarted`**, the single entry point for every
   `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's
-  `DetailPane`, the sidebar `+`, the Relace tab's "Navázat"):
+  `DetailPane`, the sidebar `+`, the Relace tab's "Navázat na handoff"):
   `store.put(session)` plus `requestChatSession`. Requesting it is what
   makes it stick -- the pick re-runs the moment the new record lands, so
   without the requested id a node that already had a thread open snapped
@@ -557,9 +557,12 @@ which also deduplicates a replay against a frame that raced it.
 - **Stop**: while a run is live the composer's `PromptInputSubmit` is the
   stop control (`status="streaming"`, `onStop` → `interrupt`), and Esc in
   the textarea does the same. Both are no-ops when nothing is live.
-- **Composer state**: disabled when the thread is closed or archived,
-  while a question is open (`isWaiting`), or for a non-owner. A suspended
-  thread keeps the composer enabled, because sending is what resumes it,
+- **Composer state**: disabled when the thread is archived
+  (`threadAcceptsMessages`), while a question is open (`isWaiting`), or
+  when the transcript is on another device. A suspended or closed thread
+  keeps the composer enabled (#498), because sending is what resumes it;
+  the placeholder is `composerStatePlaceholder` ("Relace je uzavřená." only
+  for archived). A suspended thread
   and shows a dismissible notice bar instead (`noticeDismissed`, reset
   whenever a new run starts).
 - **Question**: the latest `question` event renders as
@@ -569,18 +572,23 @@ which also deduplicates a replay against a frame that raced it.
   Uzly (`TaskRow`) and in Stav (`TaskList`), Uzavřít in the chat header
   (`SessionChat`) and on the Relace row (`DetailPane.sessions.tsx`) -- asks
   `lib/session-views.ts`'s `threadCloseAction(state)` what it does (#506):
-  `delete` for a draft, `confirm` for running and suspended, nothing (no
-  control) for closed and archived. `confirm` is Uzavřít behind a real
-  `Dialog` (`closeConfirmOpen` in `SessionChat`, `closeTaskConfirm` in
-  `App.tsx` for the sidebar `×`, `closeConfirm` in the Relace tab);
-  `window.confirm` is a no-op in the Tauri webview, never use it. `delete`
+  `delete` for a draft, `close` for running and suspended, nothing (no
+  control) for closed and archived. `close` is Uzavřít with no dialog
+  (#498): a closed thread reopens by writing into it, so only an unfinished
+  turn can be lost, the same as with Stop. `delete`
   has one implementation, `api.ts`'s `deleteDraftSession`: no dialog, the
   record leaves the store at once (so the row leaves every selector and a
   chat showing the draft closes), then `DELETE /sessions/:id`. The Relace
   tab also drops the row from its own fetched list.
-- **Continue**: "Pokračovat v nové session" (open thread) and "Navázat"
-  (closed row) both call `continueSession`; the caller switches to the
-  returned session.
+- **Continue**: "Pokračovat v nové session" (running or suspended thread)
+  calls `continueSession`; the caller switches to the returned session.
+- **A closed thread** (#498) is not in the Práce sidebar
+  (`isChatSessionState`), but Relace's Otevřít chat shows it: `App.tsx`
+  records it in `openedClosedChatByNode` when the record is closed at the
+  click, and `selectShownThread`/`selectMountedThreads` show a closed
+  thread only when it is that one. Writing into it reopens it; once it is
+  live the entry is dropped, so a later Uzavřít takes it off the surface
+  the way closing any thread does.
 
 ## The composer's rows
 

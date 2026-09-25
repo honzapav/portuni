@@ -7,9 +7,8 @@
 // `Authorization: Bearer <mcp.token>` + X-Portuni-Spawn-Id) must get past
 // the bearer gate instead of the 401 an empty bearer gets.
 //
-// PORTUNI_AUTH_TOKEN must be set before http/middleware.ts is evaluated (it
-// freezes AUTH_ENABLED at module load), so every env-dependent module is
-// imported dynamically -- same reasoning as test/agent-mcp-e2e.test.ts.
+// The server reads the bearer live (#521); it only has to be set before
+// the server starts.
 process.env.PORTUNI_AUTH_TOKEN = "front-door-token";
 process.env.PORTUNI_WORKSPACE_ID = "ws-test";
 delete process.env.PORTUNI_MCP_TOKEN;
@@ -34,6 +33,15 @@ import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { installTestContentDb } from "./helpers/content-db.js";
+import { startHttpServer } from "../apps/server/http/server.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { provisionRun } from "../apps/server/domain/runner/provision.js";
+import { SOLO_USER } from "../apps/server/infra/schema.js";
+import { createAgentMcpTransport } from "../apps/server/mcp/agent-transport.js";
+import { createAgentRouter } from "../apps/server/api/agent-router.js";
+import { createProvisionRunCentral } from "../apps/server/domain/runner/provision-central.js";
 
 async function listen(handle: HttpServerHandle): Promise<number> {
   if (!handle.server.listening) {
@@ -88,10 +96,6 @@ describe("personal workspace: the run's MCP connection passes the front door", (
   let nodeId: string;
 
   before(async () => {
-    const { startHttpServer } = await import("../apps/server/http/server.js");
-    const { setDbForTesting } = await import("../apps/server/infra/db.js");
-    const { resetGateCachesForTesting } = await import("../apps/server/http/middleware.js");
-    const { resetLocalDbForTests } = await import("../apps/server/domain/sync/local-db.js");
     resetLocalDbForTests();
     const shared = await makeSharedDb();
     nodeId = shared.nodeId;
@@ -102,15 +106,12 @@ describe("personal workspace: the run's MCP connection passes the front door", (
   });
 
   after(async () => {
-    const { setDbForTesting } = await import("../apps/server/infra/db.js");
     await handle.shutdown();
     setDbForTesting(null);
     delete process.env.PORT;
   });
 
   it("provisionRun's token and URL connect, list tools, and an empty bearer is a 401", async () => {
-    const { provisionRun } = await import("../apps/server/domain/runner/provision.js");
-    const { SOLO_USER } = await import("../apps/server/infra/schema.js");
     const provisioned = await provisionRun({ userId: SOLO_USER, nodeId, sessionId: "S1", resume: null });
     assert.equal(provisioned.mcp.token, "front-door-token");
 
@@ -215,11 +216,6 @@ describe("team workspace (sync agent): the run's MCP connection passes the front
 
   before(async () => {
     process.env.PORTUNI_AGENT_MODE = "1";
-    const { startHttpServer } = await import("../apps/server/http/server.js");
-    const { createAgentMcpTransport } = await import("../apps/server/mcp/agent-transport.js");
-    const { createAgentRouter } = await import("../apps/server/api/agent-router.js");
-    const { resetGateCachesForTesting } = await import("../apps/server/http/middleware.js");
-    const { resetLocalDbForTests } = await import("../apps/server/domain/sync/local-db.js");
     resetLocalDbForTests();
     central = await startStubCentral();
     client = fakeCentral();
@@ -245,8 +241,6 @@ describe("team workspace (sync agent): the run's MCP connection passes the front
   });
 
   it("createProvisionRunCentral's token and URL connect, list tools, and an empty bearer is a 401", async () => {
-    const { createProvisionRunCentral } = await import("../apps/server/domain/runner/provision-central.js");
-    const { SOLO_USER } = await import("../apps/server/infra/schema.js");
     const provisioned = await createProvisionRunCentral(client)({
       userId: SOLO_USER,
       nodeId: AGENT_NODE,

@@ -130,11 +130,22 @@ export function selectNodeThreads(store: SessionStore, nodeId: string | null): C
 // live, else the newest row of the first non-empty bucket, which is what
 // selectNodeThreads orders (waiting, running, suspended, draft), else
 // nothing.
+//
+// #498: a closed thread is not among those, but one the user opened on
+// purpose (Relace's Otevřít chat, `openedClosedId`) is shown while it is the
+// requested one and still closed -- writing into it reopens it, and from
+// then on it is an ordinary live thread. A thread closed while on screen
+// (Uzavřít) was never opened as closed, so it leaves the surface as before.
 export function selectShownThread(
   store: SessionStore,
   nodeId: string | null,
   requestedId: string | null,
+  openedClosedId: string | null = null,
 ): CompleteSession | null {
+  if (requestedId !== null && requestedId === openedClosedId) {
+    const s = store.get(requestedId);
+    if (s && !s.partial && s.node_id === nodeId && s.state === "closed" && isThreadSession(s)) return s;
+  }
   return pickOpenChatSession(selectNodeThreads(store, nodeId), requestedId);
 }
 
@@ -145,12 +156,14 @@ export function selectMountedThreads(
   store: SessionStore,
   openNodeIds: readonly string[],
   shownId: string | null,
+  // #498: the closed thread opened from Relace (selectShownThread's own).
+  openedClosedId: string | null = null,
 ): CompleteSession[] {
   if (openNodeIds.length === 0 && shownId === null) return EMPTY;
   return cached(
     store,
     "mounted",
-    `${openNodeIds.join(",")}|${shownId ?? ""}`,
+    `${openNodeIds.join(",")}|${shownId ?? ""}|${openedClosedId ?? ""}`,
     () => {
       const mounted: CompleteSession[] = [];
       const seen = new Set<string>();
@@ -162,7 +175,11 @@ export function selectMountedThreads(
         }
       }
       const shown = shownId === null ? undefined : store.get(shownId);
-      if (shown && !shown.partial && isChatSessionState(shown.state) && !seen.has(shown.id)) mounted.push(shown);
+      // The shown one may be a closed thread opened from Relace (#498).
+      const openable =
+        shown !== undefined &&
+        (isChatSessionState(shown.state) || (shown.state === "closed" && shown.id === openedClosedId));
+      if (shown && !shown.partial && openable && !seen.has(shown.id)) mounted.push(shown);
       return mounted;
     },
     sameRows,

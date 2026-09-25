@@ -18,7 +18,12 @@ import {
   FILE_STATUSES,
 } from "../shared/popp.js";
 import { DDL, DDL_MIGRATION_006, DDL_AFTER_MIGRATIONS } from "./schema-triggers.js";
-import { runMigrations, appliedMigrationIds, MIGRATION_IDS } from "./schema-migrations.js";
+import {
+  runMigrations,
+  appliedMigrationIds,
+  MIGRATION_IDS,
+  SESSION_CONTENT_DROP_MIGRATION_ID,
+} from "./schema-migrations.js";
 import { ensurePgSchema } from "./migrations/pg.js";
 
 // Re-export canonical sets so existing imports from "./schema.js" keep working.
@@ -56,6 +61,8 @@ export {
   runMigration028,
   runMigration030,
   runMigration036,
+  runMigration040,
+  SESSION_CONTENT_DROP_MIGRATION_ID,
 } from "./schema-migrations.js";
 
 const SOLO_USER_ID = "01SOLO0000000000000000000";
@@ -112,6 +119,15 @@ function repairRequested(explicit?: boolean): boolean {
 export interface EnsureSchemaOptions {
   // Force the full DDL replay even when every known migration is recorded.
   repair?: boolean;
+  // A personal workspace whose one-time copy of its threads' content into
+  // content.db (boot/content-import.ts) is not complete yet: migration 040,
+  // which drops that content from the graph db, is left for a later boot
+  // (#462). The copy runs before ensureSchema, so this only bites when the
+  // copy itself failed. The central server never sets it -- its devices
+  // downloaded their share before the migration was released. The 030 and
+  // 036 rebuilds carry the current shape and do not wait; only a database
+  // older than both would need them, and it is copied first all the same.
+  holdSessionContentDrop?: boolean;
 }
 
 // Apply the full schema (DDL + migration 006 fresh DDL + seed solo user +
@@ -175,7 +191,9 @@ export async function ensureSchemaOn(
     await db.execute(sql);
   }
   await seedSoloUser(db);
-  await runMigrations(db);
+  await runMigrations(db, {
+    hold: options.holdSessionContentDrop ? new Set([SESSION_CONTENT_DROP_MIGRATION_ID]) : undefined,
+  });
   // Anything that needs a column a migration adds -- see DDL_AFTER_MIGRATIONS.
   for (const sql of DDL_AFTER_MIGRATIONS) await db.execute(sql);
   // Recorded last: only a replay that got all the way through may license the
@@ -186,8 +204,8 @@ export async function ensureSchemaOn(
   });
 }
 
-export async function ensureSchema(): Promise<void> {
-  await ensureSchemaOn(getDb());
+export async function ensureSchema(options: EnsureSchemaOptions = {}): Promise<void> {
+  await ensureSchemaOn(getDb(), options);
 }
 
 // Explicit schema repair: full DDL replay plus the migration pass, regardless

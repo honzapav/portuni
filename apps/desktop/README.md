@@ -126,11 +126,11 @@ to Keychain` in `~/Library/Logs/ooo.workflow.portuni/sidecar.log`.
 
 ## Auth & loopback boundary
 
-The HTTP middleware auth gate (`src/infra/server-config.ts`) refuses to
-boot in any team-shaped configuration without a bearer token. For
-desktop mode this matters when `turso_url` is a remote `libsql://` —
-the Tauri host generates a random 48-char token (OS CSPRNG) at every
-launch and sets it as `PORTUNI_AUTH_TOKEN` in the sidecar env. The
+The server's auth module (`apps/server/infra/auth-config.ts`) refuses to
+boot in env mode without a bearer token, on loopback too; there is no
+"auth disabled" state. The Tauri host always passes one: it keeps a random
+token per workspace (OS CSPRNG, persisted in the Keychain) and at every
+launch sets it as `PORTUNI_AUTH_TOKEN` in the sidecar env. The
 webview never sees the token: the React `apiFetch` helper calls the
 `api_request` Tauri command, and the Rust proxy injects the
 `Authorization: Bearer <token>` header (and strips any caller-supplied
@@ -207,13 +207,13 @@ The webview origin isn't in `PORTUNI_ALLOWED_ORIGINS`. Check the
 `[req]` log to see what the actual origin header is, then add it in
 `src-tauri/src/lib.rs`'s `allowed_origins` array.
 
-**"Refusing to start: PORTUNI_AUTH_TOKEN unset"**  
-The sidecar booted without the random per-launch token. This means
-Tauri's `env_clear()` + explicit `PORTUNI_AUTH_TOKEN` flow didn't fire,
-usually because the binary was launched outside the Tauri shell. When
-running the `.app` standalone for testing, the host wires it up
-correctly; running the bare `portuni-sidecar` binary directly will hit
-this only if `TURSO_URL` is also remote.
+**"Refusing to start: PORTUNI_AUTH_TOKEN is not set"**  
+The sidecar booted without its token and refused to start (the host shows
+the `PORTUNI_BACKEND_ERROR=` line). This means Tauri's `env_clear()` +
+explicit `PORTUNI_AUTH_TOKEN` flow didn't fire, usually because the binary
+was launched outside the Tauri shell. When running the `.app` standalone
+for testing, the host wires it up correctly; running the bare
+`portuni-sidecar` binary directly always needs `PORTUNI_AUTH_TOKEN` set.
 
 **"backend sidecar did not start within 30s"**  
 The frontend polled `get_backend_port` for 30 s and got `null`. Common

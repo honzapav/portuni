@@ -62,8 +62,12 @@ import {
   INDEX_SESSION_SCOPE_SESSION,
   DDL_SESSION_RUNS,
   INDEX_SESSION_RUNS_SESSION,
-  DDL_SESSION_EVENTS,
 } from "./schema-triggers.js";
+
+// The migration that drops a thread's content from the graph db (#462).
+// Named here because a personal workspace's boot holds exactly this one
+// back until its one-time copy into content.db is complete.
+export const SESSION_CONTENT_DROP_MIGRATION_ID = "040_sessions_drop_content";
 
 interface Migration {
   id: string;
@@ -1466,7 +1470,8 @@ const MIGRATIONS: Migration[] = [
       }
       await db.execute(DDL_SESSION_RUNS);
       await db.execute(INDEX_SESSION_RUNS_SESSION);
-      await db.execute(DDL_SESSION_EVENTS);
+      // session_events used to be created here too; migration 040 (#462)
+      // drops it, so the history no longer creates it on the way there.
     },
   },
   // #329: a server-generated handoff for a session with no local mirror on
@@ -1544,7 +1549,101 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration039,
   },
+  // #462, the central migration of docs/superpowers/specs/
+  // 2026-09-22-local-sessions-design.md: a thread's content -- the first
+  // message (`brief`), the inline handoff summary (`handoff_inline`) and
+  // the transcript (`session_events`) -- lives on the device that ran it
+  // (content.db, infra/device-content-db.ts) since #456, and every device
+  // has copied its share there. The record keeps everything else.
+  //
+  // In a personal workspace this runs after the one-time copy out of the
+  // graph db (boot/content-import.ts, keyed on content.db's
+  // device_schema.version); the boot holds it back while that copy is
+  // incomplete (ensureSchemaOn's holdSessionContentDrop), so no content is
+  // dropped before it is on the device.
+  //
+  // isApplied is false while a `sessions_new` is lying around
+  // (docs/lessons-learned.md section 7, point 4): a rebuild that died
+  // between its DROP and its RENAME leaves the rows there, and a DDL replay
+  // then recreates an empty `sessions` of the new shape that would
+  // otherwise read as migrated. The up() then fails loudly on the existing
+  // `sessions_new` instead of recording itself. The same shape is in
+  // PG_BASELINE_DDL (schema.pg.ts); the Postgres cutover has not run, so
+  // there is no pg-002.
+  {
+    id: SESSION_CONTENT_DROP_MIGRATION_ID,
+    isApplied: async (db) => {
+      const cols = await db.execute("PRAGMA table_info(sessions)");
+      if (cols.rows.some((r) => r.name === "brief" || r.name === "handoff_inline")) return false;
+      const tables = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_events','sessions_new')",
+      );
+      return tables.rows.length === 0;
+    },
+    up: runMigration040,
+  },
 ];
+
+// Table rebuild: sessions without brief and handoff_inline, and the
+// graph db's session_events dropped (#462). ONE executeMultiple, like 030
+// and 036: on Turso over HTTP a per-statement PRAGMA foreign_keys = OFF does
+// not stick, and DROP TABLE sessions would cascade into session_scope and
+// session_runs. session_events goes first -- it references sessions, and
+// nothing references it. The source list names only columns the current
+// shape has; the two content columns are simply not copied. A database
+// that never had them (a fresh DDL install whose marker was cleared) takes
+// the same rebuild, which is a plain copy then.
+export async function runMigration040(db: DbClient): Promise<void> {
+  await db.executeMultiple(`
+    PRAGMA foreign_keys = OFF;
+    DROP TABLE IF EXISTS session_events;
+    DROP INDEX IF EXISTS idx_sessions_node;
+    DROP INDEX IF EXISTS idx_sessions_user;
+    DROP INDEX IF EXISTS idx_sessions_state;
+    DROP INDEX IF EXISTS idx_sessions_terminal;
+    CREATE TABLE sessions_new (
+      id TEXT PRIMARY KEY CHECK(length(id) = 26),
+      node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      session_type TEXT NOT NULL CHECK(session_type IN ('interactive_task','interactive_chat','headless','env')),
+      cli TEXT,
+      instance_id TEXT,
+      agent_session_id TEXT,
+      terminal_id TEXT,
+      runner TEXT,
+      host_id TEXT,
+      waiting_since TEXT,
+      state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived','draft')),
+      handoff_path TEXT,
+      handoff_hash TEXT,
+      name TEXT NOT NULL DEFAULT '',
+      name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
+      model TEXT,
+      effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
+      context_used_tokens INTEGER,
+      context_max_tokens INTEGER,
+      created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+      last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
+      closed_at DATETIME
+    );
+    INSERT INTO sessions_new (
+      id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, runner,
+      host_id, waiting_since, state, handoff_path, handoff_hash, name, name_is_custom, model, effort,
+      context_used_tokens, context_max_tokens, created_at, last_active_at, closed_at
+    ) SELECT
+      id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, runner,
+      host_id, waiting_since, state, handoff_path, handoff_hash, name, name_is_custom, model, effort,
+      context_used_tokens, context_max_tokens, created_at, last_active_at, closed_at
+    FROM sessions;
+    DROP TABLE sessions;
+    ALTER TABLE sessions_new RENAME TO sessions;
+    ${INDEX_SESSIONS_NODE};
+    ${INDEX_SESSIONS_USER};
+    ${INDEX_SESSIONS_STATE};
+    ${INDEX_SESSIONS_TERMINAL};
+    PRAGMA foreign_keys = ON;
+  `);
+}
 
 export async function runMigration039(db: DbClient): Promise<void> {
   await db.execute("ALTER TABLE sessions ADD COLUMN context_used_tokens INTEGER");
@@ -1654,11 +1753,12 @@ export async function runMigration030(db: DbClient): Promise<void> {
   const hasTerminalId = cols.has("terminal_id");
   const terminalIdCol = hasTerminalId ? ", terminal_id" : "";
   const profileSourceCol = cols.has("instance_id") ? "instance_id" : "profile_id";
-  const runnerCols = ["brief", "runner", "host_id", "waiting_since"].filter((c) => cols.has(c));
+  // #462: brief and handoff_inline are not part of the current shape
+  // (migration 040), so a rebuild never carries them over.
+  const runnerCols = ["runner", "host_id", "waiting_since"].filter((c) => cols.has(c));
   const runnerColList = runnerCols.length > 0 ? ", " + runnerCols.join(", ") : "";
-  const handoffInlineCol = cols.has("handoff_inline") ? ", handoff_inline" : "";
-  // #375: same "always the current full shape" rule as terminal_id/
-  // handoff_inline above -- a database that has already been through 036
+  // #375: same "always the current full shape" rule as terminal_id
+  // above -- a database that has already been through 036
   // (state allows 'draft', model/effort exist) but still needs 030's own
   // fix must not have this rebuild drop them, or lose a 'draft' row
   // outright (the CHECK below would reject re-inserting it).
@@ -1688,14 +1788,12 @@ export async function runMigration030(db: DbClient): Promise<void> {
       instance_id TEXT,
       agent_session_id TEXT,
       terminal_id TEXT,
-      brief TEXT,
       runner TEXT,
       host_id TEXT,
       waiting_since TEXT,
       state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived','draft')),
       handoff_path TEXT,
       handoff_hash TEXT,
-      handoff_inline TEXT,
       name TEXT NOT NULL DEFAULT '',
       name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
       model TEXT,
@@ -1708,10 +1806,10 @@ export async function runMigration030(db: DbClient): Promise<void> {
     );
     INSERT INTO sessions_new (
       id, node_id, user_id, session_type, cli, instance_id, agent_session_id, state,
-      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${handoffInlineCol}${modelEffortColList}
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${modelEffortColList}
     ) SELECT
       id, node_id, user_id, session_type, cli, ${profileSourceCol}, agent_session_id, state,
-      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${handoffInlineCol}${modelEffortColList}
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${modelEffortColList}
     FROM sessions;
     DROP TABLE sessions;
     ALTER TABLE sessions_new RENAME TO sessions;
@@ -1749,14 +1847,12 @@ export async function runMigration036(db: DbClient): Promise<void> {
       instance_id TEXT,
       agent_session_id TEXT,
       terminal_id TEXT,
-      brief TEXT,
       runner TEXT,
       host_id TEXT,
       waiting_since TEXT,
       state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived','draft')),
       handoff_path TEXT,
       handoff_hash TEXT,
-      handoff_inline TEXT,
       name TEXT NOT NULL DEFAULT '',
       name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
       model TEXT,
@@ -1768,12 +1864,12 @@ export async function runMigration036(db: DbClient): Promise<void> {
       closed_at DATETIME
     );
     INSERT INTO sessions_new (
-      id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner,
-      host_id, waiting_since, state, handoff_path, handoff_hash, handoff_inline, name, name_is_custom,
+      id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, runner,
+      host_id, waiting_since, state, handoff_path, handoff_hash, name, name_is_custom,
       created_at, last_active_at, closed_at
     ) SELECT
-      id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner,
-      host_id, waiting_since, state, handoff_path, handoff_hash, handoff_inline, name, name_is_custom,
+      id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, runner,
+      host_id, waiting_since, state, handoff_path, handoff_hash, name, name_is_custom,
       created_at, last_active_at, closed_at
     FROM sessions;
     DROP TABLE sessions;
@@ -1803,7 +1899,14 @@ export async function appliedMigrationIds(db: DbClient): Promise<Set<string> | n
   }
 }
 
-export async function runMigrations(db: DbClient): Promise<void> {
+export interface RunMigrationsOptions {
+  // Migration ids left unapplied (and unrecorded) on this pass; the next
+  // pass without them runs them. Only ever the session content drop, while
+  // a personal workspace's copy into content.db is incomplete.
+  hold?: ReadonlySet<string>;
+}
+
+export async function runMigrations(db: DbClient, options: RunMigrationsOptions = {}): Promise<void> {
   // Ensure the migrations table exists (DDL already has it for fresh
   // installs, but this covers databases created before the table existed).
   await db.execute(
@@ -1820,6 +1923,10 @@ export async function runMigrations(db: DbClient): Promise<void> {
 
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.id)) continue;
+    if (options.hold?.has(migration.id)) {
+      console.warn(`Migration ${migration.id} held back on this boot.`);
+      continue;
+    }
 
     if (migration.isApplied) {
       const applied = await migration.isApplied(db);

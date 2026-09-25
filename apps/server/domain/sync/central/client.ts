@@ -9,7 +9,7 @@
 // what its user could reach anyway.
 
 import type { DataSourceRow, SessionRow, SessionState } from "../../../shared/types.js";
-import type { LegacySessionContentPage, SessionScopeRecord } from "../../../shared/api-types.js";
+import type { SessionScopeRecord } from "../../../shared/api-types.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
@@ -143,15 +143,6 @@ export interface CentralClient {
   // (domain/session-handoff.ts's createSuspendServerSide, #458) fills its
   // summary's scope sections from here instead of leaving them empty.
   sessionScopeRecord(sessionId: string): Promise<SessionScopeRecord>;
-  // The one exception to "no content crosses": the content a sidecar
-  // released before #456 DID send, read back once so this device keeps its
-  // own history (boot/content-import.ts, first boot of a sync agent). The
-  // ids of the device user's threads that ran on `hostId` and still have
-  // legacy content on the central server, then one thread's content, its
-  // events a page at a time. Owner-only on the central server; nothing on
-  // the device writes content back.
-  listLegacySessionContent(hostId: string): Promise<string[]>;
-  getLegacySessionContent(sessionId: string, opts?: { after?: number }): Promise<LegacySessionContentPage>;
   // GET /nodes/:id/orientation: what buildOrientationHint would render
   // locally, computed by the central server (which has the real graph db)
   // instead of the agent-mode sidecar (which does not).
@@ -503,21 +494,6 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       const r = await request("GET", p);
       if (r.status !== 200) throwFor(r.status, p, r.json);
       return r.json as SessionScopeRecord;
-    },
-
-    async listLegacySessionContent(hostId) {
-      const p = `/sessions/legacy-content?host_id=${encodeURIComponent(hostId)}`;
-      const r = await request("GET", p);
-      if (r.status !== 200) throwFor(r.status, p, r.json);
-      return (r.json as { sessions: string[] }).sessions;
-    },
-
-    async getLegacySessionContent(sessionId, opts) {
-      const qs = opts?.after !== undefined ? `?after=${opts.after}` : "";
-      const p = `/sessions/${encodeURIComponent(sessionId)}/legacy-content${qs}`;
-      const r = await request("GET", p);
-      if (r.status !== 200) throwFor(r.status, p, r.json);
-      return r.json as LegacySessionContentPage;
     },
 
     async orientation(nodeId) {

@@ -37,19 +37,11 @@
 //                                                      and suspends -- device-local, the file and
 //                                                      the transcript it is built from are here
 //   GET   /sessions/:id/events             read    -> canonical event log, from the device's
-//                                                      content.db (#456); on the central server the
-//                                                      legacy rows an older sidecar wrote
-//   POST  /sessions/:id/events             write   -> legacy (#323, retired by #456): batch-append
-//                                                      into the graph db's own session_events,
-//                                                      kept only for a sidecar released before
-//                                                      #456; no current code path calls it
+//                                                      content.db (#456); empty on the central
+//                                                      server, which holds no content (#462)
 //   POST  /sessions/:id/runs               write   -> central record half (#323): create a run record
 //   PATCH /sessions/:id/runs/:run_id       write   -> central record half (#323): patch a run record
 //   GET   /sessions/:id/runs               read    -> central record half (#323): list a session's runs
-//   GET   /sessions/legacy-content         read    -> central: the caller's own threads that ran on
-//                                                      ?host_id and still have legacy content
-//   GET   /sessions/:id/legacy-content     read    -> central, owner-only: one thread's legacy content,
-//                                                      read once by a sync agent at boot
 //
 // The "central record half" routes exist so the SAME SessionStore interface
 // (domain/runner/store.ts) that DbSessionStore implements over this
@@ -60,10 +52,10 @@
 // That interface is the RECORD half only (#456): a thread's content -- the
 // first message, the transcript, the inline handoff summary -- is written
 // to the device's own content.db by SessionContentStore and never sent
-// here. `brief` and `handoff_inline` on the create/patch routes, and the
-// event-append route above, are accepted only for an older sidecar.
-// They're served here unconditionally (also reachable in env/local mode,
-// harmless) rather than gated to google/central mode specifically.
+// here; since the central migration (#462) the record routes do not take
+// `brief` or `handoff_inline` at all. They're served here unconditionally
+// (also reachable in env/local mode, harmless) rather than gated to
+// google/central mode specifically.
 //
 // Who may do what is auth/session-access.ts's sessionAccess table, one line
 // since #457 (docs/superpowers/specs/2026-09-22-local-sessions-design.md,
@@ -103,13 +95,10 @@ import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv, instanceClaudeConfigDir } from "../domain/runner/instances.js";
 import { resolveHostLabel, transcriptHostLabel } from "../domain/runner/hosts.js";
 import { DbSessionStore } from "../domain/runner/store.js";
-import { LegacyGraphContentStore, sessionContentStoreForProcess } from "../domain/runner/store-content.js";
-import { columnExistsSql, tableExistsSql } from "../infra/sql.js";
-import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
+import { sessionContentStoreForProcess } from "../domain/runner/store-content.js";
+import { EFFORT_LEVELS, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
 import type {
-  LegacySessionContentPage,
-  SessionEventRow,
   SessionResumeInfo,
   SessionScopeRecord,
   SessionSummary,
@@ -248,7 +237,7 @@ async function guardSessionAccess(
 // Raw SessionRow, not the curated SessionSummary other routes return: this
 // is a brand new route with no web consumer yet, and CentralSessionStore's
 // getSessionRecord needs every column (host_id, handoff_hash,
-// agent_session_id, handoff_inline) -- session-runtime.ts's own
+// agent_session_id) -- session-runtime.ts's own
 // suspend()/resume() read session.handoff_hash/host_id off exactly this
 // call, so a lossy summary would silently corrupt agent-mode's own
 // suspend/resume behaviour.
@@ -282,15 +271,10 @@ const PatchSessionBody = z
     waiting_since: z.string().nullable().optional(),
     handoff_path: z.string().nullable().optional(),
     handoff_hash: z.string().nullable().optional(),
-    // #434: a team-workspace suspend's summary when this device had no mirror
-    // to write a handoff file into -- the same column the local half
-    // (suspendSession) writes, so a team-workspace suspend without a
-    // mirror resumes from the summary exactly as a personal one does.
-    handoff_inline: z.string().nullable().optional(),
     // Set together with state: "running" when a draft is promoted by its
     // first message (#374's CentralSessionStore.patchSession, in agent
-    // mode, forwards these here).
-    brief: z.string().optional(),
+    // mode, forwards these here). The message itself is content and stays
+    // on the device (#456, #462).
     runner: z.string().optional(),
     instance_id: z.string().nullable().optional(),
     name_is_custom: z.boolean().optional(),
@@ -303,33 +287,6 @@ const PatchSessionBody = z
     context_max_tokens: z.number().int().nullable().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, "at least one field is required");
-
-// #456 compatibility shim: `sessions.brief` and `sessions.handoff_inline`
-// are content, which the device now keeps in its own content.db and never
-// sends here. The two columns stay on the central record until the central
-// migration (#462), and these routes keep accepting them so a sidecar
-// released before #456 is not broken by the server deploying first
-// (spec, "Rollout", step 1). Written directly, because the record store no
-// longer models either field.
-async function writeLegacyContentColumns(
-  db: DbClient,
-  sessionId: string,
-  body: { brief?: string | null; handoff_inline?: string | null },
-): Promise<void> {
-  const sets: string[] = [];
-  const args: Array<string | null> = [];
-  if (body.brief !== undefined) {
-    sets.push("brief = ?");
-    args.push(body.brief);
-  }
-  if (body.handoff_inline !== undefined) {
-    sets.push("handoff_inline = ?");
-    args.push(body.handoff_inline);
-  }
-  if (sets.length === 0) return;
-  args.push(sessionId);
-  await db.execute({ sql: `UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, args });
-}
 
 export async function handlePatchSession(
   req: IncomingMessage,
@@ -367,12 +324,6 @@ export async function handlePatchSession(
     // Central record half (#323): raw SessionRow, same reasoning as
     // handleGetSession above -- the caller is CentralSessionStore, which
     // needs every column back, not the curated summary.
-    // #456: `brief` and `handoff_inline` are content and no longer reach
-    // the record store -- the device writes them to its own content.db.
-    // They are still accepted here, and written straight to the columns,
-    // so a sidecar released before #456 keeps working until the central
-    // migration (#462) drops both columns.
-    await writeLegacyContentColumns(db, sessionId, body);
     const updated = await new DbSessionStore(db).patchSession(sessionId, {
       name: body.name,
       state: body.state,
@@ -968,7 +919,6 @@ const RecordSessionBody = z.union([
   z.object({
     draft: z.literal(false).optional(),
     node_id: z.string().min(1),
-    brief: z.string().nullable().optional(),
     runner: z.string().min(1),
     instance_id: z.string().nullable().optional(),
     host_id: z.string().nullable().optional(),
@@ -1015,8 +965,6 @@ export async function handleCreateSessionRecord(
             instance_id: body.instance_id ?? null,
             host_id: body.host_id ?? null,
           });
-    // Same #456 compatibility as handlePatchSession's own legacy write.
-    if (body.draft !== true) await writeLegacyContentColumns(db, session.id, { brief: body.brief ?? null });
     await logAudit(identity.userId, "session_record", "session", session.id, {
       node_id: body.node_id,
       ...(body.draft === true ? { draft: true } : { runner: body.runner }),
@@ -1115,168 +1063,3 @@ export async function handleListSessionRuns(
   }
 }
 
-// The payload's per-event shape is intentionally loose (kind + arbitrary
-// payload): the wire format IS the CanonicalEvent union, but this route's
-// only caller is CentralSessionStore forwarding events the local session
-// runtime already constructed and validated against that union -- the
-// stricter per-kind shape checking (capEventPayload's caps, etc.) lives in
-// DbSessionStore.appendEvents itself, same as every other appendEvents call.
-const AppendEventsBody = z.object({
-  run_id: z.string().nullable(),
-  events: z.array(z.object({ kind: z.string(), payload: z.unknown() })).min(1),
-});
-
-export async function handleAppendSessionEvents(
-  req: IncomingMessage,
-  res: ServerResponse,
-  identity: RequestIdentity,
-  sessionId: string,
-): Promise<void> {
-  try {
-    const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, AppendEventsBody);
-    if (!body) return;
-
-    // #456: the transcript is the device's, so the runtime writes it to
-    // content.db and never calls this route anymore. It stays for a
-    // sidecar released before #456, writing the graph db's own
-    // `session_events` -- the same rows the central server's
-    // GET /sessions/:id/events reads back to that sidecar
-    // (sessionContentStoreForProcess() is LegacyGraphContentStore there),
-    // until #462 drops them.
-    const seqs = await new LegacyGraphContentStore(db).appendEvents(
-      sessionId,
-      body.run_id,
-      body.events as CanonicalEvent[],
-    );
-    respondJson(res, 200, { seqs });
-  } catch (err) {
-    respondError(res, `${req.method} /sessions/${sessionId}/events`, err);
-  }
-}
-
-// --- Legacy session content (#456 follow-up) -------------------------------
-// A sidecar released before #456 sent each thread's content to the central
-// server: the transcript into the graph db's `session_events`, the first
-// message and the inline summary into `sessions.brief` /
-// `sessions.handoff_inline`. A sync agent downloads its own share of that
-// once, on its first boot (boot/content-import.ts), so the history of the
-// threads it ran stays readable on the device that ran them. Read-only: the
-// central copy stays until the central migration (#462) drops the table and
-// both columns, and after it these answer as if nothing were left.
-
-const LEGACY_EVENTS_PAGE = 500;
-
-async function legacyContentSources(
-  db: DbClient,
-): Promise<{ events: boolean; brief: boolean; inline: boolean }> {
-  const table = async (name: string) =>
-    (await db.execute({ sql: tableExistsSql(db.dialect), args: [name] })).rows.length > 0;
-  const column = async (name: string) =>
-    (await db.execute({ sql: columnExistsSql(db.dialect), args: ["sessions", name] })).rows.length > 0;
-  return { events: await table("session_events"), brief: await column("brief"), inline: await column("handoff_inline") };
-}
-
-// GET /sessions/legacy-content?host_id=<device> -- the ids of the CALLER's
-// own threads (the same owner rule as every session route, #457) that ran on
-// that device -- the record's own host or any of its runs' -- and still have
-// legacy content.
-export async function handleListLegacySessionContent(
-  req: IncomingMessage,
-  res: ServerResponse,
-  identity: RequestIdentity,
-  url: URL,
-): Promise<void> {
-  try {
-    const hostId = url.searchParams.get("host_id")?.trim();
-    if (!hostId) {
-      respondJson(res, 400, { error: "host_id is required", code: "HOST_ID_REQUIRED" });
-      return;
-    }
-    const db = getDb();
-    const src = await legacyContentSources(db);
-    const has = [
-      ...(src.events ? ["EXISTS (SELECT 1 FROM session_events e WHERE e.session_id = s.id)"] : []),
-      ...(src.brief ? ["s.brief IS NOT NULL"] : []),
-      ...(src.inline ? ["s.handoff_inline IS NOT NULL"] : []),
-    ];
-    if (has.length === 0) {
-      respondJson(res, 200, { sessions: [] });
-      return;
-    }
-    const rows = await db.execute({
-      sql: `SELECT s.id FROM sessions s
-             WHERE s.user_id = ?
-               AND (s.host_id = ? OR EXISTS (SELECT 1 FROM session_runs r WHERE r.session_id = s.id AND r.host_id = ?))
-               AND (${has.join(" OR ")})
-             ORDER BY s.id`,
-      args: [identity.userId, hostId, hostId],
-    });
-    respondJson(res, 200, { sessions: rows.rows.map((r) => String(r.id)) });
-  } catch (err) {
-    respondError(res, `${req.method} /sessions/legacy-content`, err);
-  }
-}
-
-// GET /sessions/:id/legacy-content?after=<seq> -- one thread's legacy
-// content, owner-only (sessionAccess "read": anyone else gets
-// SESSION_NOT_FOUND), its events a page at a time and raw, exactly as
-// stored.
-export async function handleGetLegacySessionContent(
-  req: IncomingMessage,
-  res: ServerResponse,
-  identity: RequestIdentity,
-  sessionId: string,
-  url: URL,
-): Promise<void> {
-  try {
-    const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "read");
-    if (!existing) return;
-    const afterParam = url.searchParams.get("after");
-    const after = afterParam !== null && afterParam !== "" ? Number(afterParam) : null;
-    const src = await legacyContentSources(db);
-
-    const events: SessionEventRow[] = [];
-    if (src.events) {
-      const r = await db.execute({
-        sql: `SELECT id, session_id, run_id, seq, kind, payload, created_at FROM session_events
-               WHERE session_id = ?${after !== null ? " AND seq > ?" : ""}
-               ORDER BY seq LIMIT ?`,
-        args: after !== null ? [sessionId, after, LEGACY_EVENTS_PAGE] : [sessionId, LEGACY_EVENTS_PAGE],
-      });
-      for (const row of r.rows) {
-        events.push({
-          id: String(row.id),
-          session_id: String(row.session_id),
-          run_id: row.run_id === null ? null : String(row.run_id),
-          seq: Number(row.seq),
-          kind: String(row.kind),
-          payload: String(row.payload),
-          created_at: String(row.created_at),
-        });
-      }
-    }
-    let brief: string | null = null;
-    let inline: string | null = null;
-    const cols = [...(src.brief ? ["brief"] : []), ...(src.inline ? ["handoff_inline"] : [])];
-    if (cols.length > 0) {
-      const r = await db.execute({ sql: `SELECT ${cols.join(", ")} FROM sessions WHERE id = ?`, args: [sessionId] });
-      const row = r.rows[0];
-      if (row && src.brief && row.brief != null) brief = String(row.brief);
-      if (row && src.inline && row.handoff_inline != null) inline = String(row.handoff_inline);
-    }
-    const page: LegacySessionContentPage = {
-      session_id: sessionId,
-      brief,
-      handoff_inline: inline,
-      events,
-      next_after: events.length === LEGACY_EVENTS_PAGE ? events[events.length - 1].seq : null,
-    };
-    respondJson(res, 200, page);
-  } catch (err) {
-    respondError(res, `${req.method} /sessions/${sessionId}/legacy-content`, err);
-  }
-}

@@ -103,6 +103,7 @@ Behaviour at the edges is deliberate:
 - A non-write tool always allows.
 - A malformed JSON payload allows (we cannot tell what the harness wanted).
 - An unreachable Portuni server allows. The guard is a soft fallback, not the primary defense; the harness's own permission system is.
+- A server that refuses the token (401/403 from `/scope`) blocks the write, with a message saying the token is missing or does not match and naming the variable to export (`PORTUNI_MCP_TOKEN` or the workspace's `PORTUNI_MCP_TOKEN_<ID>`). A token mismatch never silently turns the guard off.
 
 This catches drift in the declarative config, harness bugs, and cases where the config was never written.
 
@@ -223,7 +224,10 @@ the first message, every event of the transcript, the inline handoff
 summary. The central server holds the record, because the MCP handshake,
 scope enforcement and the write gate key on it. The content is written to
 the **device that ran the thread**, in the sidecar's own database, and is
-never sent to the central server.
+never sent to the central server. The central database has no place for it
+either: no transcript table, no first-message or summary column. Content
+an older desktop version had sent there was copied back to the device that
+wrote it, and then dropped.
 
 So `GET /sessions/:id/events` is a device-local route: it answers from the
 machine you are asking, which is the machine that has the log. Asked on a

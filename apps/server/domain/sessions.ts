@@ -48,7 +48,6 @@ const CreateSessionInput = z.object({
   instance_id: z.string().nullable().optional().describe("Runner provider instance used (apps/server/domain/runner/instances.ts) -- renamed from profile_id."),
   agent_session_id: z.string().nullable().optional().describe("The underlying agent CLI's own conversation id, for --resume."),
   terminal_id: z.string().nullable().optional().describe("Historical: the desktop PTY that spawned this session's CLI, back when one existed (#218). Nothing writes a non-null value anymore since the embedded terminal was removed (#345/#346); the column stays for old rows until a later migration drops it."),
-  brief: z.string().nullable().optional().describe("The task as given (runner batch): the first user message on a fresh run."),
   runner: z.string().nullable().optional().describe("Runner adapter id (e.g. 'claude') this session's task runs under."),
   host_id: z.string().nullable().optional().describe("The device/workspace running this session's task."),
   // #375: the thread's own model/effort override. Resolution (session ->
@@ -140,8 +139,8 @@ export async function createSession(
   const name = computeDefaultSessionName(nodeName, now);
 
   await db.execute({
-    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner, host_id, model, effort, state, name, created_at, last_active_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, runner, host_id, model, effort, state, name, created_at, last_active_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     args: [
       id,
       parsed.node_id,
@@ -151,7 +150,6 @@ export async function createSession(
       parsed.instance_id ?? null,
       parsed.agent_session_id ?? null,
       parsed.terminal_id ?? null,
-      parsed.brief ?? null,
       parsed.runner ?? null,
       parsed.host_id ?? null,
       parsed.model ?? null,
@@ -349,9 +347,11 @@ export async function setSessionCli(db: DbClient, id: string, cli: string): Prom
 }
 
 // State machine. running/suspended are the live states (a session can
-// bounce between them via suspend/resume, #190); closed is terminal from the
-// user's point of view but auto-archives (a view filter, never a delete) as
-// the only way out of closed. archived itself is terminal. draft (#374) is
+// bounce between them via suspend/resume, #190); closed is "done, off the
+// active lists", not "never again": writing into it reopens it exactly the
+// way it reopens a suspended thread (#498, session-runtime.ts's
+// sendMessage), and otherwise it auto-archives (a view filter, never a
+// delete). archived itself is terminal. draft (#374) is
 // a thread before its first message: its only transition is to running (the
 // first message, session-runtime.ts's sendMessage), and its only other exit
 // is deletion (deleteDraftSession/pruneStaleDraftSessions), never a state
@@ -360,7 +360,7 @@ const ALLOWED_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   draft: ["running"],
   running: ["suspended", "closed"],
   suspended: ["running", "closed"],
-  closed: ["archived"],
+  closed: ["running", "archived"],
   archived: [],
 };
 
@@ -380,7 +380,9 @@ export async function transitionSessionState(
   }
 
   const now = new Date().toISOString();
-  const closedAt = toState === "closed" ? now : existing.closed_at;
+  // A reopened thread (#498: closed -> running) is no longer closed; a
+  // stale closed_at would read as "closed at" on a running row.
+  const closedAt = toState === "closed" ? now : toState === "running" ? null : existing.closed_at;
 
   await db.execute({
     sql: "UPDATE sessions SET state = ?, last_active_at = ?, closed_at = ? WHERE id = ?",
@@ -507,28 +509,14 @@ export async function suspendStaleRunningSessionsOnBoot(
 // action, so it would just add audit-log noise proportional to session
 // volume without a corresponding actor to attribute it to.
 const DEFAULT_ARCHIVE_AFTER_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-// Retention for session_events (runner batch, #317): the event log of an
-// archived session is dropped once closed_at is older than this -- the
-// session row, its runs, audit trail and handoff file all stay.
-const DEFAULT_EVENTS_RETENTION_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
-
 export async function autoArchiveClosedSessions(
   db: DbClient,
   olderThanMs: number = DEFAULT_ARCHIVE_AFTER_MS,
-  eventsRetentionMs: number = DEFAULT_EVENTS_RETENTION_MS,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - olderThanMs).toISOString();
   const res = await db.execute({
     sql: "UPDATE sessions SET state = 'archived' WHERE state = 'closed' AND closed_at IS NOT NULL AND closed_at < ?",
     args: [cutoff],
-  });
-  const eventsCutoff = new Date(Date.now() - eventsRetentionMs).toISOString();
-  await db.execute({
-    sql: `DELETE FROM session_events
-           WHERE session_id IN (
-             SELECT id FROM sessions WHERE state = 'archived' AND closed_at IS NOT NULL AND closed_at < ?
-           )`,
-    args: [eventsCutoff],
   });
   return res.rowsAffected;
 }
@@ -710,12 +698,9 @@ export async function suspendSession(
   const enrichedName = handoffEnrichedName(existing, input.handoffTitle ?? null);
   await db.execute({
     sql: `UPDATE sessions
-             SET state = 'suspended', handoff_path = ?, handoff_hash = ?, handoff_inline = NULL,
+             SET state = 'suspended', handoff_path = ?, handoff_hash = ?,
                  agent_session_id = COALESCE(?, agent_session_id), last_active_at = ?, name = ?
            WHERE id = ?`,
-    // handoff_inline is content and lives on the device now (#456); the
-    // column stays on the record until the central migration (#462) and is
-    // cleared here so no stale copy survives a re-suspend.
     args: [
       input.handoffPath,
       input.handoffHash,

@@ -282,9 +282,9 @@ export interface SessionRuntime {
   // #378: sending into a session with no live run is what promotes a draft
   // (#374, unchanged) or resumes a suspended thread (new: `--resume` on the
   // last run's agent_session_id while that's still valid, else from the
-  // summary) -- there is no separate resume verb to call first. Throws
-  // "has no live run" only for a closed/archived session, same wording as
-  // before.
+  // summary) -- there is no separate resume verb to call first. #498: a
+  // closed thread reopens the same way. Throws "has no live run" only for
+  // an archived session, same wording as before.
   sendMessage(sessionId: string, text: string): Promise<void>;
   answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void>;
   // Cancels the CURRENT TURN only (Query.interrupt()) -- the process, the
@@ -992,7 +992,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await promoteDraftAndStart(sessionId, text);
       return;
     }
-    if (session.state === "suspended") {
+    // #498: Uzavřít is "done, off the active lists", not "never again" --
+    // writing into a closed thread reopens it exactly like a suspended one.
+    if (session.state === "suspended" || session.state === "closed") {
       await resumeByWriting(sessionId, session, text, logged);
       return;
     }
@@ -1158,7 +1160,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // Same reason as promoteDraftAndStart's own state_changed: a window
     // other than this one showing the thread learns it woke up.
     await appendAndPublish(sessionId, null, [
-      { kind: "state_changed", payload: { from: "suspended", to: "running", waiting: false } },
+      { kind: "state_changed", payload: { from: session.state, to: "running", waiting: false } },
     ]);
 
     await startRun(updated, run, runProvisioned, instanceEnv, {

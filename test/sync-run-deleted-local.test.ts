@@ -5,8 +5,9 @@
 
 process.env.PORT = "14930";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, stat } from "node:fs/promises";
@@ -73,7 +74,7 @@ after(async () => {
 
 describe("sync run vs deleted_local", () => {
   it("reports the deletion instead of re-downloading the file", async () => {
-    const res = await fetch(`${BASE}/nodes/${nodeId}/sync`, { method: "POST" });
+    const res = await authFetch(`${BASE}/nodes/${nodeId}/sync`, { method: "POST" });
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       pulled: Array<{ file_id: string }>;

@@ -25,7 +25,7 @@ For a standalone CLI server, add Portuni to `~/.claude.json` yourself:
 }
 ```
 
-Claude Code expands `${VAR:-}` at config load, so the token stays out of the file – export `PORTUNI_MCP_TOKEN` in your shell (Settings → MCP Server → Copy token in the desktop app). The standalone server requires the header whenever `PORTUNI_AUTH_TOKEN` is set; the desktop sidecar always requires it.
+Claude Code expands `${VAR:-}` at config load, so the token stays out of the file – export `PORTUNI_MCP_TOKEN` in your shell (Settings → MCP Server → Copy token in the desktop app). Every Portuni server requires the header (a standalone server does not start without `PORTUNI_AUTH_TOKEN`); an unset or empty `PORTUNI_MCP_TOKEN` sends an empty bearer and gets 401.
 
 :::caution
 Use `type: "http"` (Streamable HTTP), not `"sse"` – Claude Code quietly ignores SSE transport in the global config, and you'll be left wondering why nothing's connecting.

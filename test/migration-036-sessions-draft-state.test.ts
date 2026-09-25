@@ -64,9 +64,11 @@ test("migration 036 preserves existing rows and allows a draft afterward", async
     created_at DATETIME NOT NULL DEFAULT (datetime('now')), last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
     closed_at DATETIME
   )`);
+  // brief/handoff_inline: a pre-036 table had both; the current one has
+  // neither (#462), and 036's rebuild leaves them behind.
   await db.execute(`INSERT INTO sessions_legacy SELECT
-      id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner,
-      host_id, waiting_since, state, handoff_path, handoff_hash, handoff_inline, name, name_is_custom,
+      id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, 'zadání', runner,
+      host_id, waiting_since, state, handoff_path, handoff_hash, NULL, name, name_is_custom,
       created_at, last_active_at, closed_at
     FROM sessions`);
   await db.execute("DROP TABLE sessions");
@@ -86,6 +88,8 @@ test("migration 036 preserves existing rows and allows a draft afterward", async
 
   const preserved = await getSession(db, sessionId);
   assert.equal(preserved?.name, "pre-migration session");
+  const cols = new Set((await db.execute("PRAGMA table_info(sessions)")).rows.map((r) => String(r.name)));
+  assert.ok(!cols.has("brief") && !cols.has("handoff_inline"), "036 rebuilds to the current shape");
   assert.equal(preserved?.node_id, nodeId);
 
   // The actual behavior change: 'draft' is now a valid state.

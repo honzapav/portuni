@@ -5,8 +5,9 @@
 
 process.env.PORT = "14934";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
@@ -359,7 +360,7 @@ describe("per-node serialization across jobs (#338 catch-up)", () => {
     };
     setAdapterForTests("test-fs", blocking);
 
-    const routeDone = fetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
+    const routeDone = authFetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
     await inRun;
 
     let jobRan!: () => void;
@@ -397,7 +398,7 @@ describe("POST /sync/jobs, GET /sync/jobs/:id, GET /sync/jobs/current (REST)", (
     await mkdir(join(mirrorRoot, "wip"), { recursive: true });
     await writeFile(join(mirrorRoot, "wip", "e.md"), "unsynced");
 
-    const start = await fetch(`${BASE}/sync/jobs`, {
+    const start = await authFetch(`${BASE}/sync/jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ node_ids: [shared.nodeId] }),
@@ -408,7 +409,7 @@ describe("POST /sync/jobs, GET /sync/jobs/:id, GET /sync/jobs/current (REST)", (
 
     let finalStatus = "";
     for (let i = 0; i < 200; i++) {
-      const r = await fetch(`${BASE}/sync/jobs/${job.id}`);
+      const r = await authFetch(`${BASE}/sync/jobs/${job.id}`);
       assert.equal(r.status, 200);
       const body = (await r.json()) as { status: string };
       finalStatus = body.status;
@@ -426,14 +427,14 @@ describe("POST /sync/jobs, GET /sync/jobs/:id, GET /sync/jobs/current (REST)", (
     await mkdir(join(mirrorRoot, "wip"), { recursive: true });
     await writeFile(join(mirrorRoot, "wip", "f.md"), "unsynced");
 
-    const start = await fetch(`${BASE}/sync/jobs`, {
+    const start = await authFetch(`${BASE}/sync/jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ node_ids: [shared.nodeId] }),
     });
     const job = (await start.json()) as { id: string };
 
-    const cur = await fetch(`${BASE}/sync/jobs/current`);
+    const cur = await authFetch(`${BASE}/sync/jobs/current`);
     assert.equal(cur.status, 200);
     const curBody = (await cur.json()) as { job: { id: string } | null };
     assert.equal(curBody.job?.id, job.id);
@@ -447,14 +448,14 @@ describe("POST /sync/jobs, GET /sync/jobs/:id, GET /sync/jobs/current (REST)", (
     await mkdir(join(mirrorRoot, "wip"), { recursive: true });
     await writeFile(join(mirrorRoot, "wip", "g.md"), "unsynced");
 
-    const start = await fetch(`${BASE}/sync/jobs`, { method: "POST" });
+    const start = await authFetch(`${BASE}/sync/jobs`, { method: "POST" });
     assert.equal(start.status, 202);
     const job = (await start.json()) as { total: number; nodes: Array<{ node_id: string }> };
     assert.ok(job.nodes.some((n) => n.node_id === shared.nodeId));
   });
 
   it("GET /sync/jobs/:id for an unknown id is 404", async () => {
-    const r = await fetch(`${BASE}/sync/jobs/nonexistent`);
+    const r = await authFetch(`${BASE}/sync/jobs/nonexistent`);
     assert.equal(r.status, 404);
   });
 });

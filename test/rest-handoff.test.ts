@@ -10,10 +10,11 @@
 
 process.env.PORT = "14951";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 delete process.env.PORTUNI_URL;
 delete process.env.PORTUNI_AGENT_MODE;
 
+import { useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
