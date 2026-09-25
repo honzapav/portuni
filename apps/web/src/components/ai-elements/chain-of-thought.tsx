@@ -18,6 +18,7 @@
 // (they pull `Badge`, unused here) and `ChainOfThoughtImage`; dropped the
 // `max-w-prose` on the root (the thread column bounds the width, spec
 // rule 3); `"use client"` removed (Vite, no RSC).
+// The header's default text comes from the `chat` catalog (#536).
 
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
 import {
@@ -34,6 +35,7 @@ import {
 } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import { createContext, memo, useContext, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 
 type ChainOfThoughtContextValue = {
   isOpen: boolean;
@@ -100,6 +102,7 @@ export type ChainOfThoughtHeaderProps = ComponentProps<
 export const ChainOfThoughtHeader = memo(
   ({ className, children, ...props }: ChainOfThoughtHeaderProps) => {
     const { isOpen, setIsOpen } = useChainOfThought();
+    const { t } = useTranslation("chat");
 
     return (
       <Collapsible onOpenChange={setIsOpen} open={isOpen}>
@@ -112,7 +115,7 @@ export const ChainOfThoughtHeader = memo(
         >
           <BrainIcon className="size-4" />
           <span className="flex-1 text-left">
-            {children ?? "Chain of Thought"}
+            {children ?? t(($) => $.chain_of_thought.title)}
           </span>
           <ChevronDownIcon
             className={cn(

@@ -3,8 +3,9 @@
 // the session summary's counters or the latest context_usage event.
 // Dependency-free so test/context-ring.test.ts covers the thresholds.
 
+import type { TFunction } from "i18next";
 import type { ChatEvent } from "./session-chat";
-import { formatTokens } from "./format";
+import { formatNumber, formatTokens } from "./format";
 
 // From this fraction on the ring takes the warning colour and
 // "Pokračovat v nové session" becomes the filled button.
@@ -35,12 +36,19 @@ export function contextRingState(
   usedInput: number | null | undefined,
   maxInput: number | null | undefined,
   locale: string,
+  t: TFunction<"chat">,
 ): ContextRingState | null {
   const used = finite(usedInput);
   const max = finite(maxInput);
   if (used === null) return null;
   if (max === null || max <= 0) {
-    return { used, max: null, fraction: null, warn: false, label: `${formatTokens(locale, used)} tokenů` };
+    return {
+      used,
+      max: null,
+      fraction: null,
+      warn: false,
+      label: t(($) => $.context.tokens, { ns: "chat", count: used, tokens: formatTokens(locale, used) }),
+    };
   }
   const fraction = used / max;
   // A share of the window, capped: a count above it is a runner that
@@ -52,7 +60,10 @@ export function contextRingState(
     max,
     fraction,
     warn: fraction >= CONTEXT_WARN_FRACTION,
-    label: percent < 1 ? "<1 %" : `${percent} %`,
+    label:
+      percent < 1
+        ? t(($) => $.context.under_one_percent, { ns: "chat" })
+        : t(($) => $.context.percent, { ns: "chat", percent: formatNumber(locale, percent) }),
   };
 }
 

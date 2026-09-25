@@ -21,6 +21,8 @@
 // plain text only (`sessionsClient.message`). Kept: the composer shell,
 // textarea, submit button and the model-picker pieces (Select), which have
 // no dependency on `ai` and are wired up in a later phase.
+// The default placeholder and the submit/stop labels come from the `chat`
+// catalog (#536).
 
 import {
   InputGroup,
@@ -49,6 +51,7 @@ import type {
   ReactNode,
 } from "react";
 import { Children, useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 export interface PromptInputMessage {
   text: string;
@@ -94,9 +97,10 @@ export const PromptInputTextarea = ({
   onChange,
   onKeyDown,
   className,
-  placeholder = "What would you like to know?",
+  placeholder,
   ...props
 }: PromptInputTextareaProps) => {
+  const { t } = useTranslation("chat");
   const [isComposing, setIsComposing] = useState(false);
 
   const handleKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = useCallback(
@@ -125,7 +129,7 @@ export const PromptInputTextarea = ({
       onCompositionEnd={handleCompositionEnd}
       onCompositionStart={handleCompositionStart}
       onKeyDown={handleKeyDown}
-      placeholder={placeholder}
+      placeholder={placeholder ?? t(($) => $.composer.placeholder.default)}
       {...props}
     />
   );
@@ -193,6 +197,7 @@ export const PromptInputSubmit = ({
   children,
   ...props
 }: PromptInputSubmitProps) => {
+  const { t } = useTranslation("chat");
   const isGenerating = status === "submitted" || status === "streaming";
 
   let Icon = <CornerDownLeftIcon className="size-4" />;
@@ -218,7 +223,7 @@ export const PromptInputSubmit = ({
 
   return (
     <InputGroupButton
-      aria-label={isGenerating ? "Stop" : "Submit"}
+      aria-label={isGenerating ? t(($) => $.composer.stop) : t(($) => $.composer.submit)}
       className={cn(className)}
       onClick={handleClick}
       size={size}

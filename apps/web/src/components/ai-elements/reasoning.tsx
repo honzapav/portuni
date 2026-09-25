@@ -17,6 +17,8 @@
 // Changed: `ReasoningContent` loads Streamdown's cjk/code/math/mermaid
 // plugins lazily (lib/streamdown-plugins.ts) instead of bundling all four
 // statically.
+// The trigger's default texts and Streamdown's own labels come from the
+// `chat` catalog (#536).
 
 "use client";
 
@@ -43,6 +45,8 @@ import {
 import { Streamdown } from "streamdown";
 
 import { Shimmer } from "./shimmer";
+import { useTranslation } from "react-i18next";
+import { useStreamdownTranslations } from "@/lib/streamdown-translations";
 
 interface ReasoningContextValue {
   isStreaming: boolean;
@@ -171,15 +175,20 @@ export type ReasoningTriggerProps = ComponentProps<
   getThinkingMessage?: (isStreaming: boolean, duration?: number) => ReactNode;
 };
 
-const defaultGetThinkingMessage = (isStreaming: boolean, duration?: number) => {
+const DefaultThinkingMessage = ({ isStreaming, duration }: { isStreaming: boolean; duration?: number }) => {
+  const { t } = useTranslation("chat");
   if (isStreaming || duration === 0) {
-    return <Shimmer duration={1}>Thinking...</Shimmer>;
+    return <Shimmer duration={1}>{t(($) => $.reasoning.thinking)}</Shimmer>;
   }
   if (duration === undefined) {
-    return <p>Thought for a few seconds</p>;
+    return <p>{t(($) => $.reasoning.thought_few_seconds)}</p>;
   }
-  return <p>Thought for {duration} seconds</p>;
+  return <p>{t(($) => $.reasoning.thought_for, { count: duration })}</p>;
 };
+
+const defaultGetThinkingMessage = (isStreaming: boolean, duration?: number) => (
+  <DefaultThinkingMessage isStreaming={isStreaming} duration={duration} />
+);
 
 export const ReasoningTrigger = memo(
   ({
@@ -224,6 +233,7 @@ export type ReasoningContentProps = ComponentProps<
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => {
     const plugins = useStreamdownPlugins();
+    const translations = useStreamdownTranslations();
     return (
       <CollapsibleContent
         className={cn(
@@ -233,7 +243,9 @@ export const ReasoningContent = memo(
         )}
         {...props}
       >
-        <Streamdown plugins={plugins}>{children}</Streamdown>
+        <Streamdown plugins={plugins} translations={translations}>
+          {children}
+        </Streamdown>
       </CollapsibleContent>
     );
   }
