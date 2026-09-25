@@ -178,11 +178,15 @@ describe("requestChatSession", () => {
 
 describe("isThreadSession (v2 rule 7)", () => {
   it("an interactive_task with no cli is a thread", () => {
-    assert.equal(isThreadSession({ session_type: "interactive_task", cli: null }), true);
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: null, runner: null }), true);
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: null, runner: "claude" }), true);
+  });
+  it("a runner thread stays a thread once its agent connects to MCP and fills in cli", () => {
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: "claude", runner: "claude" }), true);
   });
   it("a hand-opened CLI session or a chat session is not", () => {
-    assert.equal(isThreadSession({ session_type: "interactive_task", cli: "claude" }), false);
-    assert.equal(isThreadSession({ session_type: "interactive_chat", cli: null }), false);
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: "claude", runner: null }), false);
+    assert.equal(isThreadSession({ session_type: "interactive_chat", cli: null, runner: null }), false);
   });
 });
 
