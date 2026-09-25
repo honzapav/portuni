@@ -177,6 +177,51 @@ describe("sweepOrphanedRuns (#325)", () => {
   });
 });
 
+// #497: after Předat → resume → the host dies, the record must not keep
+// pointing at the Předat file the transcript has since outgrown -- a resume
+// would take that file over the transcript.
+describe("sweepOrphanedRuns drops a stale handoff (#497)", () => {
+  async function withStaleHandoff(db: SharedDb["db"]) {
+    const started = await startSessionAndRun(db);
+    await started.store.patchSession(started.session.id, {
+      handoff_path: `wip/sessions/${started.session.id}-handoff.md`,
+      handoff_hash: "stale",
+    });
+    return started;
+  }
+
+  it("in a personal workspace", async () => {
+    const shared = await sharedDb();
+    const dataDir = await mkdtemp(join(tmpdir(), "portuni-run-sweep-"));
+    const { session, run } = await withStaleHandoff(shared.db);
+    await writePidFile(dataDir, run.id, 999_999_999, session.id);
+
+    await sweepOrphanedRuns(shared.db, dataDir, { sigtermGraceMs: 10 });
+
+    const suspended = await getSession(shared.db, session.id);
+    assert.equal(suspended?.state, "suspended");
+    assert.equal(suspended?.handoff_path, null);
+    assert.equal(suspended?.handoff_hash, null);
+  });
+
+  it("in a team workspace, through the central server", async () => {
+    const shared = await sharedDb();
+    const dataDir = await mkdtemp(join(tmpdir(), "portuni-run-sweep-central-"));
+    const { session, run } = await withStaleHandoff(shared.db);
+    await writePidFile(dataDir, run.id, 999_999_999, session.id);
+
+    const central = new FakeCentralRecords(shared.db);
+    await sweepOrphanedRunsOn(centralRunSweepBackend(new CentralSessionStore(central.client), content), dataDir, {
+      isAlive: () => false,
+    });
+
+    const suspended = await getSession(shared.db, session.id);
+    assert.equal(suspended?.state, "suspended");
+    assert.equal(suspended?.handoff_path, null);
+    assert.equal(suspended?.handoff_hash, null);
+  });
+});
+
 describe("run sweep: pid identity (a reused pid is never killed)", () => {
   it("parses ps's lstart + command row", () => {
     const id = parseProcessIdentity("Sat Sep 13 20:15:03 2026 /usr/local/bin/claude --print\n");
@@ -251,7 +296,7 @@ describe("sweepOrphanedRuns in central mode (#393, #458)", () => {
     const patched = central.patches.find(([id]) => id === session.id);
     assert.ok(patched, "the record patch must go to the central server");
     assert.equal(patched![1].state, "suspended");
-    assert.equal(patched![1].handoff_path, undefined, "a lost device leaves no handoff");
+    assert.equal(patched![1].handoff_path ?? null, null, "a lost device leaves no handoff");
     assert.deepEqual(central.summaries, [], "the central server never receives a summary");
 
     const runs = await localStore.listRuns(session.id);

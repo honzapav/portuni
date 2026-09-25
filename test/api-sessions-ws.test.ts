@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { ulid } from "ulid";
 import WebSocket from "ws";
 import type { AddressInfo } from "node:net";
+import { useTestBearer } from "./helpers/auth.js";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
 import { ensureSchema } from "../apps/server/infra/schema.js";
 import { getDb, setDbForTesting } from "../apps/server/infra/db.js";
@@ -31,6 +32,7 @@ import { createSessionRuntime } from "../apps/server/domain/runner/session-runti
 import { setSessionRuntimeForTesting } from "../apps/server/boot/session-runtime.js";
 import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
+import type { SessionRow } from "../apps/server/shared/types.js";
 
 const SECRET = "test-secret-at-least-32-chars-long!!";
 const U1 = "01U100000000000000000001A";
@@ -126,6 +128,9 @@ class FrameCollector {
 // dependency is a live lookup into the registry module, not a captured
 // adapter reference (identical to how boot/session-runtime.ts wires it).
 let currentRuntime: ReturnType<typeof createSessionRuntime>;
+// What the live channel's row reads go through when a test needs to hold
+// or fail one; null reads straight through.
+let getSessionOverride: ((sessionId: string) => Promise<SessionRow | null>) | null = null;
 
 function installAdapter(script: readonly FakeScriptStep[]): void {
   clearRegistryForTests();
@@ -162,6 +167,10 @@ describe("GET /sessions/ws", () => {
       args: [ulid(), nodeId, orgId, U1],
     });
 
+    // The process's auth mode stays env (the google identity context is
+    // injected below), and an env-mode server never starts without a
+    // bearer (#521).
+    useTestBearer();
     handle = startHttpServer({ port: 0, host: "127.0.0.1", registerSigint: false });
     if (!handle.server.listening) {
       await new Promise<void>((resolve) => handle.server.once("listening", resolve));
@@ -184,7 +193,12 @@ describe("GET /sessions/ws", () => {
       registry: { getAdapter },
       provision: stubProvision(),
     });
-    setSessionRuntimeForTesting(currentRuntime);
+    const runtime = currentRuntime;
+    setSessionRuntimeForTesting({
+      ...runtime,
+      getSession: (sessionId: string) =>
+        getSessionOverride ? getSessionOverride(sessionId) : runtime.getSession(sessionId),
+    });
   });
 
   after(async () => {
@@ -201,6 +215,7 @@ describe("GET /sessions/ws", () => {
 
   beforeEach(() => {
     installAdapter([{ wait: "message" }]);
+    getSessionOverride = null;
   });
 
   test("an upgrade with no/invalid bearer is refused with 401", async () => {
@@ -348,6 +363,39 @@ describe("GET /sessions/ws", () => {
     await waitClose(ws);
   });
 
+  test("a run that ends on its own leaves suspended as the last session_state (#494)", async () => {
+    installAdapter([{ wait: "message" }, { end: "completed" }]);
+    const runtime = currentRuntime;
+    const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
+
+    const token = await tokenFor(U1);
+    const ws = openSocket(base, token);
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === "session_states");
+
+    // Unblocks the script into its end: the runtime suspends the thread
+    // itself after run_ended, with no REST call in between.
+    await runtime.sendMessage(session.id, "done");
+    const isOwn = (f: Frame) =>
+      f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id;
+    await collector.waitFor((f) => isOwn(f) && (f.payload as { state: string }).state === "suspended");
+    assert.equal((await runtime.getSession(session.id))?.state, "suspended");
+    // The transition is in the log too, so a replay says the same.
+    const events = await runtime.listEvents(session.id);
+    assert.ok(
+      events.some((e) => {
+        if (e.kind !== "state_changed") return false;
+        const payload = JSON.parse(e.payload) as { from: string; to: string };
+        return payload.from === "running" && payload.to === "suspended";
+      }),
+    );
+    const own = collector.frames.filter(isOwn);
+    assert.equal((own[own.length - 1].payload as { state: string }).state, "suspended");
+    ws.close();
+    await waitClose(ws);
+  });
+
   test("a rename through the runtime fans out as session_state carrying the new name", async () => {
     installAdapter([{ wait: "message" }]);
     const runtime = currentRuntime;
@@ -367,6 +415,88 @@ describe("GET /sessions/ws", () => {
         (f.payload as { name?: string }).name === "Přejmenováno",
     );
     assert.equal((update.payload as { state: string }).state, "running");
+    ws.close();
+    await waitClose(ws);
+  });
+
+  // #494: a slow row read must neither hold back the frames after it nor
+  // land after them with the older row.
+  test("a stuck row read does not hold back a newer session_state, and its stale row never goes out", async () => {
+    installAdapter([{ wait: "message" }]);
+    const runtime = currentRuntime;
+    const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
+
+    const token = await tokenFor(U1);
+    const ws = openSocket(base, token);
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === "session_states");
+
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let reads = 0;
+    getSessionOverride = async (sessionId) => {
+      reads += 1;
+      if (reads === 1) {
+        const stale = await runtime.getSession(sessionId);
+        await firstHeld;
+        return stale;
+      }
+      return runtime.getSession(sessionId);
+    };
+    const named = (name: string) => (f: Frame) =>
+      f.type === "session_state" &&
+      (f.payload as { session_id: string }).session_id === session.id &&
+      (f.payload as { name?: string }).name === name;
+
+    await runtime.renameSession(session.id, "První");
+    await runtime.renameSession(session.id, "Druhé");
+    await collector.waitFor(named("Druhé"));
+
+    releaseFirst();
+    await runtime.renameSession(session.id, "Třetí");
+    await collector.waitFor(named("Třetí"));
+    const names = collector.frames
+      .filter((f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id)
+      .map((f) => (f.payload as { name?: string }).name);
+    assert.deepEqual(names, ["Druhé", "Třetí"], "the held read's older row was dropped");
+    ws.close();
+    await waitClose(ws);
+  });
+
+  test("a failed row read is reported, and the next session_state still goes out", { timeout: 10_000 }, async (t) => {
+    installAdapter([{ wait: "message" }]);
+    const runtime = currentRuntime;
+    const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
+
+    const token = await tokenFor(U1);
+    const ws = openSocket(base, token);
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === "session_states");
+
+    let markWarned!: () => void;
+    const warned = new Promise<void>((resolve) => {
+      markWarned = resolve;
+    });
+    const warn = t.mock.method(console, "warn", () => markWarned());
+    getSessionOverride = async () => {
+      getSessionOverride = null;
+      throw new Error("central unreachable");
+    };
+    await runtime.renameSession(session.id, "Nedoručeno");
+    await warned;
+    assert.match(String(warn.mock.calls[0].arguments[0]), new RegExp(session.id));
+
+    await runtime.renameSession(session.id, "Doručeno");
+    await collector.waitFor(
+      (f) =>
+        f.type === "session_state" &&
+        (f.payload as { session_id: string }).session_id === session.id &&
+        (f.payload as { name?: string }).name === "Doručeno",
+    );
     ws.close();
     await waitClose(ws);
   });

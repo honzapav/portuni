@@ -9,6 +9,7 @@
 // the record, the send clock) from #466.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { createSessionStore } from "../apps/web/src/lib/session-store.js";
 import type { SessionStore } from "../apps/web/src/lib/session-store.js";
@@ -28,6 +29,7 @@ import {
   renamePersistentSession,
   closePersistentSession,
   deletePersistentSession,
+  deleteDraftSession,
   patchSessionRunnerInstance,
 } from "../apps/web/src/api.js";
 import {
@@ -301,6 +303,87 @@ describe("scenario 6: a closed thread leaves every selector", () => {
     assert.deepEqual(selectMountedThreads(store, ["n1"], "d1"), []);
     assert.equal(selectShownThread(store, "n1", "d1"), null);
     assert.equal(Object.keys(selectLiveStates(store)).length, 0);
+  });
+});
+
+// #506: a draft can be deleted from the Stav list, the chat header and the
+// Relace row, and every one of them is the same deleteDraftSession.
+// #498: a closed thread is off the sidebar, but Relace's Otevřít chat shows
+// it (App.tsx passes it as openedClosedId), and writing into it reopens it.
+describe("scenario 6c: a closed thread opened from Relace is shown until it moves on", () => {
+  it("shows the opened closed thread, never one closed while on screen", () => {
+    store.putMany([
+      row({ id: "s1", state: "closed", closed_at: "2026-09-22 11:00:00" }),
+      row({ id: "s2", last_active_at: "2026-09-22 09:00:00" }),
+    ]);
+    // Not in the sidebar.
+    assert.deepEqual(selectNodeThreads(store, "n1").map((s) => s.id), ["s2"]);
+    // Requested but not opened as closed (it was closed while on screen):
+    // the node falls back to its live thread, as before.
+    assert.equal(selectShownThread(store, "n1", "s1")?.id, "s2");
+    // Opened from Relace: shown, and mounted.
+    assert.equal(selectShownThread(store, "n1", "s1", "s1")?.id, "s1");
+    assert.deepEqual(selectMountedThreads(store, ["n1"], "s1", "s1").map((s) => s.id), ["s2", "s1"]);
+    assert.deepEqual(selectMountedThreads(store, ["n1"], "s1").map((s) => s.id), ["s2"]);
+    // Another node's request never shows it.
+    assert.equal(selectShownThread(store, "n2", "s1", "s1"), null);
+
+    // Written into: running again, a live thread like any other.
+    store.applyFrame(frame({ session_id: "s1", state: "running" }));
+    assert.equal(selectShownThread(store, "n1", "s1", null)?.id, "s1");
+    assert.deepEqual(selectNodeThreads(store, "n1").map((s) => s.id).sort(), ["s1", "s2"]);
+  });
+
+  it("an archived thread is never shown as chat", () => {
+    store.putMany([row({ id: "s1", state: "archived" }), row({ id: "s2" })]);
+    assert.equal(selectShownThread(store, "n1", "s1", "s1")?.id, "s2");
+  });
+});
+
+describe("scenario 6b: a draft deleted from any surface leaves the store at once", () => {
+  it("removes the record before the DELETE lands and sends the DELETE", async () => {
+    store.putMany([row({ id: "d1", state: "draft" }), row({ id: "s2", last_active_at: "2026-09-22 09:00:00" })]);
+    answer("DELETE /sessions/d1", { deleted: true });
+    // The signal the DELETE was sent: the recorded backend answered it.
+    const recorded = globalThis.fetch;
+    let answered!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      answered = resolve;
+    });
+    globalThis.fetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
+      const res = await recorded(...args);
+      answered();
+      return res;
+    }) as typeof globalThis.fetch;
+
+    deleteDraftSession("d1");
+
+    // Synchronously gone: the chat showing it closes and the shown thread
+    // falls back to the node's other one, as with the sidebar's ×.
+    assert.equal(selectSession(store, "d1"), undefined);
+    assert.equal(selectShownThread(store, "n1", "d1")?.id, "s2");
+    assert.deepEqual(selectMountedThreads(store, ["n1"], "d1").map((s) => s.id), ["s2"]);
+    await sent;
+    assert.deepEqual(calls, ["DELETE /sessions/d1"]);
+    assert.equal(selectSession(store, "d1"), undefined);
+  });
+
+  it("is the one deletion the sidebar, the chat header and Relace call", () => {
+    // Read as code: comments stripped, so a comment naming the old function
+    // neither fails nor satisfies an assertion. There is no component
+    // harness to mount these files in; this pins the wiring by its calls.
+    const src = (p: string) =>
+      readFileSync(new URL(`../apps/web/src/${p}`, import.meta.url), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+    for (const file of ["App.tsx", "components/SessionChat.tsx", "components/DetailPane.sessions.tsx"]) {
+      const text = src(file);
+      assert.match(text, /deleteDraftSession\(/, `${file} deletes a draft through deleteDraftSession`);
+      assert.match(text, /threadCloseAction\(/, `${file} asks threadCloseAction what close does`);
+      assert.doesNotMatch(text, /deletePersistentSession/, `${file} has no second draft deletion`);
+    }
+    // The Stav list hands its × to the same onCloseTask as the Uzly rows.
+    assert.match(src("components/WorkspaceNodeList.tsx"), /function TaskList\([^)]*onCloseTask/);
   });
 });
 

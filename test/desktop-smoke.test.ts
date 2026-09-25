@@ -2,6 +2,7 @@
 // libSQL URL and no Turso auth, exercising the same startHttpServer +
 // ensureSchema path the Tauri sidecar will run.
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -21,7 +22,7 @@ test("backend runs end-to-end with file: libSQL URL", async (t) => {
   const prevAuth = process.env.PORTUNI_AUTH_TOKEN;
   process.env.TURSO_URL = `file:${dbPath}`;
   delete process.env.TURSO_AUTH_TOKEN;
-  delete process.env.PORTUNI_AUTH_TOKEN;
+  useTestBearer();
   setDbForTesting(null);
 
   await ensureSchema();
@@ -33,7 +34,8 @@ test("backend runs end-to-end with file: libSQL URL", async (t) => {
     if (prevTurso === undefined) delete process.env.TURSO_URL;
     else process.env.TURSO_URL = prevTurso;
     if (prevTursoToken !== undefined) process.env.TURSO_AUTH_TOKEN = prevTursoToken;
-    if (prevAuth !== undefined) process.env.PORTUNI_AUTH_TOKEN = prevAuth;
+    if (prevAuth === undefined) delete process.env.PORTUNI_AUTH_TOKEN;
+    else process.env.PORTUNI_AUTH_TOKEN = prevAuth;
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -48,7 +50,7 @@ test("backend runs end-to-end with file: libSQL URL", async (t) => {
   // OS-assigned port we just bound, then reset caches.
   process.env.PORT = String(address.port);
   resetGateCachesForTesting();
-  const res = await fetch(`http://127.0.0.1:${address.port}/health`);
+  const res = await authFetch(`http://127.0.0.1:${address.port}/health`);
   assert.equal(res.status, 200);
   const body = (await res.json()) as { status: string };
   assert.equal(body.status, "ok");

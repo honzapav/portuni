@@ -17,28 +17,28 @@ import { join } from "node:path";
 import { getDb } from "../../infra/db.js";
 import { getSessionScope, threadNameFromFirstMessage } from "../sessions.js";
 import {
-  buildRunSummaryContent,
   checkConversationResumable,
   extractHandoffTitle,
   isHandoffRelativePath,
   readNodeHandoffFile,
-  createSuspendServerSide,
+  createSessionHandoffs,
   localSuspendDeps,
   type ServerHandoffReason,
+  type SessionHandoffs,
   type SuspendServerSide,
   type SuspendServerSideOptions,
-  type SummaryEvent,
 } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
 import type { SessionRunRow, SessionStore } from "./store.js";
 import type { ListEventsOptions, SessionContentStore } from "./store-content.js";
 import type { SessionEventRow } from "../../shared/api-types.js";
 import { detectAll } from "./registry.js";
-import { getInstanceDefaults, getInstanceEnv, listInstances, type InstanceDefaults } from "./instances.js";
+import { getInstanceDefaults, getInstanceEnv, instanceClaudeConfigDir, listInstances, type InstanceDefaults } from "./instances.js";
 import { localHostId, resolveHostLabel } from "./hosts.js";
 import { getMirrorPath } from "../sync/mirror-registry.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
+import { isRunEndedError } from "./types.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
 import type {
   CanonicalEvent,
@@ -191,14 +191,20 @@ export interface CreateSessionRuntimeDeps {
   content: SessionContentStore;
   registry: RunnerRegistryLookup;
   provision: (input: ProvisionRunInput) => Promise<ProvisionRunResult>;
-  // #378: writes the mechanical summary and moves the session to suspended
-  // -- called whenever a run ends other than by Uzavřít/continue (any
-  // reason), and by the idle sweep specifically ("idle"). Defaults to the
-  // local-mode binding (suspendSessionServerSide against the graph db);
-  // boot/session-runtime.ts's createAgentSessionRuntime supplies the same
-  // code with its two graph-db reads pointed at the central server (#458),
-  // since agent mode has no graph db to write against.
+  // #378: moves the session to suspended -- called whenever a run ends
+  // other than by Uzavřít/continue (any reason), and by the idle sweep
+  // specifically ("idle"); #497: only Předat ("handoff") writes a summary
+  // with it. Defaults to the local-mode binding (suspendSessionServerSide
+  // against the graph db); boot/session-runtime.ts's
+  // createAgentSessionRuntime supplies the same code with its two graph-db
+  // reads pointed at the central server (#458), since agent mode has no
+  // graph db to write against.
   suspendFallback?: SuspendServerSide;
+  // #497: the summary builder and the handoff-file writer Pokračovat v nové
+  // session and a resume without a conversation use -- the same seams the
+  // suspend above has (createSessionHandoffs). Defaults to the local-mode
+  // binding; createAgentSessionRuntime supplies the central-backed one.
+  handoffs?: Pick<SessionHandoffs, "summarize" | "writeFile">;
   // #407: how a node's organization is resolved when a draft's first
   // message picks the organization's default runner instance. Defaults to
   // the local graph-db query; createAgentSessionRuntime supplies the
@@ -276,9 +282,9 @@ export interface SessionRuntime {
   // #378: sending into a session with no live run is what promotes a draft
   // (#374, unchanged) or resumes a suspended thread (new: `--resume` on the
   // last run's agent_session_id while that's still valid, else from the
-  // summary) -- there is no separate resume verb to call first. Throws
-  // "has no live run" only for a closed/archived session, same wording as
-  // before.
+  // summary) -- there is no separate resume verb to call first. #498: a
+  // closed thread reopens the same way. Throws "has no live run" only for
+  // an archived session, same wording as before.
   sendMessage(sessionId: string, text: string): Promise<void>;
   answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void>;
   // Cancels the CURRENT TURN only (Query.interrupt()) -- the process, the
@@ -355,10 +361,15 @@ interface LiveRun {
 
 export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRuntime {
   const { store, content, registry, provision } = deps;
+  const localHandoffs = () => createSessionHandoffs(localSuspendDeps(getDb(), content));
   const suspendFallback =
     deps.suspendFallback ??
     ((sessionId: string, reason: ServerHandoffReason, opts?: SuspendServerSideOptions) =>
-      createSuspendServerSide(localSuspendDeps(getDb(), content))(sessionId, reason, opts));
+      localHandoffs().suspend(sessionId, reason, opts));
+  const handoffs: Pick<SessionHandoffs, "summarize" | "writeFile"> = deps.handoffs ?? {
+    summarize: (session, reason) => localHandoffs().summarize(session, reason),
+    writeFile: (session, summary) => localHandoffs().writeFile(session, summary),
+  };
   const resolveNodeOrgId = deps.resolveNodeOrgId ?? resolveNodeOrgIdLocal;
 
   const liveRuns = new Map<string, LiveRun>();
@@ -373,6 +384,17 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // Per-session serial dispatch: every appendAndPublish for a session
   // chains onto this so emission order survives concurrent sink calls.
   const queues = new Map<string, Promise<void>>();
+  // #488: per-session lifecycle lock. Starting a run takes as long as the
+  // adapter needs to spawn its process, and the live handle only lands in
+  // liveRuns once it returns -- so anything that decides what to do by
+  // looking at liveRuns (a second message, Uzavřít, Předat, Pokračovat v
+  // nové session) queues behind the start in progress instead of acting on
+  // a session whose run is half-started. Without it two quick messages
+  // into a suspended thread start two processes and one of them is
+  // orphaned, a message in the start window is refused with "no live run",
+  // and a close during the start leaves the process running on a closed
+  // session.
+  const lifecycleLocks = new Map<string, Promise<unknown>>();
   // #378: sessions a closeSession()/continueSession() close is in progress
   // for -- the run_ended that follows must NOT trigger the auto-summary/
   // suspend path (handleAdapterEvent), since these two already own the
@@ -387,13 +409,80 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // (started, a message sent, an adapter event, a question answered) --
   // the idle sweep's own cutoff. Cleared once the run ends.
   const lastActivityAt = new Map<string, number>();
-  // Sessions whose live run is mid-turn: a user_message went in and no
-  // turn_ended came back yet. The idle sweep never ends such a run -- the
-  // agent is working, only an open question waits on the user.
-  const turnsInFlight = new Set<string>();
+  // #491: how many times activity was observed for this session's live run.
+  // The idle sweep re-checks a session against this before ending it -- two
+  // activities inside the same millisecond share a timestamp, so the count,
+  // not the clock, is what says "something happened since I picked this
+  // one". Cleared with lastActivityAt when the run ends.
+  const activityTicks = new Map<string, number>();
+  // #490: how many messages the session's live run has been sent that no
+  // turn has answered yet -- a count, not a flag: a message written while
+  // the agent works queues behind the turn in flight, and the first
+  // turn_ended after it ends only ONE of them. The idle sweep never ends a
+  // run with work outstanding -- the agent is working, only an open
+  // question waits on the user. run_ended zeroes the count: no turn of a
+  // run that is over can still be in flight.
+  const turnsInFlight = new Map<string, number>();
+  // #488: the run each session is starting or running, by run id -- set
+  // when startRun begins, cleared when that run's run_ended is handled (or
+  // its start fails). What isCurrentRun compares an event's run against.
+  const currentRuns = new Map<string, string>();
+
+  function addTurnInFlight(sessionId: string): void {
+    turnsInFlight.set(sessionId, (turnsInFlight.get(sessionId) ?? 0) + 1);
+  }
+
+  // `count` is what the turn reported it answered (turn_ended's
+  // consumed_messages): the SDK folds sends that arrive close together into
+  // one turn, so one turn_ended can end more than one message's wait.
+  function dropTurnInFlight(sessionId: string, count = 1): void {
+    const left = (turnsInFlight.get(sessionId) ?? 0) - Math.max(count, 0);
+    if (left > 0) turnsInFlight.set(sessionId, left);
+    else turnsInFlight.delete(sessionId);
+  }
+
+  function isTurnInFlight(sessionId: string): boolean {
+    return (turnsInFlight.get(sessionId) ?? 0) > 0;
+  }
+  // #489: the session's current run, from the moment it started until its
+  // run_ended has been handled AND the suspend that follows it is written.
+  // A message that arrives while a run is ending -- the adapter already
+  // refuses it, or run_ended landed but the suspend is still in flight --
+  // waits on this instead of being dropped or refused, and is then
+  // delivered by resuming the thread (the ordinary "write into a suspended
+  // thread" path).
+  const runSettling = new Map<string, { runId: string; promise: Promise<void>; resolve: () => void }>();
+
+  function trackRunSettling(sessionId: string, runId: string): void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    runSettling.set(sessionId, { runId, promise, resolve });
+  }
+
+  // Called once the run's end is fully accounted for (the row, the suspend
+  // or the close). A late run_ended from a run something already replaced
+  // never settles the entry the newer run owns.
+  function settleRun(sessionId: string, runId: string): void {
+    const entry = runSettling.get(sessionId);
+    if (!entry || entry.runId !== runId) return;
+    runSettling.delete(sessionId);
+    entry.resolve();
+  }
+
+  // Resolves once no run end is in flight for this session. Nothing here
+  // waits on a clock: the promise is resolved by the run_ended handler
+  // itself, on the event queue, which never takes the lifecycle lock a
+  // caller of this holds.
+  async function waitForRunToSettle(sessionId: string): Promise<void> {
+    const entry = runSettling.get(sessionId);
+    if (entry) await entry.promise;
+  }
 
   function touchActivity(sessionId: string): void {
     lastActivityAt.set(sessionId, Date.now());
+    activityTicks.set(sessionId, (activityTicks.get(sessionId) ?? 0) + 1);
   }
 
   function publish(sessionId: string, event: PublishedEvent): void {
@@ -428,6 +517,27 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   function drain(sessionId: string): Promise<void> {
     return queues.get(sessionId) ?? Promise.resolve();
+  }
+
+  // #488: runs `task` after every lifecycle operation already queued for
+  // this session, and hands the caller that task's own promise (so its
+  // failure is still the caller's). Separate from `queues`, which serialises
+  // the event sink: an adapter event handler must never wait on a start,
+  // and a start drains the event queue while it holds this lock.
+  function withLifecycleLock<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+    const prev = lifecycleLocks.get(sessionId) ?? Promise.resolve();
+    const result = prev.then(task, task);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    lifecycleLocks.set(sessionId, settled);
+    void settled.then(() => {
+      // Only the tail clears the entry, so a lock taken while this one was
+      // running keeps its place in the chain.
+      if (lifecycleLocks.get(sessionId) === settled) lifecycleLocks.delete(sessionId);
+    });
+    return result;
   }
 
   async function appendAndPublish(
@@ -490,6 +600,17 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
   }
 
+  // #488: whether an adapter event belongs to the session's current run --
+  // the one being started or live, from startRun until its own run_ended
+  // is handled. A late event from any other run (a run_ended arriving
+  // after the next run started, or while it is still starting and has no
+  // live handle yet) must not touch session-level state -- the live
+  // handle, the turn in flight, the suspend path -- even though the run's
+  // own row still records its end.
+  function isCurrentRun(sessionId: string, runId: string): boolean {
+    return currentRuns.get(sessionId) === runId;
+  }
+
   async function handleAdapterEvent(
     sessionId: string,
     runId: string,
@@ -500,10 +621,24 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       return;
     }
     const canonical = event as CanonicalEvent;
+    if (canonical.kind === "run_ended") {
+      // #489: whatever this end turns out to be -- a close, a suspend, a
+      // late end from a replaced run, or a failure anywhere in handling it
+      // (the log write included) -- a message waiting for it stops waiting
+      // here. Settling in a finally is what keeps a failed write from
+      // wedging every later lifecycle verb on the thread.
+      try {
+        await handleRunEnded(sessionId, runId, canonical);
+      } finally {
+        settleRun(sessionId, runId);
+      }
+      return;
+    }
     await appendAndPublish(sessionId, runId, [canonical]);
     touchActivity(sessionId);
-    if (canonical.kind === "turn_ended" || canonical.kind === "run_ended") turnsInFlight.delete(sessionId);
-    if (canonical.kind !== "run_ended") await captureAgentSessionId(sessionId, runId);
+    if (canonical.kind === "turn_ended" && isCurrentRun(sessionId, runId))
+      dropTurnInFlight(sessionId, canonical.payload.consumed_messages ?? 1);
+    await captureAgentSessionId(sessionId, runId);
 
     if (canonical.kind === "context_usage") {
       // The ring's counters on the row (v2 spec): lists and the header
@@ -532,42 +667,79 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       ]);
       return;
     }
+  }
 
-    if (canonical.kind === "run_ended") {
-      // Captured before the entry is removed: the adapter may only expose
-      // the runner's own conversation id once the run is actually over
-      // (a real CLI's translation learns it from an early protocol
-      // message, but the value is only load-bearing at resume time, so
-      // reading it here -- once, at run end -- is enough either way).
-      const live = liveRuns.get(sessionId);
-      const agentSessionId = live?.runId === runId ? live.handle.agentSessionId() : null;
+  async function handleRunEnded(
+    sessionId: string,
+    runId: string,
+    canonical: Extract<CanonicalEvent, { kind: "run_ended" }>,
+  ): Promise<void> {
+    // The run is over whether or not its end reaches the log: a failed
+    // write is reported and the teardown below still runs, so the thread
+    // never keeps a dead handle (and a client replaying the log reads the
+    // record's state, which the suspend below still writes).
+    await appendAndPublish(sessionId, runId, [canonical]).catch((err) => {
+      console.error(`[portuni:runner] session ${sessionId}: recording run_ended of run ${runId} failed:`, err);
+    });
+    touchActivity(sessionId);
+    if (isCurrentRun(sessionId, runId)) turnsInFlight.delete(sessionId);
+    // Captured before the entry is removed: the adapter may only expose
+    // the runner's own conversation id once the run is actually over
+    // (a real CLI's translation learns it from an early protocol
+    // message, but the value is only load-bearing at resume time, so
+    // reading it here -- once, at run end -- is enough either way).
+    const live = liveRuns.get(sessionId);
+    const agentSessionId = live?.runId === runId ? live.handle.agentSessionId() : null;
+    // #488: only the current run's end takes the session with it.
+    const current = isCurrentRun(sessionId, runId);
+    if (current) {
+      currentRuns.delete(sessionId);
       liveRuns.delete(sessionId);
       lastActivityAt.delete(sessionId);
-      runStartScopeSize.delete(runId);
-      await store.patchRun(runId, {
-        ended_at: new Date().toISOString(),
-        end_reason: canonical.payload.reason,
-        usage: canonical.payload.usage,
-        ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
-      });
-      await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
-      await clearWaitingIfPending(sessionId, runId);
+      activityTicks.delete(sessionId);
+    }
+    runStartScopeSize.delete(runId);
+    await store.patchRun(runId, {
+      ended_at: new Date().toISOString(),
+      end_reason: canonical.payload.reason,
+      usage: canonical.payload.usage,
+      ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
+    });
+    await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
+    if (!current) return;
+    await clearWaitingIfPending(sessionId, runId);
 
-      // #378: closeSession()/continueSession() already own the resulting
-      // transition (to "closed") for their own run end -- everything else
-      // (idle, error, a natural CLI-initiated end) writes the mechanical
-      // summary and moves the session to suspended instead.
-      if (closingSessions.has(sessionId)) {
-        closingSessions.delete(sessionId);
-      } else {
-        const reason = pendingEndReason.get(sessionId) ?? "run_ended";
-        pendingEndReason.delete(sessionId);
-        const suspended = await suspendFallback(sessionId, reason);
-        if (suspended) {
-          await appendAndPublish(sessionId, runId, [
-            { kind: "handoff", payload: { path: suspended.handoff_path, hash: suspended.handoff_hash } },
-          ]);
-        }
+    // #378: closeSession()/continueSession() already own the resulting
+    // transition (to "closed") for their own run end -- everything else
+    // (idle, error, a natural CLI-initiated end) moves the session to
+    // suspended instead; #497: with a summary only for Předat.
+    if (closingSessions.has(sessionId)) {
+      closingSessions.delete(sessionId);
+    } else {
+      const reason = pendingEndReason.get(sessionId) ?? "run_ended";
+      pendingEndReason.delete(sessionId);
+      const suspended = await suspendFallback(sessionId, reason);
+      if (suspended) {
+        // #494: the run_ended above already fanned a session_state out
+        // (api/sessions-ws.ts reads the row the moment it sees one) --
+        // but it read the row before this suspend wrote it, so every
+        // window kept showing the thread as running. The transition
+        // itself is what tells them it is suspended now.
+        // #497: the handoff event (the chat's "Shrnutí uloženo" row)
+        // only when a summary was actually written -- Předat.
+        await appendAndPublish(sessionId, runId, [
+          ...(suspended.state === "suspended"
+            ? [{ kind: "state_changed" as const, payload: { from: "running", to: "suspended", waiting: false } }]
+            : []),
+          ...(reason === "handoff"
+            ? [
+                {
+                  kind: "handoff" as const,
+                  payload: { path: suspended.handoff_path, hash: suspended.handoff_hash },
+                },
+              ]
+            : []),
+        ]);
       }
     }
   }
@@ -610,56 +782,83 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       runStartResume: RunStart["resume"];
       resumeMode: null | "conversation" | "handoff";
       policy: PermissionPolicy;
+      // #489: false when the brief is a message already in the transcript
+      // -- a message the previous run refused while it was ending, being
+      // delivered to this one. The agent still gets it; the chat must not
+      // show it twice.
+      logBrief?: boolean;
     },
   ): Promise<void> {
     const adapter = registry.getAdapter(run.runner);
     if (!adapter) throw new Error(`startRun: unknown runner '${run.runner}'`);
 
-    // session_scope is a local graph-db table; agent mode has none, so the
-    // restart indicator's "expansions since run start" signal degrades to 0
-    // there rather than failing the whole run start.
-    runStartScopeSize.set(run.id, await readSessionScopeSize(session.id));
-
     // #375: resolved once here, so the adapter never reads config itself.
     const instanceDefaults = run.instance_id ? await getInstanceDefaults(run.instance_id) : null;
     const { model, effort } = resolveModelAndEffort(session, instanceDefaults);
 
-    await appendAndPublish(session.id, run.id, [
-      {
-        kind: "run_started",
-        payload: {
-          run_id: run.id,
-          runner: run.runner,
-          instance_id: run.instance_id,
-          resume: opts.resumeMode,
-        },
-      },
-    ]);
-    if (opts.brief !== null) {
+    // session_scope is a local graph-db table; agent mode has none, so the
+    // restart indicator's "expansions since run start" signal degrades to 0
+    // there rather than failing the whole run start.
+    runStartScopeSize.set(run.id, await readSessionScopeSize(session.id));
+    // #490: the brief's turn is counted before the adapter can answer it.
+    // A start that fails gives the count and the baseline back -- no run
+    // of it is live, and a leftover count would keep the next run of this
+    // thread "working" for the idle sweep.
+    let briefCounted = false;
+    let handle: RunHandle;
+    currentRuns.set(session.id, run.id);
+    try {
       await appendAndPublish(session.id, run.id, [
-        { kind: "user_message", payload: { text: opts.brief, source: "chat" } },
+        {
+          kind: "run_started",
+          payload: {
+            run_id: run.id,
+            runner: run.runner,
+            instance_id: run.instance_id,
+            resume: opts.resumeMode,
+            // #489: the brief is a redelivered message the log already
+            // holds (before this event); the web counts it from here.
+            ...(opts.brief !== null && opts.logBrief === false ? { carried_messages: 1 } : {}),
+          },
+        },
       ]);
-      turnsInFlight.add(session.id);
+      if (opts.brief !== null) {
+        if (opts.logBrief !== false) {
+          await appendAndPublish(session.id, run.id, [
+            { kind: "user_message", payload: { text: opts.brief, source: "chat" } },
+          ]);
+        }
+        addTurnInFlight(session.id);
+        briefCounted = true;
+      }
+
+      const runStart: RunStart = {
+        sessionId: session.id,
+        runId: run.id,
+        cwd: provisioned.cwd,
+        brief: opts.brief,
+        resume: opts.runStartResume,
+        orientation: provisioned.orientation,
+        instance: { id: run.instance_id, env: instanceEnv },
+        mcp: { ...provisioned.mcp, headers: { "X-Portuni-Spawn-Id": session.id } },
+        policy: opts.policy,
+        portuniRoot: provisioned.portuniRoot,
+        mirrors: provisioned.mirrors,
+        model,
+        effort,
+      };
+
+      handle = await adapter.start(runStart, makeSink(session.id, run.id));
+    } catch (err) {
+      if (briefCounted) dropTurnInFlight(session.id);
+      runStartScopeSize.delete(run.id);
+      if (currentRuns.get(session.id) === run.id) currentRuns.delete(session.id);
+      throw err;
     }
-
-    const runStart: RunStart = {
-      sessionId: session.id,
-      runId: run.id,
-      cwd: provisioned.cwd,
-      brief: opts.brief,
-      resume: opts.runStartResume,
-      orientation: provisioned.orientation,
-      instance: { id: run.instance_id, env: instanceEnv },
-      mcp: { ...provisioned.mcp, headers: { "X-Portuni-Spawn-Id": session.id } },
-      policy: opts.policy,
-      portuniRoot: provisioned.portuniRoot,
-      mirrors: provisioned.mirrors,
-      model,
-      effort,
-    };
-
-    const handle = await adapter.start(runStart, makeSink(session.id, run.id));
     liveRuns.set(session.id, { handle, runId: run.id, agentSessionIdSaved: false });
+    // #489: from here until this run's end is fully accounted for, a
+    // message that the run refuses waits for that end rather than failing.
+    trackRunSettling(session.id, run.id);
     touchActivity(session.id);
     // Written before drain() lets any already-queued run_ended handler
     // remove it, so write-then-remove ordering always holds even for a
@@ -693,6 +892,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   async function startTask(input: StartTaskInput): Promise<{ session: SessionRow; run: SessionRunRow }> {
     const instanceId = input.instanceId ?? null;
+    // Provisioned before anything is created: a run that cannot start (no
+    // front-door token, #507; a mirror that cannot be made) is refused
+    // with no record and no first message left behind.
+    const provisioned = await provision({
+      userId: input.userId,
+      nodeId: input.nodeId,
+      sessionId: null,
+      resume: null,
+    });
     const session = await store.createSession({
       node_id: input.nodeId,
       user_id: input.userId,
@@ -705,13 +913,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // The brief is the thread's first message, i.e. content: it stays on
     // this device even when the record above was created on central.
     await content.setContent(session.id, { brief: input.brief });
-
-    const provisioned = await provision({
-      userId: input.userId,
-      nodeId: input.nodeId,
-      sessionId: session.id,
-      resume: null,
-    });
 
     const run = await store.createRun({
       session_id: session.id,
@@ -735,15 +936,53 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // The user's own message goes through the same per-session queue as the
   // adapter's events, and is handed to the adapter only once persisted --
   // so whatever the runner emits in reaction to it can never land before it.
-  async function sendMessage(sessionId: string, text: string): Promise<void> {
+  // #489: how many times one message may follow a run that ends before it
+  // can be delivered. Each retry costs a whole run end, so a message that
+  // gets this far is chasing a runner that cannot start, not a race.
+  const MAX_DELIVERY_ATTEMPTS = 3;
+
+  async function sendMessageLocked(
+    sessionId: string,
+    text: string,
+    // #489: the message is already in the transcript (this is a redelivery
+    // after the run it was written for refused it).
+    logged = false,
+    attempt = 0,
+  ): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (live) {
       touchActivity(sessionId);
-      turnsInFlight.add(sessionId);
-      await enqueue(sessionId, () =>
-        appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
-      );
-      await live.handle.send(text);
+      // Counted before the adapter can answer it; given back on any
+      // failure below, so a message the run never took never keeps the
+      // run "working" for the idle sweep (#490).
+      addTurnInFlight(sessionId);
+      try {
+        if (!logged) {
+          await enqueue(sessionId, () =>
+            appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
+          );
+        }
+        await live.handle.send(text);
+      } catch (err) {
+        dropTurnInFlight(sessionId);
+        if (!isRunEndedError(err)) throw err;
+        // #489: the run was already tearing down (a provider error or
+        // limit, the idle sweep, Předat) and never took the message. It is
+        // in the chat, so it has to reach the agent: wait for the run to
+        // end and for the suspend that follows, then deliver it the way a
+        // message into a suspended thread is delivered -- as the next
+        // run's first message, written once.
+        await deliverAfterRunEnd(sessionId, text, attempt, true);
+      }
+      return;
+    }
+
+    // #489: run_ended has landed but the suspend it triggers is still being
+    // written, so the row still says running and there is no handle. The
+    // message is not refused -- it waits for the state that suspend leaves
+    // behind and goes to the run it starts.
+    if (runSettling.has(sessionId)) {
+      await deliverAfterRunEnd(sessionId, text, attempt, logged);
       return;
     }
 
@@ -753,11 +992,29 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await promoteDraftAndStart(sessionId, text);
       return;
     }
-    if (session.state === "suspended") {
-      await resumeByWriting(sessionId, session, text);
+    // #498: Uzavřít is "done, off the active lists", not "never again" --
+    // writing into a closed thread reopens it exactly like a suspended one.
+    if (session.state === "suspended" || session.state === "closed") {
+      await resumeByWriting(sessionId, session, text, logged);
       return;
     }
     throw new Error(`sendMessage: session ${sessionId} has no live run`);
+  }
+
+  // #489: waits for the run that is ending (never a clock -- the run's own
+  // run_ended handler resolves this, and it runs on the event queue, which
+  // never takes the lifecycle lock this holds) and then sends again.
+  async function deliverAfterRunEnd(
+    sessionId: string,
+    text: string,
+    attempt: number,
+    logged: boolean,
+  ): Promise<void> {
+    if (attempt + 1 >= MAX_DELIVERY_ATTEMPTS) {
+      throw new Error(`sendMessage: session ${sessionId} keeps ending runs before the message can be delivered`);
+    }
+    await waitForRunToSettle(sessionId);
+    await sendMessageLocked(sessionId, text, logged, attempt + 1);
   }
 
   // A thread is a session row from the moment it opens (#374, "the session
@@ -775,6 +1032,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const { runner, instanceId } = session.runner
       ? { runner: session.runner, instanceId: session.instance_id }
       : await resolveTaskDefaults(session.node_id, resolveNodeOrgId);
+    // Provisioned before the draft is touched: a run that cannot start
+    // (#507) leaves the draft a draft, with the message still the user's.
+    const provisioned = await provision({
+      userId: session.user_id,
+      nodeId: session.node_id,
+      sessionId,
+      resume: null,
+    });
     // Content first, record second: the first message and the user_message
     // event below are the device's, the patch is the record's (#456).
     await content.setContent(sessionId, { brief: text });
@@ -798,12 +1063,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       { kind: "state_changed", payload: { from: "draft", to: "running", waiting: false } },
     ]);
 
-    const provisioned = await provision({
-      userId: updated.user_id,
-      nodeId: session.node_id,
-      sessionId,
-      resume: null,
-    });
     const run = await store.createRun({
       session_id: sessionId,
       runner,
@@ -824,10 +1083,17 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // starts a new one -- no mode picker, the server decides. `--resume` on
   // the last run's agent_session_id while the CLI's own transcript for it
   // still exists (checkConversationResumable, the same check GET
-  // /sessions/:id/resume-info already used); otherwise the session's own
-  // summary (written when the last run ended) becomes extra orientation,
-  // same as the old handoff-mode resume did.
-  async function resumeByWriting(sessionId: string, session: SessionRow, text: string): Promise<void> {
+  // /sessions/:id/resume-info already used); otherwise a summary becomes
+  // extra orientation, same as the old handoff-mode resume did (#497:
+  // resumeSummary).
+  async function resumeByWriting(
+    sessionId: string,
+    session: SessionRow,
+    text: string,
+    // #489: true when `text` is already in the transcript -- a message the
+    // previous run refused while it was ending.
+    logged = false,
+  ): Promise<void> {
     if (!session.node_id) throw new Error(`sendMessage: session ${sessionId} has no anchor node`);
     const runner = session.runner;
     if (!runner) throw new Error(`sendMessage: session ${sessionId} has no runner to resume under`);
@@ -841,16 +1107,24 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // its transcripts; without it the check reads the default location,
     // finds nothing for a session run under any other profile, and every
     // resume silently becomes a fresh agent holding only the summary.
+    // instanceClaudeConfigDir is the same resolution the resume-info route
+    // answers with (#508).
     const instanceId = session.instance_id;
     const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
+    // #508: the CLI that wrote the transcript is the last run's runner.
+    // `sessions.cli` is filled in only once the run's own MCP connection
+    // completes its handshake, which a run whose Portuni connection failed
+    // (#507) or never reached this graph db never does -- a null there
+    // turned every such resume into a summary start.
+    const transcriptCli = session.cli ?? lastRun?.runner ?? null;
     const canResumeConversation =
       lastRun?.agent_session_id != null &&
       (await checkConversationResumable(
-        session.cli,
+        transcriptCli,
         lastRun.agent_session_id,
         provisioned.cwd,
         undefined,
-        instanceEnv.CLAUDE_CONFIG_DIR ?? null,
+        instanceClaudeConfigDir(instanceEnv),
       ));
 
     let runStartResume: RunStart["resume"] = null;
@@ -858,9 +1132,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     if (canResumeConversation && lastRun?.agent_session_id) {
       runStartResume = { agentSessionId: lastRun.agent_session_id };
     } else {
-      const summary = session.handoff_path
-        ? await readFile(join(provisioned.cwd, session.handoff_path), "utf8").catch(() => null)
-        : (await content.getContent(sessionId))?.handoff_inline ?? null;
+      const summary = await resumeSummary(session, provisioned.cwd);
+      // #497: nothing to continue from here -- no conversation, no Předat
+      // file, no transcript and no content at all on this device. The same
+      // refusals Předat gives: the transcript is on the device the thread
+      // last ran on, or its download to this one has not finished. Refused
+      // before any run is created or the record touched.
+      if (!summary && !(await contentIsHere(sessionId))) await refuseForMissingContent(session);
       if (summary) {
         runProvisioned = {
           ...provisioned,
@@ -882,7 +1160,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // Same reason as promoteDraftAndStart's own state_changed: a window
     // other than this one showing the thread learns it woke up.
     await appendAndPublish(sessionId, null, [
-      { kind: "state_changed", payload: { from: "suspended", to: "running", waiting: false } },
+      { kind: "state_changed", payload: { from: session.state, to: "running", waiting: false } },
     ]);
 
     await startRun(updated, run, runProvisioned, instanceEnv, {
@@ -890,12 +1168,31 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       runStartResume,
       resumeMode: runStartResume ? "conversation" : "handoff",
       policy: "default",
+      logBrief: !logged,
     });
+  }
+
+  // #497: the summary a resume without a conversation continues from. A
+  // file Předat wrote is what the user handed over (and may have edited),
+  // so it wins; otherwise nothing was written at suspend and the summary is
+  // built now, from this device's transcript, with the same builder a
+  // handoff uses. With no transcript here either, an inline summary an
+  // older sidecar left behind is the last resort, and with none of the
+  // three the thread resumes on its orientation alone, as before.
+  async function resumeSummary(session: SessionRow, cwd: string): Promise<string | null> {
+    if (session.handoff_path) {
+      const file = await readFile(join(cwd, session.handoff_path), "utf8").catch(() => null);
+      if (file) return file;
+    }
+    if ((await content.listEvents(session.id, { limit: 1 })).length > 0) {
+      return handoffs.summarize(session, "run_ended");
+    }
+    return (await content.getContent(session.id))?.handoff_inline ?? null;
   }
 
   // Same ordering rule: the answered question (and the waiting: false
   // state) is recorded before the adapter learns the decision.
-  async function answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
+  async function answerLocked(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (!live) throw new Error(`answer: session ${sessionId} has no live run`);
     touchActivity(sessionId);
@@ -918,7 +1215,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // the prompt queue and the run stay alive, so a message right after is an
   // ordinary one. Ending the run belongs to close() alone (closeSession,
   // continueSession, the idle sweep).
-  async function interrupt(sessionId: string): Promise<void> {
+  async function interruptLocked(sessionId: string): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (!live) return;
     touchActivity(sessionId);
@@ -963,7 +1260,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // first: the run_ended this produces must not ALSO trigger the auto-
   // summary/suspend path, since this function already owns the transition
   // to closed.
-  async function closeSession(sessionId: string): Promise<SessionRow> {
+  async function closeSessionLocked(sessionId: string): Promise<SessionRow> {
     const live = liveRuns.get(sessionId);
     if (live) {
       closingSessions.add(sessionId);
@@ -1021,7 +1318,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // this device but has no live handle any more (the device restarted
   // under it) still gets its summary: the suspend path needs no adapter.
   // Suspended with no file: the same summary path writes the file now.
-  async function handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
+  async function handoffLocked(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
     const session = await mustGetSession(sessionId);
     if (session.state === "suspended" && session.handoff_path) {
       return { session, handoff_path: session.handoff_path };
@@ -1046,33 +1343,42 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
           );
         }
       }
-      await interrupt(sessionId);
+      await interruptLocked(sessionId);
       if (!(await endRunWithReason(sessionId, "handoff"))) {
         await suspendFallback(sessionId, "handoff");
       }
     } else {
       if (!(await contentIsHere(sessionId))) {
-        const host = await runHostOf(session);
-        if (host && host !== localHostId()) {
-          throw new SessionHandoffError(
-            "HANDOFF_TRANSCRIPT_ELSEWHERE",
-            `Transkript vlákna je na zařízení ${resolveHostLabel(host) ?? host}; předat ho lze jen tam.`,
-          );
-        }
-        // Ran here (or nowhere recorded) but nothing is here: the first-boot
-        // download from the central server has not finished or failed. A
-        // summary built now would be empty and would stand in for the real
-        // one, so refuse until the content arrives.
-        throw new SessionHandoffError(
-          "HANDOFF_NO_CONTENT",
-          "Obsah vlákna na tomto zařízení zatím není; zkus to znovu, až se stáhne.",
-        );
+        await refuseForMissingContent(session, "předat ho lze jen tam");
       }
       await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true });
     }
     const after = await mustGetSession(sessionId);
     if (!after.handoff_path) throw noMirrorHandoffError();
     return { session: after, handoff_path: after.handoff_path };
+  }
+
+  // The thread's content is not on this device. Always throws: the
+  // transcript is on the device the thread last ran on, or -- it ran here,
+  // or nowhere recorded -- the first-boot download from the central server
+  // has not finished or failed. A summary built now would be empty and
+  // would stand in for the real one, so nothing proceeds until the content
+  // arrives.
+  async function refuseForMissingContent(
+    session: SessionRow,
+    elsewhereTail = "pokračovat v něm lze jen tam",
+  ): Promise<never> {
+    const host = await runHostOf(session);
+    if (host && host !== localHostId()) {
+      throw new SessionHandoffError(
+        "HANDOFF_TRANSCRIPT_ELSEWHERE",
+        `Transkript vlákna je na zařízení ${resolveHostLabel(host) ?? host}; ${elsewhereTail}.`,
+      );
+    }
+    throw new SessionHandoffError(
+      "HANDOFF_NO_CONTENT",
+      "Obsah vlákna na tomto zařízení zatím není; zkus to znovu, až se stáhne.",
+    );
   }
 
   // Where the thread last ran: the host of its open run if it has one,
@@ -1113,6 +1419,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
 
     const { runner, instanceId } = await resolveTaskDefaults(input.nodeId, resolveNodeOrgId);
+    // Provisioned before the record is created, like startTask.
+    const provisioned = await provision({
+      userId: input.userId,
+      nodeId: input.nodeId,
+      sessionId: null,
+      resume: null,
+    });
     const created = await store.createSession({
       node_id: input.nodeId,
       user_id: input.userId,
@@ -1126,12 +1439,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const title = extractHandoffTitle(summary);
     const session = title ? await store.patchSession(created.id, { name: title }) : created;
 
-    const provisioned = await provision({
-      userId: input.userId,
-      nodeId: input.nodeId,
-      sessionId: session.id,
-      resume: null,
-    });
     const seededProvisioned = {
       ...provisioned,
       orientation:
@@ -1165,38 +1472,55 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     );
   }
 
+  // A run is idle when no turn of it is in flight (an unanswered question is
+  // the one turn that waits on the user, not on the agent) and nothing has
+  // touched it since the sweep's cutoff.
+  function isIdleRun(sessionId: string, idleMs: number, now: number): boolean {
+    if (isTurnInFlight(sessionId) && !pendingQuestions.has(sessionId)) return false;
+    return now - (lastActivityAt.get(sessionId) ?? now) > idleMs;
+  }
+
+  // #491: the list of idle runs is computed once, but ending one takes
+  // seconds (the child process has to go and the suspend has to be
+  // written), and a user who starts writing into the next session on the
+  // list in the meantime must keep it running. So every session is checked
+  // again the moment before it is ended, against the activity it had when
+  // it was picked: a run that has been touched since -- a message, an
+  // answer, an adapter event, a run that is already gone -- is skipped.
   async function checkIdleRunsOnce(idleMs: number, now: number = Date.now()): Promise<void> {
-    const staleIds = [...liveRuns.keys()].filter(
-      (id) =>
-        (!turnsInFlight.has(id) || pendingQuestions.has(id)) && now - (lastActivityAt.get(id) ?? now) > idleMs,
-    );
-    for (const id of staleIds) {
+    const stale = [...liveRuns.keys()]
+      .filter((id) => isIdleRun(id, idleMs, now))
+      .map((id) => ({ id, tick: activityTicks.get(id) }));
+    for (const { id, tick } of stale) {
+      if (!liveRuns.has(id)) continue;
+      if (activityTicks.get(id) !== tick) continue;
+      if (!isIdleRun(id, idleMs, now)) continue;
       await endIdleRun(id);
     }
   }
 
-  async function nodeNameForSession(nodeId: string): Promise<string | null> {
-    try {
-      const db = getDb();
-      const res = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [nodeId] });
-      return res.rows.length > 0 ? String(res.rows[0].name) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // #378: "Pokračovat v nové session" / "Navázat" -- closes THIS session
-  // (summary built from whatever's in its own log right now, used only to
-  // seed the new one -- not the auto-summary/suspend path, since this ends
-  // as closed, never suspended) and starts a fresh one, running, on the
-  // same node, carrying the old summary as extra orientation. No mode
-  // picker, no brief: the new thread starts itself, same shape as a
-  // handoff-mode resume used to, just into a brand new session row.
-  async function continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
+  // #378: "Pokračovat v nové session" -- closes THIS session (summary built
+  // from whatever's in its own log right now -- not the suspend path, since
+  // this ends as closed, never suspended) and starts a fresh one, running,
+  // on the same node, carrying the old summary as extra orientation. No
+  // mode picker, no brief: the new thread starts itself. #497: the summary
+  // is written as the old thread's handoff file (when this device has a
+  // mirror of the node) and the new thread's orientation points at it, the
+  // way Navázat na handoff's does.
+  async function continueSessionLocked(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
     const oldSession = await mustGetSession(sessionId);
     if (!oldSession.node_id) throw new Error(`continueSession: session ${sessionId} has no anchor node`);
     const runner = oldSession.runner;
     if (!runner) throw new Error(`continueSession: session ${sessionId} has no runner to continue under`);
+
+    // Provisioned before the old thread is closed: when the new run cannot
+    // start (#507), the old one stays as it is.
+    const provisioned = await provision({
+      userId: oldSession.user_id,
+      nodeId: oldSession.node_id,
+      sessionId: null,
+      resume: null,
+    });
 
     const live = liveRuns.get(sessionId);
     if (live) {
@@ -1205,21 +1529,20 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await drain(sessionId);
     }
 
-    const scope = await getSessionScope(getDb(), sessionId).catch(() => []);
-    const rows = await content.listEvents(sessionId);
-    const events: SummaryEvent[] = rows.map((r) => ({ kind: r.kind, payload: JSON.parse(r.payload) as unknown }));
-    const nodeName = await nodeNameForSession(oldSession.node_id);
-    const summary = buildRunSummaryContent({
-      nodeName,
-      sessionName: oldSession.name,
-      reason: "continue",
-      events,
-      writeSet: scope.filter((s) => s.writable === 1).map((s) => s.node_id),
-      readSet: scope.map((s) => s.node_id),
-      lastActiveAt: oldSession.last_active_at,
+    const summary = await handoffs.summarize(oldSession, "continue");
+    // The old run is already ended: a file that cannot be written (a full
+    // disk, a mirror gone read-only) must not strand the old thread running
+    // with no live run. The summary still seeds the new thread inline, the
+    // way it does when there is no mirror.
+    const written = await handoffs.writeFile(oldSession, summary).catch((err: unknown) => {
+      console.error(`[portuni:runner] continueSession ${sessionId}: writing the handoff file failed:`, err);
+      return null;
     });
 
-    await store.patchSession(sessionId, { state: "closed" });
+    await store.patchSession(sessionId, {
+      state: "closed",
+      ...(written ? { handoff_path: written.handoffPath, handoff_hash: written.handoffHash } : {}),
+    });
     await appendAndPublish(sessionId, null, [
       { kind: "state_changed", payload: { from: oldSession.state, to: "closed", waiting: false } },
     ]);
@@ -1235,15 +1558,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     });
     await store.patchSession(newSession.id, { name: oldSession.name, name_is_custom: true });
 
-    const provisioned = await provision({
-      userId: oldSession.user_id,
-      nodeId: oldSession.node_id,
-      sessionId: newSession.id,
-      resume: null,
-    });
     const seededProvisioned = {
       ...provisioned,
-      orientation: `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n${summary}`,
+      orientation: written
+        ? `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n` +
+          `Navazuješ na předchozí vlákno; konverzace se nepřenáší, ` +
+          `pokračuješ z tohoto shrnutí (\`${written.handoffPath}\`):\n\n${summary}`
+        : `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n${summary}`,
     };
 
     const run = await store.createRun({
@@ -1286,6 +1607,39 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   function listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]> {
     return content.listEvents(sessionId, opts);
+  }
+
+  // #488: the entry points that start a run, end one or act on the live
+  // one take the session's lifecycle lock, so they can never observe liveRuns while
+  // a start of the same session is still in flight. A second message
+  // arriving during a start therefore finds the run that start produced and
+  // goes to it as an ordinary message; Uzavřít and Předat wait for the
+  // start and then end that run.
+  function sendMessage(sessionId: string, text: string): Promise<void> {
+    return withLifecycleLock(sessionId, () => sendMessageLocked(sessionId, text));
+  }
+
+  // Stop and an answer act on the live run too: during a start they wait
+  // for the run it produces instead of finding none (Stop a silent no-op,
+  // an answer "has no live run").
+  function interrupt(sessionId: string): Promise<void> {
+    return withLifecycleLock(sessionId, () => interruptLocked(sessionId));
+  }
+
+  function answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
+    return withLifecycleLock(sessionId, () => answerLocked(sessionId, requestId, decision));
+  }
+
+  function closeSession(sessionId: string): Promise<SessionRow> {
+    return withLifecycleLock(sessionId, () => closeSessionLocked(sessionId));
+  }
+
+  function handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
+    return withLifecycleLock(sessionId, () => handoffLocked(sessionId));
+  }
+
+  function continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
+    return withLifecycleLock(sessionId, () => continueSessionLocked(sessionId));
   }
 
   function subscriberCount(target: string): number {

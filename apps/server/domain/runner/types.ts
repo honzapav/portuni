@@ -14,9 +14,14 @@ export type FileChangeOp = "create" | "edit" | "delete" | "rename";
 export type QuestionType = "approval" | "input";
 export type ErrorClass = "provider" | "transport" | "permission" | "unknown";
 
+// `value`: true/false for an approval; a string answers an input question
+// (every dotaz of it); a map answers an AskUserQuestion ask question by
+// question, keyed by the question text (#492).
+export type QuestionAnswer = string | boolean | Record<string, string>;
+
 export interface QuestionDecision {
   by: string;
-  value: string | boolean;
+  value: QuestionAnswer;
   at: string;
 }
 
@@ -27,6 +32,12 @@ export interface RunStartedEvent {
     runner: string;
     instance_id: string | null;
     resume: null | "conversation" | "handoff";
+    // #489/#490: messages already in the transcript that this run starts
+    // with as its first turn -- a message the previous run refused while
+    // it was ending, redelivered here without being logged again. They
+    // sit before this run_started in the log, so a client counting the
+    // turn in flight from run_started adds them. Absent means none.
+    carried_messages?: number;
   };
 }
 
@@ -81,6 +92,9 @@ export interface QuestionEvent {
     title: string;
     detail: string;
     options: string[] | null;
+    // AskUserQuestion (#492): each dotaz with its own options; absent for
+    // every other question and on rows written before it.
+    questions?: { question: string; options: string[]; multi_select: boolean }[];
     decision: QuestionDecision | null;
   };
 }
@@ -142,7 +156,18 @@ export interface ContextUsageEvent {
 // replay knows the last turn is over. Renders nothing.
 export interface TurnEndedEvent {
   kind: "turn_ended";
-  payload: { run_id: string };
+  payload: {
+    run_id: string;
+    // #490: how many of the messages sent into this run this turn answered.
+    // One turn is not one message: the SDK folds sends that arrive close
+    // together, or land while a turn is running, into a single turn with a
+    // single result ("queued sends may coalesce into fewer turns" --
+    // SDKResultMessage, @anthropic-ai/claude-agent-sdk 0.3.270), so
+    // counting turn_ended events is not counting answered messages.
+    // Absent when the adapter cannot tell: one message then, which is the
+    // documented one-result-per-turn default.
+    consumed_messages?: number;
+  };
 }
 
 export type CanonicalEvent =
@@ -241,8 +266,26 @@ export interface RunStart {
   effort: EffortLevel | null;
 }
 
+// #489: what send() throws when the run behind the handle is over or in
+// teardown. Pushing the message into a prompt stream nobody reads any more
+// would drop it silently -- the message is already in the chat by then, so
+// the runtime has to learn that this run never got it and deliver it to the
+// next one instead.
+export class RunEndedError extends Error {
+  constructor(message = "the run has ended") {
+    super(message);
+    this.name = "RunEndedError";
+  }
+}
+
+export function isRunEndedError(e: unknown): boolean {
+  return e instanceof RunEndedError || (e instanceof Error && e.name === "RunEndedError");
+}
+
 export interface RunHandle {
   // Next user message (queued mid-turn if the runner is still working).
+  // Throws RunEndedError when the run is already over or tearing down --
+  // never drops the message silently (#489).
   send(text: string): Promise<void>;
   answer(requestId: string, decision: QuestionDecision): Promise<void>;
   interrupt(): Promise<void>;

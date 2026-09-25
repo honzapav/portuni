@@ -13,7 +13,7 @@ import {
   buildOrientationHint,
   resolvePortuniMcpUrl,
   resolvePortuniRoot,
-  resolveTokenEnvVar,
+  resolveRunnerMcpToken,
 } from "../write-scope.js";
 import { orientationForNode } from "../scope-materialize.js";
 
@@ -28,7 +28,10 @@ export interface ProvisionRunResumeInfo {
 export interface ProvisionRunInput {
   userId: string;
   nodeId: string;
-  sessionId: string;
+  // Null when the run is provisioned before its record exists (a new
+  // thread is provisioned first, so a run that cannot start creates
+  // nothing).
+  sessionId: string | null;
   resume: ProvisionRunResumeInfo | null;
 }
 
@@ -41,6 +44,9 @@ export interface ProvisionRunResult {
 }
 
 export async function provisionRun(input: ProvisionRunInput): Promise<ProvisionRunResult> {
+  // First, before any mirror work: a run without a front-door bearer
+  // cannot reach Portuni at all (#507).
+  const token = resolveRunnerMcpToken();
   const db = getDb();
 
   // Idempotent: a node already mirrored on this device returns the
@@ -67,7 +73,6 @@ export async function provisionRun(input: ProvisionRunInput): Promise<ProvisionR
   }
 
   const url = appendHomeNodeIdToUrl(resolvePortuniMcpUrl(), input.nodeId);
-  const token = process.env[resolveTokenEnvVar()] ?? "";
 
   return {
     cwd,

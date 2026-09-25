@@ -8,8 +8,9 @@
 
 process.env.PORT = "14933";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, mkdir, stat, readFile } from "node:fs/promises";
@@ -379,14 +380,14 @@ describe("REST refuses with 409 LOCAL_MODE_NO_REMOTE on a local workspace", () =
   });
 
   it("POST /nodes/:id/sync -> 409 LOCAL_MODE_NO_REMOTE", async () => {
-    const res = await fetch(`${base}/nodes/${shared.nodeId}/sync`, { method: "POST" });
+    const res = await authFetch(`${base}/nodes/${shared.nodeId}/sync`, { method: "POST" });
     assert.equal(res.status, 409);
     const body = (await res.json()) as { code?: string };
     assert.equal(body.code, "LOCAL_MODE_NO_REMOTE");
   });
 
   it("POST /nodes/:id/sync/remote-sweep -> 409 LOCAL_MODE_NO_REMOTE", async () => {
-    const res = await fetch(`${base}/nodes/${shared.nodeId}/sync/remote-sweep`, { method: "POST" });
+    const res = await authFetch(`${base}/nodes/${shared.nodeId}/sync/remote-sweep`, { method: "POST" });
     assert.equal(res.status, 409);
     const body = (await res.json()) as { code?: string };
     assert.equal(body.code, "LOCAL_MODE_NO_REMOTE");
@@ -400,7 +401,7 @@ describe("REST refuses with 409 LOCAL_MODE_NO_REMOTE on a local workspace", () =
       nodeId: shared.nodeId,
       localPath: src,
     });
-    const res = await fetch(`${base}/nodes/${shared.nodeId}/files/${registered.file_id}/resolve`, {
+    const res = await authFetch(`${base}/nodes/${shared.nodeId}/files/${registered.file_id}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "restore" }),

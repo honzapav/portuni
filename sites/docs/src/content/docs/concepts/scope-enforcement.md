@@ -103,6 +103,7 @@ Behaviour at the edges is deliberate:
 - A non-write tool always allows.
 - A malformed JSON payload allows (we cannot tell what the harness wanted).
 - An unreachable Portuni server allows. The guard is a soft fallback, not the primary defense; the harness's own permission system is.
+- A server that refuses the token (401/403 from `/scope`) blocks the write, with a message saying the token is missing or does not match and naming the variable to export (`PORTUNI_MCP_TOKEN` or the workspace's `PORTUNI_MCP_TOKEN_<ID>`). A token mismatch never silently turns the guard off.
 
 This catches drift in the declarative config, harness bugs, and cases where the config was never written.
 
@@ -211,7 +212,7 @@ The list routes follow the same rule: `GET /sessions`, a node's
 the caller's own threads only. So a node's Relace tab, the Práce sidebar,
 the Přehled inbox and the running count show each person their own work,
 even on a node the whole organisation can see. What people share on a node
-is its **files** — including the handoff file a suspended thread writes —
+is its **files** — including the handoff file Předat writes —
 not the conversations that produced them.
 
 ### The record is central, the content is the device's
@@ -239,7 +240,7 @@ across is the handoff file, not a copy of the conversation (see
 There is **no backup of transcripts**. Losing a device's database loses the
 conversations it ran; the records on the central server and the handoff
 files tracked in the nodes are what survive. Portuni owns no content — what
-a team shares on a node is its files, including a suspended thread's
+a team shares on a node is its files, including a handed-over thread's
 handoff summary, never the conversation that produced them.
 
 ## Why this is its own page (and not a permission system)

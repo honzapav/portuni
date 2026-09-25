@@ -180,9 +180,9 @@ information only. It quotes nothing: the thread's first message is content
 and lives in the device's `content.db`, so `SessionSummary` has no `brief`
 to show (#461) and the row names the thread instead. There is no owner
 column either -- every row is the caller's own (#457). Actions: "Otevřít
-chat" (`onOpenChat`), "Uzavřít" behind a confirm `Dialog` (`closeConfirm`),
-and on a closed row "Navázat" (`continueSession` from `api.ts`, then
-`onSessionStarted` and `onOpenChat` with the new session). Above the rows
+chat" (`onOpenChat`) on a running, suspended or closed row
+(`sessionRowOpensChat`, #498 -- a closed thread has a composer, so there is
+no Navázat), and "Uzavřít" without a dialog. Above the rows
 the tab lists the node's handoff files (`lib/handoff-files.ts`), each with
 **Navázat na handoff** (#460): `startSessionFromHandoff`, which is
 `POST /sessions` with the file's node-relative path. There is no live
@@ -353,7 +353,7 @@ this bound.
   lands on the node surface as `workspaceDetailError`.
 - **`registerSessionStarted`**, the single entry point for every
   `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's
-  `DetailPane`, the sidebar `+`, the Relace tab's "Navázat"):
+  `DetailPane`, the sidebar `+`, the Relace tab's "Navázat na handoff"):
   `store.put(session)` plus `requestChatSession`. Requesting it is what
   makes it stick -- the pick re-runs the moment the new record lands, so
   without the requested id a node that already had a thread open snapped
@@ -386,13 +386,34 @@ One typed client, two transports behind one `Transport` interface:
 Client rules:
 
 - Every request frame carries an id the server echoes; the caller awaits
-  the reply, and an unanswered request rejects on `REQUEST_TIMEOUT_MS`.
-  `disconnect()` rejects every pending request at once.
+  the reply. A request is delivered once, or reported as failed and never
+  sent afterwards (#496):
+  - an unanswered request rejects on `REQUEST_TIMEOUT_MS` (30 s) and its
+    frame is cancelled out of the transport's queue (`Transport.cancel`,
+    in Tauri `sessions_cancel` on the Rust outbox), so a message that
+    waited out a reconnect never reaches the agent after the chat showed
+    the error, and sending it again delivers it once;
+  - a `message` or `continue` on the wire (sent on an open connection, or
+    flushed by the open that followed) has no timeout: the server may take
+    longer than 30 s (a start waiting for the lifecycle lock, a
+    redelivery waiting for a run to end), and reporting it failed while it
+    is still delivered is what made a resend reach the agent twice. Its
+    reply or a drop settles it;
+  - when an open connection drops, every request already sent rejects at
+    once (`disconnected: ...`), since its reply cannot come on the next
+    connection; a request sent while the connection is down stays queued
+    until the next open or its timeout. A request that was on the wire at
+    the drop may or may not have reached the server; it is never resent;
+  - a subscribe never goes out while the connection is down, has no
+    timeout while it waits for it and survives a drop: each open sends one
+    subscribe per wanted session and settles every caller waiting on it,
+    so a first load that completes after a reconnect shows no load error;
+  - `disconnect()` rejects everything still outstanding.
 - The client tracks the highest `seq` seen **per session** from `event`
   frames only. `delta` frames carry no `seq` and are never persisted, so
   they never move it.
-- When the transport reports `open` after having been open before, the
-  client resubscribes every still-wanted session with `after: <last seq>`.
+- Every time the transport reports `open`, the client subscribes every
+  still-wanted session once, after a drop with `after: <last seq>`.
   The server's replay fills exactly that gap: nothing lost, nothing
   re-delivered.
 - `session_state` frames and the one `session_states` snapshot frame on
@@ -406,7 +427,9 @@ Client rules:
 
 `test/sessions-client.test.ts` drives the direct transport against a fake
 `ws` server (reply correlation, ordering, resubscribe-with-`after` across a
-forced drop, deltas not moving the seq). The Tauri transport has no runtime
+forced drop, deltas not moving the seq), and over an in-memory socket with
+mocked timers the #496 rules (timeout during an outage, drop in flight,
+subscribe across a long outage, a message on the wire past the timeout). The Tauri transport has no runtime
 to test against here.
 
 ## Event rendering
@@ -444,12 +467,15 @@ which also deduplicates a replay against a frame that raced it.
   as "N × <tool>". Expanded, one `ChainOfThoughtStep` per item with the
   `Tool` card inside; a historical group expands by hand, per mount; the
   live run's trailing group (`live: true`) stays open on the tool that is
-  running.
+  running. `live` needs a turn in flight (`turnInFlight`), not just the
+  live run: after `turn_ended` (a Stop mid-tool or mid-reasoning
+  included) the run is idle and no group looks live.
 - **The working row** (`WorkingRow`, `workingPhase`): while a turn is in
-  flight (`turnInFlight`: a `user_message` on the live run with no
-  `turn_ended` after it; the run start alone opens no turn, so a thread
-  started by Navázat or a resume waits idle for its first message) or a
-  send is in flight (`sentAt`), and
+  flight (`turnInFlight`: the live run's `user_message`s, counted from its
+  `run_started` plus the `carried_messages` that event names, outnumber
+  what its `turn_ended`s answered (`consumed_messages`); the run start
+  alone opens no turn, so a thread started by Navázat or a resume waits
+  idle for its first message) or a send is in flight (`sentAt`), and
   neither streaming text nor a running tool is on screen, a `Loader` with
   "Spouštím…" (until `run_started`), "Přemýšlím…" (until the first delta
   or tool) or "Pokračuji…" (after a tool finished) and a seconds counter.
@@ -459,11 +485,14 @@ which also deduplicates a replay against a frame that raced it.
   in flight only (`turnActive`), never to the idle run.
 - **Deltas**: two `DeltaBuffers` keyed by `run_id`, one for `channel:
   "text"`, one for `channel: "reasoning"`. Each is cleared by its own
-  persisted event (`assistant_message` / `reasoning`) and on `run_ended`.
-  The persisted event is the record; the delta is only its live preview.
-  Frames are coalesced first (`createDeltaCoalescer`): buffered per
-  (run, channel) and flushed once per `requestAnimationFrame`, so a burst
-  costs one render; `run_ended` flushes, unmount clears. The desktop
+  persisted event (`assistant_message` / `reasoning`) and both on
+  `turn_ended` and `run_ended` (`deltaBuffersAfter`): text streamed and
+  never finalized (a Stop mid-answer) ends with its turn and never
+  prefixes the next answer. The persisted event is the record; the delta
+  is only its live preview. Frames are coalesced first
+  (`createDeltaCoalescer`): buffered per (run, channel) and flushed once
+  per `requestAnimationFrame`, so a burst costs one render; `run_ended`
+  flushes, `turn_ended` drops the run's pending frames, unmount clears. The desktop
   bridge forwards frames unchanged.
 - **AI Elements** supply the transcript chrome under
   `src/components/ai-elements/` (`conversation`, `message`, `reasoning`,
@@ -528,22 +557,38 @@ which also deduplicates a replay against a frame that raced it.
 - **Stop**: while a run is live the composer's `PromptInputSubmit` is the
   stop control (`status="streaming"`, `onStop` → `interrupt`), and Esc in
   the textarea does the same. Both are no-ops when nothing is live.
-- **Composer state**: disabled when the thread is closed or archived,
-  while a question is open (`isWaiting`), or for a non-owner. A suspended
-  thread keeps the composer enabled, because sending is what resumes it,
+- **Composer state**: disabled when the thread is archived
+  (`threadAcceptsMessages`), while a question is open (`isWaiting`), or
+  when the transcript is on another device. A suspended or closed thread
+  keeps the composer enabled (#498), because sending is what resumes it;
+  the placeholder is `composerStatePlaceholder` ("Relace je uzavřená." only
+  for archived). A suspended thread
   and shows a dismissible notice bar instead (`noticeDismissed`, reset
   whenever a new run starts).
 - **Question**: the latest `question` event renders as
   `QuestionConfirmation` above the composer while `isWaiting`; answers go
   through `sessionsClient.answer`.
-- **Close**: "Uzavřít" always asks first through a real `Dialog`
-  (`closeConfirmOpen` in `SessionChat`, `closeTaskConfirm` in `App.tsx` for
-  the sidebar `×`, `closeConfirm` in the Relace tab). `window.confirm` is a
-  no-op in the Tauri webview; never use it. A draft's `×` deletes outright
-  and is forgotten locally.
-- **Continue**: "Pokračovat v nové session" (open thread) and "Navázat"
-  (closed row) both call `continueSession`; the caller switches to the
-  returned session.
+- **Close**: every surface that closes a thread -- the sidebar's `×` in
+  Uzly (`TaskRow`) and in Stav (`TaskList`), Uzavřít in the chat header
+  (`SessionChat`) and on the Relace row (`DetailPane.sessions.tsx`) -- asks
+  `lib/session-views.ts`'s `threadCloseAction(state)` what it does (#506):
+  `delete` for a draft, `close` for running and suspended, nothing (no
+  control) for closed and archived. `close` is Uzavřít with no dialog
+  (#498): a closed thread reopens by writing into it, so only an unfinished
+  turn can be lost, the same as with Stop. `delete`
+  has one implementation, `api.ts`'s `deleteDraftSession`: no dialog, the
+  record leaves the store at once (so the row leaves every selector and a
+  chat showing the draft closes), then `DELETE /sessions/:id`. The Relace
+  tab also drops the row from its own fetched list.
+- **Continue**: "Pokračovat v nové session" (running or suspended thread)
+  calls `continueSession`; the caller switches to the returned session.
+- **A closed thread** (#498) is not in the Práce sidebar
+  (`isChatSessionState`), but Relace's Otevřít chat shows it: `App.tsx`
+  records it in `openedClosedChatByNode` when the record is closed at the
+  click, and `selectShownThread`/`selectMountedThreads` show a closed
+  thread only when it is that one. Writing into it reopens it; once it is
+  live the entry is dropped, so a later Uzavřít takes it off the surface
+  the way closing any thread does.
 
 ## The composer's rows
 

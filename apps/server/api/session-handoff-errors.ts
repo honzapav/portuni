@@ -1,4 +1,5 @@
-// The one mapping of a SessionHandoffError (Předat, Navázat na handoff) to
+// The one mapping of a SessionHandoffError (Předat, Navázat na handoff, a
+// resume with nothing to continue from on this device) to
 // what a client receives, shared by the local router (api/sessions.ts), the
 // sync agent's router (api/agent-router.ts) and the live channel
 // (api/sessions-ws.ts): 409 with the error's code and its Czech message,

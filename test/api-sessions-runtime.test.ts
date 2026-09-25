@@ -181,8 +181,9 @@ describe("task REST endpoints under /sessions", () => {
     assert.deepEqual(
       eventsBody.events.map((e) => e.kind),
       // #378: nobody closed this run explicitly, so it falls through to the
-      // auto-summary/suspend path and gets its handoff event too.
-      ["run_started", "user_message", "run_ended", "handoff"],
+      // suspend path -- the transition the suspend made (#494), and no
+      // handoff event: only Předat writes one (#497).
+      ["run_started", "user_message", "run_ended", "state_changed"],
     );
     assert.deepEqual(eventsBody.events[1].payload, { text: "Fix the bug", source: "chat" });
     assert.equal(eventsBody.next_after, null);

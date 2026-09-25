@@ -25,7 +25,12 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
   sequence).
 - Per-mirror MCP configs reference the token as `PORTUNI_MCP_TOKEN_<ID>`
   (the server learns its id from `PORTUNI_WORKSPACE_ID`; a standalone
-  server without one keeps `PORTUNI_MCP_TOKEN`). Global MCP entries are
+  server without one keeps `PORTUNI_MCP_TOKEN`). The name comes from
+  `workspace::token_env_var` in Rust and `clientTokenEnvVar()` on the
+  server; both are tested against `apps/server/shared/token-env-var-cases.json`
+  (#521). The sidecar itself verifies `PORTUNI_AUTH_TOKEN`, which the host
+  always passes: a sidecar without it refuses to start and the host shows
+  the `PORTUNI_BACKEND_ERROR=` line. Global MCP entries are
   named `portuni-<id>`; a workspace migrated from the single-workspace
   layout keeps the historical `portuni` entry.
 - **Every config.json load-modify-save goes through `ConfigLock`**, a
@@ -128,6 +133,14 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   means this window's own), and `auth.rs`'s `auth_status`,
   `google_login`, `auth_refresh`, `auth_logout`, `central_request`
   (`load_auth_config` takes an explicit `ws_id`).
+- `regenerate_mcp_token` writes the fresh token to Keychain and
+  `AuthTokens`, then restarts that workspace's sidecar (in a team
+  workspace, its sync agent) with it through the same kill + spawn as
+  `restart_sidecar` (#522): the sidecar checks the `PORTUNI_AUTH_TOKEN` it
+  was spawned with, so without the restart every proxied request answers
+  401 until the app restarts. A failed respawn reaches the window as
+  `backend-error`, like a failed start; the live channel reconnects with the
+  new token on its own.
 - App-global commands keep `AppHandle` and never call `ws_of`, because a
   `bootstrap` window legitimately calls them: workspace list and CRUD,
   updater, clipboard, `open_external`, exit, `workspace_migration_status`,
@@ -330,6 +343,13 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   workspace id and carries a `generation` counter bumped on every connect
   and disconnect, so a background task from a superseded connect exits
   instead of resurrecting a connection.
+- Frames wait in a per-connection `Outbox` (a queue, not a channel) until
+  the socket is open, across a reconnect too. `sessions_cancel(id)` takes
+  a still-queued frame back out by its request id; the web client cancels
+  every request it reports as failed (timeout, drop), so a failed request
+  is never delivered afterwards (#496). A frame already written is out of
+  reach. Closing the outbox (`sessions_disconnect`, a superseding
+  connect) is what tells the background task to close its socket and exit.
 - `disconnect_for_ws` runs from `sessions_disconnect` and from
   `on_window_event`'s `Destroyed` arm, because a force-closed window never
   calls the command itself.
@@ -341,8 +361,9 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   injects the bearer (`ws: true` + `proxyReqWs`). The direct transport
   queues frames until `onopen`, reimplements the backoff in TS, tracks the
   highest `seq` per session (never moved by `delta` frames) and
-  resubscribes every wanted session with `after: <seq>` when the
-  transport reopens, so the server's replay fills exactly the gap.
+  subscribes every wanted session (with `after: <seq>` after a drop) on
+  each open, so the server's replay fills exactly the gap. `cancel(id)`
+  drops a still-queued frame, the same contract as `sessions_cancel`.
   `session_state` and `session_states` frames go to one global listener
   set.
   `test/sessions-client.test.ts` covers the direct transport against a

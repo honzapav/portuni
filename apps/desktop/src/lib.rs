@@ -235,8 +235,9 @@ struct SidecarState(Mutex<HashMap<String, CommandChild>>);
 // sync agent for that workspace is deferred (not logged in / no server_url).
 struct BackendPorts(Mutex<HashMap<String, u16>>);
 // Per-workspace MCP bearer token, cached so api_request reads it without
-// touching Keychain each time. regenerate_mcp_token rotates the
-// active workspace's entry in place without restarting the Tauri host.
+// touching Keychain each time. regenerate_mcp_token rotates a
+// workspace's entry and restarts that workspace's sidecar with it, without
+// restarting the Tauri host.
 struct AuthTokens(Mutex<HashMap<String, String>>);
 // Per-workspace, per-launch secret proving a request came through THIS
 // Tauri host's api_request proxy rather than from an external process (an
@@ -813,24 +814,92 @@ fn get_mcp_token(window: tauri::Window) -> Result<String, String> {
 }
 
 // Rotates the MCP auth token: writes a fresh value to Keychain and into
-// the active workspace's entry in the AuthTokens map. Per-mirror .mcp.json and .codex/config.toml
-// reference the token via the PORTUNI_MCP_TOKEN env var, so they survive
-// rotation (a shell that already exported the old value keeps it until it
-// re-exports).
+// the workspace's entry in the AuthTokens map, then restarts that
+// workspace's sidecar (in a team workspace, its sync agent) with the fresh
+// value (#522). The sidecar checks the PORTUNI_AUTH_TOKEN it was spawned
+// with, so without the restart every api_request the webview proxies with
+// the new token answers 401 until the app restarts. Per-mirror .mcp.json and
+// .codex/config.toml reference the token via the PORTUNI_MCP_TOKEN env var,
+// so they survive rotation (a shell that already exported the old value
+// keeps it until it re-exports).
 // Only ~/.claude.json embeds the literal token and goes stale until the
 // user re-runs "Install Claude (global)".
 #[tauri::command]
-fn regenerate_mcp_token(window: tauri::Window) -> Result<String, String> {
+async fn regenerate_mcp_token(window: tauri::Window) -> Result<String, String> {
     let ws_id = ws_of(&window)?;
-    let app = window.app_handle();
-    let fresh = random_token();
-    keychain_set_ws(KEYCHAIN_MCP_ACCOUNT, &ws_id, &fresh)?;
-    app.state::<AuthTokens>()
-        .0
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(ws_id, fresh.clone());
+    let app = window.app_handle().clone();
+    // spawn_blocking: the respawn reaps the old port and, in a team
+    // workspace, mints the device token through block_on, neither of which
+    // may run on an async-runtime worker.
+    tauri::async_runtime::spawn_blocking(move || {
+        rotate_mcp_token(&mut AppTokenRotation(&app), &ws_id, random_token())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// The steps of an MCP token rotation, behind a seam so their order is
+// testable without Keychain or a real sidecar process.
+trait TokenRotation {
+    fn persist(&mut self, ws_id: &str, token: &str) -> Result<(), String>;
+    fn cache(&mut self, ws_id: &str, token: &str) -> Result<(), String>;
+    fn restart_sidecar(&mut self, ws_id: &str, token: &str) -> Result<(), String>;
+    fn report_backend_error(&mut self, ws_id: &str, msg: &str);
+}
+
+// Persist, cache, then restart the workspace's sidecar with the fresh token.
+// A failed persist or cache aborts before the running sidecar is touched. A
+// failed restart still answers the fresh token (it is already the stored
+// one, and the next spawn picks it up) and reaches the UI the way a failed
+// sidecar start does: the per-window backend-error event.
+fn rotate_mcp_token(
+    host: &mut impl TokenRotation,
+    ws_id: &str,
+    fresh: String,
+) -> Result<String, String> {
+    host.persist(ws_id, &fresh)?;
+    host.cache(ws_id, &fresh)?;
+    if let Err(e) = host.restart_sidecar(ws_id, &fresh) {
+        error!("regenerate_mcp_token[{ws_id}]: sidecar restart failed: {e}");
+        host.report_backend_error(
+            ws_id,
+            &format!("sidecar {ws_id} restart after token rotation failed: {e}"),
+        );
+    }
     Ok(fresh)
+}
+
+struct AppTokenRotation<'a>(&'a AppHandle);
+
+impl TokenRotation for AppTokenRotation<'_> {
+    fn persist(&mut self, ws_id: &str, token: &str) -> Result<(), String> {
+        keychain_set_ws(KEYCHAIN_MCP_ACCOUNT, ws_id, token)
+    }
+
+    fn cache(&mut self, ws_id: &str, token: &str) -> Result<(), String> {
+        self.0
+            .state::<AuthTokens>()
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(ws_id.to_string(), token.to_string());
+        Ok(())
+    }
+
+    // The same kill + spawn restart_sidecar does, with the fresh token
+    // handed over explicitly rather than re-read from Keychain.
+    fn restart_sidecar(&mut self, ws_id: &str, token: &str) -> Result<(), String> {
+        kill_sidecar_ws(self.0, ws_id);
+        spawn_sidecar_ws_with_token(self.0, ws_id, Some(token.to_string()))
+            .map_err(|e| e.to_string())
+    }
+
+    fn report_backend_error(&mut self, ws_id: &str, msg: &str) {
+        set_pending_backend_error(self.0, ws_id, msg);
+        let _ = self
+            .0
+            .emit_to(format!("ws:{ws_id}"), "backend-error", msg.to_string());
+    }
 }
 
 // Resolve (name, url, claude_token, token_env) for one workspace's global
@@ -2348,6 +2417,16 @@ pub(crate) fn spawn_sidecar_ws(
     app: &AppHandle,
     ws_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    spawn_sidecar_ws_with_token(app, ws_id, None)
+}
+
+// spawn_sidecar_ws with the MCP token given instead of read from Keychain;
+// regenerate_mcp_token passes the value it just rotated to.
+fn spawn_sidecar_ws_with_token(
+    app: &AppHandle,
+    ws_id: &str,
+    mcp_token: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let app_data = app.path().app_data_dir()?;
     let (_, all) = match workspace::load(&app_data)? {
         workspace::LoadedConfig::V2(f) => (f.active_workspace.clone(), f.workspaces),
@@ -2460,10 +2539,13 @@ pub(crate) fn spawn_sidecar_ws(
 
     // Per-workspace persisted MCP token, cached in the AuthTokens map so
     // api_request reads it without touching Keychain each time.
-    let auth_token = ensure_mcp_token_ws(ws_id).unwrap_or_else(|e| {
-        warn!("Keychain unavailable for {ws_id} MCP token, using per-launch random: {e}");
-        random_token()
-    });
+    let auth_token = match mcp_token {
+        Some(t) => t,
+        None => ensure_mcp_token_ws(ws_id).unwrap_or_else(|e| {
+            warn!("Keychain unavailable for {ws_id} MCP token, using per-launch random: {e}");
+            random_token()
+        }),
+    };
     app.state::<AuthTokens>()
         .0
         .lock()
@@ -3123,6 +3205,7 @@ pub fn run() {
             sessions_ws::sessions_connect,
             sessions_ws::sessions_disconnect,
             sessions_ws::sessions_send,
+            sessions_ws::sessions_cancel,
             auth::auth_status,
             auth::google_login,
             auth::auth_refresh,
@@ -4130,5 +4213,97 @@ mod ws_log_rotation_tests {
         assert_eq!(current, "after rotation\n", "logging continues into a fresh file");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod token_rotation_tests {
+    use super::{rotate_mcp_token, TokenRotation};
+    use std::collections::HashMap;
+
+    // Stands in for Keychain, the AuthTokens map and the sidecar process:
+    // `spawned` records the PORTUNI_AUTH_TOKEN each (re)spawn got, and what
+    // AuthTokens held at that moment (what api_request will send).
+    #[derive(Default)]
+    struct FakeHost {
+        keychain: HashMap<String, String>,
+        auth_tokens: HashMap<String, String>,
+        spawned: Vec<(String, String, Option<String>)>,
+        backend_errors: Vec<(String, String)>,
+        fail_persist: bool,
+        fail_restart: bool,
+    }
+
+    impl TokenRotation for FakeHost {
+        fn persist(&mut self, ws_id: &str, token: &str) -> Result<(), String> {
+            if self.fail_persist {
+                return Err("keychain locked".to_string());
+            }
+            self.keychain.insert(ws_id.to_string(), token.to_string());
+            Ok(())
+        }
+        fn cache(&mut self, ws_id: &str, token: &str) -> Result<(), String> {
+            self.auth_tokens.insert(ws_id.to_string(), token.to_string());
+            Ok(())
+        }
+        fn restart_sidecar(&mut self, ws_id: &str, token: &str) -> Result<(), String> {
+            if self.fail_restart {
+                return Err("sidecar binary missing".to_string());
+            }
+            let cached = self.auth_tokens.get(ws_id).cloned();
+            self.spawned.push((ws_id.to_string(), token.to_string(), cached));
+            Ok(())
+        }
+        fn report_backend_error(&mut self, ws_id: &str, msg: &str) {
+            self.backend_errors.push((ws_id.to_string(), msg.to_string()));
+        }
+    }
+
+    #[test]
+    fn rotation_restarts_the_sidecar_with_the_new_token() {
+        let mut host = FakeHost::default();
+        host.keychain.insert("acme".into(), "old".into());
+        host.auth_tokens.insert("acme".into(), "old".into());
+
+        let out = rotate_mcp_token(&mut host, "acme", "fresh".into()).unwrap();
+
+        assert_eq!(out, "fresh");
+        assert_eq!(host.keychain.get("acme").map(String::as_str), Some("fresh"));
+        assert_eq!(host.auth_tokens.get("acme").map(String::as_str), Some("fresh"));
+        // One respawn of that workspace's sidecar, spawned with the new token
+        // while AuthTokens already held it.
+        assert_eq!(
+            host.spawned,
+            vec![("acme".into(), "fresh".into(), Some("fresh".into()))]
+        );
+        assert!(host.backend_errors.is_empty());
+    }
+
+    #[test]
+    fn failed_restart_reaches_the_ui_as_a_backend_error() {
+        let mut host = FakeHost {
+            fail_restart: true,
+            ..Default::default()
+        };
+
+        let out = rotate_mcp_token(&mut host, "acme", "fresh".into()).unwrap();
+
+        assert_eq!(out, "fresh");
+        assert_eq!(host.backend_errors.len(), 1);
+        assert_eq!(host.backend_errors[0].0, "acme");
+        assert!(host.backend_errors[0].1.contains("sidecar binary missing"));
+    }
+
+    #[test]
+    fn failed_persist_leaves_the_running_sidecar_alone() {
+        let mut host = FakeHost {
+            fail_persist: true,
+            ..Default::default()
+        };
+        host.auth_tokens.insert("acme".into(), "old".into());
+
+        assert!(rotate_mcp_token(&mut host, "acme", "fresh".into()).is_err());
+        assert_eq!(host.auth_tokens.get("acme").map(String::as_str), Some("old"));
+        assert!(host.spawned.is_empty());
     }
 }

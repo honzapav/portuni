@@ -4,20 +4,17 @@
 // setup (via test/helpers/shared-db.ts's makeSharedDb).
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import {
-  SessionHandoffError,
   createSessionRuntime,
   resolveModelAndEffort,
 } from "../apps/server/domain/runner/session-runtime.js";
-import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
-import { createInstance, setOrgDefault } from "../apps/server/domain/runner/instances.js";
+import { createInstance, instanceClaudeConfigDir, setOrgDefault } from "../apps/server/domain/runner/instances.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
 import type { RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
@@ -91,8 +88,9 @@ describe("session runtime: startTask", () => {
         [2, "user_message"],
         [3, "run_ended"], // the fake's empty script auto-completes
         // #378: nobody closed this run explicitly, so it falls through to
-        // the auto-summary/suspend path and gets its handoff event too.
-        [4, "handoff"],
+        // the suspend path -- the transition the suspend made (#494), and
+        // no handoff event: only Předat writes a summary (#497).
+        [4, "state_changed"],
       ],
     );
     assert.equal(JSON.parse(events[0].payload).run_id, run.id);
@@ -156,7 +154,11 @@ describe("session runtime: question / answer", () => {
     assert.deepEqual(answered.decision, decision);
     assert.equal(answered.request_id, "req-1");
 
-    const stateChanged = events.filter((e) => e.kind === "state_changed").map((e) => JSON.parse(e.payload));
+    // The waiting transitions only; the run's end adds running -> suspended (#494).
+    const stateChanged = events
+      .filter((e) => e.kind === "state_changed")
+      .map((e) => JSON.parse(e.payload))
+      .filter((s) => s.to === "running");
     assert.deepEqual(
       stateChanged.map((s) => s.waiting),
       [true, false],
@@ -192,7 +194,7 @@ describe("session runtime: interrupt (#378)", () => {
 });
 
 describe("session runtime: auto-summary on a non-close run end (#378)", () => {
-  it("a run that ends on its own (nobody closed it) writes a summary and suspends the session", async () => {
+  it("a run that ends on its own (nobody closed it) suspends the session and writes no summary (#497)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     // An empty script auto-completes right away -- nobody called close(),
@@ -204,10 +206,9 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    const summary = (await content.getContent(session.id))?.handoff_inline;
-    assert.ok(summary, "a summary must exist after a non-close run end");
-    assert.match(summary!, /Poslední zprávy/);
-    assert.match(summary!, /Fix the bug|x/); // the brief shows up as the first message
+    assert.equal(row?.handoff_path, null, "no handoff file is recorded");
+    assert.equal(row?.handoff_hash, null);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "no inline summary either");
 
     const runs = await store.listRuns(session.id);
     // The adapter itself reports "completed" (a graceful close it can't
@@ -216,8 +217,8 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     assert.equal(runs[0].end_reason, "suspended");
 
     const events = await content.listEvents(session.id);
-    const handoffEvent = events.find((e) => e.kind === "handoff");
-    assert.ok(handoffEvent, "a handoff/summary event must be appended");
+    assert.equal(events.some((e) => e.kind === "handoff"), false, "no handoff event: only Předat writes one");
+    assert.equal(events.at(-1)?.kind, "state_changed");
   });
 
   it("checkIdleRunsOnce ends a run idle for longer than idleMs, tagged 'idle'", async () => {
@@ -237,10 +238,10 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    const summary = (await content.getContent(session.id))?.handoff_inline ?? null;
-    assert.ok(summary);
-    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
-    assert.equal(parseServerHandoffReason(summary), "idle");
+    // #497: the idle suspend is a record flip only.
+    assert.equal(row?.handoff_path, null);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+    assert.equal((await content.listEvents(session.id)).some((e) => e.kind === "handoff"), false);
   });
 
   it("checkIdleRunsOnce never ends a run mid-turn: the agent is working, not idle", async () => {
@@ -290,7 +291,7 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    assert.ok((await content.getContent(session.id))?.handoff_inline, "a server-written summary must exist");
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "no summary is written (#497)");
 
     const runs = await store.listRuns(session.id);
     // withSuspendReason leaves an adapter-reported limit alone -- that IS
@@ -302,7 +303,7 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     assert.ok(error, "the provider message must be in the transcript");
     assert.equal(JSON.parse(error!.payload).class, "provider");
     assert.match(JSON.parse(error!.payload).message, /spend limit/);
-    assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
+    assert.equal(events.some((e) => e.kind === "handoff"), false, "no handoff event (#497)");
   });
 
   it("the run's conversation id is recorded while it runs, not only when it ends", async () => {
@@ -422,12 +423,85 @@ describe("session runtime: resume by writing (#378)", () => {
     }
   });
 
-  it("the new run's orientation carries the previous summary", async () => {
+  // #508: the resume under a profile when `sessions.cli` was never filled
+  // in -- the run's own MCP handshake is what writes it, and a run whose
+  // Portuni connection failed (#507) never did. The runner that wrote the
+  // transcript is the last run's, so a "claude" runner is enough.
+  async function profileResume(opts: { transcript: boolean }) {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const dir = await mkdtemp(join(tmpdir(), "portuni-profile-resume-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      // Outside ~/.claude on purpose: the default location has nothing.
+      const configDir = join(dir, "claude-tempo");
+      const cwd = join(dir, "mirror");
+      const instance = await createInstance({ name: "Tempo", runner: "claude", env: { CLAUDE_CONFIG_DIR: configDir } });
+      if (opts.transcript) {
+        await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+        await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-tempo.jsonl"), "{}\n", "utf8");
+      }
+      const fake = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }], agentSessionId: "conv-tempo" });
+      // The fake adapter under the claude runner's id.
+      const claude: RunnerAdapter = {
+        id: "claude",
+        detect: () => fake.detect(),
+        start: (run, sink) => fake.start(run, sink),
+        models: () => fake.models(),
+      };
+      const runtime = createSessionRuntime({
+        store,
+        content,
+        registry: registryOf(claude),
+        provision: stubProvision({ cwd, mirrors: [cwd] }),
+      });
+      const { session } = await runtime.startTask({
+        userId: "U1",
+        nodeId,
+        brief: "zadání",
+        runner: "claude",
+        instanceId: instance.id,
+      });
+      assert.equal((await store.getSession(session.id))?.cli ?? null, null, "no handshake ever named the CLI");
+      await runtime.checkIdleRunsOnce(0, Date.now() + 1);
+      assert.equal((await store.getSession(session.id))?.state, "suspended");
+
+      await runtime.sendMessage(session.id, "pokračuj");
+
+      const runs = await store.listRuns(session.id);
+      const events = await content.listEvents(session.id);
+      const started = events.find((e) => e.run_id === runs[1]?.id && e.kind === "run_started");
+      return { runs, lastStart: fake.getLastRunStart(), resumeMode: JSON.parse(started!.payload).resume };
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("a resume finds the transcript in the instance's CLAUDE_CONFIG_DIR with no cli on the record (#508)", async () => {
+    const { runs, lastStart, resumeMode } = await profileResume({ transcript: true });
+    assert.equal(runs.length, 2);
+    assert.deepEqual(lastStart?.resume, { agentSessionId: "conv-tempo" });
+    assert.equal(runs[1].agent_session_id, "conv-tempo", "the new run continues the same conversation");
+    assert.equal(resumeMode, "conversation");
+  });
+
+  it("a resume with no transcript anywhere starts from the summary (#508)", async () => {
+    const { runs, lastStart, resumeMode } = await profileResume({ transcript: false });
+    assert.equal(runs.length, 2);
+    assert.equal(lastStart?.resume, null);
+    assert.match(lastStart?.orientation ?? "", /Předání \(obnovení ze shrnutí\)/);
+    assert.equal(resumeMode, "handoff");
+  });
+
+  it("a resume without the conversation gets a summary built from the transcript then (#497)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
 
     // First run: a real FakeRunnerAdapter so startTask/checkIdleRunsOnce
-    // can drive it through a normal suspend with a summary written.
+    // can drive it through a normal suspend -- which writes no summary.
     const firstAdapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
     const registry = { getAdapter: (id: string) => (id === "fake" ? firstAdapter : null) };
     const runtime = createSessionRuntime({ store, content, registry, provision: stubProvision() });
@@ -435,7 +509,8 @@ describe("session runtime: resume by writing (#378)", () => {
     await runtime.checkIdleRunsOnce(0, Date.now() + 1);
     const suspended = await store.getSession(session.id);
     assert.equal(suspended?.state, "suspended");
-    assert.ok((await content.getContent(session.id))?.handoff_inline);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+    assert.equal(suspended?.handoff_path, null);
 
     // Swap in a capturing adapter for the resume run so the RunStart it
     // actually receives is observable.
@@ -478,6 +553,114 @@ describe("session runtime: resume by writing (#378)", () => {
     assert.ok(capturedOrientation);
     assert.match(capturedOrientation!, /Předání \(obnovení ze shrnutí\)/);
     assert.match(capturedOrientation!, /Poslední zprávy/); // the summary content itself
+    // Built from this device's transcript at resume: the first run's brief.
+    assert.match(capturedOrientation!, /\*\*Uživatel:\*\* x/);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "and nothing is stored");
+  });
+});
+
+// #498: Uzavřít is "done, off the active lists", not "never again" --
+// writing into a closed thread reopens it the way it reopens a suspended
+// one: the same history, the conversation when it still exists, else a
+// summary from this device's transcript.
+describe("session runtime: writing into a closed thread reopens it (#498)", () => {
+  it("resumes the conversation when its transcript still exists", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const dir = await mkdtemp(join(tmpdir(), "portuni-closed-resume-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      const configDir = join(dir, "claude-profile");
+      const cwd = join(dir, "mirror");
+      const instance = await createInstance({ name: "JRD", runner: "fake", env: { CLAUDE_CONFIG_DIR: configDir } });
+      await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+      await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-closed.jsonl"), "{}\n", "utf8");
+
+      const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }], agentSessionId: "conv-closed" });
+      const runtime = createSessionRuntime({
+        store,
+        content,
+        registry: registryOf(adapter),
+        provision: stubProvision({ cwd, mirrors: [cwd] }),
+      });
+      const { session, run: firstRun } = await runtime.startTask({
+        userId: "U1",
+        nodeId,
+        brief: "x",
+        runner: "fake",
+        instanceId: instance.id,
+      });
+      await db.execute({ sql: "UPDATE sessions SET cli = 'claude' WHERE id = ?", args: [session.id] });
+      await runtime.closeSession(session.id);
+      assert.equal((await store.getSession(session.id))?.state, "closed");
+
+      const frames: Array<{ from: unknown; to: unknown }> = [];
+      runtime.subscribe(session.id, (_id, event) => {
+        if ("kind" in event && event.kind === "state_changed") frames.push({ from: event.payload.from, to: event.payload.to });
+      });
+      await runtime.sendMessage(session.id, "ještě jedna věc");
+
+      const row = await store.getSession(session.id);
+      assert.equal(row?.state, "running");
+      assert.equal(row?.closed_at, null);
+      const runs = await store.listRuns(session.id);
+      assert.equal(runs.length, 2);
+      assert.equal(runs[1].resumed_from_run_id, firstRun.id);
+      assert.equal(runs[1].agent_session_id, "conv-closed", "the new run continues the same conversation");
+      assert.deepEqual(adapter.getLastRunStart()?.resume, { agentSessionId: "conv-closed" });
+      assert.deepEqual(frames, [{ from: "closed", to: "running" }]);
+      const events = await content.listEvents(session.id);
+      const started = events.find((e) => e.run_id === runs[1].id && e.kind === "run_started");
+      assert.equal(JSON.parse(started!.payload).resume, "conversation");
+      assert.ok(
+        events.some((e) => e.run_id === runs[1].id && e.kind === "user_message" && JSON.parse(e.payload).text === "ještě jedna věc"),
+      );
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("without the conversation starts from a summary of this device's transcript", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "první zadání", runner: "fake" });
+    await runtime.closeSession(session.id);
+
+    await runtime.sendMessage(session.id, "pokračuj");
+
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    assert.equal((await store.listRuns(session.id)).length, 2);
+    const start = adapter.getLastRunStart();
+    assert.equal(start?.resume, null);
+    assert.match(start?.orientation ?? "", /Předání \(obnovení ze shrnutí\)/);
+    assert.match(start?.orientation ?? "", /\*\*Uživatel:\*\* první zadání/);
+    assert.equal(start?.brief, "pokračuj");
+  });
+
+  it("an archived thread still has no composer: the message is refused", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.closeSession(session.id);
+    await store.patchSession(session.id, { state: "archived" });
+
+    await assert.rejects(runtime.sendMessage(session.id, "haló"), /has no live run/);
+    assert.equal((await store.listRuns(session.id)).length, 1);
+  });
+});
+
+describe("instanceClaudeConfigDir (#508)", () => {
+  it("is the instance's CLAUDE_CONFIG_DIR, and null for none or a blank one", () => {
+    assert.equal(instanceClaudeConfigDir({ CLAUDE_CONFIG_DIR: "/Users/x/.claude-tempo" }), "/Users/x/.claude-tempo");
+    assert.equal(instanceClaudeConfigDir({}), null);
+    assert.equal(instanceClaudeConfigDir({ CLAUDE_CONFIG_DIR: "  " }), null);
   });
 });
 
@@ -505,7 +688,11 @@ describe("session runtime: event ordering", () => {
     const row = await store.getSession(session.id);
     assert.equal(row?.waiting_since, null, "the closed question must not leave the session waiting");
     const events = await content.listEvents(session.id);
-    const stateChanged = events.filter((e) => e.kind === "state_changed").map((e) => JSON.parse(e.payload));
+    // The waiting transitions only; the run's end adds running -> suspended (#494).
+    const stateChanged = events
+      .filter((e) => e.kind === "state_changed")
+      .map((e) => JSON.parse(e.payload))
+      .filter((s) => s.to === "running");
     assert.deepEqual(
       stateChanged.map((s) => s.waiting),
       [true, false],
@@ -701,6 +888,37 @@ describe("session runtime: close", () => {
     const newEvents = await content.listEvents(newSession.id);
     assert.ok(newEvents.some((e) => e.run_id === newRun.id && e.kind === "run_started"));
     assert.ok(!newEvents.some((e) => e.kind === "user_message"), "continue carries no brief of its own");
+  });
+});
+
+describe("session runtime: continueSession when the handoff file cannot be written", () => {
+  it("closes the old thread and seeds the new one with the summary inline", async (t) => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+      handoffs: {
+        summarize: async () => "# Shrnutí vlákna\n\nCo se udělalo.",
+        writeFile: async () => {
+          throw new Error("EROFS: read-only file system");
+        },
+      },
+    });
+    t.mock.method(console, "error", () => undefined);
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const { session: next } = await runtime.continueSession(session.id);
+
+    const old = await store.getSession(session.id);
+    assert.equal(old?.state, "closed");
+    assert.equal(old?.handoff_path, null);
+    assert.equal(next.state, "running");
+    assert.match(adapter.getLastRunStart()?.orientation ?? "", /Co se udělalo\./);
+    await runtime.closeSession(next.id);
   });
 });
 
@@ -1009,362 +1227,5 @@ describe("session runtime: organization default instance on draft promotion", ()
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /central unreachable/);
     assert.match(warnings[0], new RegExp(nodeId));
-  });
-});
-
-// #459 "Předat": the owner hands the thread to another machine through its
-// handoff file. A personal workspace here (DbSessionStore + the graph db's
-// own mirror registry); test/agent-router-sessions.test.ts runs the same
-// verb against the fake central server for a team workspace.
-describe("session runtime: handoff (#459 Předat)", () => {
-  let workspace: string | null = null;
-
-  afterEach(async () => {
-    resetLocalDbForTests();
-    delete process.env.PORTUNI_WORKSPACE_ROOT;
-    if (workspace) await rm(workspace, { recursive: true, force: true });
-    workspace = null;
-  });
-
-  // A node with a real mirror on this device: what the handoff file needs
-  // to exist as a file at all (without one the summary stays inline and
-  // Předat has nothing to hand over -- the last test below).
-  async function withMirror(script: FakeScriptStep[]) {
-    const shared = await sharedDb();
-    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-handoff-"));
-    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
-    resetLocalDbForTests();
-    const mirrorRoot = join(workspace, "mirror");
-    await mkdir(mirrorRoot, { recursive: true });
-    await registerMirror("U1", shared.nodeId, mirrorRoot);
-    const store = new DbSessionStore(shared.db);
-    const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
-    return { ...shared, store, runtime, mirrorRoot };
-  }
-
-  it("a running thread is drained, suspended, and its handoff file registered in the node", async () => {
-    const { db, nodeId, store, runtime, mirrorRoot } = await withMirror([{ wait: "message" }]);
-    const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
-
-    const result = await runtime.handoff(session.id);
-
-    assert.equal(result.handoff_path, `wip/sessions/${session.id}-handoff.md`);
-    assert.equal(result.session.state, "suspended");
-    assert.equal(result.session.handoff_path, result.handoff_path);
-    // The run is drained and ended, not left open behind a suspended row.
-    const runs = await store.listRuns(session.id);
-    assert.equal(runs.length, 1);
-    assert.equal(runs[0].id, run.id);
-    assert.ok(runs[0].ended_at, "the run must be ended, not left live");
-
-    const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
-    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
-    assert.equal(parseServerHandoffReason(onDisk), "handoff");
-    assert.match(onDisk, /Poslední zprávy/);
-
-    // Registered as a tracked file of the node, so the next sync carries it.
-    const files = await db.execute({
-      sql: "SELECT filename FROM files WHERE node_id = ?",
-      args: [nodeId],
-    });
-    assert.deepEqual(
-      files.rows.map((r) => String(r.filename)),
-      [`${session.id}-handoff.md`],
-    );
-  });
-
-  it("a second Předat on the suspended thread answers the same path and writes nothing new", async () => {
-    const { nodeId, store, runtime } = await withMirror([{ wait: "message" }]);
-    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
-    const first = await runtime.handoff(session.id);
-    const eventsAfterFirst = (await content.listEvents(session.id)).length;
-
-    const second = await runtime.handoff(session.id);
-
-    assert.equal(second.handoff_path, first.handoff_path);
-    assert.equal(second.session.state, "suspended");
-    assert.equal((await content.listEvents(session.id)).length, eventsAfterFirst);
-    assert.equal((await store.listRuns(session.id)).length, 1);
-  });
-
-  it("a draft and a closed thread are refused with a code and a Czech message", async () => {
-    const { nodeId, runtime } = await withMirror([{ wait: "message" }]);
-    const draft = await runtime.createDraft({ userId: "U1", nodeId });
-    await assert.rejects(
-      () => runtime.handoff(draft.id),
-      (err: unknown) =>
-        err instanceof SessionHandoffError &&
-        err.code === "HANDOFF_NOT_ALLOWED" &&
-        /Předat lze jen/.test(err.message),
-    );
-
-    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
-    await runtime.closeSession(session.id);
-    await assert.rejects(
-      () => runtime.handoff(session.id),
-      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NOT_ALLOWED",
-    );
-  });
-
-  // No mirror here: an empty mirror registry in a temp workspace.
-  async function withoutMirror(script: FakeScriptStep[]) {
-    const shared = await sharedDb();
-    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-handoff-"));
-    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
-    resetLocalDbForTests();
-    const store = new DbSessionStore(shared.db);
-    const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
-    return { ...shared, store, runtime };
-  }
-
-  it("a node with no mirror on this device is refused before anything happens: the run stays live", async () => {
-    const { nodeId, store, runtime } = await withoutMirror([{ wait: "message" }]);
-    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
-    const eventsBefore = (await content.listEvents(session.id)).length;
-
-    await assert.rejects(
-      () => runtime.handoff(session.id),
-      (err: unknown) =>
-        err instanceof SessionHandoffError && err.code === "HANDOFF_NO_MIRROR" && /zrcadlo/.test(err.message),
-    );
-    // Refused before any side effect: not suspended, the run not ended, no
-    // summary written anywhere, nothing appended to the transcript.
-    assert.equal((await store.getSession(session.id))?.state, "running");
-    const runs = await store.listRuns(session.id);
-    assert.equal(runs[0].ended_at, null);
-    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
-    assert.equal((await content.listEvents(session.id)).length, eventsBefore);
-    await runtime.closeSession(session.id);
-  });
-
-  it("a suspended thread with no file but its transcript here gets the file written from it", async () => {
-    const { nodeId, store, runtime } = await withoutMirror([TURN_DONE, { wait: "message" }]);
-    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
-    // Suspended while the node had no mirror here: the summary is inline.
-    await runtime.checkIdleRunsOnce(-1);
-    const suspended = await store.getSession(session.id);
-    assert.equal(suspended?.state, "suspended");
-    assert.equal(suspended?.handoff_path, null);
-    const inline = (await content.getContent(session.id))?.handoff_inline;
-    assert.ok(inline);
-
-    // The mirror arrives; Předat now writes the file instead of refusing.
-    const mirrorRoot = join(workspace!, "mirror");
-    await mkdir(mirrorRoot, { recursive: true });
-    await registerMirror("U1", nodeId, mirrorRoot);
-    const result = await runtime.handoff(session.id);
-
-    assert.equal(result.handoff_path, `wip/sessions/${session.id}-handoff.md`);
-    assert.equal(result.session.state, "suspended");
-    assert.equal((await store.getSession(session.id))?.handoff_path, result.handoff_path);
-    assert.equal(await readFile(join(mirrorRoot, result.handoff_path), "utf8"), inline);
-    // The file is the handoff now; the inline copy is gone.
-    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
-  });
-
-  it("a suspended thread whose transcript is on another device is refused, naming the device", async () => {
-    const { db, nodeId, store, runtime } = await withoutMirror([]);
-    const mirrorRoot = join(workspace!, "mirror");
-    await mkdir(mirrorRoot, { recursive: true });
-    await registerMirror("U1", nodeId, mirrorRoot);
-    const created = await store.createSession({
-      node_id: nodeId,
-      user_id: "U1",
-      runner: "fake",
-      instance_id: null,
-      host_id: "druhy-mac",
-    });
-    await db.execute({ sql: "UPDATE sessions SET state = 'suspended' WHERE id = ?", args: [created.id] });
-
-    await assert.rejects(
-      () => runtime.handoff(created.id),
-      (err: unknown) =>
-        err instanceof SessionHandoffError &&
-        err.code === "HANDOFF_TRANSCRIPT_ELSEWHERE" &&
-        /druhy-mac/.test(err.message),
-    );
-    const after = await store.getSession(created.id);
-    assert.equal(after?.state, "suspended");
-    assert.equal(after?.handoff_path, null);
-  });
-
-  it("a suspended thread that ran here but whose content has not arrived is refused, writing nothing", async () => {
-    const { db, nodeId, store, runtime } = await withoutMirror([]);
-    const mirrorRoot = join(workspace!, "mirror");
-    await mkdir(mirrorRoot, { recursive: true });
-    await registerMirror("U1", nodeId, mirrorRoot);
-    const created = await store.createSession({
-      node_id: nodeId,
-      user_id: "U1",
-      runner: "fake",
-      instance_id: null,
-      host_id: null,
-    });
-    await db.execute({ sql: "UPDATE sessions SET state = 'suspended' WHERE id = ?", args: [created.id] });
-
-    await assert.rejects(
-      () => runtime.handoff(created.id),
-      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NO_CONTENT",
-    );
-    const after = await store.getSession(created.id);
-    assert.equal(after?.state, "suspended");
-    assert.equal(after?.handoff_path, null);
-  });
-
-  it("a thread whose run is live on another device is refused and stays running", async () => {
-    const { nodeId, store, runtime } = await withoutMirror([]);
-    const mirrorRoot = join(workspace!, "mirror");
-    await mkdir(mirrorRoot, { recursive: true });
-    await registerMirror("U1", nodeId, mirrorRoot);
-    const created = await store.createSession({
-      node_id: nodeId,
-      user_id: "U1",
-      runner: "fake",
-      instance_id: null,
-      host_id: "druhy-mac",
-    });
-    const run = await store.createRun({ session_id: created.id, runner: "fake", instance_id: null, host_id: "druhy-mac" });
-    assert.equal((await store.getSession(created.id))?.state, "running");
-
-    await assert.rejects(
-      () => runtime.handoff(created.id),
-      (err: unknown) =>
-        err instanceof SessionHandoffError && err.code === "HANDOFF_RUN_ELSEWHERE" && /druhy-mac/.test(err.message),
-    );
-    assert.equal((await store.getSession(created.id))?.state, "running");
-    const runs = await store.listRuns(created.id);
-    assert.equal(runs.find((r) => r.id === run.id)?.ended_at, null);
-  });
-});
-
-// #460 "Navázat na handoff": the other end of Předat -- a handoff file
-// (written here or synced in from another machine) starts a NEW thread on
-// this device. A personal workspace here; test/agent-router-sessions.test.ts
-// runs the same body through the fake central server for a team workspace.
-describe("session runtime: startFromHandoff (#460 Navázat na handoff)", () => {
-  let workspace: string | null = null;
-
-  afterEach(async () => {
-    clearRegistryForTests();
-    resetLocalDbForTests();
-    delete process.env.PORTUNI_WORKSPACE_ROOT;
-    if (workspace) await rm(workspace, { recursive: true, force: true });
-    workspace = null;
-  });
-
-  // Thread A: started, then handed over, so its summary is a real file in
-  // the node's mirror -- exactly what a file synced in from another machine
-  // would look like here.
-  async function handedOverThread() {
-    const shared = await sharedDb();
-    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-navazat-"));
-    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
-    resetLocalDbForTests();
-    const mirrorRoot = join(workspace, "mirror");
-    await mkdir(mirrorRoot, { recursive: true });
-    await registerMirror("U1", shared.nodeId, mirrorRoot);
-    const store = new DbSessionStore(shared.db);
-    const source = createSessionRuntime({
-      store,
-      content,
-      registry: registryOf(new FakeRunnerAdapter({ script: [{ wait: "message" }] })),
-      provision: stubProvision(),
-    });
-    const { session } = await source.startTask({ userId: "U1", nodeId: shared.nodeId, brief: "x", runner: "fake" });
-    const { handoff_path } = await source.handoff(session.id);
-    return { ...shared, store, mirrorRoot, sourceId: session.id, handoffPath: handoff_path };
-  }
-
-  // The continuing thread runs under its own adapter: resolveTaskDefaults
-  // reads the PROCESS registry (detectAll), so the adapter has to be
-  // registered globally too, not only handed to this runtime.
-  function continuingRuntime(store: DbSessionStore) {
-    const { adapter, getRunStart } = capturingAdapter();
-    registerAdapter(adapter);
-    const runtime = createSessionRuntime({
-      store,
-      content,
-      registry: registryOf(adapter),
-      provision: stubProvision(),
-    });
-    return { runtime, getRunStart };
-  }
-
-  it("a file another thread wrote becomes a new thread's orientation; the source thread is untouched", async () => {
-    const { nodeId, store, mirrorRoot, sourceId, handoffPath } = await handedOverThread();
-    const fileContent = await readFile(join(mirrorRoot, handoffPath), "utf8");
-    const sourceBefore = await store.getSession(sourceId);
-    const sourceEventsBefore = await content.listEvents(sourceId);
-    const { runtime, getRunStart } = continuingRuntime(store);
-
-    const { session, run } = await runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath });
-
-    assert.notEqual(session.id, sourceId);
-    assert.equal(session.node_id, nodeId);
-    assert.equal(session.runner, "fake");
-    // The name is the summary's own H1 title, and stays enrichable (the
-    // user never typed it).
-    assert.equal(session.name, sourceBefore!.name);
-    assert.equal(session.name_is_custom, 0);
-
-    const started = getRunStart();
-    assert.equal(started?.runId, run.id);
-    assert.equal(started?.brief, null);
-    assert.ok(started!.orientation.includes(fileContent), "the file's content is the new run's orientation");
-    assert.match(started!.orientation, /Navázání na handoff/);
-
-    // No events are imported: the transcript starts here.
-    const newEvents = await content.listEvents(session.id);
-    assert.ok(newEvents.some((e) => e.kind === "run_started"));
-    assert.ok(!newEvents.some((e) => e.kind === "user_message"));
-    assert.equal(JSON.parse(newEvents[0].payload).resume, "handoff");
-
-    // The source thread is untouched: same record, same transcript.
-    const sourceAfter = await store.getSession(sourceId);
-    assert.deepEqual(sourceAfter, sourceBefore);
-    assert.deepEqual(await content.listEvents(sourceId), sourceEventsBefore);
-  });
-
-  it("a handoff file that is not on this device yet is refused and creates no record", async () => {
-    const { db, nodeId, store } = await handedOverThread();
-    const before = await db.execute("SELECT COUNT(*) AS n FROM sessions");
-    const { runtime } = continuingRuntime(store);
-
-    await assert.rejects(
-      () =>
-        runtime.startFromHandoff({
-          userId: "U1",
-          nodeId,
-          handoffPath: "wip/sessions/01JNOTHERE-handoff.md",
-        }),
-      (err: unknown) =>
-        err instanceof SessionHandoffError &&
-        err.code === "HANDOFF_FILE_NOT_HERE" &&
-        /ještě není na tomto zařízení/.test(err.message),
-    );
-
-    const after = await db.execute("SELECT COUNT(*) AS n FROM sessions");
-    assert.equal(Number(after.rows[0].n), Number(before.rows[0].n));
-  });
-
-  it("a node with no mirror on this device is refused the same way", async () => {
-    const { db, nodeId } = await sharedDb();
-    const store = new DbSessionStore(db);
-    const { runtime } = continuingRuntime(store);
-    await assert.rejects(
-      () => runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath: "wip/sessions/01JX-handoff.md" }),
-      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_FILE_NOT_HERE",
-    );
-  });
-
-  it("a path outside wip/sessions is refused before anything is read", async () => {
-    const { nodeId, store } = await handedOverThread();
-    const { runtime } = continuingRuntime(store);
-    await assert.rejects(
-      () => runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath: "wip/docs/secret.md" }),
-      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_PATH_INVALID",
-    );
   });
 });

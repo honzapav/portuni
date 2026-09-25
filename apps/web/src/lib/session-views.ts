@@ -121,9 +121,17 @@ export function requestChatSession(
 
 // v2 rule 7 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
 // a thread is a persistent task session the app opened; a hand-opened CLI
-// session (cli set) has no sub-row in Práce, Relace lists it.
-export function isThreadSession(s: { session_type: string; cli: string | null }): boolean {
-  return s.session_type === "interactive_task" && s.cli === null;
+// session has no sub-row in Práce, Relace lists it. The app opens a thread
+// through the runner, so `runner` is what tells them apart: `cli` does not,
+// because the thread's own agent fills it in when it connects to the MCP
+// server (bindExistingSessionHandshake), and the thread would drop out of
+// Práce on the next list refetch. A hand-opened session never has a runner.
+export function isThreadSession(s: {
+  session_type: string;
+  cli: string | null;
+  runner: string | null;
+}): boolean {
+  return s.session_type === "interactive_task" && (s.runner !== null || s.cli === null);
 }
 
 // v2 rule 6: the accent bar and the surface-2 fill mark exactly one row --
@@ -150,11 +158,40 @@ export function hostDisplayName(session: {
 // ---------------------------------------------------------------- #429
 
 // A thread renders as chat while it is steerable: running (waiting
-// included), suspended (the composer disables, Nahodit resumes) and draft
-// (#374, rule 5: a thread opens empty). closed and archived are history,
-// so their node falls back to the plain detail surface.
+// included), suspended (the next message resumes it) and draft (#374,
+// rule 5: a thread opens empty). These are the Práce sidebar's threads.
+// closed and archived are history, so their node falls back to the plain
+// detail surface -- except a closed thread the user opens on purpose
+// (#498: Relace's Otevřít chat), see isOpenableChatState.
 export function isChatSessionState(state: SessionState): boolean {
   return state === "running" || state === "suspended" || state === "draft";
+}
+
+// #498: Uzavřít is "done, off the active lists", not "never again". A
+// closed thread is not in the sidebar, but opening it from Relace shows its
+// chat, and writing into it reopens it (the server resumes it the way it
+// resumes a suspended one). An archived thread has no chat at all.
+export function isOpenableChatState(state: SessionState): boolean {
+  return isChatSessionState(state) || state === "closed";
+}
+
+// #498: the composer takes a message in every state but archived -- a
+// closed thread reopens on the message.
+export function threadAcceptsMessages(state: SessionState): boolean {
+  return state !== "archived";
+}
+
+// The composer's placeholder for the thread's own state (a question
+// waiting or a transcript elsewhere say their own thing first).
+export function composerStatePlaceholder(state: SessionState): string {
+  return threadAcceptsMessages(state) ? "Napiš zprávu…" : "Relace je uzavřená.";
+}
+
+// #498: Relace's Otevřít chat, the same for a closed thread as for a
+// suspended one (there is no Navázat anymore -- the closed thread has a
+// composer).
+export function sessionRowOpensChat(state: SessionState): boolean {
+  return state === "running" || state === "suspended" || state === "closed";
 }
 
 // The pane Práce shows for the selected node: the open session, but only
@@ -169,7 +206,24 @@ export function shownChatSessionId(
   openSession: { id: string; node_id: string | null; state: SessionState } | null,
 ): string | null {
   if (!selectedNodeId || !openSession) return null;
-  if (!isChatSessionState(openSession.state)) return null;
+  if (!isOpenableChatState(openSession.state)) return null;
   if (openSession.node_id !== selectedNodeId) return null;
   return openSession.id;
+}
+
+// ---------------------------------------------------------------- #506
+
+// What the close control on a thread does, the same on every surface that
+// offers it (the sidebar's Uzly and Stav rows, the chat header, the Relace
+// row): a draft is deleted outright (api.ts's deleteDraftSession), a
+// running or suspended thread is Uzavřít -- both without a dialog (#498: a
+// closed thread reopens by writing into it, so only an unfinished turn can
+// be lost, the same as with Stop) -- and a closed or archived one has no
+// close control at all.
+export type ThreadCloseAction = "delete" | "close" | null;
+
+export function threadCloseAction(state: SessionState): ThreadCloseAction {
+  if (state === "draft") return "delete";
+  if (state === "running" || state === "suspended") return "close";
+  return null;
 }

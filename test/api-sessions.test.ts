@@ -326,6 +326,31 @@ describe("session REST endpoints", () => {
     assert.equal(row.instance_id, "01INST");
   });
 
+  // #498, the central half: a team-workspace device reopens a closed thread
+  // with the same record patch it resumes a suspended one with
+  // (CentralSessionStore.patchSession -> PATCH /sessions/:id), and the lists
+  // show it running again.
+  test("PATCH state running reopens a closed thread and the running list shows it (#498)", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task", runner: "claude" });
+    const closed = await call(makeIdentity(SOLO), "POST", `/sessions/${session.id}/state`, { state: "closed" });
+    assert.equal(closed.statusCode, 200);
+
+    const res = await call(makeIdentity(SOLO), "PATCH", `/sessions/${session.id}`, { state: "running" });
+    assert.equal(res.statusCode, 200);
+    const row = JSON.parse(res.body) as { state: string; closed_at: string | null };
+    assert.equal(row.state, "running");
+    assert.equal(row.closed_at, null);
+
+    const running = await call(makeIdentity(SOLO), "GET", "/sessions?state=running");
+    const ids = (JSON.parse(running.body) as { sessions: { id: string }[] }).sessions.map((s) => s.id);
+    assert.ok(ids.includes(session.id));
+    const closedList = await call(makeIdentity(SOLO), "GET", "/sessions?state=closed");
+    const closedIds = (JSON.parse(closedList.body) as { sessions: { id: string }[] }).sessions.map((s) => s.id);
+    assert.ok(!closedIds.includes(session.id));
+
+    await db.execute({ sql: "DELETE FROM sessions WHERE id = ?", args: [session.id] });
+  });
+
   test("PATCH /sessions/:id renames a session the caller owns", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity(SOLO), "PATCH", `/sessions/${session.id}`, { name: "Renamed" });
@@ -430,9 +455,10 @@ describe("session REST endpoints", () => {
     assert.equal(res.statusCode, 404);
   });
 
-  // #329: a server-generated suspend (here via the transport-disconnect GC
-  // backstop) must be distinguishable from an agent-written one at resume time.
-  test("GET /sessions/:id/resume-info reports generated_by 'server' and the reason after a server-side suspend", async () => {
+  // #329 made a server-generated suspend distinguishable at resume time by
+  // its summary; #497: a server-side suspend (here the transport-disconnect
+  // GC backstop) writes no summary, so there is nothing to attribute.
+  test("GET /sessions/:id/resume-info reports no generated summary after a server-side suspend (#497)", async () => {
     const session = await createSession(db, SOLO, {
       node_id: nodeId,
       session_type: "interactive_task",
@@ -442,8 +468,9 @@ describe("session REST endpoints", () => {
     const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/resume-info`);
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body) as SessionResumeInfo;
-    assert.equal(body.generated_by, "server");
-    assert.equal(body.reason, "disconnect");
+    assert.equal(body.generated_by, null);
+    assert.equal(body.reason, null);
+    assert.equal(body.handoff_path, null);
   });
 
   // The restart indicator (#342, SessionChat header): GET /sessions/:id/

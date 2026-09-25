@@ -21,15 +21,27 @@ export type FileChangeOp = "create" | "edit" | "delete" | "rename";
 export type QuestionType = "approval" | "input";
 export type ErrorClass = "provider" | "transport" | "permission" | "unknown";
 
+// Mirrors the server's QuestionAnswer: a map answers an AskUserQuestion ask
+// question by question, keyed by the question text (#492).
+export type QuestionAnswer = string | boolean | Record<string, string>;
+
 export interface QuestionDecision {
   by: string;
-  value: string | boolean;
+  value: QuestionAnswer;
   at: string;
 }
 
 export interface RunStartedEvent {
   kind: "run_started";
-  payload: { run_id: string; runner: string; instance_id: string | null; resume: null | "conversation" | "handoff" };
+  payload: {
+    run_id: string;
+    runner: string;
+    instance_id: string | null;
+    resume: null | "conversation" | "handoff";
+    // A redelivered message (#489) is logged before this event; the run
+    // starts with it as its first turn.
+    carried_messages?: number;
+  };
 }
 export interface RunEndedEvent {
   kind: "run_ended";
@@ -73,8 +85,14 @@ export interface QuestionEvent {
     title: string;
     detail: string;
     options: string[] | null;
+    questions?: AskPrompt[];
     decision: QuestionDecision | null;
   };
+}
+export interface AskPrompt {
+  question: string;
+  options: string[];
+  multi_select: boolean;
 }
 export interface CompactionEvent {
   kind: "compaction";
@@ -120,7 +138,15 @@ export interface ContextUsageEvent {
 // message, and this is the event that says the last turn is over.
 export interface TurnEndedEvent {
   kind: "turn_ended";
-  payload: { run_id: string };
+  payload: {
+    run_id: string;
+    // #490: how many sent messages this turn answered (server:
+    // TurnEndedEvent). One turn can answer several messages -- the runner
+    // folds sends that land while it works into the running turn -- so the
+    // chat subtracts this, not one, per turn. Absent on an older event and
+    // from a runner that cannot tell: one message then.
+    consumed_messages?: number;
+  };
 }
 
 export type CanonicalEvent =
@@ -219,6 +245,82 @@ export function approvalChoices(
   return options.map((label) => ({ label, value: label }));
 }
 
+// --- Input questions (AskUserQuestion, #492) ---------------------------------
+
+// The dotazy of an input question. A row written before `questions` existed
+// (or a flat ask) falls back to its detail and flat options as one dotaz.
+export function askPrompts(payload: QuestionEvent["payload"]): AskPrompt[] {
+  if (payload.questions && payload.questions.length > 0) return payload.questions;
+  if (payload.options === null || payload.options.length === 0) return [];
+  return [{ question: payload.detail, options: payload.options, multi_select: false }];
+}
+
+// What the user picked so far, per question text; a multi-select question
+// holds its labels in click order.
+export type AskPicks = Readonly<Record<string, readonly string[]>>;
+
+export function togglePick(picks: AskPicks, prompt: AskPrompt, label: string): AskPicks {
+  const current = picks[prompt.question] ?? [];
+  if (!prompt.multi_select) return { ...picks, [prompt.question]: [label] };
+  const next = current.includes(label) ? current.filter((l) => l !== label) : [...current, label];
+  return { ...picks, [prompt.question]: next };
+}
+
+// A click on an option answers at once when it settles everything: every
+// dotaz single-choice and picked. Otherwise the user finishes with Odeslat.
+export function picksComplete(prompts: readonly AskPrompt[], picks: AskPicks): boolean {
+  return (
+    prompts.length > 0 &&
+    prompts.every((p) => !p.multi_select && (picks[p.question]?.length ?? 0) > 0)
+  );
+}
+
+// The value to send, or null when there is nothing to send (an empty field
+// and no pick -- Enter in an empty field sends nothing). One dotaz (or none)
+// answers with a plain string: a single-choice one with the typed text when
+// there is any (a click answers it at once, so the text is the user's own
+// answer), a multi-select one with its picks and the typed text after
+// them, so neither is lost. Several answer question by question, the typed
+// text filling each one left without a pick.
+export function askAnswer(prompts: readonly AskPrompt[], picks: AskPicks, text: string): string | Record<string, string> | null {
+  const typed = text.trim();
+  const picked = (p: AskPrompt): string | null => {
+    const labels = picks[p.question] ?? [];
+    return labels.length > 0 ? labels.join(", ") : null;
+  };
+  if (prompts.length <= 1) {
+    const only = prompts[0];
+    const labels = only ? picked(only) : null;
+    if (only?.multi_select && labels !== null) return typed !== "" ? `${labels}, ${typed}` : labels;
+    if (typed !== "") return typed;
+    return labels;
+  }
+  const answers: Record<string, string> = {};
+  for (const p of prompts) {
+    const answer = picked(p) ?? (typed !== "" ? typed : null);
+    if (answer !== null) answers[p.question] = answer;
+  }
+  return Object.keys(answers).length > 0 ? answers : null;
+}
+
+// One answer per question: the first submit claims the request id, every
+// later submit of the same question is dropped here instead of reaching the
+// server as NO_PENDING_QUESTION. A submit that failed releases the claim so
+// the user can try again.
+export function createAnswerGate(): { claim(requestId: string): boolean; release(requestId: string): void } {
+  const claimed = new Set<string>();
+  return {
+    claim(requestId) {
+      if (claimed.has(requestId)) return false;
+      claimed.add(requestId);
+      return true;
+    },
+    release(requestId) {
+      claimed.delete(requestId);
+    },
+  };
+}
+
 // --- Streamed delta buffering ------------------------------------------------
 
 export type DeltaBuffers = Readonly<Record<string, string>>;
@@ -235,6 +337,23 @@ export function clearDeltaBuffer(buffers: DeltaBuffers, runId: string): DeltaBuf
   const next = { ...buffers };
   delete next[runId];
   return next;
+}
+
+// Which events end a run's streaming buffer on one channel. The finalized
+// block supersedes what streamed (assistant_message for text, reasoning
+// for reasoning; neither carries a run id, so the caller's live run is
+// passed in), and a turn_ended or run_ended ends it on both channels:
+// what streamed and was never finalized (a Stop mid-answer) is over, and
+// left in the buffer it would prefix the next turn's answer (#495).
+export function deltaBuffersAfter(
+  buffers: DeltaBuffers,
+  channel: StreamDelta["channel"],
+  event: CanonicalEvent,
+  liveRunId: string | null,
+): DeltaBuffers {
+  if (event.kind === "turn_ended" || event.kind === "run_ended") return clearDeltaBuffer(buffers, event.payload.run_id);
+  const finalized = channel === "reasoning" ? event.kind === "reasoning" : event.kind === "assistant_message";
+  return finalized && liveRunId !== null ? clearDeltaBuffer(buffers, liveRunId) : buffers;
 }
 
 // --- Tool-call collapsing ---------------------------------------------------
@@ -320,7 +439,9 @@ export function runEndReasonLabel(reason: string): string {
 
 // `liveRunId` says which run is live: its trailing activity group (after
 // the last answer) is marked live, so the renderer keeps it expanded on
-// the running tool. run_started and state_changed yield nothing. A
+// the running tool -- but only while a turn is in flight (#495). After a
+// turn_ended (a Stop mid-tool or mid-reasoning included) the run is still
+// open and waiting for the next message, and nothing in it is working. run_started and state_changed yield nothing. A
 // run_ended yields nothing for `completed` and `suspended` (the ordinary
 // ends -- the notice bar already says the process is gone), a neutral
 // note for `interrupted`, and an error row for `error`, `limit` and
@@ -394,7 +515,7 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
     }
   }
   const trailing = group.open;
-  if (trailing && liveRunId !== null && trailing.runId === liveRunId) trailing.live = true;
+  if (trailing && liveRunId !== null && trailing.runId === liveRunId && turnInFlight(events, liveRunId)) trailing.live = true;
   return rows;
 }
 
@@ -479,25 +600,41 @@ export function runIsLiveFor(liveRunId: string | null, state: SessionState): boo
   return liveRunId !== null && state === "running";
 }
 
-// Whether the live run is in the middle of a turn: the working row, the
-// stop button and Escape apply only then. A turn opens with a
-// user_message and closes with the run's turn_ended; the run start alone
-// opens none -- a promotion writes the first message as a user_message right
-// after it, while Navázat and a resume start the process with no prompt
-// and wait for the first message. Walks back from the newest event;
-// bookkeeping events in between decide nothing.
+// Whether the live run still owes an answer: the working row, the stop
+// button and Escape apply only then. #490: a count, not "the newest of
+// user_message / turn_ended". A message written while the agent works
+// queues behind the turn in flight, and the turn_ended that follows ends
+// only the turn it belongs to -- so the run is working until the messages
+// its turns answered catch up with the messages sent into it. A turn
+// opens with a user_message; the run start alone opens none -- a promotion
+// writes the first message as a user_message right after it, while Navázat
+// and a resume start the process with no prompt and wait for the first
+// message. Counted forward from the live run's start (nothing before it
+// belongs to this run) and never below zero: a turn_ended whose message is
+// older than the window ends a turn this window never saw open. The one
+// message of this run logged before its start is a redelivery (#489): the
+// run it was written for refused it while ending, and the next run starts
+// with it -- run_started says so (`carried_messages`), and the count
+// starts there.
 export function turnInFlight(events: readonly ChatEvent[], liveRunId: string | null): boolean {
   if (liveRunId === null) return false;
+  let from = 0;
+  let pending = 0;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i].event;
-    if (e.kind === "turn_ended") {
-      if (e.payload.run_id === liveRunId) return false;
-      continue;
+    if (e.kind === "run_started" && e.payload.run_id === liveRunId) {
+      from = i + 1;
+      pending = e.payload.carried_messages ?? 0;
+      break;
     }
-    if (e.kind === "user_message") return true;
-    if (e.kind === "run_started" && e.payload.run_id === liveRunId) return false;
   }
-  return false;
+  for (let i = from; i < events.length; i++) {
+    const e = events[i].event;
+    if (e.kind === "user_message") pending += 1;
+    else if (e.kind === "turn_ended" && e.payload.run_id === liveRunId)
+      pending = Math.max(0, pending - (e.payload.consumed_messages ?? 1));
+  }
+  return pending > 0;
 }
 
 // --- The working row -----------------------------------------------------------

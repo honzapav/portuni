@@ -8,6 +8,7 @@ import {
   approvalChoices,
   appendDelta,
   clearDeltaBuffer,
+  deltaBuffersAfter,
   collapseToolCalls,
   deriveTranscriptRows,
   activitySummary,
@@ -19,6 +20,11 @@ import {
   type ActivityItem,
   type ActivityRow,
   type ChatEvent,
+  askPrompts,
+  togglePick,
+  picksComplete,
+  askAnswer,
+  createAnswerGate,
 } from "../apps/web/src/lib/session-chat.js";
 
 function ev(seq: number, kind: string, payload: unknown): ChatEvent {
@@ -97,6 +103,32 @@ describe("delta buffers", () => {
     const cleared = clearDeltaBuffer(buffers, "R1");
     assert.equal("R1" in cleared, false);
     assert.equal(cleared.R2, "other");
+  });
+
+  // #495: a Stop mid-answer ends the turn with text streamed and never
+  // finalized; the next turn's answer starts from an empty buffer.
+  it("turn_ended clears the run's buffers on both channels, so the next turn's delta starts clean", () => {
+    const turnEnded = toCanonicalEvent("turn_ended", { run_id: "R1" });
+    let text = appendDelta({}, "R1", "rozepsaná odpověď");
+    let reasoning = appendDelta({}, "R1", "rozepsaná úvaha");
+    text = deltaBuffersAfter(text, "text", turnEnded, "R1");
+    reasoning = deltaBuffersAfter(reasoning, "reasoning", turnEnded, "R1");
+    assert.deepEqual(text, {});
+    assert.deepEqual(reasoning, {});
+    text = appendDelta(text, "R1", "nová odpověď");
+    assert.deepEqual(text, { R1: "nová odpověď" });
+  });
+
+  it("deltaBuffersAfter clears on the finalized block of its own channel and on run_ended, nothing else", () => {
+    const buffers = { R1: "x", R2: "y" };
+    assert.deepEqual(deltaBuffersAfter(buffers, "text", toCanonicalEvent("assistant_message", { text: "x" }), "R1"), { R2: "y" });
+    assert.equal(deltaBuffersAfter(buffers, "reasoning", toCanonicalEvent("assistant_message", { text: "x" }), "R1"), buffers);
+    assert.deepEqual(deltaBuffersAfter(buffers, "reasoning", toCanonicalEvent("reasoning", { summary: "s" }), "R1"), { R2: "y" });
+    assert.deepEqual(
+      deltaBuffersAfter(buffers, "text", toCanonicalEvent("run_ended", { run_id: "R2", reason: "completed", usage: null }), null),
+      { R1: "x" },
+    );
+    assert.equal(deltaBuffersAfter(buffers, "text", toCanonicalEvent("user_message", { text: "hi", source: "chat" }), "R1"), buffers);
   });
 
   it("clearDeltaBuffer is a no-op (same reference-safe shape) for an unknown run_id", () => {
@@ -215,7 +247,7 @@ describe("deriveTranscriptRows", () => {
 
   it("the trailing group of the live run is live; a non-completed run end is an error row", () => {
     const rows = deriveTranscriptRows(
-      [ev(1, "user_message", { text: "hi", source: "chat" }), runStarted(2), toolEv(3, "t1", "Read", "started")],
+      [runStarted(1), ev(2, "user_message", { text: "hi", source: "chat" }), toolEv(3, "t1", "Read", "started")],
       "R1",
     );
     assert.deepEqual(
@@ -242,6 +274,29 @@ describe("deriveTranscriptRows", () => {
       interrupted.map((r) => r.kind),
       ["note"],
     );
+  });
+
+  // #495: after a Stop mid-tool the run stays open, waiting for the next
+  // message; nothing in it is working, so its trailing group is not live.
+  it("after turn_ended the live run's trailing group is not live", () => {
+    const events = [
+      runStarted(1),
+      ev(2, "user_message", { text: "hi", source: "chat" }),
+      toolEv(3, "t1", "Bash", "started"),
+      ev(4, "turn_ended", { run_id: "R1" }),
+    ];
+    const rows = deriveTranscriptRows(events, "R1");
+    assert.deepEqual(
+      rows.map((r) => r.kind),
+      ["prompt", "activity"],
+    );
+    assert.equal((rows[1] as ActivityRow).live, false);
+    // The next message opens a new turn: its trailing group is live again.
+    const next = deriveTranscriptRows(
+      [...events, ev(5, "user_message", { text: "dál", source: "chat" }), toolEv(6, "t2", "Read", "started")],
+      "R1",
+    );
+    assert.equal((next[next.length - 1] as ActivityRow).live, true);
   });
 
   it("question, compaction and handoff keep their markers", () => {
@@ -439,9 +494,60 @@ describe("turnInFlight", () => {
   it("no live run is never in flight", () => {
     assert.equal(turnInFlight([started, asked, said], null), false);
   });
+  // #489: a message the ending run r0 refused is logged before r1 starts
+  // and redelivered as r1's first message; r1's run_started says it carries
+  // one, so the chat shows the turn working (Stop, Esc, the working row).
+  it("a redelivered message counts from the run that carries it", () => {
+    const r0 = ev(1, { kind: "run_started", payload: { run_id: "r0", runner: "claude", instance_id: null, resume: null } });
+    const refused = ev(2, { kind: "user_message", payload: { text: "tak co teď?", source: "chat" } });
+    const r0End = ev(3, { kind: "run_ended", payload: { run_id: "r0", reason: "limit", usage: null } });
+    const r1 = ev(4, {
+      kind: "run_started",
+      payload: { run_id: "r1", runner: "claude", instance_id: null, resume: "conversation", carried_messages: 1 },
+    });
+    const r1Said = ev(5, { kind: "assistant_message", payload: { text: "hned" } });
+    const r1Ended = ev(6, { kind: "turn_ended", payload: { run_id: "r1" } });
+    assert.equal(turnInFlight([r0, refused, r0End, r1], "r1"), true);
+    assert.equal(workingPhase([r0, refused, r0End, r1], "r1", null), "thinking");
+    assert.equal(turnInFlight([r0, refused, r0End, r1, r1Said], "r1"), true);
+    assert.equal(turnInFlight([r0, refused, r0End, r1, r1Said, r1Ended], "r1"), false);
+  });
   it("workingPhase shows nothing once the turn ended", () => {
     assert.equal(workingPhase([started, said, ended], "r1", null), null);
     assert.equal(workingPhase([started, said, ended, asked], "r1", null), "thinking");
+  });
+
+  // #490: a message written while the agent works queues behind the turn in
+  // flight. The turn_ended that lands next ends the FIRST message's turn,
+  // not the second's -- the chat keeps showing work and the Stop button
+  // until every message sent has been answered.
+  it("a message queued mid-turn keeps the turn in flight past the first turn_ended", () => {
+    const second = ev(5, { kind: "user_message", payload: { text: "ještě", source: "chat" } });
+    const endedAgain = ev(6, { kind: "turn_ended", payload: { run_id: "r1" } });
+    assert.equal(turnInFlight([started, asked, second], "r1"), true);
+    assert.equal(turnInFlight([started, asked, second, ended], "r1"), true);
+    assert.equal(turnInFlight([started, asked, second, ended, endedAgain], "r1"), false);
+  });
+
+  it("the working row stays up while the queued message waits", () => {
+    const second = ev(5, { kind: "user_message", payload: { text: "ještě", source: "chat" } });
+    assert.equal(workingPhase([started, asked, second, ended], "r1", null), "thinking");
+  });
+
+  // One turn can answer both messages (the runner folds a send that lands
+  // mid-turn into the running turn): the turn_ended says how many it took.
+  it("a turn_ended that answered both messages ends the turn at once", () => {
+    const second = ev(5, { kind: "user_message", payload: { text: "ještě", source: "chat" } });
+    const endedBoth = ev(6, { kind: "turn_ended", payload: { run_id: "r1", consumed_messages: 2 } });
+    assert.equal(turnInFlight([started, asked, second, endedBoth], "r1"), false);
+  });
+
+  // Nothing before the live run's start belongs to it: a message answered
+  // by the previous run never keeps this one working.
+  it("counts only what happened after the live run started", () => {
+    const olderMessage = ev(0, { kind: "user_message", payload: { text: "staré", source: "chat" } });
+    assert.equal(turnInFlight([olderMessage, started], "r1"), false);
+    assert.equal(turnInFlight([olderMessage, started, asked], "r1"), true);
   });
 });
 
@@ -467,5 +573,65 @@ describe("transcriptElsewhere", () => {
     // A run that started writing on this device between the header call
     // and the replay: the log wins, the notice goes.
     assert.equal(transcriptElsewhere("MacBook Pro", 1), null);
+  });
+});
+
+describe("input questions (#492)", () => {
+  const env = { question: "Which environment?", options: ["staging", "production"], multi_select: false };
+  const dry = { question: "Dry run first?", options: ["yes", "no"], multi_select: false };
+  const base = { request_id: "q", type: "input" as const, tool: "AskUserQuestion", title: "t", decision: null };
+
+  it("askPrompts reads questions, and falls back to the flat detail/options of an older row", () => {
+    assert.deepEqual(askPrompts({ ...base, detail: "x", options: null, questions: [env, dry] }), [env, dry]);
+    assert.deepEqual(askPrompts({ ...base, detail: "Which environment?", options: ["staging", "production"] }), [env]);
+    assert.deepEqual(askPrompts({ ...base, detail: "Free text?", options: null }), []);
+  });
+
+  it("Enter in an empty field sends nothing", () => {
+    assert.equal(askAnswer([], {}, ""), null);
+    assert.equal(askAnswer([], {}, "   "), null);
+    assert.equal(askAnswer([env], {}, ""), null);
+    assert.equal(askAnswer([env, dry], {}, " "), null);
+    assert.equal(askAnswer([env], {}, " moje "), "moje");
+  });
+
+  it("one single-choice question answers on the click; several wait for every pick", () => {
+    const one = togglePick({}, env, "production");
+    assert.equal(picksComplete([env], one), true);
+    assert.equal(askAnswer([env], one, ""), "production");
+
+    const first = togglePick({}, env, "staging");
+    assert.equal(picksComplete([env, dry], first), false);
+    const both = togglePick(first, dry, "no");
+    assert.equal(picksComplete([env, dry], both), true);
+    assert.deepEqual(askAnswer([env, dry], both, ""), { "Which environment?": "staging", "Dry run first?": "no" });
+  });
+
+  it("typed text fills the questions left without a pick; a multi-select joins its picks", () => {
+    const multi = { question: "Which features?", options: ["a", "b", "c"], multi_select: true };
+    let picks = togglePick({}, multi, "a");
+    picks = togglePick(picks, multi, "c");
+    picks = togglePick(picks, multi, "a");
+    picks = togglePick(picks, multi, "b");
+    assert.equal(picksComplete([multi], picks), false, "a multi-select is finished with Odeslat");
+    assert.deepEqual(askAnswer([multi, dry], picks, "nevím"), { "Which features?": "c, b", "Dry run first?": "nevím" });
+  });
+
+  it("a single multi-select question keeps its picks when a note is typed too", () => {
+    const multi = { question: "Which features?", options: ["a", "b", "c"], multi_select: true };
+    let picks = togglePick({}, multi, "a");
+    picks = togglePick(picks, multi, "c");
+    assert.equal(askAnswer([multi], picks, "a ještě d"), "a, c, a ještě d");
+    assert.equal(askAnswer([multi], picks, ""), "a, c");
+    assert.equal(askAnswer([multi], {}, "jen text"), "jen text");
+  });
+
+  it("a second submit of the same question is dropped; a failed one can be retried", () => {
+    const gate = createAnswerGate();
+    assert.equal(gate.claim("q1"), true);
+    assert.equal(gate.claim("q1"), false);
+    gate.release("q1");
+    assert.equal(gate.claim("q1"), true);
+    assert.equal(gate.claim("q2"), true);
   });
 });

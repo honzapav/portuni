@@ -190,10 +190,17 @@ async function sweepOne(
   // with the process that was driving it; there is no summary to write on
   // its behalf that the next run could trust, and the central server has no
   // content to write one from either. The thread is resumable from its
-  // transcript, which is on this device.
+  // transcript, which is on this device. #497: like every suspend but
+  // Předat, it drops a handoff an earlier Předat left -- the transcript has
+  // outgrown it, and a resume would otherwise prefer that stale file.
   const session = await store.getSession(run.session_id);
   if (session?.state === "running") {
-    await store.patchSession(run.session_id, { state: "suspended", waiting_since: null });
+    await store.patchSession(run.session_id, {
+      state: "suspended",
+      waiting_since: null,
+      handoff_path: null,
+      handoff_hash: null,
+    });
   }
 
   await removePidFileAt(entry.path);

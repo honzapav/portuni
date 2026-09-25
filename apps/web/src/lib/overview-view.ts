@@ -17,7 +17,9 @@ export function capRows<T>(rows: readonly T[], expanded: boolean): { shown: T[];
 
 // Rule 7: a hand-opened CLI session is not a thread. Relace lists threads
 // and says how many CLI sessions there are besides.
-export function splitThreadsAndCli<T extends { session_type: string; cli: string | null; state: string }>(
+export function splitThreadsAndCli<
+  T extends { session_type: string; cli: string | null; runner: string | null; state: string },
+>(
   rows: readonly T[],
 ): { threads: T[]; cli: { total: number; running: number } } {
   const threads: T[] = [];

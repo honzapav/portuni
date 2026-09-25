@@ -9,7 +9,7 @@
 
 import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
-import { authMode } from "../infra/server-config.js";
+import { authMode } from "../infra/auth-config.js";
 import {
   createMirrorWatcher,
   type MirrorWatcher,

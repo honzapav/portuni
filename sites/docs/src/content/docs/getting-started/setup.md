@@ -49,7 +49,7 @@ The CLI server uses Varlock for credentials. `.env.schema` declares the core var
 | `PORTUNI_WORKSPACE_ROOT` | always | Root directory for your local mirror folders, e.g. `~/Workspaces/portuni` |
 | `TURSO_URL` | team setup | Turso database URL. Leave empty to fall back to local SQLite at `./portuni.db` |
 | `TURSO_AUTH_TOKEN` | team setup | Turso auth token. Set alongside `TURSO_URL` |
-| `PORTUNI_AUTH_TOKEN` | team setup | Bearer token every HTTP/MCP client must present. Leave empty to disable auth — safe only on loopback on a trusted single-user machine; the server refuses to bind a non-loopback host without it |
+| `PORTUNI_AUTH_TOKEN` | always | Bearer token every HTTP/MCP client must present. Required: the server refuses to start without it, on loopback too. Clients export the same value as `PORTUNI_MCP_TOKEN`. (The central server in google auth mode uses session JWTs and ignores it.) |
 | `PORTUNI_USER_EMAIL` | optional | Solo-user email in single-user mode. Defaults to `solo@localhost` |
 | `PORTUNI_USER_NAME` | optional | Solo-user display name. Defaults to `Solo User` |
 | `PORTUNI_PORT` | optional | HTTP port for the MCP server. Default `4011` (`PORT` works too; `PORTUNI_PORT` wins) |

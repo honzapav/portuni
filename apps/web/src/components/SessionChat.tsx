@@ -18,8 +18,8 @@
 // stick-to-bottom scrolling); everything about sessions -- subscribe,
 // suspend/resume, handoffs, access control -- stays ours.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hostDisplayName } from "../lib/session-views";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { composerStatePlaceholder, hostDisplayName, threadAcceptsMessages, threadCloseAction } from "../lib/session-views";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
 import { useSessionStore } from "../lib/use-session-store";
@@ -35,8 +35,15 @@ import {
   sessionStatusChip,
   latestQuestionEvent,
   approvalChoices,
+  askPrompts,
+  togglePick,
+  picksComplete,
+  askAnswer,
+  createAnswerGate,
+  type AskPicks,
+  type QuestionAnswer,
   appendDelta,
-  clearDeltaBuffer,
+  deltaBuffersAfter,
   createDeltaCoalescer,
   deriveTranscriptRows,
   activitySummary,
@@ -61,14 +68,6 @@ import { contextRingState, latestContextUsage } from "../lib/context-ring";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectGroup, SelectLabel } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { BrainIcon, Check, CircleX, Pencil, Redo2, Share2, X } from "lucide-react";
 import {
   Conversation,
@@ -121,6 +120,7 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
 import {
+  deleteDraftSession,
   fetchTranscriptHost,
   handoffSession,
   patchSessionModelEffort,
@@ -199,10 +199,6 @@ export default function SessionChat({
   // node, the run or the transcript on another device), the action is not
   // offered again in this view; the reason stays on screen.
   const [handoffUnavailable, setHandoffUnavailable] = useState(false);
-  // #378: "Uzavřít" is the one irreversible action, so it's the only one
-  // that asks -- confirmed via this dialog, not window.confirm (a no-op in
-  // the Tauri webview).
-  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   // Inline rename in the header (same affordance as the Relace row): the
   // rename goes through POST /sessions/:id/rename, and api.ts writes the
   // row it answers with into the store -- the sidebar, this header and the
@@ -319,26 +315,25 @@ export default function SessionChat({
       } else if (event.kind === "run_ended") {
         runId = null;
         coalescer.flush();
-        setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
-        setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setLiveRunId(null);
-      } else if (event.kind === "assistant_message") {
+      } else if (event.kind === "turn_ended") {
+        // #495: frames still waiting for the tick belong to the turn that
+        // just ended; delivered after the clear, they would prefix the
+        // next turn's answer.
+        coalescer.drop(event.payload.run_id, "text");
+        coalescer.drop(event.payload.run_id, "reasoning");
+      } else if (runId && (event.kind === "assistant_message" || event.kind === "reasoning")) {
         // The finalized block supersedes what streamed: drop its still
         // buffered frames before clearing, or the tick delivers the
         // block's tail into the buffer the clear just emptied and that
         // fragment renders as a streaming bubble until the run ends.
-        const id = runId;
-        if (id) {
-          coalescer.drop(id, "text");
-          setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, id));
-        }
-      } else if (event.kind === "reasoning") {
-        const id = runId;
-        if (id) {
-          coalescer.drop(id, "reasoning");
-          setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, id));
-        }
+        coalescer.drop(runId, event.kind === "reasoning" ? "reasoning" : "text");
       }
+      // run_ended, turn_ended and the finalized blocks clear the buffers
+      // (deltaBuffersAfter); every other event leaves them as they are.
+      const id = runId;
+      setTextDeltaBuffers((prev) => deltaBuffersAfter(prev, "text", event, id));
+      setReasoningDeltaBuffers((prev) => deltaBuffersAfter(prev, "reasoning", event, id));
     }
     const offDelta = sessionsClient.onDelta(sessionId, (delta) => coalescer.push(delta));
     // No onSessionStates handler here: App binds the live channel to the
@@ -375,6 +370,10 @@ export default function SessionChat({
   // is here, else the summary's counters (a list row, a reload before the
   // replay). Absent entirely for a draft or a session that never reported.
   const liveUsage = useMemo(() => latestContextUsage(events), [events]);
+
+  // #492: one answer per question -- a second click or Enter while the
+  // first is on its way is dropped, not sent into a NO_PENDING_QUESTION.
+  const [answerGate] = useState(createAnswerGate);
 
   // Every hook has run; from here the record is what the component reads.
   // It is missing only in the moment between its removal from the store (a
@@ -509,8 +508,8 @@ export default function SessionChat({
     }
   };
 
-  // "Pokračovat v nové session" (offered any time) / "Navázat" (a closed
-  // thread): POST /sessions/:id/continue closes this session (its summary
+  // "Pokračovat v nové session" (running or suspended): POST
+  // /sessions/:id/continue closes this session (its summary
   // seeds the new one) and starts a fresh, running one on the same node --
   // the new row goes into the store, which is what makes it this node's
   // shown thread (the old one is closed, so it leaves the selectors).
@@ -549,19 +548,22 @@ export default function SessionChat({
     }
   };
 
-  const handleAnswer = async (value: string | boolean) => {
+  const handleAnswer = async (value: QuestionAnswer) => {
     if (!openQuestion) return;
+    const requestId = openQuestion.payload.request_id;
+    if (!answerGate.claim(requestId)) return;
     try {
-      await sessionsClient.answer(sessionId, openQuestion.payload.request_id, value);
+      await sessionsClient.answer(sessionId, requestId, value);
     } catch (e) {
+      answerGate.release(requestId);
       setError(String(e));
     }
   };
 
   // #457: every thread the app can show is the caller's own, so there is no
   // access echo left here -- only the state decides.
-  const composerDisabled =
-    session.state === "closed" || session.state === "archived" || isWaiting || elsewhere !== null;
+  // #498: a closed thread takes a message too -- it reopens on it.
+  const composerDisabled = !threadAcceptsMessages(session.state) || isWaiting || elsewhere !== null;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -679,11 +681,19 @@ export default function SessionChat({
                   <Redo2 />
                 </HeaderIcon>
               )}
-              {(session.state === "running" || session.state === "suspended") && (
+              {/* #506: a draft gets the same Uzavřít, which deletes it
+                  without asking; removing the record closes this chat the
+                  way the sidebar's × does. */}
+              {threadCloseAction(session.state) !== null && (
                 <>
                   <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
                   <HeaderIcon
-                    onClick={() => setCloseConfirmOpen(true)}
+                    onClick={() => {
+                      // #498: Uzavřít asks nothing -- a closed thread
+                      // reopens by writing into it.
+                      if (threadCloseAction(session.state) === "delete") deleteDraftSession(session.id);
+                      else void runAction("close");
+                    }}
                     disabled={actionPending !== null}
                     title={actionPending === "close" ? "Zavírám…" : "Uzavřít"}
                     className="hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
@@ -721,33 +731,6 @@ export default function SessionChat({
             <X className="size-3.5" />
           </button>
         </div>
-      )}
-
-      {closeConfirmOpen && (
-        <Dialog open onOpenChange={(open) => !open && setCloseConfirmOpen(false)}>
-          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
-            <DialogHeader>
-              <DialogTitle>Uzavřít vlákno?</DialogTitle>
-              <DialogDescription>
-                Vlákno „{session.name}“ se uzavře. Server napřed uloží shrnutí konverzace.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCloseConfirmOpen(false)}>
-                Zpět
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  setCloseConfirmOpen(false);
-                  void runAction("close");
-                }}
-              >
-                Uzavřít
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
       )}
 
       {error && (
@@ -790,7 +773,7 @@ export default function SessionChat({
       </Conversation>
 
       {openQuestion && isWaiting && (
-        <QuestionConfirmation question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
+        <QuestionConfirmation key={openQuestion.payload.request_id} question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
       )}
 
       <div className="border-t border-[var(--color-border)] py-3">
@@ -818,9 +801,7 @@ export default function SessionChat({
                   ? `Transkript je na zařízení ${elsewhere.host}; pokračuj tam, nebo si vlákno nech předat.`
                   : isWaiting
                     ? "Relace čeká na odpověď na otázku výše."
-                    : session.state === "closed" || session.state === "archived"
-                      ? "Relace je uzavřená."
-                      : "Napiš zprávu…"
+                    : composerStatePlaceholder(session.state)
               }
             />
           </PromptInputBody>
@@ -1105,9 +1086,25 @@ function QuestionConfirmation({
   onAnswer,
 }: {
   question: Extract<CanonicalEvent, { kind: "question" }>;
-  onAnswer: (value: string | boolean) => void;
+  onAnswer: (value: QuestionAnswer) => void;
 }) {
   const [text, setText] = useState("");
+  const [picks, setPicks] = useState<AskPicks>({});
+  const prompts = question.payload.type === "input" ? askPrompts(question.payload) : [];
+  // Several dotazy: each one's text stands where the detail does today.
+  const perQuestion = prompts.length > 1;
+  const submitText = () => {
+    const value = askAnswer(prompts, picks, text);
+    if (value !== null) onAnswer(value);
+  };
+  const pick = (prompt: (typeof prompts)[number], label: string) => {
+    const next = togglePick(picks, prompt, label);
+    setPicks(next);
+    if (picksComplete(prompts, next)) {
+      const value = askAnswer(prompts, next, "");
+      if (value !== null) onAnswer(value);
+    }
+  };
   return (
     <div className="border-t border-[var(--color-border)]">
       <div className={`${THREAD_COLUMN} py-2.5`}>
@@ -1115,7 +1112,7 @@ function QuestionConfirmation({
         <ConfirmationTitle className="text-[13px] font-medium text-[var(--color-text)]">
           {question.payload.title}
         </ConfirmationTitle>
-        {question.payload.detail && (
+        {question.payload.detail && !perQuestion && (
           <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]">{question.payload.detail}</p>
         )}
         <ConfirmationRequest>
@@ -1128,18 +1125,50 @@ function QuestionConfirmation({
               ))}
             </ConfirmationActions>
           ) : (
-            <ConfirmationActions className="w-full">
-              <Input
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onAnswer(text);
-                }}
-                placeholder="Odpověď…"
-                className="min-w-0 flex-1"
-              />
-              <ConfirmationAction onClick={() => onAnswer(text)}>Odeslat</ConfirmationAction>
-            </ConfirmationActions>
+            <>
+              {prompts.map((prompt) => (
+                <Fragment key={prompt.question}>
+                  {perQuestion && (
+                    <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]">{prompt.question}</p>
+                  )}
+                  {prompt.options.length > 0 && (
+                    <ConfirmationActions>
+                      {prompt.options.map((label) => (
+                        <ConfirmationAction
+                          key={label}
+                          // One single-choice dotaz answers on the click,
+                          // like approval; otherwise a pick is shown until
+                          // the rest is answered.
+                          variant={
+                            (prompts.length === 1 && !prompt.multi_select) ||
+                            (picks[prompt.question] ?? []).includes(label)
+                              ? "default"
+                              : "outline"
+                          }
+                          onClick={() => pick(prompt, label)}
+                        >
+                          {label}
+                        </ConfirmationAction>
+                      ))}
+                    </ConfirmationActions>
+                  )}
+                </Fragment>
+              ))}
+              <ConfirmationActions className="w-full">
+                <Input
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => {
+                    // An IME composition's Enter confirms the composition,
+                    // it is not a send.
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) submitText();
+                  }}
+                  placeholder="Odpověď…"
+                  className="min-w-0 flex-1"
+                />
+                <ConfirmationAction onClick={submitText}>Odeslat</ConfirmationAction>
+              </ConfirmationActions>
+            </>
           )}
         </ConfirmationRequest>
       </Confirmation>

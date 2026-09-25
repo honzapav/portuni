@@ -347,9 +347,11 @@ export async function setSessionCli(db: DbClient, id: string, cli: string): Prom
 }
 
 // State machine. running/suspended are the live states (a session can
-// bounce between them via suspend/resume, #190); closed is terminal from the
-// user's point of view but auto-archives (a view filter, never a delete) as
-// the only way out of closed. archived itself is terminal. draft (#374) is
+// bounce between them via suspend/resume, #190); closed is "done, off the
+// active lists", not "never again": writing into it reopens it exactly the
+// way it reopens a suspended thread (#498, session-runtime.ts's
+// sendMessage), and otherwise it auto-archives (a view filter, never a
+// delete). archived itself is terminal. draft (#374) is
 // a thread before its first message: its only transition is to running (the
 // first message, session-runtime.ts's sendMessage), and its only other exit
 // is deletion (deleteDraftSession/pruneStaleDraftSessions), never a state
@@ -358,7 +360,7 @@ const ALLOWED_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   draft: ["running"],
   running: ["suspended", "closed"],
   suspended: ["running", "closed"],
-  closed: ["archived"],
+  closed: ["running", "archived"],
   archived: [],
 };
 
@@ -378,7 +380,9 @@ export async function transitionSessionState(
   }
 
   const now = new Date().toISOString();
-  const closedAt = toState === "closed" ? now : existing.closed_at;
+  // A reopened thread (#498: closed -> running) is no longer closed; a
+  // stale closed_at would read as "closed at" on a running row.
+  const closedAt = toState === "closed" ? now : toState === "running" ? null : existing.closed_at;
 
   await db.execute({
     sql: "UPDATE sessions SET state = ?, last_active_at = ?, closed_at = ? WHERE id = ?",
@@ -404,10 +408,11 @@ export interface ServerSideSuspendOptions {
 }
 
 // A thread some device drives: a runner task (runner set) or one with a run
-// still open. The central server leaves it alone -- its MCP connection
-// dropping, or the central server restarting, says nothing about the run on
-// the device. What is left is a hand-opened CLI or a connector session whose
-// only life was its MCP connection to this process.
+// still open. Neither the central server nor the device itself ends such a
+// thread on an MCP transport closing -- a dropped connection, or the
+// central server restarting, says nothing about the run on the device.
+// What is left is a hand-opened CLI or a connector session whose only life
+// was its MCP connection to this process.
 async function isDeviceDrivenSession(db: DbClient, row: { id: string; runner: string | null }): Promise<boolean> {
   if (row.runner !== null) return true;
   const open = await db.execute({
@@ -436,7 +441,8 @@ async function suspendRecordOnCentral(db: DbClient, sessionId: string): Promise<
 // already ran) is untouched either way, since suspendSessionServerSide only
 // acts on 'running'. On a device a thin wrapper around
 // suspendSessionServerSide (domain/session-handoff.ts); on the central
-// server suspendRecordOnCentral above.
+// server suspendRecordOnCentral above. Neither branch touches a thread a
+// device drives (isDeviceDrivenSession) -- #487.
 export async function closeSessionIfRunning(
   db: DbClient,
   sessionId: string,
@@ -447,6 +453,20 @@ export async function closeSessionIfRunning(
     await suspendRecordOnCentral(db, sessionId);
     return;
   }
+  // #487: the same rule the central branch has always had, on the device
+  // too. A transport closing -- the client dropping, or the transport's own
+  // 30-minute idle GC reaping a connection the agent simply had not called a
+  // Portuni tool over -- says nothing about a thread the runner drives: the
+  // agent process is alive, its run is open, and the user is still working
+  // in it. Only the runtime ends such a thread (idle with no turn in flight,
+  // a provider error or limit, a restart's boot sweep). Leaving the row
+  // 'running' is also what lets the agent's MCP client reconnect to it:
+  // mcp/session-persistence.ts's lookupSpawnSessionForBind refuses a spawn
+  // id whose row is no longer running (SESSION_BIND_REFUSED), so suspending
+  // here used to cost a live agent its Portuni tools for good.
+  const row = await loadSession(db, sessionId);
+  if (row?.state !== "running") return;
+  if (await isDeviceDrivenSession(db, row)) return;
   await suspendSessionServerSide(db, sessionContentStoreForProcess(), sessionId, reason);
 }
 
@@ -456,8 +476,9 @@ export async function closeSessionIfRunning(
 // there is no live transport that could possibly own any of these
 // connections anymore, so every 'running' row left over from a previous
 // life is stale by definition. Suspends (#329; previously closed) each one
-// with a server-generated handoff, so a session interrupted only by a
-// restart stays resumable. Not scoped to a single user: this is a
+// with no summary (#497): a session interrupted only by a restart stays
+// resumable from its conversation, or from a summary built from the
+// transcript when the next message resumes it. Not scoped to a single user: this is a
 // process-wide maintenance sweep, same as autoArchiveClosedSessions above.
 // On the central server (#458) it is record maintenance only: the rows it
 // suspends are the MCP-connection sessions that died with the process, with
@@ -642,9 +663,10 @@ export interface SuspendSessionInput {
   // Null when there is nowhere on this device to write a file (#329:
   // suspendSessionServerSide on a session with no local mirror) -- the
   // handoff text then goes into the device content store's
-  // handoff_inline instead (#456), never onto the record.
+  // handoff_inline instead (#456), never onto the record. #497: both null
+  // for a suspend that writes no summary at all (every reason but Předat).
   handoffPath: string | null;
-  handoffHash: string;
+  handoffHash: string | null;
   agentSessionId?: string | null;
   // Title extracted from the handoff content (session-handoff.ts's
   // extractHandoffTitle). Spec: "enriched from the handoff title at
