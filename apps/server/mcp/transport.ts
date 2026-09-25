@@ -69,11 +69,11 @@ export function createMcpTransport(): McpTransport {
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
         res.writeHead(413, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Request body too large" }));
+        res.end(JSON.stringify({ error: "Request body too large", code: "BODY_TOO_LARGE" }));
         return;
       }
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid JSON body" }));
+      res.end(JSON.stringify({ error: "Invalid JSON body", code: "INVALID_JSON" }));
       return;
     }
 
@@ -83,7 +83,7 @@ export function createMcpTransport(): McpTransport {
         // Session pinning: reject cross-user session reuse.
         if (existing.userId !== identity.userId) {
           res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Session belongs to a different user" }));
+          res.end(JSON.stringify({ error: "Session belongs to a different user", code: "MCP_SESSION_FORBIDDEN" }));
           return;
         }
         existing.lastUsedAt = Date.now();
@@ -93,13 +93,13 @@ export function createMcpTransport(): McpTransport {
 
       if (sessionId && !existing) {
         res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Session not found" }));
+        res.end(JSON.stringify({ error: "Session not found", code: "MCP_SESSION_NOT_FOUND" }));
         return;
       }
 
       if (sessions.size >= MAX_SESSIONS) {
         res.writeHead(503, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Session capacity reached" }));
+        res.end(JSON.stringify({ error: "Session capacity reached", code: "MCP_CAPACITY_REACHED" }));
         return;
       }
 
@@ -131,7 +131,7 @@ export function createMcpTransport(): McpTransport {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
-            error: "headless_session_requires_home_node",
+            error: "headless_session_requires_home_node", code: "MCP_HOME_NODE_REQUIRED",
             reason: "Headless device tokens must connect with ?home_node_id on the MCP URL.",
           }),
         );
@@ -207,7 +207,7 @@ export function createMcpTransport(): McpTransport {
           res.writeHead(403, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
-              error: "resume_session_unauthorized",
+              error: "resume_session_unauthorized", code: "MCP_RESUME_REFUSED",
               reason:
                 "resume_session_id is not a suspended session owned by this user and anchored to this node",
             }),
@@ -265,7 +265,7 @@ export function createMcpTransport(): McpTransport {
           res.writeHead(503, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
-              error: "Portuni database unreachable; refusing to start session with empty scope",
+              error: "Portuni database unreachable; refusing to start session with empty scope", code: "MCP_SCOPE_UNAVAILABLE",
               reason,
             }),
           );
@@ -312,7 +312,7 @@ export function createMcpTransport(): McpTransport {
       console.error("MCP error:", error);
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Internal server error" }));
+        res.end(JSON.stringify({ error: "Internal server error", code: "INTERNAL_ERROR" }));
       }
     }
   }

@@ -196,6 +196,31 @@ bytes **Drive-direct** (`file-content-remote.ts`) and refreshes the canonical
 hash on write. Optimistic concurrency is the same everywhere: a stale base
 version is a conflict, never a silent overwrite.
 
+## Error responses
+
+Every error a client can receive has the same shape on the central server, a
+sync agent and a personal workspace's server (#531):
+
+- REST and the agent router: `{ error, code, params?, request_id? }`, written
+  by `respondApiError` or, for a thrown error, `respondError`
+  (`http/middleware.ts`). A handler that knows the answer throws `ApiError`.
+- The live channel: `{ id, type: "error", payload: { code, message, params? } }`.
+
+`code` is a member of `apps/server/shared/error-codes.ts`, the one list a new
+code is added to first; `params` holds data only (a device label, a file
+name, a count). `error`/`message` is English and meant for logs; the web never
+shows it but renders `errors:<code>` with `params` (`displayError`,
+`apps/web/src/lib/api-error.ts`), an unknown code as `errors:UNKNOWN` with the
+request id. A trigger's rejection gets its code from `TRIGGER_ERROR_CODES`
+(`infra/sql.ts`), the same text in both dialects. `test/error-codes.test.ts`
+holds the list, the two catalogs and the server sources to each other.
+
+In a team workspace the sync agent relays an error from the central server
+unchanged: `CentralHttpError` carries the central server's `code` and
+`params`, and `respondError` (REST) and `errorFrameFor` (live channel) answer
+a coded 4xx with the same status, code and params. Codes are stable: a
+desktop of another version may branch on one, so a code is never renamed.
+
 ## Workspace checklist for a change
 
 - **New or changed REST route**: `router.ts` (local) and `agent-router.ts`
@@ -215,6 +240,8 @@ version is a conflict, never a silent overwrite.
   [`database-and-dialects.md`](./database-and-dialects.md).
 - **Web**: a feature that has nothing to do on a personal workspace is hidden
   there (`useDataMode()`), not disabled.
+- **New error**: a code in `shared/error-codes.ts` and a message in both
+  `errors.json` catalogs; never an error body without a code.
 - **Verification**: name in the PR what changed in `agent-router.ts`,
   `is_device_local_path`, `CentralClient` and `agent-tools.ts`, or why none of
   them is affected.

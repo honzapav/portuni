@@ -7,6 +7,7 @@
 // In a plain browser (Vite dev / static preview) this short-circuits to
 // "ready" -- same convention as TursoSetupGate.
 
+import { displayError } from "../errors";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "../lib/backend-url";
@@ -39,7 +40,7 @@ export default function WorkspaceMigrationGate({
         // unblocking into a possibly-unmigrated backend.
         console.error("workspace_migration_status failed:", e);
         if (!cancelled) {
-          setError(String(e));
+          setError(displayError(e));
           setStatus("needed");
         }
       });
@@ -62,7 +63,7 @@ export default function WorkspaceMigrationGate({
       // this bootstrap one itself (#222, "Bootstrap -> workspace handoff").
       // Nothing left to do here -- this window is about to disappear.
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
       setBusy(false);
     }
   }

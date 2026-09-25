@@ -95,7 +95,17 @@ export function renderConsentPage(params: ConsentPageParams): string {
   return page("Portuni -- žádost o přístup", body);
 }
 
-export function renderOAuthErrorPage(message: string): string {
-  const body = `<div class="card"><p>${escapeHtml(message)}</p></div>`;
-  return page("Portuni -- chyba přihlášení", body);
+// The sign-in error page (#531): the English message, with the error's
+// code on the card so a report can quote it. Localizing it by the user's
+// language is a later step.
+export function renderOAuthErrorPage(error: {
+  code: string;
+  message: string;
+  params?: Record<string, string | number>;
+}): string {
+  const body =
+    `<div class="card" data-error-code="${escapeHtml(error.code)}">` +
+    `<p>${escapeHtml(error.message)}</p>` +
+    `<p class="url"><code>${escapeHtml(error.code)}</code></p></div>`;
+  return page("Portuni -- sign-in error", body);
 }

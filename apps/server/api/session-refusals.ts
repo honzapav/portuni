@@ -10,19 +10,33 @@
 //
 // #530: the code always comes from the error's type, never from its
 // message text -- rewording a message never changes the code a client gets.
+// #531: the message is English (for logs); `params` carries what the web's
+// catalog message interpolates (the device label, the thread's state...).
+// REST answers `{ error, code, params? }`, the live channel's error frame
+// `{ code, message, params? }`.
 
 import type { ServerResponse } from "node:http";
-import { respondJson } from "../http/middleware.js";
+import { respondApiError } from "../http/middleware.js";
+import type { ErrorParams } from "../shared/error-codes.js";
 import { NoLiveRunError, SessionHandoffError } from "../domain/runner/session-runtime.js";
 
 export interface SessionRefusal {
   status: 409;
   code: SessionHandoffError["code"] | NoLiveRunError["code"];
   message: string;
+  params?: ErrorParams;
 }
 
 export function sessionRefusal(err: unknown): SessionRefusal | null {
-  if (err instanceof SessionHandoffError || err instanceof NoLiveRunError) {
+  if (err instanceof SessionHandoffError) {
+    return {
+      status: 409,
+      code: err.code,
+      message: err.message,
+      ...(err.params && Object.keys(err.params).length > 0 ? { params: err.params } : {}),
+    };
+  }
+  if (err instanceof NoLiveRunError) {
     return { status: 409, code: err.code, message: err.message };
   }
   return null;
@@ -33,6 +47,6 @@ export function sessionRefusal(err: unknown): SessionRefusal | null {
 export function respondSessionRefusal(res: ServerResponse, err: unknown): boolean {
   const refusal = sessionRefusal(err);
   if (!refusal) return false;
-  respondJson(res, refusal.status, { error: refusal.message, code: refusal.code });
+  respondApiError(res, refusal.status, refusal.code, refusal.message, refusal.params);
   return true;
 }

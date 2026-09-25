@@ -40,6 +40,7 @@ import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
 import { isRunEndedError } from "./types.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
+import type { ErrorParams } from "../../shared/error-codes.js";
 import type {
   CanonicalEvent,
   DeltaFrame,
@@ -71,8 +72,9 @@ export class NoLiveRunError extends Error {
 }
 
 // #459 (Předat): the thread cannot be handed to another machine right now.
-// `code` is what the REST/live-channel layer answers with (409); `message`
-// is Czech, because it is shown to the user as-is.
+// `code` (+ `params`) is what the REST/live-channel layer answers with
+// (409) and what the web renders from its catalog (#531); `message` is
+// English and meant for logs.
 export class SessionHandoffError extends Error {
   constructor(
     readonly code:
@@ -80,12 +82,15 @@ export class SessionHandoffError extends Error {
       | "HANDOFF_NO_MIRROR"
       | "HANDOFF_RUN_ELSEWHERE"
       | "HANDOFF_TRANSCRIPT_ELSEWHERE"
+      | "SESSION_TRANSCRIPT_ELSEWHERE"
       | "HANDOFF_NO_CONTENT"
       | "HANDOFF_FILE_NOT_HERE"
       | "HANDOFF_PATH_INVALID",
     message: string,
+    readonly params?: ErrorParams,
   ) {
     super(message);
+    this.name = "SessionHandoffError";
   }
 }
 
@@ -1337,7 +1342,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     if (session.state !== "running" && session.state !== "suspended") {
       throw new SessionHandoffError(
         "HANDOFF_NOT_ALLOWED",
-        "Předat lze jen běžící nebo pozastavené vlákno.",
+        `only a running or suspended thread can be handed off (state: ${session.state})`,
+        { state: session.state },
       );
     }
     if (!session.node_id || !(await getMirrorPath(session.user_id, session.node_id))) {
@@ -1348,9 +1354,11 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       if (!liveRuns.has(sessionId)) {
         const host = await runHostOf(session);
         if (host && host !== localHostId()) {
+          const label = resolveHostLabel(host) ?? host;
           throw new SessionHandoffError(
             "HANDOFF_RUN_ELSEWHERE",
-            `Vlákno právě běží na zařízení ${resolveHostLabel(host) ?? host}; předat ho lze jen tam.`,
+            `the thread is running on device ${label}; it can only be handed off there`,
+            { host: label },
           );
         }
       }
@@ -1360,7 +1368,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       }
     } else {
       if (!(await contentIsHere(sessionId))) {
-        await refuseForMissingContent(session, "předat ho lze jen tam");
+        await refuseForMissingContent(session, "handoff");
       }
       await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true });
     }
@@ -1375,20 +1383,31 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // has not finished or failed. A summary built now would be empty and
   // would stand in for the real one, so nothing proceeds until the content
   // arrives.
+  // `context` picks the code of the "elsewhere" refusal: Předat
+  // (HANDOFF_TRANSCRIPT_ELSEWHERE) or a resume by writing
+  // (SESSION_TRANSCRIPT_ELSEWHERE) -- the user is told different things.
   async function refuseForMissingContent(
     session: SessionRow,
-    elsewhereTail = "pokračovat v něm lze jen tam",
+    context: "handoff" | "resume" = "resume",
   ): Promise<never> {
     const host = await runHostOf(session);
     if (host && host !== localHostId()) {
-      throw new SessionHandoffError(
-        "HANDOFF_TRANSCRIPT_ELSEWHERE",
-        `Transkript vlákna je na zařízení ${resolveHostLabel(host) ?? host}; ${elsewhereTail}.`,
-      );
+      const label = resolveHostLabel(host) ?? host;
+      throw context === "handoff"
+        ? new SessionHandoffError(
+            "HANDOFF_TRANSCRIPT_ELSEWHERE",
+            `the thread's transcript is on device ${label}; it can only be handed off there`,
+            { host: label },
+          )
+        : new SessionHandoffError(
+            "SESSION_TRANSCRIPT_ELSEWHERE",
+            `the thread's transcript is on device ${label}; it can only be continued there`,
+            { host: label },
+          );
     }
     throw new SessionHandoffError(
       "HANDOFF_NO_CONTENT",
-      "Obsah vlákna na tomto zařízení zatím není; zkus to znovu, až se stáhne.",
+      "the thread's content is not on this device yet; retry once it has downloaded",
     );
   }
 
@@ -1422,11 +1441,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     run: SessionRunRow;
   }> {
     if (!isHandoffRelativePath(input.handoffPath)) {
-      throw new SessionHandoffError("HANDOFF_PATH_INVALID", "Cesta k souboru handoffu není platná.");
+      throw new SessionHandoffError("HANDOFF_PATH_INVALID", "the handoff file path is not valid");
     }
     const summary = await readNodeHandoffFile(input.userId, input.nodeId, input.handoffPath);
     if (summary === null) {
-      throw new SessionHandoffError("HANDOFF_FILE_NOT_HERE", "Soubor handoffu ještě není na tomto zařízení.");
+      throw new SessionHandoffError(
+        "HANDOFF_FILE_NOT_HERE",
+        "the handoff file is not on this device yet",
+        { path: input.handoffPath },
+      );
     }
 
     const { runner, instanceId } = await resolveTaskDefaults(input.nodeId, resolveNodeOrgId);
@@ -1479,7 +1502,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   function noMirrorHandoffError(): SessionHandoffError {
     return new SessionHandoffError(
       "HANDOFF_NO_MIRROR",
-      "Uzel nemá na tomto zařízení zrcadlo, soubor s předáním nelze zapsat.",
+      "the node has no mirror on this device; the handoff file cannot be written",
     );
   }
 

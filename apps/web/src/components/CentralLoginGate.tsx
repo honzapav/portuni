@@ -7,6 +7,7 @@
 //
 // A personal workspace (or a plain browser) passes straight through — no gating.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { isTauri, getDataMode, authStatus, googleLogin } from "../lib/central";
 import { scopedKey } from "../lib/workspace-storage";
@@ -72,7 +73,7 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
       // the freshly stored session JWT.
       window.location.reload();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(displayError(e));
       setBusy(false);
     }
   }

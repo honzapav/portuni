@@ -18,6 +18,7 @@
 // stick-to-bottom scrolling); everything about sessions -- subscribe,
 // suspend/resume, handoffs, access control -- stays ours.
 
+import { displayError } from "../errors";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { composerStatePlaceholder, hostDisplayName, threadAcceptsMessages, threadCloseAction } from "../lib/session-views";
 import type { SessionStore } from "../lib/session-store";
@@ -62,7 +63,7 @@ import {
   type TranscriptRow,
   type WorkingPhase,
 } from "../lib/session-chat";
-import { HandoffRefusedError, handoffErrorText } from "../lib/handoff-refusal";
+import { HandoffRefusedError } from "../lib/handoff-refusal";
 import { useNowTick } from "../lib/use-now-tick";
 import { contextRingState, latestContextUsage } from "../lib/context-ring";
 import { Button } from "@/components/ui/button";
@@ -345,7 +346,7 @@ export default function SessionChat({
     void sessionsClient
       .subscribe(sessionId, 0)
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(displayError(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -406,7 +407,7 @@ export default function SessionChat({
       await renamePersistentSession(sessionId, trimmed);
       setRenaming(false);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setRenameSaving(false);
     }
@@ -422,7 +423,7 @@ export default function SessionChat({
     sessionStore.put({ ...before, runner: picked, instance_id: instanceId });
     void patchSessionRunnerInstance(sessionId, { runner: picked, instance_id: instanceId }).catch((e) => {
       sessionStore.put(before);
-      setError(`Runner a instanci se nepodařilo uložit: ${String(e)}`);
+      setError(`Runner a instanci se nepodařilo uložit: ${displayError(e)}`);
     });
   };
 
@@ -434,7 +435,7 @@ export default function SessionChat({
     sessionStore.put({ ...before, model });
     void patchSessionModelEffort(sessionId, { model }).catch((e) => {
       sessionStore.put(before);
-      setError(`Model se nepodařilo uložit: ${String(e)}`);
+      setError(`Model se nepodařilo uložit: ${displayError(e)}`);
     });
   };
   const handleEffortChange = (value: string) => {
@@ -443,7 +444,7 @@ export default function SessionChat({
     sessionStore.put({ ...before, effort });
     void patchSessionModelEffort(sessionId, { effort }).catch((e) => {
       sessionStore.put(before);
-      setError(`Úsilí se nepodařilo uložit: ${String(e)}`);
+      setError(`Úsilí se nepodařilo uložit: ${displayError(e)}`);
     });
   };
 
@@ -479,7 +480,7 @@ export default function SessionChat({
     try {
       await sessionsClient[action](sessionId);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setActionPending(null);
     }
@@ -498,7 +499,7 @@ export default function SessionChat({
       setHandoffPath(handoff_path);
       setNoticeDismissed(false);
     } catch (e) {
-      setError(handoffErrorText(e));
+      setError(displayError(e));
       // HANDOFF_NO_CONTENT passes once the content downloads; keep offering it.
       if (
         e instanceof HandoffRefusedError &&
@@ -523,7 +524,7 @@ export default function SessionChat({
       const { session: newSession } = await sessionsClient.continueSession(sessionId);
       sessionStore.put(newSession);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
       setActionPending(null);
     }
   };
@@ -545,7 +546,7 @@ export default function SessionChat({
       setComposerText("");
     } catch (e) {
       setSentAt((current) => nextSentAt(current, { kind: "send_failed" }));
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setSending(false);
     }
@@ -559,7 +560,7 @@ export default function SessionChat({
       await sessionsClient.answer(sessionId, requestId, value);
     } catch (e) {
       answerGate.release(requestId);
-      setError(String(e));
+      setError(displayError(e));
     }
   };
 

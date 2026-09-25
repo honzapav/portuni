@@ -6,6 +6,7 @@
 // it, #498), archived (browse, behind a filter). Self-fetches on mount and whenever nodeId changes, same
 // pattern as DetailPane.access.tsx's AccessSection.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, X } from "lucide-react";
 import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
@@ -93,7 +94,7 @@ export function SessionsSection({
       const res = await fetchNodePersistentSessions(nodeId, includeArchived);
       setSessions(res.sessions);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setLoading(false);
     }
@@ -129,7 +130,7 @@ export function SessionsSection({
       const updated = await closePersistentSession(id);
       updateOne(updated);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     }
   };
 
@@ -146,7 +147,7 @@ export function SessionsSection({
       onSessionStarted?.({ session, run });
       onOpenChat?.(session.id);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setStartingHandoff(null);
       await load();

@@ -6,6 +6,7 @@
 //   configured + logged-out → "Přihlásit přes Google" button
 //   logged-in → user card (avatar/name/email/role/groups) + device token table
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Copy, RefreshCw, Trash2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -65,7 +66,7 @@ export default function AccountSection() {
         setState({ kind: "logged-in", user: enriched });
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(displayError(e));
       setState({ kind: "logged-out" });
     }
   }, []);
@@ -89,7 +90,7 @@ export default function AccountSection() {
       }
       setState({ kind: "logged-in", user: enriched });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -102,7 +103,7 @@ export default function AccountSection() {
       await authLogout();
       setState({ kind: "logged-out" });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -291,7 +292,7 @@ function ConnectedAppsTable() {
       const grants = await centralFetch<OAuthGrant[]>("GET", "/auth/oauth-grants");
       setState({ kind: "ok", grants });
     } catch (e) {
-      setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
+      setState({ kind: "error", reason: displayError(e) });
     }
   }, []);
 
@@ -305,7 +306,7 @@ function ConnectedAppsTable() {
       await centralFetch("DELETE", `/auth/oauth-grants/${encodeURIComponent(id)}`);
       void loadGrants();
     } catch (e) {
-      setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
+      setState({ kind: "error", reason: displayError(e) });
     } finally {
       setRevoking((prev) => {
         const next = new Set(prev);
@@ -426,7 +427,7 @@ function DeviceTokensTable() {
     } catch (e) {
       setTokensState({
         kind: "error",
-        reason: e instanceof Error ? e.message : String(e),
+        reason: displayError(e),
       });
     }
   }, []);
@@ -448,7 +449,7 @@ function DeviceTokensTable() {
       setNewToken({ kind: "input", label, busy: false });
       setTokensState({
         kind: "error",
-        reason: e instanceof Error ? e.message : String(e),
+        reason: displayError(e),
       });
     }
   }
@@ -461,7 +462,7 @@ function DeviceTokensTable() {
     } catch (e) {
       setTokensState({
         kind: "error",
-        reason: e instanceof Error ? e.message : String(e),
+        reason: displayError(e),
       });
     } finally {
       setRevoking((prev) => {

@@ -6,6 +6,7 @@ import { getDb } from "../infra/db.js";
 import {
   getIdentityContext,
   parseJsonBody,
+  respondApiError,
   respondError,
   respondJson,
   type RequestIdentity,
@@ -35,7 +36,7 @@ export async function handleLogin(
 ): Promise<void> {
   const ctx = getIdentityContext();
   if (ctx.mode !== "google") {
-    respondJson(res, 404, { error: "Login is not available in env auth mode" });
+    respondApiError(res, 404, "LOGIN_UNAVAILABLE", "Login is not available in env auth mode");
     return;
   }
   try {
@@ -76,9 +77,7 @@ export async function handleLogin(
       },
     });
   } catch (err) {
-    respondJson(res, 401, {
-      error: err instanceof Error ? err.message : "Login failed",
-    });
+    respondApiError(res, 401, "LOGIN_FAILED", err instanceof Error ? err.message : "Login failed");
   }
 }
 
@@ -115,7 +114,12 @@ export async function handleMintDeviceToken(
     const body = await parseJsonBody(req, res, MintBody);
     if (!body) return;
     if (body.headless && !scopeAtLeast(identity.globalScope, "admin")) {
-      respondJson(res, 403, { error: "Minting a headless device token requires admin scope" });
+      respondApiError(
+        res,
+        403,
+        "HEADLESS_TOKEN_REQUIRES_ADMIN",
+        "Minting a headless device token requires admin scope",
+      );
       return;
     }
     const minted = await mintDeviceToken(getDb(), identity.userId, body.label, {
@@ -152,7 +156,7 @@ export async function handleRevokeDeviceToken(
   try {
     const ok = await revokeDeviceToken(getDb(), identity.userId, tokenId);
     if (!ok) {
-      respondJson(res, 404, { error: "Token not found" });
+      respondApiError(res, 404, "DEVICE_TOKEN_NOT_FOUND", "Token not found", { tokenId });
       return;
     }
     await logAudit(identity.userId, "revoke_device_token", "device_token", tokenId, {});
@@ -189,7 +193,7 @@ export async function handleRevokeOAuthGrant(
   try {
     const ok = await revokeGrant(getDb(), identity.userId, grantId);
     if (!ok) {
-      respondJson(res, 404, { error: "Grant not found" });
+      respondApiError(res, 404, "OAUTH_GRANT_NOT_FOUND", "Grant not found", { grantId });
       return;
     }
     await logAudit(identity.userId, "revoke_oauth_grant", "oauth_grant", grantId, {});
@@ -260,7 +264,7 @@ export async function handleInviteUser(
     respondJson(res, 201, invited);
   } catch (err) {
     if (err instanceof UserExistsError) {
-      respondJson(res, 409, { error: err.message });
+      respondApiError(res, 409, "USER_EXISTS", err.message, { email: err.email });
       return;
     }
     respondError(res, "POST /auth/users/invite", err);
@@ -277,7 +281,7 @@ export function handleDesktopConfig(res: ServerResponse): void {
   const id = (process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_ID ?? "").trim();
   const secret = (process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET ?? "").trim();
   if (!id || !secret) {
-    respondJson(res, 404, { error: "desktop config not available" });
+    respondApiError(res, 404, "DESKTOP_CONFIG_UNAVAILABLE", "desktop config not available");
     return;
   }
   respondJson(res, 200, { google_client_id: id, google_client_secret: secret });
@@ -306,13 +310,13 @@ export async function handleMintHandoff(
     const header = (req.headers.authorization as string | undefined) ?? "";
     const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
     if (!token) {
-      respondJson(res, 401, { error: "handoff requires a bearer token" });
+      respondApiError(res, 401, "BEARER_MISSING", "handoff requires a bearer token");
       return;
     }
     const body = await parseJsonBody(req, res, HandoffBody);
     if (!body) return;
     if (!(await nodeAccessible(body.node_id))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId: body.node_id });
       return;
     }
     // The mirror rides along so a caller that needs a directory before
@@ -334,14 +338,14 @@ export async function handleExchangeHandoff(
 ): Promise<void> {
   try {
     if (!isLoopbackAddress(req.socket?.remoteAddress)) {
-      respondJson(res, 403, { error: "handoff exchange is loopback only", code: "HANDOFF_NOT_LOOPBACK" });
+      respondApiError(res, 403, "HANDOFF_NOT_LOOPBACK", "handoff exchange is loopback only");
       return;
     }
     const body = await parseJsonBody(req, res, ExchangeBody);
     if (!body) return;
     const entry = exchangeHandoff(body.code);
     if (!entry) {
-      respondJson(res, 404, { error: "handoff code unknown, expired or already used", code: "HANDOFF_INVALID" });
+      respondApiError(res, 404, "HANDOFF_INVALID", "handoff code unknown, expired or already used");
       return;
     }
     const [name, mirror] = await Promise.all([

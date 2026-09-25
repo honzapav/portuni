@@ -3,7 +3,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
 import { archiveActor, createActor, updateActor } from "../domain/actors.js";
-import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import {
+  respondApiError,
+  parseBody,
+  respondError,
+  respondJson,
+  type RequestIdentity,
+} from "../http/middleware.js";
 
 export async function handleListActors(
   req: IncomingMessage,
@@ -44,7 +50,7 @@ export async function handleCreateActor(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "body required" });
+      respondApiError(res, 400, "INVALID_REQUEST", "body required");
       return;
     }
     const row = await createActor(getDb(), identity.userId, body as Parameters<typeof createActor>[2]);
@@ -63,7 +69,7 @@ export async function handleUpdateActor(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "no fields to update" });
+      respondApiError(res, 400, "INVALID_REQUEST", "no fields to update");
       return;
     }
     const row = await updateActor(getDb(), identity.userId, {

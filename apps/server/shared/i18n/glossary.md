@@ -79,3 +79,21 @@ never Title Case. Czech keeps its own casing and „…“ quotes.
 | úsilí (effort) | effort | |
 | kontext | context | The context window. |
 | koncept | draft | An unsent message. |
+
+## Records, access and runners
+
+| Czech | English | Notes |
+|---|---|---|
+| odpovědnost | responsibility | |
+| zdroj dat | data source | |
+| nástroj | tool | |
+| událost | event | |
+| stav životního cyklu | lifecycle state | |
+| zdraví (projektu) | health | |
+| přístup / sdílení | access / sharing | |
+| žádost o přístup | access request | |
+| oprávnění | permission | |
+| instance (poskytovatele) | instance | A runner's provider instance. |
+| token | token | |
+| připojená aplikace | connected app | An OAuth grant. |
+| přepis | transcript | A thread's conversation on the device. |

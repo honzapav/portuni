@@ -16,6 +16,7 @@
 // In a plain browser (Vite dev / static preview) this short-circuits to
 // "ready" — the dev proxy handles auth and there is no Keychain.
 
+import { displayError } from "../errors";
 import { useEffect, useState, type ReactNode } from "react";
 import { isTauri } from "../lib/backend-url";
 import { Button } from "@/components/ui/button";
@@ -93,7 +94,7 @@ export default function TursoSetupGate({ children }: Props) {
       // start from a clean slate against the freshly-spawned sidecar.
       window.location.reload();
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
       setSaving(false);
     }
   }
@@ -114,7 +115,7 @@ export default function TursoSetupGate({ children }: Props) {
       // data_mode=central + configured in the new window and takes over
       // with the Google login screen there.
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
       setSaving(false);
     }
   }
@@ -130,7 +131,7 @@ export default function TursoSetupGate({ children }: Props) {
       // and the Rust host opens the new ws:<id> window itself and closes
       // this bootstrap one (#222).
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
       setSaving(false);
     }
   }

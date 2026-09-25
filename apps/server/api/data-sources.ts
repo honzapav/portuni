@@ -9,7 +9,13 @@ import {
   updateDataSource,
 } from "../domain/entity-attributes.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
-import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import {
+  respondApiError,
+  parseBody,
+  respondError,
+  respondJson,
+  type RequestIdentity,
+} from "../http/middleware.js";
 import { guardRestNodeWrite } from "./write-gate.js";
 
 export async function handleListDataSources(
@@ -19,7 +25,7 @@ export async function handleListDataSources(
 ): Promise<void> {
   const nodeId = url.searchParams.get("node_id");
   if (!nodeId) {
-    respondJson(res, 400, { error: "node_id parameter required" });
+    respondApiError(res, 400, "INVALID_REQUEST", "node_id parameter required");
     return;
   }
   try {
@@ -38,17 +44,17 @@ export async function handleCreateDataSource(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "body required" });
+      respondApiError(res, 400, "INVALID_REQUEST", "body required");
       return;
     }
     const nodeId = body.node_id as string | undefined;
     if (!nodeId) {
-      respondJson(res, 400, { error: "node_id required" });
+      respondApiError(res, 400, "INVALID_REQUEST", "node_id required");
       return;
     }
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `node ${nodeId} not found` });
+      respondApiError(res, 404, "NODE_NOT_FOUND", `node ${nodeId} not found`, { nodeId });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -76,12 +82,12 @@ export async function handleDeleteDataSource(
       args: [dsId],
     });
     if (dsRow.rows.length === 0) {
-      respondJson(res, 404, { error: `data source ${dsId} not found` });
+      respondApiError(res, 404, "DATA_SOURCE_NOT_FOUND", `data source ${dsId} not found`, { dataSourceId: dsId });
       return;
     }
     const nodeId = String(dsRow.rows[0].node_id);
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `data source ${dsId} not found` });
+      respondApiError(res, 404, "DATA_SOURCE_NOT_FOUND", `data source ${dsId} not found`, { dataSourceId: dsId });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -101,7 +107,7 @@ export async function handleUpdateDataSource(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "no fields to update" });
+      respondApiError(res, 400, "INVALID_REQUEST", "no fields to update");
       return;
     }
     const db = getDb();
@@ -110,12 +116,12 @@ export async function handleUpdateDataSource(
       args: [dsId],
     });
     if (dsRow.rows.length === 0) {
-      respondJson(res, 404, { error: `data source ${dsId} not found` });
+      respondApiError(res, 404, "DATA_SOURCE_NOT_FOUND", `data source ${dsId} not found`, { dataSourceId: dsId });
       return;
     }
     const nodeId = String(dsRow.rows[0].node_id);
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `data source ${dsId} not found` });
+      respondApiError(res, 404, "DATA_SOURCE_NOT_FOUND", `data source ${dsId} not found`, { dataSourceId: dsId });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;

@@ -71,7 +71,7 @@ describe("server i18n instance", () => {
     assert.equal(graph(($) => $.sample.message, { workspaceName: "W" }), "Graph of W.");
     assert.equal(settings(($) => $.sample.message, { workspaceName: "W" }), "Settings of W.");
     assert.equal(
-      errors(($) => $.sample.message, { requestId: "r1" }),
+      errors(($) => $.UNKNOWN, { requestId: "r1" }),
       "Something went wrong (request r1).",
     );
   });

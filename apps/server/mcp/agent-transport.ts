@@ -545,11 +545,11 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
         res.writeHead(413, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Request body too large" }));
+        res.end(JSON.stringify({ error: "Request body too large", code: "BODY_TOO_LARGE" }));
         return;
       }
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid JSON body" }));
+      res.end(JSON.stringify({ error: "Invalid JSON body", code: "INVALID_JSON" }));
       return;
     }
 
@@ -559,7 +559,7 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         // Session pinning: reject cross-user session reuse.
         if (existing.userId !== identity.userId) {
           res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Session belongs to a different user" }));
+          res.end(JSON.stringify({ error: "Session belongs to a different user", code: "MCP_SESSION_FORBIDDEN" }));
           return;
         }
         existing.lastUsedAt = Date.now();
@@ -569,13 +569,13 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
 
       if (sessionId && !existing) {
         res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Session not found" }));
+        res.end(JSON.stringify({ error: "Session not found", code: "MCP_SESSION_NOT_FOUND" }));
         return;
       }
 
       if (sessions.size >= MAX_SESSIONS) {
         res.writeHead(503, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Session capacity reached" }));
+        res.end(JSON.stringify({ error: "Session capacity reached", code: "MCP_CAPACITY_REACHED" }));
         return;
       }
 
@@ -621,7 +621,7 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         res.writeHead(503, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
-            error: "Central MCP server unreachable; refusing to start agent session",
+            error: "Central MCP server unreachable; refusing to start agent session", code: "CENTRAL_UNREACHABLE",
             reason,
           }),
         );
@@ -681,7 +681,7 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
       if (upstream && !tracked) upstream.close().catch(() => undefined);
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Internal server error" }));
+        res.end(JSON.stringify({ error: "Internal server error", code: "INTERNAL_ERROR" }));
       }
     }
   }

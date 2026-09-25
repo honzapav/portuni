@@ -25,12 +25,13 @@ import { canonicalIssuer, isOAuthEnabled } from "../auth/oauth/enabled.js";
 import { upsertUserFromIdentity } from "../auth/users.js";
 import { logAudit } from "../infra/audit.js";
 import { renderConsentPage, renderOAuthErrorPage } from "../auth/oauth/consent-page.js";
+import type { ErrorCode, ErrorParams } from "../shared/error-codes.js";
 
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60; // matches grants.ts ACCESS_TTL_MS
 
 function respondNotFound(res: ServerResponse): void {
   res.writeHead(404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: "not found" }));
+  res.end(JSON.stringify({ error: "not found", code: "ROUTE_NOT_FOUND" }));
 }
 
 function respondHtml(res: ServerResponse, status: number, html: string): void {
@@ -38,8 +39,18 @@ function respondHtml(res: ServerResponse, status: number, html: string): void {
   res.end(html);
 }
 
-function respondErrorPage(res: ServerResponse, status: number, message: string): void {
-  respondHtml(res, status, renderOAuthErrorPage(message));
+// A sign-in flow error is an HTML page (the user is in a browser, mid
+// redirect), not JSON. It carries its code (shared/error-codes.ts) and
+// params like every other error; the English message is what it renders
+// until the pages are localized by the user's language.
+function respondErrorPage(
+  res: ServerResponse,
+  status: number,
+  code: ErrorCode,
+  message: string,
+  params?: ErrorParams,
+): void {
+  respondHtml(res, status, renderOAuthErrorPage({ code, message, params }));
 }
 
 function respondJsonNoStore(res: ServerResponse, status: number, body: unknown): void {
@@ -124,25 +135,32 @@ async function handleAuthorize(url: URL, res: ServerResponse, ctx: IdentityConte
   const scope = q.get("scope") ?? "";
 
   if (!clientId || !redirectUri || !codeChallenge || !state || !resource) {
-    respondErrorPage(res, 400, "Chybí povinný parametr požadavku o autorizaci.");
+    respondErrorPage(res, 400, "OAUTH_MISSING_PARAMETER", "A required authorization request parameter is missing.");
     return;
   }
   if (codeChallengeMethod !== "S256") {
-    respondErrorPage(res, 400, "Podporována je pouze metoda PKCE S256.");
+    respondErrorPage(res, 400, "OAUTH_PKCE_S256_ONLY", "Only the PKCE S256 method is supported.");
     return;
   }
 
   const cimd = await fetchClientMetadata(clientId);
   if (!cimd.ok) {
-    respondErrorPage(res, 400, `Nepodařilo se ověřit klienta: ${cimd.reason}`);
+    respondErrorPage(res, 400, "OAUTH_CLIENT_UNVERIFIED", `The client could not be verified: ${cimd.reason}`, {
+      reason: cimd.reason,
+    });
     return;
   }
   if (!redirectUriAllowed(cimd.doc.redirect_uris, redirectUri)) {
-    respondErrorPage(res, 400, "Návratová adresa (redirect_uri) není u tohoto klienta registrována.");
+    respondErrorPage(
+      res,
+      400,
+      "OAUTH_REDIRECT_URI_UNREGISTERED",
+      "The redirect_uri is not registered for this client.",
+    );
     return;
   }
   if (resource !== `${canonicalIssuer()}/mcp`) {
-    respondErrorPage(res, 400, "Neplatný cílový zdroj (resource).");
+    respondErrorPage(res, 400, "OAUTH_INVALID_RESOURCE", "Invalid target resource (resource).");
     return;
   }
 
@@ -165,7 +183,12 @@ async function handleGoogleCallback(url: URL, res: ServerResponse, ctx: Identity
   const stateToken = url.searchParams.get("state") ?? "";
   const flow = await verifyFlowState(stateToken, ctx.jwtSecret);
   if (!flow) {
-    respondErrorPage(res, 400, "Přihlašovací relace vypršela nebo je neplatná. Zkuste to prosím znovu.");
+    respondErrorPage(
+      res,
+      400,
+      "OAUTH_SESSION_EXPIRED",
+      "The sign-in session has expired or is invalid. Please try again.",
+    );
     return;
   }
 
@@ -173,13 +196,16 @@ async function handleGoogleCallback(url: URL, res: ServerResponse, ctx: Identity
   try {
     handled = await ctx.adapter.interactiveLogin!.handleCallback(url.searchParams);
   } catch (err) {
-    respondErrorPage(res, 400, err instanceof Error ? err.message : "Přihlášení přes Google se nezdařilo.");
+    const reason = err instanceof Error ? err.message : String(err);
+    respondErrorPage(res, 400, "OAUTH_GOOGLE_LOGIN_FAILED", `Google sign-in failed: ${reason}`, { reason });
     return;
   }
 
   const cimd = await fetchClientMetadata(flow.request.clientId);
   if (!cimd.ok) {
-    respondErrorPage(res, 400, `Nepodařilo se ověřit klienta: ${cimd.reason}`);
+    respondErrorPage(res, 400, "OAUTH_CLIENT_UNVERIFIED", `The client could not be verified: ${cimd.reason}`, {
+      reason: cimd.reason,
+    });
     return;
   }
 
@@ -222,7 +248,12 @@ async function handleConsent(req: IncomingMessage, res: ServerResponse, ctx: Ide
 
   const flow = await verifyFlowState(token, ctx.jwtSecret);
   if (!flow?.identity) {
-    respondErrorPage(res, 400, "Přihlašovací relace vypršela nebo je neplatná. Zkuste to prosím znovu.");
+    respondErrorPage(
+      res,
+      400,
+      "OAUTH_SESSION_EXPIRED",
+      "The sign-in session has expired or is invalid. Please try again.",
+    );
     return;
   }
 

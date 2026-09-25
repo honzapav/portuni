@@ -7,9 +7,11 @@
 //
 // Frames are JSON `{ id?, type, payload }`. A frame carrying `id` gets a
 // `{ id, type: "reply", payload }` on success or `{ id, type: "error",
-// payload: { code, message } }` on failure; a refused action is always an
-// error frame, never a closed socket -- the same sessionAccess codes the
-// REST routes answer with (auth/session-access.ts).
+// payload: { code, message, params? } }` on failure; a refused action is
+// always an error frame, never a closed socket -- the same codes the REST
+// routes answer with (auth/session-access.ts, api/session-refusals.ts).
+// `code` is a member of shared/error-codes.ts and `params` what the web's
+// catalog message interpolates; `message` is English, for logs (#531).
 //
 // Auth happens once, at the "upgrade" event, before this module ever sees
 // the connection (http/server.ts's checkUpgradeAuth) -- every frame on an
@@ -41,7 +43,9 @@ import { listSessions } from "../domain/sessions.js";
 import { scopeAtLeast } from "../auth/roles.js";
 import { sessionRefusal } from "./session-refusals.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
-import type { CentralClient } from "../domain/sync/central/client.js";
+import { CentralHttpError, type CentralClient } from "../domain/sync/central/client.js";
+import { ApiError } from "../http/middleware.js";
+import { isErrorCode, type ErrorCode, type ErrorParams } from "../shared/error-codes.js";
 import { logAudit } from "../infra/audit.js";
 import { toSummary } from "./sessions.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
@@ -193,8 +197,32 @@ function sendReply(ws: WebSocket, id: string | undefined, payload: unknown): voi
   if (id) send(ws, { id, type: "reply", payload });
 }
 
-function sendErrorReply(ws: WebSocket, id: string | undefined, code: string, message: string): void {
-  if (id) send(ws, { id, type: "error", payload: { code, message } });
+function sendErrorReply(
+  ws: WebSocket,
+  id: string | undefined,
+  code: ErrorCode,
+  message: string,
+  params?: ErrorParams,
+): void {
+  if (!id) return;
+  const payload: { code: ErrorCode; message: string; params?: ErrorParams } = { code, message };
+  if (params && Object.keys(params).length > 0) payload.params = params;
+  send(ws, { id, type: "error", payload });
+}
+
+// The error frame for anything a frame handler threw: the same mapping
+// REST's respondError applies (a session refusal, an access refusal, a typed
+// ApiError, a central server's coded 4xx relayed with its params), else
+// INTERNAL_ERROR. Exported for tests.
+export function errorFrameFor(err: unknown): { code: ErrorCode; message: string; params?: ErrorParams } {
+  const refusal = sessionRefusal(err);
+  if (refusal) return { code: refusal.code, message: refusal.message, params: refusal.params };
+  if (err instanceof SessionAccessError) return { code: err.code, message: err.message };
+  if (err instanceof ApiError) return { code: err.code, message: err.message, params: err.params };
+  if (err instanceof CentralHttpError && isErrorCode(err.code) && err.status >= 400 && err.status < 500) {
+    return { code: err.code, message: err.message, params: err.params };
+  }
+  return { code: "INTERNAL_ERROR", message: "internal error" };
 }
 
 // The one-line session rule (#457, auth/session-access.ts): a thread is its
@@ -339,7 +367,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       return false;
     }
     if (!scopeAtLeast(conn.identity.globalScope, "write")) {
-      sendErrorReply(conn.ws, frame.id, "FORBIDDEN", `${frame.type} requires write scope`);
+      sendErrorReply(conn.ws, frame.id, "FORBIDDEN", `${frame.type} requires write scope`, { requiredScope: "write" });
       return false;
     }
     return true;
@@ -426,7 +454,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       // NO_LIVE_RUN from the error's type.
       const refusal = sessionRefusal(err);
       if (refusal) {
-        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message);
+        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message, refusal.params);
         return;
       }
       throw err;
@@ -529,7 +557,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     } catch (err) {
       const refusal = sessionRefusal(err);
       if (refusal) {
-        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message);
+        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message, refusal.params);
         return;
       }
       throw err;
@@ -544,7 +572,12 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       return;
     }
     const result = ClientFrameSchema.safeParse(parsed);
-    if (!result.success) return;
+    if (!result.success) {
+      // A frame that asked for an answer gets one; anything else is dropped.
+      const id = (parsed as { id?: unknown } | null)?.id;
+      if (typeof id === "string") sendErrorReply(conn.ws, id, "INVALID_REQUEST", "invalid frame");
+      return;
+    }
     const frame = result.data;
     try {
       switch (frame.type) {
@@ -572,8 +605,9 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
           break;
       }
     } catch (err) {
-      console.error("[portuni:sessions-ws] frame handling failed:", err);
-      sendErrorReply(conn.ws, frame.id, "INTERNAL_ERROR", "internal error");
+      const reply = errorFrameFor(err);
+      if (reply.code === "INTERNAL_ERROR") console.error("[portuni:sessions-ws] frame handling failed:", err);
+      sendErrorReply(conn.ws, frame.id, reply.code, reply.message, reply.params);
     }
   }
 

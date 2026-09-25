@@ -20,6 +20,8 @@
 // comment for the canonical protocol description.
 
 import { isTauri } from "./backend-url.js";
+import { ApiError, ClientError } from "./api-error.js";
+import type { ErrorParams } from "../../../server/shared/error-codes";
 import type { SessionSummary, SessionRunRow } from "../types";
 import type { QuestionAnswer } from "./session-chat.js";
 
@@ -58,7 +60,7 @@ interface ReplyFrame {
 interface ErrorFrame {
   id?: string;
   type: "error";
-  payload: { code: string; message: string };
+  payload: { code: string; message: string; params?: ErrorParams };
 }
 interface EventFrame {
   type: "event";
@@ -479,7 +481,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     return setTimeout(() => {
       pendingReplies.delete(id);
       transport.cancel(id);
-      reject(new Error(`request_timeout: ${type} got no reply within ${REQUEST_TIMEOUT_MS} ms`));
+      reject(new ClientError("REQUEST_TIMEOUT", `request_timeout: ${type} got no reply within ${REQUEST_TIMEOUT_MS} ms`));
     }, REQUEST_TIMEOUT_MS);
   }
 
@@ -532,7 +534,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       if (pending.type === "subscribe" && subscribedSessions.has(pending.sessionId)) {
         void park(pending.sessionId, lastSeq.get(pending.sessionId)).then(pending.resolve, pending.reject);
       } else {
-        pending.reject(new Error(`disconnected: the session channel dropped before the ${pending.type} reply arrived`));
+        pending.reject(new ClientError("DISCONNECTED", `disconnected: the session channel dropped before the ${pending.type} reply arrived`));
       }
     }
   }
@@ -571,10 +573,10 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
   }
 
   function rejectAllPending(reason: string): void {
-    for (const [, pending] of pendingReplies) pending.reject(new Error(reason));
+    for (const [, pending] of pendingReplies) pending.reject(new ClientError("DISCONNECTED", reason));
     pendingReplies.clear();
     for (const [, parked] of parkedSubscribes) {
-      for (const w of parked.waiters) w.reject(new Error(reason));
+      for (const w of parked.waiters) w.reject(new ClientError("DISCONNECTED", reason));
     }
     parkedSubscribes.clear();
   }
@@ -586,7 +588,8 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       if (!pending) return;
       pendingReplies.delete(frame.id);
       if (frame.type === "error") {
-        pending.reject(new Error(`${frame.payload.code}: ${frame.payload.message}`));
+        const { code, message, params } = frame.payload;
+        pending.reject(new ApiError(0, code, `${code}: ${message}`, params ?? {}));
       } else {
         pending.resolve(frame.payload);
       }

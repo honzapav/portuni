@@ -3,6 +3,7 @@
 // gating (global_scope === "admin") happens in SettingsPage.tsx; this
 // component assumes it's only ever rendered for an admin.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -51,7 +52,7 @@ export default function SettingsUsersPanel() {
       if (mountedRef.current) {
         setState({
           kind: "error",
-          reason: e instanceof Error ? e.message : String(e),
+          reason: displayError(e),
         });
       }
     }
@@ -80,9 +81,7 @@ export default function SettingsUsersPanel() {
         setInviteError(
           e instanceof UserExistsError
             ? "Uživatel už existuje"
-            : e instanceof Error
-              ? e.message
-              : String(e),
+            : displayError(e),
         );
       }
     } finally {

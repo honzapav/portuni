@@ -5,6 +5,7 @@
 // shape, driving the REST API instead of Tauri commands -- the registry now
 // lives on the sidecar, not in the desktop's own config.json.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -91,7 +92,7 @@ export default function RunnersSection() {
         if (mountedRef.current) setRunners(r);
       })
       .catch((e) => {
-        if (mountedRef.current) setRunnersError(e instanceof Error ? e.message : String(e));
+        if (mountedRef.current) setRunnersError(displayError(e));
       });
   }, []);
 
@@ -104,7 +105,7 @@ export default function RunnersSection() {
       if (mountedRef.current) setState({ kind: "ok", instances });
     } catch (e) {
       if (mountedRef.current) {
-        setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
+        setState({ kind: "error", reason: displayError(e) });
       }
     }
   }, []);
@@ -147,7 +148,7 @@ export default function RunnersSection() {
       await withPending(instance.id, () => deleteRunnerInstance(instance.id));
       await load();
     } catch (e) {
-      setRowError(e instanceof Error ? e.message : String(e));
+      setRowError(displayError(e));
     }
   }
 
@@ -160,7 +161,7 @@ export default function RunnersSection() {
       );
       await load();
     } catch (e) {
-      setRowError(e instanceof Error ? e.message : String(e));
+      setRowError(displayError(e));
     }
   }
 
@@ -416,7 +417,7 @@ function InstanceRow({
       await updateRunnerInstance(instance.id, { name: name.trim(), runner: runner.trim(), env });
       onSaved();
     } catch (e) {
-      onError(e instanceof Error ? e.message : String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -596,7 +597,7 @@ function CreateInstanceForm({
       setEnvText("");
       onCreated();
     } catch (e) {
-      if (mountedRef.current) setError(e instanceof Error ? e.message : String(e));
+      if (mountedRef.current) setError(displayError(e));
     } finally {
       if (mountedRef.current) setBusy(false);
     }

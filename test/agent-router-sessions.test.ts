@@ -945,7 +945,8 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(res.status, 409);
     const body = (await res.json()) as { error: string; code: string };
     assert.equal(body.code, "HANDOFF_NOT_ALLOWED");
-    assert.match(body.error, /Předat lze jen/);
+    assert.match(body.error, /only a running or suspended thread/);
+    assert.deepEqual((body as { params?: unknown }).params, { state: "draft" });
     assert.equal(fake.sessions.get(session.id)?.state, "draft");
   });
 
@@ -977,6 +978,7 @@ describe("agent-router: sessions/tasks", () => {
     const body = (await res.json()) as { error: string; code: string };
     assert.equal(body.code, "HANDOFF_RUN_ELSEWHERE");
     assert.match(body.error, /druhy-mac/);
+    assert.deepEqual((body as { params?: unknown }).params, { host: "druhy-mac" });
     assert.equal(fake.sessions.get(created.id)?.state, "running");
     assert.equal(fake.sessions.get(created.id)?.handoff_path, null);
     assert.equal(fake.runs.get(run.id)?.ended_at, null);
@@ -1002,8 +1004,9 @@ describe("agent-router: sessions/tasks", () => {
     });
     assert.equal(res.status, 409);
     const body = (await res.json()) as { error: string; code: string };
-    assert.equal(body.code, "HANDOFF_TRANSCRIPT_ELSEWHERE");
+    assert.equal(body.code, "SESSION_TRANSCRIPT_ELSEWHERE");
     assert.match(body.error, /druhy-mac/);
+    assert.deepEqual((body as { params?: unknown }).params, { host: "druhy-mac" });
     assert.equal(fake.sessions.get(created.id)?.state, "suspended");
     assert.equal([...fake.runs.values()].filter((r) => r.session_id === created.id).length, 0);
   });
@@ -1067,7 +1070,7 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(res.status, 409);
     const body = (await res.json()) as { error: string; code: string };
     assert.equal(body.code, "HANDOFF_FILE_NOT_HERE");
-    assert.match(body.error, /ještě není na tomto zařízení/);
+    assert.match(body.error, /not on this device yet/);
     assert.equal(fake.sessions.size, before);
   });
 

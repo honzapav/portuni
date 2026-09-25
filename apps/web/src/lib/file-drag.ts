@@ -121,7 +121,9 @@ export type ApplyOutcome = {
   // and everything after it on a failure (rule 7).
   plan: FilePlan;
   done: number;
-  failure: { fileId: string; message: string } | null;
+  // `error` is what the move threw; the component renders it (displayError),
+  // `message` is its raw text for logs and tests.
+  failure: { fileId: string; message: string; error: unknown } | null;
 };
 
 // "Použít": the existing move route once per planned file, in orderMoves
@@ -147,7 +149,7 @@ export async function applyMoves(
       await move(entry.fileId, entry.target);
       done += 1;
     } catch (e) {
-      failure = { fileId: entry.fileId, message: e instanceof Error ? e.message : String(e) };
+      failure = { fileId: entry.fileId, message: e instanceof Error ? e.message : String(e), error: e };
       remaining[entry.fileId] = entry.target;
     }
   }

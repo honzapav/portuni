@@ -11,7 +11,13 @@ import {
   updateResponsibility,
 } from "../domain/responsibilities.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
-import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import {
+  respondApiError,
+  parseBody,
+  respondError,
+  respondJson,
+  type RequestIdentity,
+} from "../http/middleware.js";
 import { guardRestNodeWrite } from "./write-gate.js";
 
 export async function handleListResponsibilities(
@@ -40,17 +46,17 @@ export async function handleCreateResponsibility(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "body required" });
+      respondApiError(res, 400, "INVALID_REQUEST", "body required");
       return;
     }
     const nodeId = body.node_id as string | undefined;
     if (!nodeId) {
-      respondJson(res, 400, { error: "node_id required" });
+      respondApiError(res, 400, "INVALID_REQUEST", "node_id required");
       return;
     }
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `node ${nodeId} not found` });
+      respondApiError(res, 404, "NODE_NOT_FOUND", `node ${nodeId} not found`, { nodeId });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -74,7 +80,7 @@ export async function handleUpdateResponsibility(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "no fields to update" });
+      respondApiError(res, 400, "INVALID_REQUEST", "no fields to update");
       return;
     }
     const db = getDb();
@@ -83,12 +89,16 @@ export async function handleUpdateResponsibility(
       args: [respId],
     });
     if (respRow.rows.length === 0) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      respondApiError(res, 404, "RESPONSIBILITY_NOT_FOUND", `responsibility ${respId} not found`, {
+        responsibilityId: respId,
+      });
       return;
     }
     const nodeId = String(respRow.rows[0].node_id);
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      respondApiError(res, 404, "RESPONSIBILITY_NOT_FOUND", `responsibility ${respId} not found`, {
+        responsibilityId: respId,
+      });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -115,12 +125,16 @@ export async function handleDeleteResponsibility(
       args: [respId],
     });
     if (respRow.rows.length === 0) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      respondApiError(res, 404, "RESPONSIBILITY_NOT_FOUND", `responsibility ${respId} not found`, {
+        responsibilityId: respId,
+      });
       return;
     }
     const nodeId = String(respRow.rows[0].node_id);
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      respondApiError(res, 404, "RESPONSIBILITY_NOT_FOUND", `responsibility ${respId} not found`, {
+        responsibilityId: respId,
+      });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -140,7 +154,7 @@ export async function handleAssignResponsibility(
   try {
     const body = (await parseBody(req)) as { actor_id?: string } | undefined;
     if (!body?.actor_id) {
-      respondJson(res, 400, { error: "actor_id required" });
+      respondApiError(res, 400, "INVALID_REQUEST", "actor_id required");
       return;
     }
     const db = getDb();
@@ -149,12 +163,16 @@ export async function handleAssignResponsibility(
       args: [respId],
     });
     if (respRow.rows.length === 0) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      respondApiError(res, 404, "RESPONSIBILITY_NOT_FOUND", `responsibility ${respId} not found`, {
+        responsibilityId: respId,
+      });
       return;
     }
     const nodeId = String(respRow.rows[0].node_id);
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      respondApiError(res, 404, "RESPONSIBILITY_NOT_FOUND", `responsibility ${respId} not found`, {
+        responsibilityId: respId,
+      });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -186,12 +204,16 @@ export async function handleUnassignResponsibility(
       args: [respId],
     });
     if (respRow.rows.length === 0) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      respondApiError(res, 404, "RESPONSIBILITY_NOT_FOUND", `responsibility ${respId} not found`, {
+        responsibilityId: respId,
+      });
       return;
     }
     const nodeId = String(respRow.rows[0].node_id);
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      respondApiError(res, 404, "RESPONSIBILITY_NOT_FOUND", `responsibility ${respId} not found`, {
+        responsibilityId: respId,
+      });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;

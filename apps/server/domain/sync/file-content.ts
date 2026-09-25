@@ -23,7 +23,13 @@ import { resolveRemote } from "./routing.js";
 import { sha256Buffer } from "./hash.js";
 import { safeMirrorJoin, type Section } from "./remote-path.js";
 import { withPathLock } from "./path-lock.js";
+import type { ErrorParams } from "../../shared/error-codes.js";
 
+// These values go over the wire unchanged from the central server to a
+// team-workspace sync agent, and agents of older versions branch on them
+// (engine-central.ts on EXISTS/CONFLICT, agent-transport.ts on NOT_FOUND,
+// INVALID_PATH, NO_REMOTE, NOT_EDITABLE; the web on CONFLICT/NO_PREVIEW):
+// never rename one. Each is a member of shared/error-codes.ts.
 export type FileContentErrorCode =
   | "NO_MIRROR"
   | "NO_REMOTE"
@@ -40,6 +46,7 @@ export class FileContentError extends Error {
     message: string,
     readonly code: FileContentErrorCode,
     readonly currentVersion?: string,
+    readonly params?: ErrorParams,
   ) {
     super(message);
     this.name = "FileContentError";
@@ -64,7 +71,7 @@ export function resolveMirrorAbs(mirrorRoot: string, relPath: string): string {
   try {
     return safeMirrorJoin(mirrorRoot, ...segments);
   } catch {
-    throw new FileContentError(`invalid path: ${relPath}`, "INVALID_PATH");
+    throw new FileContentError(`invalid path: ${relPath}`, "INVALID_PATH", undefined, { path: relPath });
   }
 }
 
@@ -89,12 +96,12 @@ export async function readFileContent(
     buf = await readFile(abs);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND");
+      throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND", undefined, { path: a.relPath });
     }
     throw e;
   }
   if (!isEditableMime(mime) || buf.includes(0)) {
-    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
   return {
     content: buf.toString("utf8"),
@@ -176,7 +183,7 @@ export async function createFile(
   const section: Section = a.section ?? "wip";
   const fn = a.filename;
   if (!fn || fn.includes("/") || fn.includes("\\") || fn.includes("\0") || fn === "." || fn === "..") {
-    throw new FileContentError(`invalid filename: ${a.filename}`, "INVALID_PATH");
+    throw new FileContentError(`invalid filename: ${a.filename}`, "INVALID_PATH", undefined, { filename: a.filename });
   }
   const subSegs = a.subpath ? a.subpath.split("/").filter((s) => s.length > 0) : [];
   let abs: string;
@@ -195,7 +202,7 @@ export async function createFile(
   await withPathLock(abs, async () => {
     try {
       await readFile(abs);
-      throw new FileContentError(`file already exists: ${fn}`, "EXISTS");
+      throw new FileContentError(`file already exists: ${fn}`, "EXISTS", undefined, { filename: fn });
     } catch (e) {
       if (e instanceof FileContentError) throw e;
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;

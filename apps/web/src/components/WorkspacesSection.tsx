@@ -10,6 +10,7 @@
 // workspace's sidecar, so this table is the only place another, enabled
 // workspace's health is visible at all.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -66,7 +67,7 @@ export default function WorkspacesSection() {
       if (mountedRef.current) {
         setState({
           kind: "error",
-          reason: e instanceof Error ? e.message : String(e),
+          reason: displayError(e),
         });
       }
     }
@@ -130,7 +131,7 @@ export default function WorkspacesSection() {
       await withPending(id, () => openWorkspaceWindow(id));
       // Opens/focuses its own window -- nothing left to do here.
     } catch (e) {
-      setRowError(e instanceof Error ? e.message : String(e));
+      setRowError(displayError(e));
     }
   }
 
@@ -141,7 +142,7 @@ export default function WorkspacesSection() {
       await withPending(id, () => restartWorkspace(id));
       await reloadAfterMutation();
     } catch (e) {
-      setRowError(e instanceof Error ? e.message : String(e));
+      setRowError(displayError(e));
     }
   }
 
@@ -152,7 +153,7 @@ export default function WorkspacesSection() {
       await withPending(id, () => setWorkspaceEnabled(id, enabled));
       await reloadAfterMutation();
     } catch (e) {
-      setRowError(e instanceof Error ? e.message : String(e));
+      setRowError(displayError(e));
     }
   }
 
@@ -163,7 +164,7 @@ export default function WorkspacesSection() {
       await withPending(w.id, () => deleteWorkspace(w.id));
       await reloadAfterMutation();
     } catch (e) {
-      setRowError(e instanceof Error ? e.message : String(e));
+      setRowError(displayError(e));
     }
   }
 
@@ -444,7 +445,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
       onCreated();
       if (wasLocal && mountedRef.current) setCreatedHint(true);
     } catch (e) {
-      if (mountedRef.current) setError(e instanceof Error ? e.message : String(e));
+      if (mountedRef.current) setError(displayError(e));
     } finally {
       if (mountedRef.current) setBusy(false);
     }

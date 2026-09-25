@@ -7,6 +7,7 @@
 // in Práce. No auto-refresh; a manual "Obnovit" button matches
 // SyncOverview's pattern.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Clock, MessagesSquare, RefreshCw, Sparkles } from "lucide-react";
 import { capRows, overviewCounters, splitThreadsAndCli } from "../lib/overview-view";
@@ -74,7 +75,7 @@ export default function OverviewView({
     try {
       setData(await fetchOverview());
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setLoading(false);
     }

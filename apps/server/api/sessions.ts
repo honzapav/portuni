@@ -69,6 +69,7 @@ import { z } from "zod";
 import { getDb } from "../infra/db.js";
 import {
   parseJsonBody,
+  respondApiError,
   respondError,
   respondJson,
   type RequestIdentity,
@@ -166,7 +167,7 @@ export async function handleListSessions(
       limit: url.searchParams.get("limit") ?? undefined,
     });
     if (!parsed.success) {
-      respondJson(res, 400, { error: "invalid query", code: "INVALID_QUERY", issues: parsed.error.issues });
+      respondApiError(res, 400, "INVALID_REQUEST", "invalid query", undefined, { issues: parsed.error.issues });
       return;
     }
     const db = getDb();
@@ -192,7 +193,7 @@ export async function handleListNodeSessions(
     const db = getDb();
     const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [nodeId] });
     if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
       return;
     }
 
@@ -227,7 +228,7 @@ async function guardSessionAccess(
     return await sessionAccess(db, identity, sessionId, action);
   } catch (err) {
     if (err instanceof SessionAccessError) {
-      respondJson(res, 404, { error: err.message, code: err.code });
+      respondApiError(res, 404, err.code, err.message);
       return null;
     }
     throw err;
@@ -313,7 +314,7 @@ export async function handlePatchSession(
     // "running" and passes; a bare change on any other state is refused.
     const touchesRunner = body.runner !== undefined || body.instance_id !== undefined;
     if (touchesRunner && existing.state !== "draft" && body.state === undefined) {
-      respondJson(res, 409, { error: "runner and instance can only change on a draft", code: "SESSION_NOT_DRAFT" });
+      respondApiError(res, 409, "SESSION_NOT_DRAFT", "runner and instance can only change on a draft");
       return;
     }
     // #426: the live half of a model change (session-runtime.ts's in-memory
@@ -427,7 +428,14 @@ export async function handleTransitionSessionState(
       const updated = await transitionSessionState(db, identity.userId, sessionId, target);
       respondJson(res, 200, await toSummary(updated));
     } catch (transitionErr) {
-      respondJson(res, 409, { error: "invalid_transition", detail: String(transitionErr) });
+      respondApiError(
+        res,
+        409,
+        "INVALID_SESSION_TRANSITION",
+        `invalid session state transition from ${existing.state} to ${target}`,
+        { from: existing.state, to: target },
+        { detail: String(transitionErr) },
+      );
     }
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/state`, err);
@@ -585,7 +593,7 @@ export async function handleStartSession(
 
     const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
     if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
       return;
     }
 
@@ -610,7 +618,7 @@ export async function handleStartSession(
       } catch (err) {
         if (respondSessionRefusal(res, err)) return;
         if (err instanceof NoRunnerAvailableError) {
-          respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
+          respondApiError(res, 400, "NO_RUNNER_AVAILABLE", err.message);
           return;
         }
         throw err;
@@ -639,15 +647,17 @@ export async function handleStartSession(
       return;
     }
     if (!body.runner) {
-      respondJson(res, 400, { error: "runner is required when brief is given", code: "RUNNER_REQUIRED" });
+      respondApiError(res, 400, "RUNNER_REQUIRED", "runner is required when brief is given");
       return;
     }
     if (!getAdapter(body.runner)) {
-      respondJson(res, 400, { error: `unknown runner '${body.runner}'`, code: "UNKNOWN_RUNNER" });
+      respondApiError(res, 400, "UNKNOWN_RUNNER", `unknown runner '${body.runner}'`, { runner: body.runner });
       return;
     }
     if (body.instance_id != null && (await getInstanceEnv(body.instance_id)) === null) {
-      respondJson(res, 400, { error: `unknown instance '${body.instance_id}'`, code: "UNKNOWN_INSTANCE" });
+      respondApiError(res, 400, "UNKNOWN_INSTANCE", `unknown instance '${body.instance_id}'`, {
+        instanceId: body.instance_id,
+      });
       return;
     }
 
@@ -687,7 +697,7 @@ export async function handleDeleteSession(
     const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
     if (!existing) return;
     if (existing.state !== "draft") {
-      respondJson(res, 409, { error: "only a draft session can be deleted", code: "NOT_A_DRAFT" });
+      respondApiError(res, 409, "NOT_A_DRAFT", "only a draft session can be deleted");
       return;
     }
     await deleteDraftSession(db, identity.userId, sessionId);
@@ -721,7 +731,7 @@ export async function handleSendSessionMessage(
       // NO_LIVE_RUN from the error's type.
       if (respondSessionRefusal(res, err)) return;
       if (err instanceof NoRunnerAvailableError) {
-        respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
+        respondApiError(res, 400, "NO_RUNNER_AVAILABLE", err.message);
         return;
       }
       throw err;
@@ -754,7 +764,7 @@ export async function handleAnswerSessionQuestion(
     const runtime = getSessionRuntime();
     const pending = runtime.pendingQuestion(sessionId);
     if (!pending || pending.request_id !== requestId) {
-      respondJson(res, 409, { error: "no pending question with this request_id", code: "NO_PENDING_QUESTION" });
+      respondApiError(res, 409, "NO_PENDING_QUESTION", "no pending question with this request_id");
       return;
     }
     const decision: QuestionDecision = { by: identity.userId, value: body.decision.value, at: new Date().toISOString() };
@@ -942,7 +952,7 @@ export async function handleCreateSessionRecord(
 
     const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
     if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
       return;
     }
 
@@ -1032,7 +1042,7 @@ export async function handlePatchSessionRun(
     const store = new DbSessionStore(db);
     const runs = await store.listRuns(sessionId);
     if (!runs.some((r) => r.id === runId)) {
-      respondJson(res, 404, { error: "run not found" });
+      respondApiError(res, 404, "RUN_NOT_FOUND", "run not found");
       return;
     }
     const body = await parseJsonBody(req, res, PatchRunBody);

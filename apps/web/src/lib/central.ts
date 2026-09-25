@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { isTauri } from "./backend-url";
+import { parseApiError } from "./api-error";
 
 export { isTauri };
 
@@ -113,7 +114,8 @@ export async function authLogout(): Promise<void> {
 
 type CentralResponse = { status: number; body: string };
 
-// Calls central_request Tauri command, parses JSON body, throws on >= 400.
+// Calls central_request Tauri command, parses JSON body, throws an ApiError
+// (the server's code and params) on >= 400.
 // `body` is passed as a JSON string (same shape as api_request).
 export async function centralFetch<T>(
   method: string,
@@ -129,21 +131,14 @@ export async function centralFetch<T>(
     path,
     body: body ?? null,
   });
+  if (res.status >= 400) {
+    throw parseApiError(res.status, res.body, `central ${method.toUpperCase()} ${path}`);
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(res.body);
   } catch {
     parsed = res.body;
-  }
-  if (res.status >= 400) {
-    const msg =
-      parsed != null &&
-      typeof parsed === "object" &&
-      "error" in parsed &&
-      typeof (parsed as Record<string, unknown>).error === "string"
-        ? (parsed as { error: string }).error
-        : `HTTP ${res.status}`;
-    throw new Error(msg);
   }
   return parsed as T;
 }

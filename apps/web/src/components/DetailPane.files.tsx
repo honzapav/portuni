@@ -70,6 +70,8 @@ import {
   type TreeNode,
 } from "../lib/file-tree";
 import { fetchNodeFileUrl } from "../api";
+import { displayError } from "../errors";
+import { errorCode } from "../lib/api-error";
 import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { listWorkspaces } from "../lib/workspaces";
@@ -87,6 +89,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+
+// An action's error shown on its form or row (#267). A coded error (the
+// server's or the client's) renders from the errors catalog; a plain Error
+// thrown by DetailPane's file handlers already carries the user's text (a
+// Czech prefix over displayError, a repair hint) and is shown as-is.
+function actionErrorText(e: unknown): string {
+  return errorCode(e) === null && e instanceof Error ? e.message : displayError(e);
+}
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -167,7 +177,7 @@ export function NewFileForm({
     } catch (e) {
       // Stays with the form (#267), not a tab-level box: this is the
       // create action's own error, not a row's or the sync run's.
-      setError(e instanceof Error ? e.message : String(e));
+      setError(actionErrorText(e));
     } finally {
       setBusy(false);
     }
@@ -847,7 +857,7 @@ export function FileTree({
         phase: "failed",
         fileId: outcome.failure.fileId,
         filename: failed?.filename ?? outcome.failure.fileId,
-        message: outcome.failure.message,
+        message: actionErrorText(outcome.failure.error),
       });
     } else {
       setApplyState(IDLE_APPLY);
@@ -1500,7 +1510,7 @@ function FileRow({
     [],
   );
   const showRowError = (e: unknown) => {
-    setRowError(e instanceof Error ? e.message : String(e));
+    setRowError(actionErrorText(e));
     if (rowErrorTimer.current) clearTimeout(rowErrorTimer.current);
     rowErrorTimer.current = setTimeout(() => setRowError(null), 6000);
   };

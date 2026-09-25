@@ -189,8 +189,8 @@ Předat leaves one), the same suspend code writes the file now
 (`createSuspendServerSide`'s `writeFileIfSuspended`): the summary built
 from the transcript here, or, only when there is no transcript here, the
 inline summary in `content.db` (nothing refreshes it at suspend, so it can
-be older than the transcript). Every refusal is a `SessionHandoffError` (REST 409, Czech
-message; `api/session-refusals.ts` is the one mapping the local
+be older than the transcript). Every refusal is a `SessionHandoffError` (REST 409 with
+`code` and `params`, English message for logs, #531; `api/session-refusals.ts` is the one mapping the local
 router, the agent router and the socket share, for `NoLiveRunError`'s
 `NO_LIVE_RUN` too, and it reads the code off the error's type, never its
 message text, #530) and comes before any side
@@ -204,8 +204,8 @@ here while the thread last ran on another device) and `HANDOFF_NO_CONTENT`
 (suspended without a file and no content here although it ran here: the
 first-boot download has not finished, and an empty summary would stand in
 for the real one). `HANDOFF_RUN_ELSEWHERE` and `HANDOFF_TRANSCRIPT_ELSEWHERE`
-name the device the way `transcript_host` does. The web shows the message as-is
-(`apps/web/src/lib/handoff-refusal.ts`) and does not offer Předat in the
+name the device the way `transcript_host` does, in `params.host`. The web renders
+the code from the `errors` catalog (`displayError`, `apps/web/src/lib/api-error.ts`) and does not offer Předat in the
 chat where the transcript is on another device. The other machine picks
 the work up from the file once it syncs.
 
@@ -217,8 +217,7 @@ path is node-relative and must be exactly what `handoffRelativePath` writes
 mirror **on this device** (`readNodeHandoffFile`, the mirror registry in
 `sync.db` plus the local bytes, so a sync agent answers it without reaching
 central) before it creates anything. No mirror or no file yet is
-`HANDOFF_FILE_NOT_HERE` (409, „Soubor handoffu ještě není na tomto
-zařízení.") and no record is created; a path of any other shape is
+`HANDOFF_FILE_NOT_HERE` (409, `params.path`) and no record is created; a path of any other shape is
 `HANDOFF_PATH_INVALID` (the routers' schema rejects it as a 400 first). With
 the file in hand it is `continueSession`'s shape minus the close: a new
 record on this device (`runner`/`instance_id` resolved as for a draft,
@@ -761,7 +760,8 @@ human verification.
   else, with no transcript here, a `handoff_inline` an older sidecar left.
   With none of them and no content of the thread on this device at all,
   the send is refused before any run is created, with Předat's errors:
-  `HANDOFF_TRANSCRIPT_ELSEWHERE` naming the device the thread last ran on,
+  `SESSION_TRANSCRIPT_ELSEWHERE` (its own code: the sentence says "continue
+  it there", not "hand it off there") naming the device the thread last ran on,
   or `HANDOFF_NO_CONTENT` while the first-boot download has not arrived
   (409 over REST, an error reply on the live channel). A thread whose
   content row is here but holds none of them starts on its orientation
@@ -869,8 +869,8 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   (`guardRestSessionWrite` in `routeSessions`).
 - Every frame goes through the same `sessionAccess` tier and the same
   `SessionRuntime` method as its REST twin. A refused action is an
-  `{id, type: "error", payload: {code, message}}` frame, never a closed
-  socket.
+  `{id, type: "error", payload: {code, message, params?}}` frame, never a
+  closed socket; `code` is from `shared/error-codes.ts`, `message` English.
 - **Mounted in both kinds of workspace** through `SessionsWsDeps` (`runtime`, `access`,
   `snapshot`, `canSee`): `createLocalSessionsWsDeps()` over the graph db;
   `agentMain` passes `createSessionsWsServer(createAgentSessionsWsDeps(

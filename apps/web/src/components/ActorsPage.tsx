@@ -1,3 +1,4 @@
+import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Pencil, Trash2, Users, Search } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -60,7 +61,7 @@ export default function ActorsPage(_props: Props) {
       const data = await fetchActors();
       setActors(data);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setLoading(false);
     }
@@ -107,7 +108,7 @@ export default function ActorsPage(_props: Props) {
       await archiveActor(actor.id);
       await loadActors();
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     }
   };
 
@@ -457,7 +458,7 @@ function ActorModal({
         if (!cancelled) setUsers(list);
       })
       .catch((e) => {
-        if (!cancelled) setUsersError(String(e));
+        if (!cancelled) setUsersError(displayError(e));
       });
     return () => {
       cancelled = true;
@@ -500,7 +501,7 @@ function ActorModal({
       }
       await onSaved();
     } catch (err) {
-      setFormError(String(err));
+      setFormError(displayError(err));
       setSaving(false);
     }
   };

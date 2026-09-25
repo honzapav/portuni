@@ -1,3 +1,4 @@
+import { displayError } from "../errors";
 import {
   memo,
   useCallback,
@@ -463,7 +464,7 @@ function DetailPaneBody({
       void onMutate();
     } catch (e) {
       if (lastIdRef.current !== requestNodeId) return;
-      setSyncError(String(e));
+      setSyncError(displayError(e));
     } finally {
       if (lastIdRef.current === requestNodeId) {
         setSyncRunning(false);
@@ -501,7 +502,7 @@ function DetailPaneBody({
       }
     } catch (e) {
       if (lastIdRef.current !== requestNodeId) return;
-      setMirrorError(e instanceof SyncAgentDownError ? e.message : String(e));
+      setMirrorError(displayError(e));
     } finally {
       if (lastIdRef.current === requestNodeId) {
         setCreatingMirror(false);
@@ -541,7 +542,7 @@ function DetailPaneBody({
         setSyncLoaded(true);
         return;
       }
-      setSyncError(String(e));
+      setSyncError(displayError(e));
       setSyncLoaded(true);
     }
   }, [node.id]);
@@ -582,7 +583,7 @@ function DetailPaneBody({
       await onMutate();
       setEditing(false);
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -600,7 +601,7 @@ function DetailPaneBody({
       await onMutate();
       onSelect(null);
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
       setBusy(false);
     }
   };
@@ -612,7 +613,7 @@ function DetailPaneBody({
       await deleteEdge(edgeId);
       await onMutate();
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -633,7 +634,7 @@ function DetailPaneBody({
       });
       await onMutate();
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -663,7 +664,7 @@ function DetailPaneBody({
       await deleteEdge(edge.id);
       await onMutate();
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -680,7 +681,7 @@ function DetailPaneBody({
       setCreatingFile(false);
       if (onOpenFile && f.relative_path) onOpenFile(node.id, f.relative_path);
     } catch (e) {
-      throw new Error(`Soubor se nepodařilo vytvořit: ${String(e)}`);
+      throw new Error(`Soubor se nepodařilo vytvořit: ${displayError(e)}`);
     }
   };
 
@@ -690,7 +691,7 @@ function DetailPaneBody({
     try {
       await newInShowtime(node.id);
     } catch (e) {
-      setPresentationError(`Prezentaci se nepodařilo založit: ${e instanceof Error ? e.message : String(e)}`);
+      setPresentationError(`Prezentaci se nepodařilo založit: ${displayError(e)}`);
     }
   };
 
@@ -699,7 +700,7 @@ function DetailPaneBody({
       await renameFile(node.id, fileId, name);
       await Promise.all([onMutate(), loadSyncStatus()]);
     } catch (e) {
-      throw new Error(`Přejmenování selhalo: ${String(e)}`);
+      throw new Error(`Přejmenování selhalo: ${displayError(e)}`);
     }
   };
 
@@ -712,7 +713,7 @@ function DetailPaneBody({
     try {
       res = await deleteFile(node.id, fileId);
     } catch (e) {
-      throw new Error(`Smazání selhalo: ${String(e)}`);
+      throw new Error(`Smazání selhalo: ${displayError(e)}`);
     }
     await Promise.all([onMutate(), loadSyncStatus()]);
     if (
@@ -1896,7 +1897,7 @@ function LifecycleDropdown({
       await updateNode(nodeId, { lifecycle_state: next });
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -1965,7 +1966,7 @@ function HealthDropdown({
       await updateNode(nodeId, { health: next });
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2035,7 +2036,7 @@ function EditableDescription({
       await onMutate();
       setEditing(false);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2127,7 +2128,7 @@ function EditableGoal({
       await onMutate();
       setEditing(false);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2227,7 +2228,7 @@ function OrganizationPicker({
       await moveNode(node.id, orgId);
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2340,7 +2341,7 @@ function OwnerPicker({
         }),
       );
     } catch (e) {
-      setFetchError(String(e));
+      setFetchError(displayError(e));
     } finally {
       setLoading(false);
     }
@@ -2355,7 +2356,7 @@ function OwnerPicker({
       await updateNode(node.id, { owner_id: actorId });
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2630,7 +2631,7 @@ function ResponsibilitiesEditor({
       );
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     }
   };
 
@@ -2724,7 +2725,7 @@ function ResponsibilityItem({
       await onMutate();
       setEditing(false);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2745,7 +2746,7 @@ function ResponsibilityItem({
       await deleteResponsibility(responsibility.id);
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
       setBusy(false);
     }
   };
@@ -2757,7 +2758,7 @@ function ResponsibilityItem({
       await unassignResponsibility(responsibility.id, actorId);
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -2771,7 +2772,7 @@ function ResponsibilityItem({
       await onMutate();
       setPickerOpen(false);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -2938,7 +2939,7 @@ function AddResponsibilityForm({
         if (!cancelled) setActors(list);
       })
       .catch((e) => {
-        if (!cancelled) setFetchError(String(e));
+        if (!cancelled) setFetchError(displayError(e));
       })
       .finally(() => {
         if (!cancelled) setLoadingActors(false);
@@ -2971,7 +2972,7 @@ function AddResponsibilityForm({
       setDescription("");
       setSelected([]);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -3112,7 +3113,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
       await removeCreator(item.id);
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setBusyId(null);
     }
@@ -3222,7 +3223,7 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
       await onSavedMutate();
       setEditing(false);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -3354,7 +3355,7 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
       setDescription("");
       setExternalLink("");
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -3439,7 +3440,7 @@ function AssigneePicker({
         if (!cancelled) setActors(list);
       })
       .catch((e) => {
-        if (!cancelled) setFetchError(String(e));
+        if (!cancelled) setFetchError(displayError(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

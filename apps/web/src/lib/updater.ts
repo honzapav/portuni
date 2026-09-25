@@ -6,6 +6,7 @@
 // The webview never talks to tauri-plugin-updater directly, only through
 // these Tauri commands (no updater permission in capabilities/default.json).
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "./backend-url";
 import { createUpdateScheduler, shouldCheckOnFocus, windowTimerDeps } from "./update-schedule";
@@ -69,7 +70,7 @@ const CHECK_DELAY_MS = 10_000;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 function errorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  return displayError(e);
 }
 
 export function useAppUpdate(): AppUpdate {

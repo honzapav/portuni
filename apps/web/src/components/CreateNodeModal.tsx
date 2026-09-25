@@ -6,6 +6,7 @@
 // non-organization types an organization picker is shown — the form
 // won't submit without one because the server rejects it.
 
+import { displayError } from "../errors";
 import { useMemo, useState } from "react";
 import type { GraphNode } from "../types";
 import { createNode } from "../api";
@@ -106,7 +107,7 @@ export default function CreateNodeModal({
       });
       onCreated(created);
     } catch (err) {
-      setError(String(err));
+      setError(displayError(err));
       setSubmitting(false);
     }
   };

@@ -9,7 +9,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { getDb } from "../infra/db.js";
-import { parseJsonBody, respondJson, respondError, type RequestIdentity } from "../http/middleware.js";
+import {
+  parseJsonBody,
+  respondApiError,
+  respondJson,
+  respondError,
+  type RequestIdentity,
+} from "../http/middleware.js";
 import {
   readFileContent,
   writeFileContent,
@@ -62,11 +68,11 @@ const CODE_STATUS: Record<FileContentErrorCode, number> = {
 function handleFileContentError(res: ServerResponse, err: unknown): boolean {
   if (err instanceof FileContentError) {
     const status = CODE_STATUS[err.code];
-    const body: Record<string, unknown> = { error: err.message, code: err.code };
-    if (err.code === "CONFLICT" && err.currentVersion) {
-      body.currentVersion = err.currentVersion;
-    }
-    respondJson(res, status, body);
+    const extra =
+      err.code === "CONFLICT" && err.currentVersion
+        ? { currentVersion: err.currentVersion }
+        : undefined;
+    respondApiError(res, status, err.code, err.message, err.params, extra);
     return true;
   }
   return false;
@@ -81,7 +87,7 @@ export async function handleGetFileContent(
 ): Promise<void> {
   const relPath = url.searchParams.get("path");
   if (!relPath) {
-    respondJson(res, 400, { error: "path query param required" });
+    respondApiError(res, 400, "INVALID_REQUEST", "path query param required");
     return;
   }
   try {
@@ -89,7 +95,7 @@ export async function handleGetFileContent(
     // Same node-access enforcement as graph routes: a hidden node looks
     // not-found so its file content never leaks.
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     // Binary-safe byte read for the central-mode sync agent. Remote-only:
@@ -164,19 +170,19 @@ export async function handlePutFileContent(
 ): Promise<void> {
   const relPath = url.searchParams.get("path");
   if (!relPath) {
-    respondJson(res, 400, { error: "path query param required" });
+    respondApiError(res, 400, "INVALID_REQUEST", "path query param required");
     return;
   }
   const body = await parseJsonBody(req, res, putSchema, FILE_BODY_MAX_BYTES);
   if (!body) return;
   if ((body.content === undefined) === (body.content_base64 === undefined)) {
-    respondJson(res, 400, { error: "exactly one of content / content_base64 required" });
+    respondApiError(res, 400, "INVALID_REQUEST", "exactly one of content / content_base64 required");
     return;
   }
   try {
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
@@ -200,10 +206,13 @@ export async function handlePutFileContent(
     // The text path never writes a .showtime bundle: what the editor holds
     // for one is the bundled preview, not the file (the byte path above may).
     if (isShowtimePath(relPath)) {
-      respondJson(res, 415, {
-        error: `a .showtime bundle is read-only here; edit it in Showtime: ${relPath}`,
-        code: "NOT_EDITABLE",
-      });
+      respondApiError(
+        res,
+        415,
+        "NOT_EDITABLE",
+        `a .showtime bundle is read-only here; edit it in Showtime: ${relPath}`,
+        { path: relPath },
+      );
       return;
     }
     // Mirror present -> local write (unchanged, push deferred to sync). No
@@ -246,14 +255,14 @@ export async function handleGetSyncInfo(
   try {
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     const info = await getNodeSyncInfo(db, nodeId);
     respondJson(res, 200, info);
   } catch (err) {
     if (err instanceof NodeNotFoundError) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     respondError(res, `GET /nodes/${nodeId}/sync-info`, err);
@@ -281,7 +290,7 @@ export async function handleRegisterFile(
   try {
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
@@ -294,7 +303,7 @@ export async function handleRegisterFile(
   } catch (err) {
     if (handleFileContentError(res, err)) return;
     if (err instanceof NodeNotFoundError) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     respondError(res, `POST /nodes/${nodeId}/files/register`, err);
@@ -314,7 +323,7 @@ export async function handleRegisterFilesBatch(
   try {
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
@@ -327,7 +336,7 @@ export async function handleRegisterFilesBatch(
   } catch (err) {
     if (handleFileContentError(res, err)) return;
     if (err instanceof NodeNotFoundError) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     respondError(res, `POST /nodes/${nodeId}/files/register-batch`, err);
@@ -385,7 +394,7 @@ export async function handleCreateFile(
   try {
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -439,7 +448,7 @@ export async function handleMoveFile(
   try {
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
@@ -473,7 +482,7 @@ export async function handleRenameFile(
   try {
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -508,7 +517,7 @@ export async function handleDeleteFile(
   try {
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;

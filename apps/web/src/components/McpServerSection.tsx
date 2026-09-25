@@ -12,6 +12,7 @@
 // are gated by isTauri(); in plain browser dev mode the buttons are
 // disabled with an explanation, so the page still renders.
 
+import { displayError } from "../errors";
 import { useEffect, useState } from "react";
 import { Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -91,7 +92,7 @@ export default function McpServerSection() {
         if (!cancelled)
           setStatus({
             kind: "error",
-            reason: e instanceof Error ? e.message : String(e),
+            reason: displayError(e),
           });
       }
     })();
@@ -110,7 +111,7 @@ export default function McpServerSection() {
       await copyText(text);
       flash("ok", `${label} zkopírováno do schránky`);
     } catch (e) {
-      flash("err", `Kopírování selhalo: ${e instanceof Error ? e.message : String(e)}`);
+      flash("err", `Kopírování selhalo: ${displayError(e)}`);
     }
   }
 
@@ -126,7 +127,7 @@ export default function McpServerSection() {
       setToken(t);
       return t;
     } catch (e) {
-      flash("err", `Nepodařilo se načíst token: ${e instanceof Error ? e.message : String(e)}`);
+      flash("err", `Nepodařilo se načíst token: ${displayError(e)}`);
       return null;
     }
   }
@@ -172,7 +173,7 @@ export default function McpServerSection() {
         flash("ok", `Zapsáno do ${path}`);
       }
     } catch (e) {
-      flash("err", `Chyba: ${e instanceof Error ? e.message : String(e)}`);
+      flash("err", `Chyba: ${displayError(e)}`);
     } finally {
       setBusy(null);
     }
@@ -198,7 +199,7 @@ export default function McpServerSection() {
         "Nový token vygenerován. Nezapomeň znovu spustit instalaci pro Claude Code, Codex i Vibe.",
       );
     } catch (e) {
-      flash("err", `Chyba: ${e instanceof Error ? e.message : String(e)}`);
+      flash("err", `Chyba: ${displayError(e)}`);
     } finally {
       setBusy(null);
     }

@@ -3,6 +3,7 @@
 // node id and a refresh callback as props and don't share state with
 // the rest of DetailPane.
 
+import { displayError } from "../errors";
 import { useState } from "react";
 import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
 import type { DetailEvent } from "../types";
@@ -54,7 +55,7 @@ export function EventCard({
       }
       setEditing(false);
     } catch (e) {
-      setError(`Uložení selhalo: ${String(e)}`);
+      setError(`Uložení selhalo: ${displayError(e)}`);
     } finally {
       setSaving(false);
     }
@@ -67,7 +68,7 @@ export function EventCard({
       await archiveEvent(evt.id);
       await onMutate();
     } catch (e) {
-      setError(`Archivace selhala: ${String(e)}`);
+      setError(`Archivace selhala: ${displayError(e)}`);
     } finally {
       setSaving(false);
     }
@@ -80,7 +81,7 @@ export function EventCard({
       await updateEvent(evt.id, { status: "resolved" });
       await onMutate();
     } catch (e) {
-      setError(`Označení selhalo: ${String(e)}`);
+      setError(`Označení selhalo: ${displayError(e)}`);
     } finally {
       setSaving(false);
     }
@@ -249,7 +250,7 @@ export function AddEventForm({
       setContent("");
       setType("note");
     } catch (e) {
-      setError(`Událost se nepodařilo přidat: ${String(e)}`);
+      setError(`Událost se nepodařilo přidat: ${displayError(e)}`);
     } finally {
       setSubmitting(false);
     }

@@ -8,6 +8,7 @@
 //   SettingsAccessRequestsPanel -- Nastavení > Žádosti o přístup: the
 //                            caller's whole queue across visible nodes.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, KeyRound, X } from "lucide-react";
 import type { AccessRequest } from "../types";
@@ -272,7 +273,7 @@ export default function SettingsAccessRequestsPanel({
       if (mountedRef.current) setState({ kind: "ok", requests });
     } catch (e) {
       if (mountedRef.current) {
-        setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
+        setState({ kind: "error", reason: displayError(e) });
       }
     }
   }, []);

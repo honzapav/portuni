@@ -1,3 +1,4 @@
+import { displayError } from "./errors";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
@@ -60,7 +61,6 @@ import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import { loadOpenNodes, saveOpenNodes } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
-import { handoffErrorText } from "./lib/handoff-refusal";
 import { lazyWithNamespaces } from "./i18n";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
@@ -219,7 +219,7 @@ export default function App() {
         setGraph(g);
         setGraphError(null);
       })
-      .catch((err) => setGraphError(String(err)));
+      .catch((err) => setGraphError(displayError(err)));
   }, []);
 
   // Sync URL with selected node
@@ -282,7 +282,7 @@ export default function App() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setDetailError(String(err));
+        setDetailError(displayError(err));
         setDetailLoading(false);
       });
     return () => {
@@ -493,7 +493,7 @@ export default function App() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setWorkspaceDetailError(String(err));
+        setWorkspaceDetailError(displayError(err));
         setWorkspaceDetailLoading(false);
       });
     return () => {
@@ -508,7 +508,7 @@ export default function App() {
       setWorkspaceNodeDetail(n);
       setWorkspaceDetailError(null);
     } catch (err) {
-      setWorkspaceDetailError(String(err));
+      setWorkspaceDetailError(displayError(err));
     }
   }, [selectedWorkspaceNodeId]);
 
@@ -611,7 +611,7 @@ export default function App() {
         // surface, so it reads as a failure instead of a click that did
         // nothing; another open node's refetch stays silent, as before.
         if (selectedWorkspaceNodeIdRef.current !== nodeId) return;
-        setWorkspaceDetailError(`Vlákna uzlu se nepodařilo načíst: ${String(e)}`);
+        setWorkspaceDetailError(`Vlákna uzlu se nepodařilo načíst: ${displayError(e)}`);
       })
       .finally(() => {
         nodeThreadRefetches.current.delete(nodeId);
@@ -821,7 +821,7 @@ export default function App() {
       const now = Date.now();
       if (now - lastRun < 500) return;
       lastRun = now;
-      refetchAll().catch((err) => setGraphError(String(err)));
+      refetchAll().catch((err) => setGraphError(displayError(err)));
       refetchWorkspaceDetail().catch(() => undefined);
     };
     window.addEventListener("focus", handler);
@@ -921,7 +921,7 @@ export default function App() {
       sessionStore.put({ ...before, name, name_is_custom: true });
       void renamePersistentSession(session.id, name).catch((e) => {
         sessionStore.put(before);
-        setWorkspaceDetailError(`Vlákno se nepodařilo přejmenovat: ${String(e)}`);
+        setWorkspaceDetailError(`Vlákno se nepodařilo přejmenovat: ${displayError(e)}`);
       });
     },
     [sessionStore],
@@ -953,7 +953,7 @@ export default function App() {
   const workspaceHandoffTask = useCallback(
     (session: SessionSummary) => {
       void handoffSession(session.id).catch((e) => {
-        setWorkspaceDetailError(`Vlákno se nepodařilo předat: ${handoffErrorText(e)}`);
+        setWorkspaceDetailError(`Vlákno se nepodařilo předat: ${displayError(e)}`);
       });
     },
     [],
@@ -1197,7 +1197,7 @@ export default function App() {
           onCreated={(node) => {
             setCreateModalOpen(false);
             setSelectedId(node.id);
-            refetchAll().catch((err) => setGraphError(String(err)));
+            refetchAll().catch((err) => setGraphError(displayError(err)));
             // Opened from the workspace "vytvoř nový uzel" action: open the
             // freshly created node in the workspace (works for orgs too).
             if (createFromWorkspaceRef.current) {

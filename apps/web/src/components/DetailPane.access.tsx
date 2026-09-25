@@ -6,6 +6,7 @@
 // self-fetches on mount and whenever nodeId changes, the same way
 // DetailPane.tsx self-fetches sync status for the Files tab.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Lock, Pencil, Plus, Search, User, Users, X } from "lucide-react";
 import type {
@@ -930,7 +931,7 @@ function EntryPicker({
             setGroups([]);
             return;
           }
-          setSearchError(String(e));
+          setSearchError(displayError(e));
         });
     }, 300);
     return () => {

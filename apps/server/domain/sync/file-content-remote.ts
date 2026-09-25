@@ -71,7 +71,9 @@ export function buildRemotePathOrThrow(
     return buildRemotePath({ ...info, section, subpath, filename });
   } catch (e) {
     if (e instanceof RemotePathError) {
-      throw new FileContentError(`invalid path: ${section}/${filename}`, "INVALID_PATH");
+      throw new FileContentError(`invalid path: ${section}/${filename}`, "INVALID_PATH", undefined, {
+        path: `${section}/${filename}`,
+      });
     }
     throw e;
   }
@@ -86,17 +88,17 @@ export function parseRelPath(relPath: string): ParsedRelPath {
     assertSafeRelativePath(relPath, "file-content-remote.relPath");
   } catch (e) {
     if (e instanceof RemotePathError) {
-      throw new FileContentError(`invalid path: ${relPath}`, "INVALID_PATH");
+      throw new FileContentError(`invalid path: ${relPath}`, "INVALID_PATH", undefined, { path: relPath });
     }
     throw e;
   }
   const segments = relPath.split("/");
   const section = segments[0] as Section;
   if (!SECTIONS.includes(section)) {
-    throw new FileContentError(`invalid section in path: ${relPath}`, "INVALID_PATH");
+    throw new FileContentError(`invalid section in path: ${relPath}`, "INVALID_PATH", undefined, { path: relPath });
   }
   if (segments.length < 2) {
-    throw new FileContentError(`path has no filename: ${relPath}`, "INVALID_PATH");
+    throw new FileContentError(`path has no filename: ${relPath}`, "INVALID_PATH", undefined, { path: relPath });
   }
   const filename = segments[segments.length - 1];
   const middle = segments.slice(1, -1);
@@ -128,7 +130,7 @@ async function resolveRemoteTarget(
     remotePath = buildRemotePath({ ...info, section, subpath, filename });
   } catch (e) {
     if (e instanceof RemotePathError) {
-      throw new FileContentError(`invalid path: ${relPath}`, "INVALID_PATH");
+      throw new FileContentError(`invalid path: ${relPath}`, "INVALID_PATH", undefined, { path: relPath });
     }
     throw e;
   }
@@ -204,10 +206,10 @@ export async function readFileContentRemote(
 
   const record = await getFileRecord(db, a.nodeId, remotePath);
   if (record?.isNative) {
-    throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
   if (!isEditableMime(mime)) {
-    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
 
   const adapter = await getAdapter(db, remoteName);
@@ -215,15 +217,15 @@ export async function readFileContentRemote(
   // and short-circuits a native object even when no DB record exists.
   const stat = await adapter.stat(remotePath);
   if (!stat) {
-    throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND");
+    throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND", undefined, { path: a.relPath });
   }
   if (stat.is_native_format) {
-    throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
 
   const buf = await adapter.get(remotePath);
   if (buf.includes(0)) {
-    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
   return {
     content: buf.toString("utf8"),
@@ -250,10 +252,10 @@ export async function writeFileContentRemote(
 
   const record = await getFileRecord(db, a.nodeId, remotePath);
   if (record?.isNative) {
-    throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
   if (!isEditableMime(mime)) {
-    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
 
   const adapter = await getAdapter(db, remoteName);
@@ -271,7 +273,7 @@ export async function writeFileContentRemote(
       const stat = await adapter.stat(remotePath);
       if (stat) {
         if (stat.is_native_format) {
-          throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE");
+          throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
         }
         const current = await adapter.get(remotePath);
         const currentVersion = sha256Buffer(current);
@@ -331,7 +333,7 @@ export async function readFileBytesRemote(
   const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
   const record = await getFileRecord(db, a.nodeId, remotePath);
   if (record?.isNative) {
-    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
   const adapter = await getAdapter(db, remoteName);
 
@@ -351,7 +353,7 @@ export async function readFileBytesRemote(
       // failure with a single follow-up stat (error path only).
       const stat = await adapter.stat(remotePath).catch(() => null);
       if (!stat) {
-        throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND");
+        throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND", undefined, { path: a.relPath });
       }
       throw e;
     }
@@ -368,10 +370,10 @@ export async function readFileBytesRemote(
 
   const stat = await adapter.stat(remotePath);
   if (!stat) {
-    throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND");
+    throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND", undefined, { path: a.relPath });
   }
   if (stat.is_native_format) {
-    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
   const buf = await adapter.get(remotePath);
   const canonicalHash = stat.hash ? stat.hash.toLowerCase() : sha256Buffer(buf);
@@ -412,7 +414,7 @@ export async function writeFileBytesRemote(
   const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
   const record = await getFileRecord(db, a.nodeId, remotePath);
   if (record?.isNative) {
-    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
   }
   const adapter = await getAdapter(db, remoteName);
 
@@ -424,14 +426,14 @@ export async function writeFileBytesRemote(
     if ((a.ifAbsent || a.baseCanonicalHash) && !a.force) {
       const stat = await adapter.stat(remotePath);
       if (stat?.is_native_format) {
-        throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+        throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
       }
       if (a.ifAbsent && stat) {
         // The object's presence -- and, when the backend reports one on
         // stat, its hash -- is proven right here; persist it before throwing
         // so this record does not stay stuck as remote_missing forever (#273).
         await backfillRemoteHash(db, record, stat.hash?.toLowerCase() ?? null, stat.remote_file_id);
-        throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS");
+        throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS", undefined, { path: a.relPath });
       }
       if (a.baseCanonicalHash && stat) {
         let current = stat.hash?.toLowerCase() ?? null;
@@ -465,7 +467,7 @@ export async function writeFileBytesRemote(
       const stat = await adapter.stat(remotePath);
       if (stat) {
         if (stat.is_native_format) {
-          throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+          throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
         }
         const current = await adapter.get(remotePath);
         const currentVersion = sha256Buffer(current);
@@ -505,7 +507,7 @@ export async function writeFileBytesRemote(
 
 function assertSafeFilename(fn: string): void {
   if (!fn || fn.includes("/") || fn.includes("\\") || fn.includes("\0") || fn === "." || fn === "..") {
-    throw new FileContentError(`invalid filename: ${fn}`, "INVALID_PATH");
+    throw new FileContentError(`invalid filename: ${fn}`, "INVALID_PATH", undefined, { filename: fn });
   }
 }
 
@@ -557,7 +559,7 @@ export async function createFileRemote(
   }
   const section: Section = a.section ?? "wip";
   if (!SECTIONS.includes(section)) {
-    throw new FileContentError(`invalid section: ${section}`, "INVALID_PATH");
+    throw new FileContentError(`invalid section: ${section}`, "INVALID_PATH", undefined, { section: section });
   }
   const subpath = a.subpath ? a.subpath : null;
 
@@ -574,7 +576,7 @@ export async function createFileRemote(
     remotePath = buildRemotePath({ ...info, section, subpath, filename: a.filename });
   } catch (e) {
     if (e instanceof RemotePathError) {
-      throw new FileContentError(`invalid path: ${a.filename}`, "INVALID_PATH");
+      throw new FileContentError(`invalid path: ${a.filename}`, "INVALID_PATH", undefined, { filename: a.filename });
     }
     throw e;
   }
@@ -590,10 +592,10 @@ export async function createFileRemote(
     args: [a.nodeId, remotePath],
   });
   if (existingRow.rows.length > 0) {
-    throw new FileContentError(`file already exists: ${a.filename}`, "EXISTS");
+    throw new FileContentError(`file already exists: ${a.filename}`, "EXISTS", undefined, { filename: a.filename });
   }
   if (await adapter.stat(remotePath)) {
-    throw new FileContentError(`file already exists: ${a.filename}`, "EXISTS");
+    throw new FileContentError(`file already exists: ${a.filename}`, "EXISTS", undefined, { filename: a.filename });
   }
 
   const mt = a.mimeType !== undefined ? a.mimeType : mimeFor(a.filename);
@@ -634,7 +636,7 @@ export async function createFileRemote(
     ],
   });
   if (inserted.rows.length === 0) {
-    throw new FileContentError(`file already exists: ${a.filename}`, "EXISTS");
+    throw new FileContentError(`file already exists: ${a.filename}`, "EXISTS", undefined, { filename: a.filename });
   }
 
   await auditFile(db, a.userId, "sync_create_remote", id, { remote_name: remoteName, remote_path: remotePath, hash: canonicalHash }, now);

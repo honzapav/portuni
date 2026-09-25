@@ -12,6 +12,7 @@
 // server hands that entry over as `content`, and the protocol handler unzips
 // it from the bundle at `localPath`. A bundle opens in Showtime, not a browser,
 // and the handoff carries the node with it (`openInShowtime`).
+import { displayError } from "../errors";
 import { useEffect, useState } from "react";
 import { isTauri, openPathExternal } from "../lib/backend-url";
 import { protocolUrl } from "../lib/html-preview-url";
@@ -70,13 +71,16 @@ export default function HtmlPreview({
     setOpenError(null);
     try {
       if (kind === "showtime") {
-        if (!nodeId) throw new Error("Deck nepatří k žádnému uzlu.");
+        if (!nodeId) {
+          setOpenError("Deck nepatří k žádnému uzlu.");
+          return;
+        }
         await openInShowtime(nodeId, localPath);
       } else {
         await openPathExternal(localPath);
       }
     } catch (e) {
-      setOpenError(e instanceof Error ? e.message : String(e));
+      setOpenError(displayError(e));
     }
   }
 

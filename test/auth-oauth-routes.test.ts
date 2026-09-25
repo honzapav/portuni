@@ -203,7 +203,9 @@ describe("authorize parameter errors", () => {
     assert.equal(res.status, 400);
     assert.equal(res.headers.get("content-type")?.includes("text/html"), true);
     const html = await res.text();
-    assert.match(html, /chyb/i);
+    assert.match(html, /sign-in error/i);
+    assert.match(html, /data-error-code="OAUTH_MISSING_PARAMETER"/);
+    assert.match(html, /A required authorization request parameter is missing\./);
   });
 
   it("rejects a redirect_uri not registered for the client", async () => {
@@ -216,6 +218,7 @@ describe("authorize parameter errors", () => {
     url.searchParams.set("resource", "https://api.portuni.test/mcp");
     const res = await authFetch(url, { redirect: "manual" });
     assert.equal(res.status, 400);
+    assert.match(await res.text(), /data-error-code="OAUTH_REDIRECT_URI_UNREGISTERED"/);
   });
 
   it("rejects an unrecognized resource", async () => {

@@ -151,7 +151,7 @@ suspended record into the store, so the header, the sidebar and Relace
 follow without a refetch. A refusal (409) rejects with
 `HandoffRefusedError` (`lib/handoff-refusal.ts`, its own module so the main
 chunk does not pull in the chat's helpers); the chat and the sidebar show
-its Czech message through `handoffErrorText`, never the status line, and
+its code from the `errors` catalog through `displayError`, never the status line, and
 after a refusal that does not depend on the thread's state (no mirror, the
 run or the transcript on another device) the chat stops offering Předat
 for that view. **Navázat na handoff** is the Relace tab's, not
@@ -699,6 +699,16 @@ message may use are fixed in its `glossary.md`; translator notes are in
   with `localeCompare(..., "cs")`. The date picker's first weekday comes
   from `Intl.Locale#getWeekInfo`, falling back to Monday for `cs` and
   Sunday for `en`.
+- **Errors.** A caught error is shown through `displayError(e)`
+  (`src/errors.ts`), never `String(e)` or `e.message`: the server's
+  `{ error, code, params? }` becomes an `ApiError` (`parseApiError`, used by
+  `throwForStatus`, `lib/central.ts` and the live channel's error frames),
+  and `errorText` (`lib/api-error.ts`, pure, takes `t`) renders
+  `errors:<code>` through a complete `Record` over the server's
+  `ERROR_CODES` plus the web's own (`SYNC_AGENT_DOWN`, `REQUEST_TIMEOUT`,
+  `DISCONNECTED`). A code this build does not know shows `errors:UNKNOWN`
+  with the request id; an error with no code (a network failure, a Tauri
+  command's string) `errors:UNKNOWN_DETAIL` with its raw text.
 - **One copy of i18next.** It is installed in the root `node_modules`
   only; `apps/web/.npmrc` (`legacy-peer-deps`) keeps npm from adding a
   second one for `react-i18next`'s peer, so the root is installed before
