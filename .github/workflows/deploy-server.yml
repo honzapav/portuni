@@ -46,7 +46,15 @@ jobs:
   deploy:
     name: Deploy to api.portuni.com
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # workflow_run's `branches: [main]` also matches a fork PR whose head
+    # branch is named main, and head_sha would then check out the fork's
+    # code with the deploy secrets. Only CI of a push to this repo's own
+    # main may deploy.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@v7
         with:
