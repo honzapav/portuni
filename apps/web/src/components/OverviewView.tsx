@@ -27,8 +27,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { SessionStateMessage } from "../lib/sessions-client";
-import { fmtDateTime } from "./DetailPane.sessions";
 import { mergeLiveSessionStates, sessionRowChip, sortInboxSessions } from "../lib/session-views";
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 const TYPE_LABELS: Record<string, string> = {
   organization: "Organizace",
@@ -279,6 +280,7 @@ function SessionsCard({
   onOpenSession: (nodeId: string, sessionId: string) => void;
   onSelectNode: (nodeId: string) => void;
 }) {
+  const locale = useLocale();
   // The inbox: Čeká na mě first, then Běží, then Pozastaveno. Since #457
   // GET /overview carries the caller's own threads only, so there is nothing
   // to filter here. Threads only (v2 rule 7): a hand-opened CLI session is a
@@ -314,7 +316,7 @@ function SessionsCard({
                   <StateChip label={chip.label} color={chip.color} pulsing={chip.pulsing} />
                 </div>
                 <div className="text-[11.5px] text-[var(--color-text-dim)]">
-                  {s.node_name ?? "Chat"} · {fmtDateTime(s.last_active_at)}
+                  {s.node_name ?? "Chat"} · {formatDateTime(locale, s.last_active_at)}
                 </div>
               </Row>
             );
@@ -334,7 +336,7 @@ function SessionsCard({
                   {j.session_name} → {j.node_name}
                 </div>
                 <div className="pl-0 text-[11px] text-[var(--color-text-dim)]">
-                  {j.reason ?? "bez uvedeného důvodu"} · {fmtDateTime(j.added_at)}
+                  {j.reason ?? "bez uvedeného důvodu"} · {formatDateTime(locale, j.added_at)}
                 </div>
               </Row>
             ))}
@@ -417,6 +419,7 @@ function ActivityCard({
   sessionWrites: OverviewSessionWrite[];
   onSelectNode: (nodeId: string) => void;
 }) {
+  const locale = useLocale();
   // Merge and sort by timestamp so activity reads as one interleaved feed.
   type Item =
     | { kind: "event"; at: string; data: OverviewEvent }
@@ -443,7 +446,7 @@ function ActivityCard({
               <Row key={`e-${item.data.id}`} onClick={() => onSelectNode(item.data.node_id)}>
                 <div className="truncate text-[var(--color-text)]">{item.data.content}</div>
                 <div className="text-[11px] text-[var(--color-text-dim)]">
-                  {item.data.node_name} · {fmtDateTime(item.data.created_at)}
+                  {item.data.node_name} · {formatDateTime(locale, item.data.created_at)}
                 </div>
               </Row>
             ) : (
@@ -451,7 +454,7 @@ function ActivityCard({
                 <div className="text-[var(--color-text)]">
                   {item.data.session_name} zapsala do {item.data.node_name}
                 </div>
-                <div className="text-[11px] text-[var(--color-text-dim)]">{fmtDateTime(item.data.added_at)}</div>
+                <div className="text-[11px] text-[var(--color-text-dim)]">{formatDateTime(locale, item.data.added_at)}</div>
               </Row>
             ),
           )}
@@ -468,6 +471,7 @@ function NewNodesCard({
   nodes: OverviewNewNode[];
   onSelectNode: (nodeId: string) => void;
 }) {
+  const locale = useLocale();
   const [expanded, setExpanded] = useState(false);
   const { shown, hidden } = capRows(nodes, expanded);
   return (
@@ -484,7 +488,7 @@ function NewNodesCard({
             <Row key={n.id} onClick={() => onSelectNode(n.id)}>
               <div className="truncate text-[var(--color-text)]">{n.name}</div>
               <div className="text-[11px] text-[var(--color-text-dim)]">
-                {TYPE_LABELS[n.type] ?? n.type} · {n.created_by_name} · {fmtDateTime(n.created_at)}
+                {TYPE_LABELS[n.type] ?? n.type} · {n.created_by_name} · {formatDateTime(locale, n.created_at)}
               </div>
             </Row>
           ))}

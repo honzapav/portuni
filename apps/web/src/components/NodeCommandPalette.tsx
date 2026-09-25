@@ -18,6 +18,8 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { compareText } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 const MAX_RESULTS = 50;
 
@@ -26,7 +28,7 @@ function nodeTypeVar(type: string): string {
   return known.includes(type) ? `var(--color-node-${type})` : "var(--color-node-default)";
 }
 
-export function filterNodes(nodes: GraphNode[], query: string): GraphNode[] {
+export function filterNodes(nodes: GraphNode[], query: string, locale: string): GraphNode[] {
   const q = foldForSearch(query.trim());
   const pool = q
     ? nodes.filter(
@@ -35,7 +37,7 @@ export function filterNodes(nodes: GraphNode[], query: string): GraphNode[] {
           foldForSearch(n.description ?? "").includes(q) ||
           foldForSearch(n.type).includes(q),
       )
-    : [...nodes].sort((a, b) => a.name.localeCompare(b.name, "cs"));
+    : [...nodes].sort((a, b) => compareText(locale, a.name, b.name));
   return pool.slice(0, MAX_RESULTS);
 }
 
@@ -54,6 +56,7 @@ export default function NodeCommandPalette({
   // elsewhere while the palette is open (the graph). Cleared on close.
   onQueryChange?: (query: string) => void;
 }) {
+  const locale = useLocale();
   const [text, setText] = useState("");
   useEffect(() => {
     if (!open) {
@@ -62,10 +65,10 @@ export default function NodeCommandPalette({
     }
   }, [open, onQueryChange]);
 
-  const matches = useMemo(() => filterNodes(nodes, text), [nodes, text]);
+  const matches = useMemo(() => filterNodes(nodes, text, locale), [nodes, text, locale]);
   // Grouped by node type once the list is long enough to be worth scanning
   // in sections; a short one stays flat (lib/node-search.ts).
-  const groups = useMemo(() => groupNodesByType(matches), [matches]);
+  const groups = useMemo(() => groupNodesByType(matches, locale), [matches, locale]);
 
   // A row: the type dot in a 20 px icon slot, the name, and the type name
   // muted on the right -- empty under a group heading that already names it.

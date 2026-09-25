@@ -36,6 +36,8 @@ import {
 } from "../lib/runners";
 import { fetchGraph } from "../api";
 import type { GraphNode } from "../types";
+import { compareText } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 type ListState =
   | { kind: "loading" }
@@ -71,6 +73,7 @@ function useMountedRef(): MutableRefObject<boolean> {
 }
 
 export default function RunnersSection() {
+  const locale = useLocale();
   const [runners, setRunners] = useState<RunnerInfo[] | null>(null);
   const [runnersError, setRunnersError] = useState<string | null>(null);
   const [state, setState] = useState<ListState>({ kind: "loading" });
@@ -117,7 +120,7 @@ export default function RunnersSection() {
         setOrgs(
           g.nodes
             .filter((n) => n.type === "organization")
-            .sort((a, b) => a.name.localeCompare(b.name, "cs")),
+            .sort((a, b) => compareText(locale, a.name, b.name)),
         );
       })
       .catch(() => {

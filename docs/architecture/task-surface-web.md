@@ -687,6 +687,18 @@ message may use are fixed in its `glossary.md`; translator notes are in
   is converted. `test/i18n-catalog.test.ts` checks that placeholders and
   tags match between `en` and `cs` and that every Czech plural renders its
   own form for 1, 2, 5 and 1.5.
+- **Formatting.** A date, time, number, token count or sort order that
+  stands alone (a table cell, a chip, the date picker) goes through
+  `lib/format.ts` (`formatDate`, `formatDateTime`, `formatRelative`,
+  `formatNumber`, `formatTokens`, `compareText`, `weekInfo`, plus the
+  date picker's `formatMonthYear` and `weekdayNames`) with the UI
+  language from `useLocale()` (`lib/use-locale.ts`); each caches its
+  `Intl` instance per locale and options. A server timestamp
+  (`YYYY-MM-DD HH:MM:SS`, UTC) is parsed by `parseServerTimestamp` and
+  nowhere else. No component formats with a hardcoded `"cs-CZ"` or sorts
+  with `localeCompare(..., "cs")`. The date picker's first weekday comes
+  from `Intl.Locale#getWeekInfo`, falling back to Monday for `cs` and
+  Sunday for `en`.
 - **One copy of i18next.** It is installed in the root `node_modules`
   only; `apps/web/.npmrc` (`legacy-peer-deps`) keeps npm from adding a
   second one for `react-i18next`'s peer, so the root is installed before

@@ -21,6 +21,8 @@ import {
 } from "../api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 // --- Non-member side -------------------------------------------------------
 
@@ -155,6 +157,7 @@ export function AccessRequestList({
   showNode?: boolean;
   onResolved: (request: AccessRequest, decision: "approve" | "deny") => void;
 }) {
+  const locale = useLocale();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errorId, setErrorId] = useState<string | null>(null);
 
@@ -199,7 +202,7 @@ export function AccessRequestList({
               <div className="flex flex-wrap items-baseline gap-x-2">
                 <span className="text-[13px] font-medium text-[var(--color-text)]">{r.user_name}</span>
                 <span className="text-[12px] text-[var(--color-text-dim)]">{r.user_email}</span>
-                <span className="text-[11.5px] text-[var(--color-text-dim)]">{fmtDateTime(r.created_at)}</span>
+                <span className="text-[11.5px] text-[var(--color-text-dim)]">{formatDateTime(locale, r.created_at)}</span>
               </div>
               {showNode && (
                 <div className="text-[12px] text-[var(--color-text-muted)]">
@@ -339,23 +342,4 @@ function initials(name: string): string {
     .join("")
     .toUpperCase()
     .slice(0, 2);
-}
-
-function fmtDateTime(value: string): string {
-  // SQLite datetime('now') yields "YYYY-MM-DD HH:MM:SS" in UTC without a
-  // zone marker; normalise so Date parses it as UTC, not local time.
-  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
-    ? value.replace(" ", "T") + "Z"
-    : value;
-  try {
-    return new Date(iso).toLocaleString("cs-CZ", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return value;
-  }
 }

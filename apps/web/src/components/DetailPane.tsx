@@ -137,6 +137,8 @@ import { SessionsSection } from "./DetailPane.sessions";
 import { RequestAccessControl } from "./AccessRequests";
 import { copyText } from "../lib/clipboard";
 import { useDataMode } from "../lib/central";
+import { compareText } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -2204,6 +2206,7 @@ function OrganizationPicker({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const locale = useLocale();
   const [saving, setSaving] = useState(false);
 
   const currentOrgEdge = node.edges.find(
@@ -2214,7 +2217,7 @@ function OrganizationPicker({
   );
   const orgs = (graph?.nodes ?? [])
     .filter((n) => n.type === "organization")
-    .sort((a, b) => a.name.localeCompare(b.name, "cs"));
+    .sort((a, b) => compareText(locale, a.name, b.name));
 
   const pick = async (orgId: string) => {
     if (orgId === currentOrgEdge?.peer_id) return;

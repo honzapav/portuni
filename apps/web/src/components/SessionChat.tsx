@@ -135,6 +135,7 @@ import {
   type RunnerInstanceSummary,
   type RunnerModel,
 } from "../lib/runners";
+import { useLocale } from "../lib/use-locale";
 
 // Spec rule 3 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
 // transcript, notice bar, question panel and composer share one centred
@@ -160,6 +161,7 @@ export default function SessionChat({
   sessionsClient: SessionsClient;
   onOpenFile?: (relPath: string) => void;
 }) {
+  const locale = useLocale();
   const session = useSessionStore(
     sessionStore,
     useCallback((store: SessionStore) => selectSession(store, sessionId), [sessionId]),
@@ -448,6 +450,7 @@ export default function SessionChat({
   const ring = contextRingState(
     liveUsage?.used ?? session.context_used_tokens,
     liveUsage?.max ?? session.context_max_tokens,
+    locale,
   );
   const openQuestion = latestQuestionEvent(events);
   const isWaiting = session.state === "running" && session.waiting_since !== null;

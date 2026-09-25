@@ -30,6 +30,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 // #329: labels for a session the server suspended (dropped connection,
 // idle GC, terminal exit, boot sweep) rather than the agent's own
@@ -44,25 +46,6 @@ const SERVER_SUSPEND_REASON_LABEL: Record<string, string> = {
   // #459: the owner asked for it -- Předat wrote this summary on purpose.
   handoff: "předání na jiné zařízení",
 };
-
-export function fmtDateTime(value: string): string {
-  // SQLite datetime('now') yields "YYYY-MM-DD HH:MM:SS" in UTC without a
-  // zone marker; normalise so Date parses it as UTC, not local time.
-  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
-    ? value.replace(" ", "T") + "Z"
-    : value;
-  try {
-    return new Date(iso).toLocaleString("cs-CZ", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return value;
-  }
-}
 
 type Props = {
   nodeId: string;
@@ -98,6 +81,7 @@ export function SessionsSection({
   onSessionStarted,
   liveStates,
 }: Props) {
+  const locale = useLocale();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -207,7 +191,7 @@ export function SessionsSection({
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[13.5px] text-[var(--color-text)]">{entry.title}</div>
                   <div className="truncate text-[12px] text-[var(--color-text-dim)]">
-                    {[entry.host, entry.last_active_at ? fmtDateTime(entry.last_active_at) : null]
+                    {[entry.host, entry.last_active_at ? formatDateTime(locale, entry.last_active_at) : null]
                       .filter(Boolean)
                       .join(" · ") || entry.relative_path}
                   </div>
@@ -280,6 +264,7 @@ function SessionRow({
   onOpenChat?: (sessionId: string) => void;
   onOpenHandoff?: () => void;
 }) {
+  const locale = useLocale();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name);
   const [saving, setSaving] = useState(false);
@@ -417,7 +402,7 @@ function SessionRow({
 
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--color-text-dim)]">
         <span>{chip.label}</span>
-        <span>{fmtDateTime(session.last_active_at)}</span>
+        <span>{formatDateTime(locale, session.last_active_at)}</span>
         <span>
           {session.runner ?? session.cli ?? "neznámý"}
           {session.instance_id ? ` · ${session.instance_id}` : ""}

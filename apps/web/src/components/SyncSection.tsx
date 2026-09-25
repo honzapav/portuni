@@ -13,8 +13,10 @@ import { useDataMode } from "../lib/central";
 import { useSyncHealth } from "../lib/use-sync-health";
 import { useSyncWatch } from "../lib/use-sync-watch";
 import { remoteWatchLine } from "../lib/remote-watch-view";
+import { useLocale } from "../lib/use-locale";
 
 export default function SyncSection() {
+  const locale = useLocale();
   const dataMode = useDataMode();
   const { health: syncHealth } = useSyncHealth();
   // The remote watcher (#338/#339) runs on central only, so a local
@@ -56,7 +58,7 @@ export default function SyncSection() {
       {watch.remotes.length > 0 && (
         <ul className="mb-4 flex flex-col gap-1">
           {watch.remotes.map((r) => {
-            const line = remoteWatchLine(r, now);
+            const line = remoteWatchLine(r, now, locale);
             return (
               <li
                 key={line.remote_name}

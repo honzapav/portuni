@@ -26,6 +26,8 @@ import {
   type NewDeviceToken,
   type OAuthGrant,
 } from "../lib/central";
+import { formatDate } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 type SectionState =
   | { kind: "loading" }
@@ -279,6 +281,7 @@ type GrantsState =
   | { kind: "ok"; grants: OAuthGrant[] };
 
 function ConnectedAppsTable() {
+  const locale = useLocale();
   const [state, setState] = useState<GrantsState>({ kind: "loading" });
   const [revoking, setRevoking] = useState<Set<string>>(() => new Set());
 
@@ -357,10 +360,10 @@ function ConnectedAppsTable() {
                     {g.client_name}
                   </td>
                   <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                    {fmtDate(g.created_at)}
+                    {formatDate(locale, g.created_at)}
                   </td>
                   <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                    {g.last_used_at ? fmtDate(g.last_used_at) : "—"}
+                    {g.last_used_at ? formatDate(locale, g.last_used_at) : "—"}
                   </td>
                   <td className="py-2">
                     <Button
@@ -408,6 +411,7 @@ type NewTokenState =
   | { kind: "created"; token: NewDeviceToken };
 
 function DeviceTokensTable() {
+  const locale = useLocale();
   const [tokensState, setTokensState] = useState<TokensState>({ kind: "loading" });
   const [newToken, setNewToken] = useState<NewTokenState>(null);
   const [revoking, setRevoking] = useState<Set<string>>(() => new Set());
@@ -616,13 +620,13 @@ function DeviceTokensTable() {
                       {t.label}
                     </td>
                     <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                      {fmtDate(t.created_at)}
+                      {formatDate(locale, t.created_at)}
                     </td>
                     <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                      {t.last_used_at ? fmtDate(t.last_used_at) : "—"}
+                      {t.last_used_at ? formatDate(locale, t.last_used_at) : "—"}
                     </td>
                     <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                      {t.expires_at ? fmtDate(t.expires_at) : "—"}
+                      {t.expires_at ? formatDate(locale, t.expires_at) : "—"}
                     </td>
                     <td className="py-2 pr-4">
                       {revoked ? (
@@ -668,18 +672,6 @@ function DeviceTokensTable() {
 }
 
 // --- Helpers -----------------------------------------------------------------
-
-function fmtDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString("cs-CZ", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
 
 function ErrorBox({
   message,

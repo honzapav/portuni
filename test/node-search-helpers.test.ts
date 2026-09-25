@@ -23,7 +23,7 @@ describe("groupNodesByType", () => {
       ["area", 4],
     ]);
     assert.equal(short.length, GROUP_THRESHOLD);
-    assert.equal(groupNodesByType(short), null);
+    assert.equal(groupNodesByType(short, "en"), null);
   });
 
   it("groups a longer list in the fixed POPP order with Czech labels", () => {
@@ -34,7 +34,7 @@ describe("groupNodesByType", () => {
       ["area", 2],
       ["organization", 2],
     ]);
-    const groups = groupNodesByType(long);
+    const groups = groupNodesByType(long, "en");
     assert.ok(groups);
     assert.deepEqual(
       groups.map((g) => g.type),
@@ -51,12 +51,13 @@ describe("groupNodesByType", () => {
   });
 
   it("stays flat when a long list holds a single type, and sorts unknown types last", () => {
-    assert.equal(groupNodesByType(nodes([["project", 12]])), null);
+    assert.equal(groupNodesByType(nodes([["project", 12]]), "en"), null);
     const mixed = groupNodesByType(
       nodes([
         ["widget", 5],
         ["project", 5],
       ]),
+      "en",
     );
     assert.deepEqual(mixed?.map((g) => g.type), ["project", "widget"]);
     assert.equal(nodeTypeLabel("widget"), "widget");

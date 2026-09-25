@@ -8,12 +8,15 @@ import { Download, ExternalLink, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AppUpdate } from "../lib/updater";
 import { isTauri, openExternal } from "../lib/backend-url";
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 type Props = {
   appUpdate: AppUpdate;
 };
 
 export default function UpdateSection({ appUpdate }: Props) {
+  const locale = useLocale();
   const { state, currentVersion, updateInfo, hasChecked, lastCheckedAt, checkNow, install, restart } =
     appUpdate;
 
@@ -68,13 +71,7 @@ export default function UpdateSection({ appUpdate }: Props) {
         // completed attempt including a failed one.
         <div className="mb-4 text-[12px] text-[var(--color-text-dim)]">
           Naposledy zkontrolováno:{" "}
-          {lastCheckedAt.toLocaleString("cs-CZ", {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
+          {formatDateTime(locale, lastCheckedAt)}
         </div>
       )}
 

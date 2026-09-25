@@ -26,7 +26,8 @@ import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import { formatTokens } from "@/lib/context-ring";
+import { formatTokens } from "@/lib/format";
+import { useLocale } from "@/lib/use-locale";
 import { type ComponentProps, createContext, useContext } from "react";
 
 const PERCENT_MAX = 100;
@@ -138,6 +139,7 @@ export type ContextContentHeaderProps = ComponentProps<"div">;
 
 export const ContextContentHeader = ({ children, className, ...props }: ContextContentHeaderProps) => {
   const { usedTokens, maxTokens, label } = useContextValue();
+  const locale = useLocale();
   const fraction = usedFraction(usedTokens, maxTokens);
 
   return (
@@ -147,7 +149,9 @@ export const ContextContentHeader = ({ children, className, ...props }: ContextC
           <div className="flex items-center justify-between gap-3 text-xs">
             <p>{label}</p>
             <p className="font-mono text-muted-foreground">
-              {maxTokens === null ? formatTokens(usedTokens) : `${formatTokens(usedTokens)} / ${formatTokens(maxTokens)}`}
+              {maxTokens === null
+                ? formatTokens(locale, usedTokens)
+                : `${formatTokens(locale, usedTokens)} / ${formatTokens(locale, maxTokens)}`}
             </p>
           </div>
           {fraction !== null && (
@@ -169,12 +173,15 @@ export const ContextContentBody = ({ children, className, ...props }: ContextCon
   </div>
 );
 
-const UsageRow = ({ label, tokens, className, ...props }: ComponentProps<"div"> & { label: string; tokens: number }) => (
-  <div className={cn("flex items-center justify-between text-xs", className)} {...props}>
-    <span className="text-muted-foreground">{label}</span>
-    <span>{formatTokens(tokens)}</span>
-  </div>
-);
+const UsageRow = ({ label, tokens, className, ...props }: ComponentProps<"div"> & { label: string; tokens: number }) => {
+  const locale = useLocale();
+  return (
+    <div className={cn("flex items-center justify-between text-xs", className)} {...props}>
+      <span className="text-muted-foreground">{label}</span>
+      <span>{formatTokens(locale, tokens)}</span>
+    </div>
+  );
+};
 
 export type ContextInputUsageProps = ComponentProps<"div">;
 

@@ -2,6 +2,8 @@
 // the ordering and the "only group a long list" threshold are testable from
 // the server's own node:test runner (test/node-search-helpers.test.ts).
 
+import { compareText } from "./format";
+
 // Czech labels for the five POPP node types, same wording as
 // CreateNodeModal/OverviewView.
 export const NODE_TYPE_LABELS: Record<string, string> = {
@@ -37,6 +39,7 @@ export function nodeTypeLabel(type: string): string {
 // or everything in it shares a single type, where headings add nothing.
 export function groupNodesByType<T extends { type: string }>(
   nodes: T[],
+  locale: string,
 ): NodeTypeGroup<T>[] | null {
   if (nodes.length <= GROUP_THRESHOLD) return null;
   const buckets = new Map<string, T[]>();
@@ -49,7 +52,7 @@ export function groupNodesByType<T extends { type: string }>(
   const known = NODE_TYPE_ORDER.filter((t) => buckets.has(t));
   const unknown = [...buckets.keys()]
     .filter((t) => !NODE_TYPE_ORDER.includes(t as (typeof NODE_TYPE_ORDER)[number]))
-    .sort((a, b) => a.localeCompare(b, "cs"));
+    .sort((a, b) => compareText(locale, a, b));
   return [...known, ...unknown].map((type) => ({
     type,
     label: nodeTypeLabel(type),

@@ -2,12 +2,10 @@ import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { formatDate, formatMonthYear, weekInfo, weekdayNames } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
-const MONTHS_CS = [
-  "leden", "únor", "březen", "duben", "květen", "červen",
-  "červenec", "srpen", "září", "říjen", "listopad", "prosinec",
-];
-const WEEKDAYS_CS = ["Po", "Út", "St", "Čt", "Pá", "So", "Ne"];
+const TRIGGER_DATE: Intl.DateTimeFormatOptions = { year: "numeric", month: "numeric", day: "numeric" };
 
 function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n);
@@ -20,11 +18,6 @@ function parseIso(s: string): Date {
 
 function formatIso(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-function formatCzech(s: string): string {
-  const d = parseIso(s);
-  return `${d.getDate()}. ${d.getMonth() + 1}. ${d.getFullYear()}`;
 }
 
 function isoEq(a: Date, b: Date): boolean {
@@ -42,6 +35,7 @@ export function DatePicker({
   onChange: (next: string) => void;
   className?: string;
 }) {
+  const locale = useLocale();
   const [open, setOpen] = useState(false);
   const selected = parseIso(value);
   const [viewYear, setViewYear] = useState(selected.getFullYear());
@@ -56,7 +50,9 @@ export function DatePicker({
 
   const today = new Date();
   const firstOfMonth = new Date(viewYear, viewMonth, 1);
-  const leading = (firstOfMonth.getDay() + 6) % 7;
+  // Days shown before the 1st: from the locale's first day of the week
+  // (1 = Monday ... 7 = Sunday; Date#getDay has Sunday = 0).
+  const leading = (firstOfMonth.getDay() - (weekInfo(locale).firstDay % 7) + 7) % 7;
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const cells: { date: Date; inMonth: boolean }[] = [];
   for (let i = leading; i > 0; i--) {
@@ -80,7 +76,7 @@ export function DatePicker({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="outline" size="sm" className={`font-mono ${className ?? ""}`}>
-          {formatCzech(value)}
+          {formatDate(locale, parseIso(value), TRIGGER_DATE)}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[230px] gap-0 p-2">
@@ -95,7 +91,7 @@ export function DatePicker({
             <ChevronLeft />
           </Button>
           <div className="font-mono text-[12px] uppercase tracking-wider text-[var(--color-text-muted)]">
-            {MONTHS_CS[viewMonth]} {viewYear}
+            {formatMonthYear(locale, viewYear, viewMonth)}
           </div>
           <Button
             variant="ghost"
@@ -108,7 +104,7 @@ export function DatePicker({
           </Button>
         </div>
         <div className="grid grid-cols-7 gap-0.5">
-          {WEEKDAYS_CS.map((w) => (
+          {weekdayNames(locale).map((w) => (
             <div
               key={w}
               className="py-0.5 text-center font-mono text-[10.5px] uppercase tracking-wider text-[var(--color-text-dim)]"

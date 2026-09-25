@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fetchUsersAdmin, inviteUser, UserExistsError } from "../api";
 import type { UserAdmin } from "../types";
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 type UsersState =
   | { kind: "loading" }
@@ -21,6 +23,7 @@ type UsersState =
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function SettingsUsersPanel() {
+  const locale = useLocale();
   const [state, setState] = useState<UsersState>({ kind: "loading" });
   const [email, setEmail] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -208,7 +211,7 @@ export default function SettingsUsersPanel() {
                     {u.global_scope ?? "—"}
                   </td>
                   <td className="py-2 text-[var(--color-text-muted)]">
-                    {u.last_login_at ? fmtDateTime(u.last_login_at) : "—"}
+                    {u.last_login_at ? formatDateTime(locale, u.last_login_at) : "—"}
                   </td>
                 </tr>
               ))}
@@ -228,18 +231,4 @@ function initials(name: string): string {
     .join("")
     .toUpperCase()
     .slice(0, 2);
-}
-
-function fmtDateTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString("cs-CZ", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
 }

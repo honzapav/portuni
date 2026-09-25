@@ -4,6 +4,7 @@
 // Dependency-free so test/context-ring.test.ts covers the thresholds.
 
 import type { ChatEvent } from "./session-chat";
+import { formatTokens } from "./format";
 
 // From this fraction on the ring takes the warning colour and
 // "Pokračovat v nové session" becomes the filled button.
@@ -25,14 +26,6 @@ export type ContextUsageSnapshot = {
   output: number;
 };
 
-// Compact token count with a Czech decimal: 950, 12,3 k, 200 k.
-export function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  const k = n / 1000;
-  const text = k >= 100 ? String(Math.round(k)) : (Math.round(k * 10) / 10).toString().replace(".", ",");
-  return `${text} k`;
-}
-
 const finite = (n: number | null | undefined): number | null =>
   typeof n === "number" && Number.isFinite(n) ? n : null;
 
@@ -41,12 +34,13 @@ const finite = (n: number | null | undefined): number | null =>
 export function contextRingState(
   usedInput: number | null | undefined,
   maxInput: number | null | undefined,
+  locale: string,
 ): ContextRingState | null {
   const used = finite(usedInput);
   const max = finite(maxInput);
   if (used === null) return null;
   if (max === null || max <= 0) {
-    return { used, max: null, fraction: null, warn: false, label: `${formatTokens(used)} tokenů` };
+    return { used, max: null, fraction: null, warn: false, label: `${formatTokens(locale, used)} tokenů` };
   }
   const fraction = used / max;
   // A share of the window, capped: a count above it is a runner that
