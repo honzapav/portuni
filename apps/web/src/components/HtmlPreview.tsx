@@ -14,6 +14,7 @@
 // and the handoff carries the node with it (`openInShowtime`).
 import { displayError } from "../errors";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { isTauri, openPathExternal } from "../lib/backend-url";
 import { protocolUrl } from "../lib/html-preview-url";
 import { copyText } from "../lib/clipboard";
@@ -38,6 +39,7 @@ export default function HtmlPreview({
   // The node the file belongs to; a Showtime deck is handed over with it.
   nodeId?: string | null;
 }) {
+  const { t } = useTranslation("common");
   const [copied, setCopied] = useState(false);
   const [canOpenInShowtime, setCanOpenInShowtime] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
@@ -72,7 +74,7 @@ export default function HtmlPreview({
     try {
       if (kind === "showtime") {
         if (!nodeId) {
-          setOpenError("Deck nepatří k žádnému uzlu.");
+          setOpenError(t(($) => $.editor.html_preview.deck_without_node));
           return;
         }
         await openInShowtime(nodeId, localPath);
@@ -87,10 +89,13 @@ export default function HtmlPreview({
   const openButton =
     kind === "showtime"
       ? canOpenInShowtime && {
-          label: "Otevřít v Showtime",
-          title: "Otevřít deck v aplikaci Showtime i s kontextem uzlu",
+          label: t(($) => $.editor.html_preview.open_in_showtime),
+          title: t(($) => $.editor.html_preview.open_in_showtime_title),
         }
-      : isTauri() && { label: "Otevřít v prohlížeči", title: "Otevřít v prohlížeči" };
+      : isTauri() && {
+          label: t(($) => $.editor.html_preview.open_in_browser),
+          title: t(($) => $.editor.html_preview.open_in_browser),
+        };
 
   return (
     <div className="flex h-full flex-col">
@@ -105,8 +110,8 @@ export default function HtmlPreview({
               {openError}
             </span>
           )}
-          <Button variant="ghost" size="xs" onClick={copyPath} title="Kopírovat cestu k souboru" className="text-muted-foreground">
-            {copied ? "Zkopírováno" : "Kopírovat cestu"}
+          <Button variant="ghost" size="xs" onClick={copyPath} title={t(($) => $.editor.html_preview.copy_path_title)} className="text-muted-foreground">
+            {copied ? t(($) => $.editor.html_preview.copied) : t(($) => $.editor.html_preview.copy_path)}
           </Button>
           {openButton && (
             <Button variant="ghost" size="xs" onClick={() => void openExternal()} title={openButton.title} className="text-muted-foreground">
@@ -116,7 +121,11 @@ export default function HtmlPreview({
         </div>
       )}
       <iframe
-        title={kind === "showtime" ? "Náhled prezentace" : "HTML náhled"}
+        title={
+          kind === "showtime"
+            ? t(($) => $.editor.html_preview.frame_title_showtime)
+            : t(($) => $.editor.html_preview.frame_title_html)
+        }
         sandbox="allow-scripts"
         {...(useProtocol
           ? { src: protocolUrl(localPath as string, version) }

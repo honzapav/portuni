@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { SearchIcon } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 function Command({
   className,
@@ -28,8 +29,8 @@ function Command({
 }
 
 function CommandDialog({
-  title = "Command Palette",
-  description = "Search for a command to run...",
+  title,
+  description,
   children,
   className,
   showCloseButton = false,
@@ -40,11 +41,12 @@ function CommandDialog({
   className?: string
   showCloseButton?: boolean
 }) {
+  const { t } = useTranslation("common")
   return (
     <Dialog {...props}>
       <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
+        <DialogTitle>{title ?? t(($) => $.ui.command.title)}</DialogTitle>
+        <DialogDescription>{description ?? t(($) => $.ui.command.description)}</DialogDescription>
       </DialogHeader>
       <DialogContent
         className={cn(

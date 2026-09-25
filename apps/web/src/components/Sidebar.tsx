@@ -1,8 +1,11 @@
 import { memo, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Plus, Search, Sun, Moon, Settings, Waypoints, MessagesSquare, LayoutDashboard } from "lucide-react";
 import type { GraphPayload, SessionSummary } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
+import { nodeTypeLabel } from "../lib/node-type-labels";
 import type { Theme } from "../lib/theme";
 import type { WorkspaceNodeRow } from "../lib/sessions";
 import { isTauri } from "../lib/backend-url";
@@ -23,8 +26,13 @@ import {
 import WorkspaceNodeList from "./WorkspaceNodeList";
 import NodeCommandPalette from "./NodeCommandPalette";
 
-// Shown on disabled create-node buttons (global scope below POST /nodes).
-const CREATE_NODE_DENIED_TITLE = "Vytváření uzlů vyžaduje vyšší roli";
+// The node status filter's labels, one literal selector per status.
+type NodeStatusFilter = "active" | "completed" | "archived";
+const STATUS_FILTER_LABEL: Record<NodeStatusFilter, (t: TFunction<"common">) => string> = {
+  active: (t) => t(($) => $.sidebar.filters.status_value.active),
+  completed: (t) => t(($) => $.sidebar.filters.status_value.completed),
+  archived: (t) => t(($) => $.sidebar.filters.status_value.archived),
+};
 
 export type AppView = "overview" | "graph" | "workspace" | "settings";
 
@@ -153,6 +161,7 @@ function Sidebar({
   onWorkspaceCloseTask,
   onWorkspaceHandoffTask,
 }: Props) {
+  const { t } = useTranslation("common");
   const isMac =
     typeof navigator !== "undefined" &&
     /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent);
@@ -195,19 +204,19 @@ function Sidebar({
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-[15px] font-semibold leading-tight tracking-tight text-[var(--color-text)]">
-            Portuni
+            {t(($) => $.sidebar.brand)}
           </div>
           <WorkspaceSwitcher onOpenSettings={onOpenSettings} />
         </div>
-        <Button variant="ghost" size="icon-sm" onClick={onOpenSettings} title="Nastavení" aria-label="Nastavení" className="text-muted-foreground">
+        <Button variant="ghost" size="icon-sm" onClick={onOpenSettings} title={t(($) => $.sidebar.settings)} aria-label={t(($) => $.sidebar.settings)} className="text-muted-foreground">
           <Settings />
         </Button>
         <Button
           variant="ghost"
           size="icon-sm"
           onClick={onThemeToggle}
-          title={theme === "dark" ? "Přepnout na světlý režim" : "Přepnout na tmavý režim"}
-          aria-label={theme === "dark" ? "Přepnout na světlý režim" : "Přepnout na tmavý režim"}
+          title={theme === "dark" ? t(($) => $.sidebar.theme.to_light) : t(($) => $.sidebar.theme.to_dark)}
+          aria-label={theme === "dark" ? t(($) => $.sidebar.theme.to_light) : t(($) => $.sidebar.theme.to_dark)}
           className="text-muted-foreground"
         >
           {theme === "dark" ? <Sun /> : <Moon />}
@@ -216,21 +225,21 @@ function Sidebar({
 
       {/* Common block: view toggle, search, create -- identical on every tab */}
       <div className="flex flex-col gap-2.5 px-4 pt-4">
-        <ButtonGroup className="w-full" aria-label="Pohled">
+        <ButtonGroup className="w-full" aria-label={t(($) => $.sidebar.view.group_label)}>
           <ViewToggleButton
-            label="Přehled"
+            label={t(($) => $.sidebar.view.overview)}
             icon={<LayoutDashboard />}
             active={view === "overview"}
             onClick={() => onViewChange("overview")}
           />
           <ViewToggleButton
-            label="Graf"
+            label={t(($) => $.sidebar.view.graph)}
             icon={<Waypoints />}
             active={view === "graph"}
             onClick={() => onViewChange("graph")}
           />
           <ViewToggleButton
-            label="Práce"
+            label={t(($) => $.sidebar.view.work)}
             icon={<MessagesSquare />}
             active={view === "workspace"}
             onClick={() => onViewChange("workspace")}
@@ -241,10 +250,10 @@ function Sidebar({
           variant="outline"
           onClick={() => setPaletteOpen(true)}
           className="w-full justify-start font-normal text-muted-foreground"
-          title={`Hledat uzel (${shortcut})`}
+          title={t(($) => $.sidebar.search.title, { shortcut })}
         >
           <Search />
-          Hledat uzel…
+          {t(($) => $.sidebar.search.button)}
           <kbd className="ml-auto rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
             {shortcut}
           </kbd>
@@ -256,14 +265,14 @@ function Sidebar({
           title={
             canCreateNode
               ? view === "graph"
-                ? "Vytvořit nový uzel (organizace, projekt, proces, oblast, princip)"
-                : "Vytvoří nový uzel a otevře ho v Práci"
-              : CREATE_NODE_DENIED_TITLE
+                ? t(($) => $.sidebar.create.title_graph)
+                : t(($) => $.sidebar.create.title_work)
+              : t(($) => $.sidebar.create.denied)
           }
           className="w-full"
         >
           <Plus />
-          Nový uzel
+          {t(($) => $.sidebar.create.button)}
         </Button>
       </div>
 
@@ -277,15 +286,13 @@ function Sidebar({
 
       {view === "settings" && (
         <div className="flex-1 px-5 py-6 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
-          Konfigurace Portuni: příkaz agenta pro spouštění z uzlů a
-          parametry MCP serveru pro Claude Code a Codex.
+          {t(($) => $.sidebar.hint.settings)}
         </div>
       )}
 
       {view === "overview" && (
         <div className="flex-1 px-5 py-6 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
-          Souhrn celého workspace: běžící relace, nody vyžadující pozornost,
-          poslední aktivita a nově vytvořené nody.
+          {t(($) => $.sidebar.hint.overview)}
         </div>
       )}
 
@@ -327,8 +334,8 @@ function Sidebar({
       {(view === "graph" || view === "settings") && (
         <div className="border-t border-[var(--color-border)] px-5 py-3 text-[11px] text-[var(--color-text-dim)]">
           {view === "graph"
-            ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."
-            : "Změny se ukládají automaticky."}
+            ? t(($) => $.sidebar.footer.graph)
+            : t(($) => $.sidebar.footer.settings)}
         </div>
       )}
     </aside>
@@ -345,6 +352,7 @@ const MANAGE_WORKSPACES = "__manage__";
 // OWN window and the select stays on its placeholder, since no single
 // "current" value could reflect several windows at once.
 function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const { t } = useTranslation("common");
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
 
   useEffect(() => {
@@ -394,23 +402,23 @@ function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => void }) {
     >
       <SelectTrigger
         size="sm"
-        aria-label="Workspace"
-        title="Otevřít jiný workspace"
+        aria-label={t(($) => $.sidebar.workspace_switcher.aria_label)}
+        title={t(($) => $.sidebar.workspace_switcher.title)}
         className="-ml-1.5 mt-0.5 h-6 max-w-full gap-1 border-transparent bg-transparent py-0 pr-1 pl-1.5 text-[12px] shadow-none hover:bg-muted data-placeholder:text-muted-foreground dark:bg-transparent dark:hover:bg-muted [&_svg]:size-3"
       >
-        <SelectValue placeholder={current?.label ?? "Workspace"} />
+        <SelectValue placeholder={current?.label ?? t(($) => $.sidebar.workspace_switcher.placeholder)} />
       </SelectTrigger>
       <SelectContent>
         {workspaces.map((w) => {
           const unavailable = !w.running && !w.deferred && w.enabled;
           const hint = w.id === currentId
-            ? "toto okno"
+            ? t(($) => $.sidebar.workspace_switcher.hint.this_window)
             : w.window_open
-              ? "otevřeno"
+              ? t(($) => $.sidebar.workspace_switcher.hint.open)
               : unavailable
-                ? "nedostupný"
+                ? t(($) => $.sidebar.workspace_switcher.hint.unavailable)
                 : !w.enabled
-                  ? "vypnutý"
+                  ? t(($) => $.sidebar.workspace_switcher.hint.disabled)
                   : null;
           return (
             <SelectItem key={w.id} value={w.id} disabled={!w.enabled}>
@@ -422,7 +430,7 @@ function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => void }) {
         <SelectSeparator />
         <SelectItem value={MANAGE_WORKSPACES}>
           <Settings className="text-muted-foreground" />
-          Spravovat workspaces…
+          {t(($) => $.sidebar.workspace_switcher.manage)}
         </SelectItem>
       </SelectContent>
     </Select>
@@ -486,6 +494,7 @@ function GraphSidebarContent({
   disabledStatuses: Set<string>;
   onToggleStatus: (status: string) => void;
 }) {
+  const { t } = useTranslation("common");
   const q = query.trim();
 
   const typeCounts = new Map<string, number>();
@@ -509,8 +518,8 @@ function GraphSidebarContent({
   }, [graph]);
 
   const orderedTypes = [
-    ...TYPE_ORDER.filter((t) => typeCounts.has(t)),
-    ...Array.from(typeCounts.keys()).filter((t) => !TYPE_ORDER.includes(t)),
+    ...TYPE_ORDER.filter((type) => typeCounts.has(type)),
+    ...Array.from(typeCounts.keys()).filter((type) => !TYPE_ORDER.includes(type)),
   ];
 
   return (
@@ -518,7 +527,7 @@ function GraphSidebarContent({
       {/* Filters */}
       {q.length === 0 && (
         <div className="flex-1 overflow-y-auto scroll-thin px-5 py-6">
-          <Section title="Organizace">
+          <Section title={t(($) => $.sidebar.filters.organizations)}>
             <div className="space-y-1.5">
               {graph.nodes
                 .filter((n) => n.type === "organization")
@@ -539,7 +548,7 @@ function GraphSidebarContent({
             </div>
           </Section>
 
-          <Section title="Typy vazeb">
+          <Section title={t(($) => $.sidebar.filters.relation_types)}>
             <div className="space-y-1.5">
               {RELATION_TYPES.map((r) => {
                 const enabled = !disabledRelations.has(r);
@@ -555,17 +564,12 @@ function GraphSidebarContent({
             </div>
           </Section>
 
-          <Section title="Stav">
+          <Section title={t(($) => $.sidebar.filters.status)}>
             <div className="space-y-1.5">
-              {(["active", "completed", "archived"] as const).map((s) => {
+              {(["active", "completed", "archived"] as const satisfies readonly NodeStatusFilter[]).map((s) => {
                 const enabled = !disabledStatuses.has(s);
                 const count = graph.nodes.filter((n) => n.status === s).length;
-                const label =
-                  s === "active"
-                    ? "Aktivní"
-                    : s === "completed"
-                    ? "Dokončené"
-                    : "Archivované";
+                const label = STATUS_FILTER_LABEL[s](t);
                 return (
                   <FilterRow
                     key={s}
@@ -579,7 +583,7 @@ function GraphSidebarContent({
             </div>
           </Section>
 
-          <Section title="Typy uzlů">
+          <Section title={t(($) => $.sidebar.filters.node_types)}>
             <div className="space-y-1.5">
               {orderedTypes.map((type) => {
                 const count = typeCounts.get(type) ?? 0;
@@ -589,7 +593,7 @@ function GraphSidebarContent({
                     key={type}
                     enabled={enabled}
                     onClick={() => onToggleType(type)}
-                    label={type}
+                    label={nodeTypeLabel(type, t)}
                     count={count}
                     dotColor={nodeTypeVar(type)}
                     dotGlow={nodeTypeGlow(type, 0.4)}
@@ -599,16 +603,16 @@ function GraphSidebarContent({
             </div>
           </Section>
 
-          <Section title="Přehled">
+          <Section title={t(($) => $.sidebar.filters.summary)}>
             <div className="space-y-1.5 px-2">
               <div className="flex items-center justify-between text-[13px]">
-                <span className="text-[var(--color-text-muted)]">Uzly</span>
+                <span className="text-[var(--color-text-muted)]">{t(($) => $.sidebar.filters.summary_nodes)}</span>
                 <span className="font-mono text-[12px] text-[var(--color-text)]">
                   {graph.nodes.length}
                 </span>
               </div>
               <div className="flex items-center justify-between text-[13px]">
-                <span className="text-[var(--color-text-muted)]">Vazby</span>
+                <span className="text-[var(--color-text-muted)]">{t(($) => $.sidebar.filters.summary_relations)}</span>
                 <span className="font-mono text-[12px] text-[var(--color-text)]">
                   {graph.edges.length}
                 </span>

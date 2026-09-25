@@ -17,6 +17,7 @@ import type {
   QuestionCode,
   RunErrorCode,
 } from "../../../server/shared/chat-event-codes";
+import type { TFunction } from "i18next";
 import type { SessionState } from "../types";
 import { sessionRowChip } from "./session-views";
 
@@ -224,8 +225,12 @@ export interface StatusChip {
 
 // The header chip: the row chip's wording variant (lib/session-views.ts
 // owns the table).
-export function sessionStatusChip(state: SessionState, waitingSince: string | null): StatusChip {
-  return sessionRowChip(state, waitingSince, "header");
+export function sessionStatusChip(
+  state: SessionState,
+  waitingSince: string | null,
+  t: TFunction<"common">,
+): StatusChip {
+  return sessionRowChip(state, waitingSince, t, "header");
 }
 
 // --- Open question panel ----------------------------------------------------

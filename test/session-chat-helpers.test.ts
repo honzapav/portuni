@@ -26,32 +26,41 @@ import {
   askAnswer,
   createAnswerGate,
 } from "../apps/web/src/lib/session-chat.js";
+import { createI18n } from "../apps/server/shared/i18n/create.js";
+import { RESOURCES } from "../apps/server/shared/i18n/resources.js";
+
+const { i18n } = createI18n({ lng: "en", resources: { en: RESOURCES.en }, escapeValue: false, initAsync: false });
+const tCommon = i18n.getFixedT("en", "common");
 
 function ev(seq: number, kind: string, payload: unknown): ChatEvent {
   return { seq, event: toCanonicalEvent(kind, payload) };
 }
 
 describe("sessionStatusChip", () => {
-  it("running with no open question is 'Běží', pulsing", () => {
-    const chip = sessionStatusChip("running", null);
-    assert.equal(chip.label, "Běží");
+  it("running with no open question is 'Running', pulsing", () => {
+    const chip = sessionStatusChip("running", null, tCommon);
+    assert.equal(chip.label, "Running");
     assert.equal(chip.pulsing, true);
   });
 
-  it("running WITH waiting_since is 'Čeká na mě', overriding the plain running label", () => {
-    const chip = sessionStatusChip("running", "2026-09-13 10:00:00");
-    assert.equal(chip.label, "Čeká na mě");
+  it("running WITH waiting_since is 'Waiting on me', overriding the plain running label", () => {
+    const chip = sessionStatusChip("running", "2026-09-13 10:00:00", tCommon);
+    assert.equal(chip.label, "Waiting on me");
   });
 
-  it("suspended is never 'Čeká na mě' even if waiting_since is stale/set", () => {
-    const chip = sessionStatusChip("suspended", "2026-09-13 10:00:00");
-    assert.equal(chip.label, "Pozastaveno");
+  it("suspended is never 'Waiting on me' even if waiting_since is stale/set", () => {
+    const chip = sessionStatusChip("suspended", "2026-09-13 10:00:00", tCommon);
+    assert.equal(chip.label, "Suspended");
     assert.equal(chip.pulsing, false);
   });
 
+  it("the header wording differs from the row wording for a closed thread", () => {
+    assert.equal(sessionStatusChip("closed", null, tCommon).label, "Closed");
+  });
+
   it("closed and archived are not pulsing", () => {
-    assert.equal(sessionStatusChip("closed", null).pulsing, false);
-    assert.equal(sessionStatusChip("archived", null).pulsing, false);
+    assert.equal(sessionStatusChip("closed", null, tCommon).pulsing, false);
+    assert.equal(sessionStatusChip("archived", null, tCommon).pulsing, false);
   });
 });
 

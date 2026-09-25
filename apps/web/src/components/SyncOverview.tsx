@@ -11,7 +11,7 @@
 // stays a direct runNodeSync call -- one node is already fast enough that
 // a job adds nothing but latency.
 import { useEffect, useRef, useState } from "react";
-import { pluralFiles, pluralNodes } from "../lib/plural";
+import { Trans, useTranslation } from "react-i18next";
 import {
   RefreshCw,
   Loader2,
@@ -53,6 +53,7 @@ export default function SyncOverview({
   onMutated: () => void;
   onSelectNode: (id: string) => void;
 }) {
+  const { t } = useTranslation("files");
   // A local workspace has no remote (#310/#312) -- a sync run there would
   // only ever fail with LOCAL_MODE_NO_REMOTE, so "Synchronizovat"/
   // "Synchronizovat vše" stay hidden. Optimistically hidden while loading.
@@ -193,15 +194,25 @@ export default function SyncOverview({
           </div>
           <DialogDescription className="flex items-baseline gap-4 whitespace-nowrap text-[12px]">
             <span>
-              <span className="tabular-nums text-[var(--color-text)]">{pending.total}</span>{" "}
-              {pluralFiles(pending.total)} k synchronizaci
+              <Trans
+                t={t}
+                i18nKey={($) => $.sync_overview.to_sync}
+                count={pending.total}
+                values={{ count: pending.total }}
+                components={{ count: <span className="tabular-nums text-[var(--color-text)]" /> }}
+              />
             </span>
             {pullNodes > 0 && (
               <span
                 title="Uzly, kde remote watcher zaregistroval novější verzi než má tento počítač. Stáhne je sync run."
               >
-                <span className="tabular-nums text-[var(--color-text)]">{pullNodes}</span>{" "}
-                {pluralNodes(pullNodes)} s novinkami z remote
+                <Trans
+                  t={t}
+                  i18nKey={($) => $.sync_overview.pull_nodes}
+                  count={pullNodes}
+                  values={{ count: pullNodes }}
+                  components={{ count: <span className="tabular-nums text-[var(--color-text)]" /> }}
+                />
               </span>
             )}
             {pending.decisions > 0 && (

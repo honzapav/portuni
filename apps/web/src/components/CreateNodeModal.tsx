@@ -8,9 +8,11 @@
 
 import { displayError } from "../errors";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { GraphNode } from "../types";
 import { createNode } from "../api";
 import type { NodeDetail } from "../types";
+import { nodeTypeLabel } from "../lib/node-type-labels";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,13 +42,8 @@ const NODE_TYPES = [
 ] as const;
 type NodeType = (typeof NODE_TYPES)[number];
 
-const TYPE_LABELS: Record<NodeType, string> = {
-  organization: "Organizace",
-  project: "Projekt",
-  process: "Proces",
-  area: "Oblast",
-  principle: "Princip",
-};
+// The server's minimum length of a node name.
+const NAME_MIN_LENGTH = 2;
 
 type Props = {
   // Existing nodes used to populate the organization picker. We accept
@@ -69,6 +66,7 @@ export default function CreateNodeModal({
   onClose,
   onCreated,
 }: Props) {
+  const { t } = useTranslation("common");
   const orgs = useMemo(
     () =>
       existingNodes
@@ -91,7 +89,7 @@ export default function CreateNodeModal({
   const trimmed = name.trim();
   const needsOrg = type !== "organization";
   const canSubmit =
-    trimmed.length >= 2 && (!needsOrg || orgId.length > 0) && !submitting;
+    trimmed.length >= NAME_MIN_LENGTH && (!needsOrg || orgId.length > 0) && !submitting;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -121,12 +119,12 @@ export default function CreateNodeModal({
     >
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[480px]">
         <DialogHeader>
-          <DialogTitle>Nový uzel</DialogTitle>
+          <DialogTitle>{t(($) => $.create_node.title)}</DialogTitle>
         </DialogHeader>
 
         <form onSubmit={handleSubmit}>
           <div className="space-y-4">
-            <Field label="Typ" required>
+            <Field label={t(($) => $.create_node.field.type)} required>
               <Select
                 value={type}
                 onValueChange={(v) => setType(v as NodeType)}
@@ -136,25 +134,25 @@ export default function CreateNodeModal({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {NODE_TYPES.map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {TYPE_LABELS[t]}
+                  {NODE_TYPES.map((nodeType) => (
+                    <SelectItem key={nodeType} value={nodeType}>
+                      {nodeTypeLabel(nodeType, t)}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               {forceType === "organization" && (
                 <FieldHint>
-                  Začínáte vytvořením první organizace — typ je předvyplněn.
+                  {t(($) => $.create_node.hint.first_organization)}
                 </FieldHint>
               )}
             </Field>
 
             {needsOrg && (
-              <Field label="Organizace" required>
+              <Field label={t(($) => $.create_node.field.organization)} required>
                 {orgs.length === 0 ? (
                   <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[13px] text-[var(--color-text-dim)]">
-                    Nejdřív vytvořte organizaci a vraťte se sem.
+                    {t(($) => $.create_node.no_organizations)}
                   </div>
                 ) : (
                   <Select value={orgId} onValueChange={setOrgId}>
@@ -173,27 +171,29 @@ export default function CreateNodeModal({
               </Field>
             )}
 
-            <Field label="Název" required>
+            <Field label={t(($) => $.create_node.field.name)} required>
               {/* Auto-focus the name field on open. */}
               <Input
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={
-                  type === "organization" ? "Acme s.r.o." : "Onboarding klientů"
+                  type === "organization"
+                    ? t(($) => $.create_node.placeholder.name_organization)
+                    : t(($) => $.create_node.placeholder.name_default)
                 }
               />
-              {trimmed.length > 0 && trimmed.length < 2 && (
-                <FieldHint>Název musí mít alespoň 2 znaky.</FieldHint>
+              {trimmed.length > 0 && trimmed.length < NAME_MIN_LENGTH && (
+                <FieldHint>{t(($) => $.create_node.hint.name_min_length, { count: NAME_MIN_LENGTH })}</FieldHint>
               )}
             </Field>
 
-            <Field label="Popis">
+            <Field label={t(($) => $.create_node.field.description)}>
               <Textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={3}
-                placeholder="Krátký popis (volitelné)"
+                placeholder={t(($) => $.create_node.placeholder.description)}
                 className="resize-y leading-relaxed"
               />
             </Field>
@@ -215,10 +215,10 @@ export default function CreateNodeModal({
               onClick={onClose}
               disabled={submitting}
             >
-              Zrušit
+              {t(($) => $.create_node.cancel)}
             </Button>
             <Button type="submit" disabled={!canSubmit}>
-              {submitting ? "Vytvářím…" : "Vytvořit"}
+              {submitting ? t(($) => $.create_node.submitting) : t(($) => $.create_node.submit)}
             </Button>
           </DialogFooter>
         </form>

@@ -1,5 +1,25 @@
 {
+  "plan_bar": {
+    "failed_one": "Použití se zastavilo u <b>{{filename}}</b>. <b>{{count}} změna</b> zůstává v plánu.",
+    "failed_few": "Použití se zastavilo u <b>{{filename}}</b>. <b>{{count}} změny</b> zůstávají v plánu.",
+    "failed_many": "Použití se zastavilo u <b>{{filename}}</b>. <b>{{count}} změny</b> zůstává v plánu.",
+    "failed_other": "Použití se zastavilo u <b>{{filename}}</b>. <b>{{count}} změn</b> zůstává v plánu.",
+    "pending_one": "<b>{{count}} změna</b> čeká na použití",
+    "pending_few": "<b>{{count}} změny</b> čekají na použití",
+    "pending_many": "<b>{{count}} změny</b> čeká na použití",
+    "pending_other": "<b>{{count}} změn</b> čeká na použití"
+  },
   "sample": {
     "message": "Soubory uzlu {{nodeName}}."
+  },
+  "sync_overview": {
+    "pull_nodes_one": "<count>{{count}}</count> uzel s novinkami z remote",
+    "pull_nodes_few": "<count>{{count}}</count> uzly s novinkami z remote",
+    "pull_nodes_many": "<count>{{count}}</count> uzlu s novinkami z remote",
+    "pull_nodes_other": "<count>{{count}}</count> uzlů s novinkami z remote",
+    "to_sync_one": "<count>{{count}}</count> soubor k synchronizaci",
+    "to_sync_few": "<count>{{count}}</count> soubory k synchronizaci",
+    "to_sync_many": "<count>{{count}}</count> souboru k synchronizaci",
+    "to_sync_other": "<count>{{count}}</count> souborů k synchronizaci"
   }
 }

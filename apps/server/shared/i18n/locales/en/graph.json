@@ -1,4 +1,20 @@
 {
+  "empty": {
+    "body": "Portuni maps what you work on: teams, projects, processes. Start by adding your organization.",
+    "create_disabled": "Creating nodes requires a higher role",
+    "create_organization": "Create organization",
+    "title": "Start by creating your first organization."
+  },
+  "layout": {
+    "full_relayout": {
+      "aria_label": "Regenerate layout",
+      "title": "Regenerate the whole layout, including where organizations are placed"
+    },
+    "retile": {
+      "aria_label": "Arrange nodes",
+      "title": "Arrange nodes within organizations (organizations stay in place)"
+    }
+  },
   "sample": {
     "message": "Graph of {{workspaceName}}."
   }

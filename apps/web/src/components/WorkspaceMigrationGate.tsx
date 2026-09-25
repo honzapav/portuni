@@ -9,6 +9,7 @@
 
 import { displayError } from "../errors";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "../lib/backend-url";
 import { slugify } from "../lib/workspaces";
@@ -22,6 +23,7 @@ export default function WorkspaceMigrationGate({
 }: {
   children: React.ReactNode;
 }) {
+  const { t } = useTranslation("common");
   const [status, setStatus] = useState<GateStatus>(isTauri() ? "checking" : "ready");
   const [name, setName] = useState("default");
   const [busy, setBusy] = useState(false);
@@ -73,13 +75,12 @@ export default function WorkspaceMigrationGate({
       <div className="flex w-full max-w-[520px] flex-col overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl">
         <div className="border-b border-[var(--color-border)] px-5 py-3">
           <div className="text-[15px] font-semibold tracking-tight text-[var(--color-text)]">
-            Pojmenuj svůj workspace
+            {t(($) => $.gate.workspace_migration.title)}
           </div>
         </div>
         <div className="flex flex-col gap-3 px-5 py-4">
           <div className="text-[13px] text-[var(--color-text-dim)]">
-            Portuni nově podporuje více workspaces. Stávající data se přesunou
-            pod zvolené jméno — jméno je pak neměnné.
+            {t(($) => $.gate.workspace_migration.description)}
           </div>
           <Input
             type="text"
@@ -91,14 +92,18 @@ export default function WorkspaceMigrationGate({
           />
           {id !== name && (
             <div className="text-[12px] text-[var(--color-text-dim)]">
-              ID: {id || "(neplatné)"}
+              {id
+                ? t(($) => $.gate.workspace_migration.id_preview, { id })
+                : t(($) => $.gate.workspace_migration.id_invalid)}
             </div>
           )}
           {error && <div className="text-[12px] text-red-500">{error}</div>}
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-[var(--color-border)] px-5 py-3">
           <Button type="button" disabled={busy || !id} onClick={() => void migrate()}>
-            {busy ? "Migruji…" : "Pokračovat"}
+            {busy
+              ? t(($) => $.gate.workspace_migration.submitting)
+              : t(($) => $.gate.workspace_migration.submit)}
           </Button>
         </div>
       </div>

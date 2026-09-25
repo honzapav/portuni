@@ -8,6 +8,7 @@
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { reportError } from "../lib/error-overlay";
+import { i18n } from "../i18n";
 import { Button } from "@/components/ui/button";
 
 type Props = { children: ReactNode };
@@ -43,8 +44,7 @@ export default class ErrorBoundary extends Component<Props, State> {
           }}
         >
           <div style={{ color: "#ffe08a", fontWeight: 600, marginBottom: 12 }}>
-            Portuni narazil na chybu při vykreslení. Zkopíruj text níže a
-            přepni se zpět na fungujícího agenta.
+            {i18n.t(($) => $.error_boundary.title, { ns: "common" })}
           </div>
           <Button
             variant="outline"
@@ -52,7 +52,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             onClick={() => this.setState({ error: null, componentStack: null })}
             className="mb-4 border-[#555] bg-transparent text-[#ddd] hover:bg-[#333] hover:text-white"
           >
-            Zkusit znovu vykreslit
+            {i18n.t(($) => $.error_boundary.retry, { ns: "common" })}
           </Button>
           <div>
             {this.state.error.name}: {this.state.error.message}

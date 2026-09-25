@@ -60,7 +60,7 @@ import {
   folderDragCheck,
   type FolderActions,
 } from "../lib/file-drag";
-import { pluralChanges } from "../lib/plural";
+import { Trans, useTranslation } from "react-i18next";
 import {
   aggregateFolderSync,
   buildFileTree,
@@ -540,9 +540,7 @@ function PlanBar({
 }) {
   const applying = state.phase === "applying";
   const failed = state.phase === "failed";
-  const noun = pluralChanges(count);
-  const waits = count >= 2 && count <= 4 ? "čekají" : "čeká";
-  const stays = count >= 2 && count <= 4 ? "zůstávají" : "zůstává";
+  const { t } = useTranslation("files");
   return (
     <div
       className="mb-3 flex items-center gap-2.5 rounded-lg border px-3 py-2 text-[13px]"
@@ -567,20 +565,21 @@ function PlanBar({
             </b>
           </>
         ) : failed ? (
-          <>
-            Použití se zastavilo u <b className="font-medium">{state.filename}</b>.{" "}
-            <b className="font-medium">
-              {count} {noun}
-            </b>{" "}
-            {stays} v plánu.
-          </>
+          <Trans
+            t={t}
+            i18nKey={($) => $.plan_bar.failed}
+            count={count}
+            values={{ count, filename: state.filename }}
+            components={{ b: <b className="font-medium" /> }}
+          />
         ) : (
-          <>
-            <b className="font-medium">
-              {count} {noun}
-            </b>{" "}
-            {waits} na použití
-          </>
+          <Trans
+            t={t}
+            i18nKey={($) => $.plan_bar.pending}
+            count={count}
+            values={{ count }}
+            components={{ b: <b className="font-medium" /> }}
+          />
         )}
       </span>
       <Button variant="ghost" size="sm" disabled={applying} onClick={onDiscard}>

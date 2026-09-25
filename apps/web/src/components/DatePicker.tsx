@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -35,6 +36,7 @@ export function DatePicker({
   onChange: (next: string) => void;
   className?: string;
 }) {
+  const { t } = useTranslation("common");
   const locale = useLocale();
   const [open, setOpen] = useState(false);
   const selected = parseIso(value);
@@ -86,7 +88,7 @@ export function DatePicker({
             size="icon-xs"
             onClick={() => stepMonth(-1)}
             className="text-muted-foreground"
-            aria-label="Předchozí měsíc"
+            aria-label={t(($) => $.date_picker.previous_month)}
           >
             <ChevronLeft />
           </Button>
@@ -98,7 +100,7 @@ export function DatePicker({
             size="icon-xs"
             onClick={() => stepMonth(1)}
             className="text-muted-foreground"
-            aria-label="Další měsíc"
+            aria-label={t(($) => $.date_picker.next_month)}
           >
             <ChevronRight />
           </Button>

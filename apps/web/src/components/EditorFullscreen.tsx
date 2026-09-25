@@ -5,6 +5,7 @@
 // slots, ⤡ where the pane has ⤢, and × appended after it — the only thing
 // that leaves is "zpět" (collapsing returns to the pane, which has it).
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { Minimize2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { FileEditor } from "../lib/use-file-editor";
@@ -25,6 +26,7 @@ export default function EditorFullscreen({
   onCollapse: () => void; // back to pane
   onClose: () => void; // close editor entirely
 }) {
+  const { t } = useTranslation("common");
   const ed = editor;
   const filename = relPath.split("/").pop() ?? relPath;
 
@@ -33,10 +35,10 @@ export default function EditorFullscreen({
       <div className="flex min-h-[42px] items-center gap-1.5 border-b border-[var(--color-border)] px-2.5 py-1.5">
         <EditorFileName filename={filename} dirty={ed.dirty} />
         <EditorHeaderActions ed={ed} relPath={relPath} mode={mode} onModeChange={onModeChange}>
-          <Button variant="ghost" size="icon-sm" onClick={onCollapse} title="Zmenšit do panelu" className="text-muted-foreground">
+          <Button variant="ghost" size="icon-sm" onClick={onCollapse} title={t(($) => $.editor.collapse_title)} className="text-muted-foreground">
             <Minimize2 />
           </Button>
-          <Button variant="ghost" size="icon-sm" onClick={onClose} title="Zavřít editor" className="text-muted-foreground">
+          <Button variant="ghost" size="icon-sm" onClick={onClose} title={t(($) => $.editor.close_title)} className="text-muted-foreground">
             <X />
           </Button>
         </EditorHeaderActions>

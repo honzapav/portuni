@@ -1,5 +1,17 @@
 {
+  "plan_bar": {
+    "failed_one": "Applying stopped at <b>{{filename}}</b>. <b>{{count}} change</b> remains in the plan.",
+    "failed_other": "Applying stopped at <b>{{filename}}</b>. <b>{{count}} changes</b> remain in the plan.",
+    "pending_one": "<b>{{count}} change</b> waiting to be applied",
+    "pending_other": "<b>{{count}} changes</b> waiting to be applied"
+  },
   "sample": {
     "message": "Files of the node {{nodeName}}."
+  },
+  "sync_overview": {
+    "pull_nodes_one": "<count>{{count}}</count> node with updates from the remote",
+    "pull_nodes_other": "<count>{{count}}</count> nodes with updates from the remote",
+    "to_sync_one": "<count>{{count}}</count> file to sync",
+    "to_sync_other": "<count>{{count}}</count> files to sync"
   }
 }

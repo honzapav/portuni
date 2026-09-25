@@ -8,6 +8,7 @@
 
 import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, X } from "lucide-react";
 import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
 import {
@@ -265,6 +266,7 @@ function SessionRow({
   onOpenChat?: (sessionId: string) => void;
   onOpenHandoff?: () => void;
 }) {
+  const { t: tCommon } = useTranslation("common");
   const locale = useLocale();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name);
@@ -308,7 +310,7 @@ function SessionRow({
     }
   };
 
-  const chip = sessionRowChip(session.state, session.waiting_since);
+  const chip = sessionRowChip(session.state, session.waiting_since, tCommon);
   const host = hostDisplayName(session);
 
   // Row actions are icon buttons on the right of the title line, shown on

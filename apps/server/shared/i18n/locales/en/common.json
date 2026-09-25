@@ -1,8 +1,421 @@
 {
+  "app": {
+    "editor_guard": {
+      "back_to_editor": "Back to editor",
+      "description": "The file in the editor has unsaved changes. Do you want to save them?",
+      "description_quit": "The file in the editor has unsaved changes. Do you want to save them before closing the app?",
+      "discard": "Discard changes",
+      "save": "Save",
+      "saving": "Saving…",
+      "title": "Unsaved changes"
+    },
+    "graph_error": {
+      "hint": "Is the Portuni server running on port 4011?",
+      "title": "Couldn't load the graph"
+    },
+    "graph_loading": "Loading graph…",
+    "thread_error": {
+      "handoff_failed": "Couldn't hand off the thread: {{error}}",
+      "load_failed": "Couldn't load the node's threads: {{error}}",
+      "rename_failed": "Couldn't rename the thread: {{error}}"
+    }
+  },
+  "create_node": {
+    "cancel": "Cancel",
+    "field": {
+      "description": "Description",
+      "name": "Name",
+      "organization": "Organization",
+      "type": "Type"
+    },
+    "hint": {
+      "first_organization": "You're starting by creating your first organization, so the type is preset.",
+      "name_min_length_one": "The name must be at least {{count}} character long.",
+      "name_min_length_other": "The name must be at least {{count}} characters long."
+    },
+    "no_organizations": "Create an organization first, then come back here.",
+    "placeholder": {
+      "description": "Short description (optional)",
+      "name_default": "Client onboarding",
+      "name_organization": "Acme Inc."
+    },
+    "submit": "Create",
+    "submitting": "Creating…",
+    "title": "New node"
+  },
+  "date_picker": {
+    "next_month": "Next month",
+    "previous_month": "Previous month"
+  },
+  "editor": {
+    "back": "Back",
+    "back_title": "Back to details",
+    "close_title": "Close editor",
+    "codemirror": {
+      "all": "all",
+      "by_word": "by word",
+      "close": "close",
+      "completions": "Completions",
+      "control_character": "Control character",
+      "current_match": "current match",
+      "diagnostics": "Diagnostics",
+      "find": "Find",
+      "fold_line": "Fold line",
+      "folded_code": "folded code",
+      "folded_lines": "Folded lines",
+      "go": "go",
+      "go_to_line": "Go to line",
+      "match_case": "match case",
+      "next": "next",
+      "no_diagnostics": "No diagnostics",
+      "on_line": "on line",
+      "previous": "previous",
+      "regexp": "regexp",
+      "replace": "replace",
+      "replace_all": "replace all",
+      "replace_field": "Replace",
+      "replaced_match_on_line": "replaced match on line $",
+      "replaced_matches": "replaced $ matches",
+      "selection_deleted": "Selection deleted",
+      "to": "to",
+      "unfold": "unfold",
+      "unfold_line": "Unfold line",
+      "unfolded_lines": "Unfolded lines"
+    },
+    "collapse_title": "Shrink to panel",
+    "conflict": {
+      "keep_mine": "Keep mine",
+      "message": "The file changed on disk in the meantime.",
+      "reload_theirs": "Load theirs"
+    },
+    "expand_title": "Full window",
+    "external_change": {
+      "message": "The file changed on disk.",
+      "reload": "Load the current version"
+    },
+    "html_preview": {
+      "copied": "Copied",
+      "copy_path": "Copy path",
+      "copy_path_title": "Copy the file path",
+      "deck_without_node": "The deck doesn't belong to any node.",
+      "frame_title_html": "HTML preview",
+      "frame_title_showtime": "Presentation preview",
+      "open_in_browser": "Open in browser",
+      "open_in_showtime": "Open in Showtime",
+      "open_in_showtime_title": "Open the deck in the Showtime app with the node's context"
+    },
+    "loading": "Loading…",
+    "mode": {
+      "edit": "Edit",
+      "group_label": "Editor mode",
+      "preview": "Preview"
+    },
+    "save": "Save",
+    "save_title": "Save (Cmd/Ctrl+S)",
+    "saving": "Saving…"
+  },
+  "error_boundary": {
+    "retry": "Try rendering again",
+    "title": "Portuni hit an error while rendering. Copy the text below and switch back to a working agent."
+  },
+  "error_overlay": {
+    "dismiss": "Hide",
+    "title": "Portuni hit an error (this panel replaces a blank white screen). Copy the text below."
+  },
+  "footer": {
+    "mcp": {
+      "label_down": "mcp ×",
+      "label_loading": "mcp…",
+      "label_running": "mcp",
+      "title_down": "MCP server unavailable: {{reason}}",
+      "title_loading": "Checking the MCP server…",
+      "title_running": "MCP server is running: {{url}}"
+    },
+    "pull": {
+      "label_one": "{{count}} node on the remote",
+      "label_other": "{{count}} nodes on the remote",
+      "title": "The remote watcher found newer versions of files. Open the sync overview."
+    },
+    "threads": {
+      "label_one": "{{count}} thread",
+      "label_other": "{{count}} threads",
+      "title": "Active threads: {{runningCount}}"
+    },
+    "unsynced": {
+      "label": "↑ {{pendingCount}} unsynced",
+      "title_one": "Unsynced: {{count}} file",
+      "title_other": "Unsynced: {{count}} files"
+    },
+    "update": {
+      "available_label": "↑ {{version}}",
+      "available_title": "New Portuni version – click to update",
+      "ready_label": "Restart",
+      "ready_title": "Restart to finish the update"
+    }
+  },
+  "gate": {
+    "central_login": {
+      "not_configured": "This is a team workspace, but its configuration is missing. Add <code>server_url</code> and <code>google_client_id</code> to <code>config.json</code>.",
+      "prompt": "Sign in with Google to access the shared graph.",
+      "submit": "Sign in with Google",
+      "submitting": "Signing in…",
+      "title": "Portuni"
+    },
+    "first_steps": {
+      "confirm": "Got it, open Portuni",
+      "description": "You'll see the shared graph right away; what you can see in it is governed by permissions on the server.",
+      "mirrors": "Mirrors on your Mac are created node by node: open a node in the graph and click <label>New task</label> or the folder icon in the node's header. Portuni creates the node's local folder and pulls its files. Without this step, the content stays only on the server.",
+      "title": "You're signed in"
+    },
+    "setup": {
+      "join_team": {
+        "description": "Your organization already runs a Portuni server. Enter its address, then sign in with your Google account.",
+        "error_empty_url": "The server address can't be empty.",
+        "submit": "Connect",
+        "submitting": "Connecting…",
+        "title": "Join a team",
+        "url_placeholder": "api.your-company.com"
+      },
+      "personal": {
+        "description": "Only on this Mac, no account. Good for trying Portuni out.",
+        "submit": "Create personal workspace",
+        "title": "Personal workspace"
+      },
+      "subtitle": "How do you want to start?",
+      "title": "Welcome to Portuni"
+    },
+    "turso": {
+      "description": "Portuni connects to a remote Turso database. Paste the auth token; we'll store it in the macOS Keychain and restart the backend.",
+      "error_empty_token": "The token can't be empty.",
+      "submit": "Save and restart",
+      "submitting": "Saving…",
+      "title": "Connect to Turso",
+      "token_placeholder": "eyJhbGciOiJFZERTQSIs…"
+    },
+    "workspace_migration": {
+      "description": "Portuni now supports multiple workspaces. Your existing data moves under the name you choose, and the name can't be changed afterwards.",
+      "id_invalid": "ID: (invalid)",
+      "id_preview": "ID: {{id}}",
+      "submit": "Continue",
+      "submitting": "Migrating…",
+      "title": "Name your workspace"
+    }
+  },
+  "node_list": {
+    "activity": {
+      "running": "A task is running",
+      "waiting": "A task is waiting for an answer"
+    },
+    "empty_nodes": "No open nodes. Open a node with Search nodes (⌘K) or create a new one.",
+    "empty_tasks": "No tasks. Start a task from a node's detail with the New task button.",
+    "group": {
+      "done": "Done",
+      "draft": "New",
+      "running": "Working",
+      "suspended": "Suspended",
+      "waiting": "Need attention"
+    },
+    "heading": "Open",
+    "mode": {
+      "aria_label": "Arrangement",
+      "nodes": "Nodes",
+      "nodes_title": "Group by node",
+      "state": "Status",
+      "state_title": "Tasks only, by status"
+    },
+    "node": {
+      "close": "Close node",
+      "new_task_aria_label": "New task",
+      "new_task_title": "New task for this node"
+    },
+    "task": {
+      "close": "Close thread",
+      "handoff": "Hand off to another device",
+      "state": {
+        "done": "Done",
+        "draft": "New",
+        "running": "Running",
+        "suspended": "Suspended",
+        "waiting": "Waiting for an answer"
+      }
+    }
+  },
+  "node_type": {
+    "area": "Area",
+    "organization": "Organization",
+    "principle": "Principle",
+    "process": "Process",
+    "project": "Project"
+  },
+  "overview": {
+    "activity": {
+      "empty": "No activity yet.",
+      "session_write": "{{sessionName}} wrote to {{nodeName}}",
+      "title": "Recent activity"
+    },
+    "attention": {
+      "access_request": "Access request: {{userName}}",
+      "empty": "Nothing needs attention.",
+      "sync_issue": "Sync problem: {{nodeName}}",
+      "title": "Needs attention"
+    },
+    "counter": {
+      "attention": "Needs attention",
+      "running": "Running",
+      "unsynced": "Not synced",
+      "waiting": "Waiting on me"
+    },
+    "loading": "Loading the overview…",
+    "new_nodes": {
+      "empty": "No recently created nodes.",
+      "title": "New nodes"
+    },
+    "refresh": "Refresh",
+    "show_all_one": "Show {{count}}",
+    "show_all_other": "Show all {{count}}",
+    "threads": {
+      "cli_one": "Plus {{count}} CLI session ({{running}} running)",
+      "cli_other": "Plus {{count}} CLI sessions ({{running}} running)",
+      "empty": "No running or suspended threads.",
+      "no_node": "Chat",
+      "no_reason": "no reason given",
+      "review_queue": "Review queue (disconnected jumps)",
+      "title": "Threads"
+    },
+    "title": "Overview"
+  },
+  "palette": {
+    "description": "Type a node name and press Enter.",
+    "empty": "No nodes",
+    "footer": {
+      "close": "Close",
+      "navigate": "Navigate",
+      "open": "Open"
+    },
+    "key": {
+      "enter": "Enter",
+      "esc": "Esc"
+    },
+    "placeholder": "Search nodes…",
+    "title": "Search nodes"
+  },
+  "quit_guard": {
+    "cancel": "Cancel",
+    "close_without_sync": "Close without syncing",
+    "description_one": "You have {{count}} file that isn't on the remote (unsynced). If you close the app, it stays only on this device.",
+    "description_other": "You have {{count}} files that aren't on the remote (unsynced). If you close the app, they stay only on this device.",
+    "show_and_sync": "Show and sync",
+    "title": "Unsynced work"
+  },
   "sample": {
     "items_one": "{{count}} item",
     "items_other": "{{count}} items",
     "link": "Open <link>settings</link>.",
     "message": "Welcome to Portuni, {{userName}}."
+  },
+  "sidebar": {
+    "brand": "Portuni",
+    "create": {
+      "button": "New node",
+      "denied": "Creating nodes requires a higher role",
+      "title_graph": "Create a new node (organization, project, process, area, principle)",
+      "title_work": "Creates a new node and opens it in Work"
+    },
+    "filters": {
+      "node_types": "Node types",
+      "organizations": "Organizations",
+      "relation_types": "Relation types",
+      "status": "Status",
+      "status_value": {
+        "active": "Active",
+        "archived": "Archived",
+        "completed": "Completed"
+      },
+      "summary": "Overview",
+      "summary_nodes": "Nodes",
+      "summary_relations": "Relations"
+    },
+    "footer": {
+      "graph": "Click a node to open its detail. Drag to pan, scroll to zoom.",
+      "settings": "Changes are saved automatically."
+    },
+    "hint": {
+      "overview": "A summary of the whole workspace: running threads, nodes that need attention, recent activity and newly created nodes.",
+      "settings": "Portuni configuration: the agent command for launching from nodes and the MCP server parameters for Claude Code and Codex."
+    },
+    "search": {
+      "button": "Search nodes…",
+      "title": "Search nodes ({{shortcut}})"
+    },
+    "settings": "Settings",
+    "theme": {
+      "to_dark": "Switch to dark mode",
+      "to_light": "Switch to light mode"
+    },
+    "view": {
+      "graph": "Graph",
+      "group_label": "View",
+      "overview": "Overview",
+      "work": "Work"
+    },
+    "workspace_switcher": {
+      "aria_label": "Workspace",
+      "hint": {
+        "disabled": "disabled",
+        "open": "open",
+        "this_window": "this window",
+        "unavailable": "unavailable"
+      },
+      "manage": "Manage workspaces…",
+      "placeholder": "Workspace",
+      "title": "Open another workspace"
+    }
+  },
+  "thread": {
+    "composer": {
+      "placeholder": {
+        "archived": "This thread is archived.",
+        "open": "Write a message…"
+      }
+    },
+    "state": {
+      "header": {
+        "archived": "Archived",
+        "closed": "Closed",
+        "draft": "New",
+        "running": "Running",
+        "suspended": "Suspended"
+      },
+      "row": {
+        "archived": "Archived",
+        "closed": "Done",
+        "draft": "New",
+        "running": "Running",
+        "suspended": "Suspended"
+      },
+      "waiting": "Waiting on me"
+    }
+  },
+  "ui": {
+    "command": {
+      "description": "Search for a command to run…",
+      "title": "Command palette"
+    },
+    "dialog": {
+      "close_button": "Close",
+      "close_label": "Close"
+    },
+    "spinner": {
+      "loading": "Loading"
+    }
+  },
+  "workspace": {
+    "empty": {
+      "description": "Open any node and work on it. You can have several nodes open and switch between them.",
+      "search_placeholder": "Search nodes…",
+      "title": "Open a node in Work"
+    },
+    "pick_node_hint": "Select a node on the left.",
+    "show_node_detail": "Show node detail"
   }
 }

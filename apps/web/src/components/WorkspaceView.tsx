@@ -22,6 +22,7 @@
 
 import { Suspense, useState } from "react";
 import { ChevronLeft } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
@@ -119,6 +120,7 @@ export default function WorkspaceView({
   onOpenChat,
   liveSessionStates,
 }: Props) {
+  const { t } = useTranslation("common");
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
   });
@@ -236,7 +238,7 @@ export default function WorkspaceView({
             <WorkspaceEmpty graph={graph} onPick={(n) => onOpenNodeFromPicker(n)} />
           ) : (
             <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-text-dim)]">
-              Vyber uzel vlevo.
+              {t(($) => $.workspace.pick_node_hint)}
             </div>
           ))}
       </main>
@@ -253,8 +255,8 @@ export default function WorkspaceView({
           <Button
             variant="ghost"
             onClick={toggleDetail}
-            title="Zobrazit detail uzlu"
-            aria-label="Zobrazit detail uzlu"
+            title={t(($) => $.workspace.show_node_detail)}
+            aria-label={t(($) => $.workspace.show_node_detail)}
             className="h-full w-6 shrink-0 rounded-none border-l border-[var(--color-border)] bg-[var(--color-surface)] px-0 text-muted-foreground hover:bg-[var(--color-surface-2)]"
           >
             <ChevronLeft />

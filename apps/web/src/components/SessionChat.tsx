@@ -172,6 +172,7 @@ export default function SessionChat({
   onOpenFile?: (relPath: string) => void;
 }) {
   const { t } = useTranslation("chat");
+  const { t: tCommon } = useTranslation("common");
   const locale = useLocale();
   const session = useSessionStore(
     sessionStore,
@@ -475,7 +476,7 @@ export default function SessionChat({
   // flight) and nothing else at the transcript end says what is happening.
   const phase = runIsLive || sentAt !== null ? workingPhase(events, liveRunId, sentAt) : null;
   const showWorking = phase !== null && !streamingText && !streamingReasoning && !isWaiting;
-  const chip = sessionStatusChip(session.state, session.waiting_since);
+  const chip = sessionStatusChip(session.state, session.waiting_since, tCommon);
   // #461: the conversation is on another machine and this one holds only
   // the record. Nothing to replay, nothing to send -- the chat says where
   // the transcript is and how to pick the thread up here (Předat there).
@@ -815,7 +816,7 @@ export default function SessionChat({
                   ? `Transkript je na zařízení ${elsewhere.host}; pokračuj tam, nebo si vlákno nech předat.`
                   : isWaiting
                     ? "Relace čeká na odpověď na otázku výše."
-                    : composerStatePlaceholder(session.state)
+                    : composerStatePlaceholder(session.state, tCommon)
               }
             />
           </PromptInputBody>

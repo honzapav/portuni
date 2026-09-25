@@ -9,6 +9,7 @@
 
 import { displayError } from "../errors";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { isTauri, getDataMode, authStatus, googleLogin } from "../lib/central";
 import { scopedKey } from "../lib/workspace-storage";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -22,6 +23,7 @@ type GateStatus =
   | { kind: "first-steps" };
 
 export default function CentralLoginGate({ children }: { children: ReactNode }) {
+  const { t } = useTranslation("common");
   const [status, setStatus] = useState<GateStatus>({ kind: "checking" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,20 +93,20 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-bg)] p-6">
         <div className="flex w-full max-w-[480px] flex-col gap-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-8 py-8 shadow-2xl">
           <div className="text-[17px] font-semibold tracking-tight text-[var(--color-text)]">
-            Přihlášení proběhlo
+            {t(($) => $.gate.first_steps.title)}
           </div>
           <div className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-            Sdílený graf uvidíš hned – co je v něm vidět, řídí oprávnění na
-            serveru.
+            {t(($) => $.gate.first_steps.description)}
           </div>
           <div className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-            Pracovní složky na Macu vznikají po uzlech: otevři uzel v grafu a
-            klikni na <span className="font-medium text-[var(--color-text)]">Nový úkol</span>{" "}
-            nebo na ikonu složky v hlavičce uzlu. Portuni založí lokální složku
-            uzlu a stáhne soubory. Bez tohoto kroku zůstává obsah jen na serveru.
+            <Trans
+              t={t}
+              i18nKey={($) => $.gate.first_steps.mirrors}
+              components={{ label: <span className="font-medium text-[var(--color-text)]" /> }}
+            />
           </div>
           <Button type="button" onClick={handleFirstStepsDone} className="self-end">
-            Rozumím, otevřít Portuni
+            {t(($) => $.gate.first_steps.confirm)}
           </Button>
         </div>
       </div>
@@ -115,20 +117,21 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-bg)] p-6">
       <div className="flex w-full max-w-[420px] flex-col items-center gap-5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-8 py-10 text-center shadow-2xl">
         <div className="text-[17px] font-semibold tracking-tight text-[var(--color-text)]">
-          Portuni
+          {t(($) => $.gate.central_login.title)}
         </div>
 
         {status.kind === "not-configured" ? (
           <div className="text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-            Tohle je týmový workspace, ale chybí konfigurace. Doplň{" "}
-            <code className="font-mono text-[12px]">server_url</code> a{" "}
-            <code className="font-mono text-[12px]">google_client_id</code> do{" "}
-            <code className="font-mono text-[12px]">config.json</code>.
+            <Trans
+              t={t}
+              i18nKey={($) => $.gate.central_login.not_configured}
+              components={{ code: <code className="font-mono text-[12px]" /> }}
+            />
           </div>
         ) : (
           <>
             <div className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-              Pro přístup ke sdílenému grafu se přihlas přes Google.
+              {t(($) => $.gate.central_login.prompt)}
             </div>
             {error && (
               <Alert variant="destructive" className="w-full">
@@ -137,7 +140,9 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
             )}
             <Button type="button" disabled={busy} onClick={() => void handleLogin()}>
               <GoogleIcon />
-              {busy ? "Přihlašuji…" : "Přihlásit přes Google"}
+              {busy
+                ? t(($) => $.gate.central_login.submitting)
+                : t(($) => $.gate.central_login.submit)}
             </Button>
           </>
         )}

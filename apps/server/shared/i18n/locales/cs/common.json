@@ -1,4 +1,326 @@
 {
+  "app": {
+    "editor_guard": {
+      "back_to_editor": "Zpět do editoru",
+      "description": "Soubor v editoru má neuložené změny. Chceš je uložit?",
+      "description_quit": "Soubor v editoru má neuložené změny. Chceš je před zavřením aplikace uložit?",
+      "discard": "Zahodit změny",
+      "save": "Uložit",
+      "saving": "Ukládám…",
+      "title": "Neuložené změny"
+    },
+    "graph_error": {
+      "hint": "Běží Portuni server na portu 4011?",
+      "title": "Nepodařilo se načíst graf"
+    },
+    "graph_loading": "Načítám graf…",
+    "thread_error": {
+      "handoff_failed": "Vlákno se nepodařilo předat: {{error}}",
+      "load_failed": "Vlákna uzlu se nepodařilo načíst: {{error}}",
+      "rename_failed": "Vlákno se nepodařilo přejmenovat: {{error}}"
+    }
+  },
+  "create_node": {
+    "cancel": "Zrušit",
+    "field": {
+      "description": "Popis",
+      "name": "Název",
+      "organization": "Organizace",
+      "type": "Typ"
+    },
+    "hint": {
+      "first_organization": "Začínáte vytvořením první organizace — typ je předvyplněn.",
+      "name_min_length_one": "Název musí mít alespoň {{count}} znak.",
+      "name_min_length_few": "Název musí mít alespoň {{count}} znaky.",
+      "name_min_length_many": "Název musí mít alespoň {{count}} znaku.",
+      "name_min_length_other": "Název musí mít alespoň {{count}} znaků."
+    },
+    "no_organizations": "Nejdřív vytvořte organizaci a vraťte se sem.",
+    "placeholder": {
+      "description": "Krátký popis (volitelné)",
+      "name_default": "Onboarding klientů",
+      "name_organization": "Acme s.r.o."
+    },
+    "submit": "Vytvořit",
+    "submitting": "Vytvářím…",
+    "title": "Nový uzel"
+  },
+  "date_picker": {
+    "next_month": "Další měsíc",
+    "previous_month": "Předchozí měsíc"
+  },
+  "editor": {
+    "back": "zpět",
+    "back_title": "Zpět na detail",
+    "close_title": "Zavřít editor",
+    "codemirror": {
+      "all": "vše",
+      "by_word": "celá slova",
+      "close": "zavřít",
+      "completions": "Návrhy",
+      "control_character": "Řídicí znak",
+      "current_match": "aktuální výskyt",
+      "diagnostics": "Diagnostika",
+      "find": "Najít",
+      "fold_line": "Sbalit řádek",
+      "folded_code": "sbalený kód",
+      "folded_lines": "Sbalené řádky",
+      "go": "přejít",
+      "go_to_line": "Přejít na řádek",
+      "match_case": "rozlišovat velikost písmen",
+      "next": "další",
+      "no_diagnostics": "Žádná diagnostika",
+      "on_line": "na řádku",
+      "previous": "předchozí",
+      "regexp": "regulární výraz",
+      "replace": "nahradit",
+      "replace_all": "nahradit vše",
+      "replace_field": "Nahradit",
+      "replaced_match_on_line": "nahrazen výskyt na řádku $",
+      "replaced_matches": "nahrazené výskyty: $",
+      "selection_deleted": "Výběr smazán",
+      "to": "až",
+      "unfold": "rozbalit",
+      "unfold_line": "Rozbalit řádek",
+      "unfolded_lines": "Rozbalené řádky"
+    },
+    "collapse_title": "Zmenšit do panelu",
+    "conflict": {
+      "keep_mine": "Ponechat moje",
+      "message": "Soubor se mezitím změnil na disku.",
+      "reload_theirs": "Načíst jejich"
+    },
+    "expand_title": "Na celé okno",
+    "external_change": {
+      "message": "Soubor se na disku změnil.",
+      "reload": "Načíst aktuální verzi"
+    },
+    "html_preview": {
+      "copied": "Zkopírováno",
+      "copy_path": "Kopírovat cestu",
+      "copy_path_title": "Kopírovat cestu k souboru",
+      "deck_without_node": "Deck nepatří k žádnému uzlu.",
+      "frame_title_html": "HTML náhled",
+      "frame_title_showtime": "Náhled prezentace",
+      "open_in_browser": "Otevřít v prohlížeči",
+      "open_in_showtime": "Otevřít v Showtime",
+      "open_in_showtime_title": "Otevřít deck v aplikaci Showtime i s kontextem uzlu"
+    },
+    "loading": "Načítám…",
+    "mode": {
+      "edit": "Editace",
+      "group_label": "Režim editoru",
+      "preview": "Náhled"
+    },
+    "save": "Uložit",
+    "save_title": "Uložit (Cmd/Ctrl+S)",
+    "saving": "Ukládám…"
+  },
+  "error_boundary": {
+    "retry": "Zkusit znovu vykreslit",
+    "title": "Portuni narazil na chybu při vykreslení. Zkopíruj text níže a přepni se zpět na fungujícího agenta."
+  },
+  "error_overlay": {
+    "dismiss": "Skrýt",
+    "title": "Portuni narazil na chybu (tento panel nahrazuje bílou obrazovku). Zkopíruj text níže."
+  },
+  "footer": {
+    "mcp": {
+      "label_down": "mcp ×",
+      "label_loading": "mcp…",
+      "label_running": "mcp",
+      "title_down": "MCP server nedostupný: {{reason}}",
+      "title_loading": "Zjišťuji stav MCP serveru…",
+      "title_running": "MCP server běží: {{url}}"
+    },
+    "pull": {
+      "label_one": "{{count}} uzel na remote",
+      "label_few": "{{count}} uzly na remote",
+      "label_many": "{{count}} uzlu na remote",
+      "label_other": "{{count}} uzlů na remote",
+      "title": "Remote watcher našel novější verze souborů. Otevřít přehled synchronizace."
+    },
+    "threads": {
+      "label_one": "{{count}} sess",
+      "label_few": "{{count}} sess",
+      "label_many": "{{count}} sess",
+      "label_other": "{{count}} sess",
+      "title": "Aktivní vlákna: {{runningCount}}"
+    },
+    "unsynced": {
+      "label": "↑ {{pendingCount}} nesynced",
+      "title_one": "Nesynchronizováno: {{count}} soubor",
+      "title_few": "Nesynchronizováno: {{count}} soubory",
+      "title_many": "Nesynchronizováno: {{count}} souboru",
+      "title_other": "Nesynchronizováno: {{count}} souborů"
+    },
+    "update": {
+      "available_label": "↑ {{version}}",
+      "available_title": "Nová verze Portuni – klikni pro aktualizaci",
+      "ready_label": "Restartovat",
+      "ready_title": "Restartovat pro dokončení aktualizace"
+    }
+  },
+  "gate": {
+    "central_login": {
+      "not_configured": "Tohle je týmový workspace, ale chybí konfigurace. Doplň <code>server_url</code> a <code>google_client_id</code> do <code>config.json</code>.",
+      "prompt": "Pro přístup ke sdílenému grafu se přihlas přes Google.",
+      "submit": "Přihlásit přes Google",
+      "submitting": "Přihlašuji…",
+      "title": "Portuni"
+    },
+    "first_steps": {
+      "confirm": "Rozumím, otevřít Portuni",
+      "description": "Sdílený graf uvidíš hned – co je v něm vidět, řídí oprávnění na serveru.",
+      "mirrors": "Pracovní složky na Macu vznikají po uzlech: otevři uzel v grafu a klikni na <label>Nový úkol</label> nebo na ikonu složky v hlavičce uzlu. Portuni založí lokální složku uzlu a stáhne soubory. Bez tohoto kroku zůstává obsah jen na serveru.",
+      "title": "Přihlášení proběhlo"
+    },
+    "setup": {
+      "join_team": {
+        "description": "Tvoje organizace už provozuje Portuni server. Zadej jeho adresu – přihlásíš se pak svým Google účtem.",
+        "error_empty_url": "Adresa serveru nesmí být prázdná.",
+        "submit": "Připojit",
+        "submitting": "Připojuji…",
+        "title": "Připojit se k týmu",
+        "url_placeholder": "api.tvoje-firma.com"
+      },
+      "personal": {
+        "description": "Jen na tomto Macu, žádný účet. Vhodné pro vyzkoušení.",
+        "submit": "Vytvořit osobní workspace",
+        "title": "Osobní workspace"
+      },
+      "subtitle": "Jak chceš začít?",
+      "title": "Vítej v Portuni"
+    },
+    "turso": {
+      "description": "Portuni se připojuje ke vzdálené Turso databázi. Vlož auth token, uložíme ho do macOS Keychain a restartujeme backend.",
+      "error_empty_token": "Token nesmí být prázdný.",
+      "submit": "Uložit a restartovat",
+      "submitting": "Ukládám…",
+      "title": "Připojení k Turso",
+      "token_placeholder": "eyJhbGciOiJFZERTQSIs…"
+    },
+    "workspace_migration": {
+      "description": "Portuni nově podporuje více workspaces. Stávající data se přesunou pod zvolené jméno — jméno je pak neměnné.",
+      "id_invalid": "ID: (neplatné)",
+      "id_preview": "ID: {{id}}",
+      "submit": "Pokračovat",
+      "submitting": "Migruji…",
+      "title": "Pojmenuj svůj workspace"
+    }
+  },
+  "node_list": {
+    "activity": {
+      "running": "Úkol běží",
+      "waiting": "Úkol čeká na odpověď"
+    },
+    "empty_nodes": "Žádné otevřené uzly. Otevři uzel přes Hledat uzel (⌘K) nebo vytvoř nový.",
+    "empty_tasks": "Žádné úkoly. Spusť úkol z detailu uzlu tlačítkem Nový úkol.",
+    "group": {
+      "done": "Hotové",
+      "draft": "Nové",
+      "running": "Pracují",
+      "suspended": "Pozastavené",
+      "waiting": "Vyžadují pozornost"
+    },
+    "heading": "Otevřené",
+    "mode": {
+      "aria_label": "Řazení",
+      "nodes": "Uzly",
+      "nodes_title": "Seskupit podle uzlů",
+      "state": "Stav",
+      "state_title": "Jen úkoly, podle stavu"
+    },
+    "node": {
+      "close": "Zavřít uzel",
+      "new_task_aria_label": "Nový úkol",
+      "new_task_title": "Nový úkol pro tento uzel"
+    },
+    "task": {
+      "close": "Uzavřít vlákno",
+      "handoff": "Předat na jiné zařízení",
+      "state": {
+        "done": "Hotovo",
+        "draft": "Nový",
+        "running": "Běží",
+        "suspended": "Pozastaveno",
+        "waiting": "Čeká na odpověď"
+      }
+    }
+  },
+  "node_type": {
+    "area": "Oblast",
+    "organization": "Organizace",
+    "principle": "Princip",
+    "process": "Proces",
+    "project": "Projekt"
+  },
+  "overview": {
+    "activity": {
+      "empty": "Zatím žádná aktivita.",
+      "session_write": "{{sessionName}} zapsala do {{nodeName}}",
+      "title": "Poslední aktivita"
+    },
+    "attention": {
+      "access_request": "Žádost o přístup: {{userName}}",
+      "empty": "Nic nevyžaduje pozornost.",
+      "sync_issue": "Problém se synchronizací: {{nodeName}}",
+      "title": "Vyžaduje pozornost"
+    },
+    "counter": {
+      "attention": "Vyžaduje pozornost",
+      "running": "Běží",
+      "unsynced": "Nesynchronizováno",
+      "waiting": "Čeká na mě"
+    },
+    "loading": "Načítám přehled…",
+    "new_nodes": {
+      "empty": "Žádné nedávno vytvořené uzly.",
+      "title": "Nové uzly"
+    },
+    "refresh": "Obnovit",
+    "show_all_one": "Zobrazit {{count}}",
+    "show_all_few": "Zobrazit všechny {{count}}",
+    "show_all_many": "Zobrazit všech {{count}}",
+    "show_all_other": "Zobrazit všech {{count}}",
+    "threads": {
+      "cli_one": "K tomu {{count}} relace z CLI ({{running}} běží)",
+      "cli_few": "K tomu {{count}} relace z CLI ({{running}} běží)",
+      "cli_many": "K tomu {{count}} relace z CLI ({{running}} běží)",
+      "cli_other": "K tomu {{count}} relací z CLI ({{running}} běží)",
+      "empty": "Žádná běžící ani pozastavená vlákna.",
+      "no_node": "Chat",
+      "no_reason": "bez uvedeného důvodu",
+      "review_queue": "Fronta ke kontrole (nesouvislé přeskoky)",
+      "title": "Relace"
+    },
+    "title": "Přehled"
+  },
+  "palette": {
+    "description": "Napiš název uzlu a potvrď Enterem.",
+    "empty": "Žádný uzel",
+    "footer": {
+      "close": "Zavřít",
+      "navigate": "Navigace",
+      "open": "Otevřít"
+    },
+    "key": {
+      "enter": "Enter",
+      "esc": "Esc"
+    },
+    "placeholder": "Hledat uzel…",
+    "title": "Hledat uzel"
+  },
+  "quit_guard": {
+    "cancel": "Zrušit",
+    "close_without_sync": "Zavřít bez synchronizace",
+    "description_one": "Máš {{count}} soubor, který není na remote (nesynchronizováno). Pokud aplikaci zavřeš, zůstane jen lokálně.",
+    "description_few": "Máš {{count}} soubory, které nejsou na remote (nesynchronizováno). Pokud aplikaci zavřeš, zůstanou jen lokálně.",
+    "description_many": "Máš {{count}} souboru, které nejsou na remote (nesynchronizováno). Pokud aplikaci zavřeš, zůstanou jen lokálně.",
+    "description_other": "Máš {{count}} souborů, které nejsou na remote (nesynchronizováno). Pokud aplikaci zavřeš, zůstanou jen lokálně.",
+    "show_and_sync": "Zobrazit a synchronizovat",
+    "title": "Nesynchronizovaná práce"
+  },
   "sample": {
     "items_one": "{{count}} položka",
     "items_few": "{{count}} položky",
@@ -6,5 +328,110 @@
     "items_other": "{{count}} položek",
     "link": "Otevřít <link>nastavení</link>.",
     "message": "Vítejte v Portuni, {{userName}}."
+  },
+  "sidebar": {
+    "brand": "Portuni",
+    "create": {
+      "button": "Nový uzel",
+      "denied": "Vytváření uzlů vyžaduje vyšší roli",
+      "title_graph": "Vytvořit nový uzel (organizace, projekt, proces, oblast, princip)",
+      "title_work": "Vytvoří nový uzel a otevře ho v Práci"
+    },
+    "filters": {
+      "node_types": "Typy uzlů",
+      "organizations": "Organizace",
+      "relation_types": "Typy vazeb",
+      "status": "Stav",
+      "status_value": {
+        "active": "Aktivní",
+        "archived": "Archivované",
+        "completed": "Dokončené"
+      },
+      "summary": "Přehled",
+      "summary_nodes": "Uzly",
+      "summary_relations": "Vazby"
+    },
+    "footer": {
+      "graph": "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete.",
+      "settings": "Změny se ukládají automaticky."
+    },
+    "hint": {
+      "overview": "Souhrn celého workspace: běžící vlákna, uzly vyžadující pozornost, poslední aktivita a nově vytvořené uzly.",
+      "settings": "Konfigurace Portuni: příkaz agenta pro spouštění z uzlů a parametry MCP serveru pro Claude Code a Codex."
+    },
+    "search": {
+      "button": "Hledat uzel…",
+      "title": "Hledat uzel ({{shortcut}})"
+    },
+    "settings": "Nastavení",
+    "theme": {
+      "to_dark": "Přepnout na tmavý režim",
+      "to_light": "Přepnout na světlý režim"
+    },
+    "view": {
+      "graph": "Graf",
+      "group_label": "Pohled",
+      "overview": "Přehled",
+      "work": "Práce"
+    },
+    "workspace_switcher": {
+      "aria_label": "Workspace",
+      "hint": {
+        "disabled": "vypnutý",
+        "open": "otevřeno",
+        "this_window": "toto okno",
+        "unavailable": "nedostupný"
+      },
+      "manage": "Spravovat workspaces…",
+      "placeholder": "Workspace",
+      "title": "Otevřít jiný workspace"
+    }
+  },
+  "thread": {
+    "composer": {
+      "placeholder": {
+        "archived": "Relace je uzavřená.",
+        "open": "Napiš zprávu…"
+      }
+    },
+    "state": {
+      "header": {
+        "archived": "Archivováno",
+        "closed": "Uzavřeno",
+        "draft": "Nový",
+        "running": "Běží",
+        "suspended": "Pozastaveno"
+      },
+      "row": {
+        "archived": "Archiv",
+        "closed": "Hotovo",
+        "draft": "Nový",
+        "running": "Běží",
+        "suspended": "Pozastaveno"
+      },
+      "waiting": "Čeká na mě"
+    }
+  },
+  "ui": {
+    "command": {
+      "description": "Vyhledej příkaz ke spuštění…",
+      "title": "Paleta příkazů"
+    },
+    "dialog": {
+      "close_button": "Zavřít",
+      "close_label": "Zavřít"
+    },
+    "spinner": {
+      "loading": "Načítání"
+    }
+  },
+  "workspace": {
+    "empty": {
+      "description": "Otevři libovolný uzel a pracuj na něm. Můžeš mít otevřených víc uzlů a přeskakovat mezi nimi.",
+      "search_placeholder": "Hledat uzel…",
+      "title": "Otevři uzel v Práci"
+    },
+    "pick_node_hint": "Vyber uzel vlevo.",
+    "show_node_detail": "Zobrazit detail uzlu"
   }
 }

@@ -63,6 +63,7 @@ never Title Case. Czech keeps its own casing and „…“ quotes.
 | úkol / úloha | task | |
 | vlákno | thread | A session as the user sees it. |
 | session | session | Developer and agent text only; the UI says thread. |
+| CLI relace | CLI session | A session opened by hand in a terminal (not a thread); the one place the UI says session. |
 | runner | runner | The agent CLI that drives a thread (Claude Code, Codex, ...). |
 | běh | run | One runner process on a thread. |
 | zpráva | message | |

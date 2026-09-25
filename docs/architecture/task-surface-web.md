@@ -667,6 +667,15 @@ message may use are fixed in its `glossary.md`; translator notes are in
   (`GraphView` → `graph`, `SessionChat` → `chat`). The detail pane and
   settings load `node`, `files` and `settings` when their texts move into
   the catalog.
+- **Shared labels and enums.** A label shown on several surfaces lives
+  in the catalog once: the POPP node types in `common` `node_type.*`
+  through `lib/node-type-labels.ts` (`nodeTypeLabel(type, t)`), the
+  thread states in `common` `thread.state.*` through
+  `lib/session-views.ts`. An enum reaches its keys through a complete
+  `Record<Enum, (t) => string>` of literal selectors, never a key built
+  from the value. A pure helper in `lib/` that returns text takes `t` as a
+  parameter, so the server's `node:test` runner tests it with the English
+  catalog. Counts are plural keys; no hand-written Czech plural remains.
 - **Typed keys.** Call sites use the selector form
   `t(($) => $.composer.send)`. `shared/i18n/types/resources.d.ts` is
   generated from the English catalog by `npm run i18n:types`;
