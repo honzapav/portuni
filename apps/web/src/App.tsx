@@ -2,7 +2,6 @@ import { displayError } from "./errors";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Sidebar, { type AppView } from "./components/Sidebar";
-import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
 import WorkspaceView from "./components/WorkspaceView";
 import OverviewView from "./components/OverviewView";
@@ -56,6 +55,9 @@ import {
 // bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
 // initial bundle by ~70 % and keeps the marketing/docs sites snappy.
 const GraphView = lazyWithNamespaces(() => import("./components/GraphView"), ["graph"]);
+// The detail pane loads with its namespaces (node, files), so its first
+// frame never shows a bare key.
+const DetailPane = lazyWithNamespaces(() => import("./components/DetailPane"), ["node", "files"]);
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
@@ -1140,27 +1142,29 @@ export default function App() {
             />
           </aside>
         ) : (
-          <DetailPane
-            node={nodeDetail}
-            graph={graph}
-            loading={detailLoading}
-            error={detailError}
-            onSelect={setSelectedId}
-            canGoBack={historyRef.current.length > 0}
-            onBack={goBack}
-            onMutate={refetchAll}
-            onOpenFile={openFileInEditor}
-            onOpenChat={openSessionChat}
-            onSessionStarted={(result) => {
-              // Graf has no chat surface of its own, so a task started here
-              // lands in Práce: the node opens and the fresh session is the
-              // thread it shows. Without this the run is live with nowhere
-              // in the UI showing it.
-              registerSessionStarted(result);
-              if (result.session.node_id) openSessionChat(result.session.node_id, result.session.id);
-            }}
-            liveSessionStates={liveSessionStates}
-          />
+          <Suspense fallback={null}>
+            <DetailPane
+              node={nodeDetail}
+              graph={graph}
+              loading={detailLoading}
+              error={detailError}
+              onSelect={setSelectedId}
+              canGoBack={historyRef.current.length > 0}
+              onBack={goBack}
+              onMutate={refetchAll}
+              onOpenFile={openFileInEditor}
+              onOpenChat={openSessionChat}
+              onSessionStarted={(result) => {
+                // Graf has no chat surface of its own, so a task started here
+                // lands in Práce: the node opens and the fresh session is the
+                // thread it shows. Without this the run is live with nowhere
+                // in the UI showing it.
+                registerSessionStarted(result);
+                if (result.session.node_id) openSessionChat(result.session.node_id, result.session.id);
+              }}
+              liveSessionStates={liveSessionStates}
+            />
+          </Suspense>
         ))}
 
       </div>

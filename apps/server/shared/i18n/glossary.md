@@ -95,6 +95,7 @@ never Title Case. Czech keeps its own casing and „…“ quotes.
 | přístup / sdílení | access / sharing | |
 | žádost o přístup | access request | |
 | oprávnění | permission | |
+| správce | admin | A user with the `admin` scope tier; plural "admins". |
 | poskytovatel | provider | The service behind a runner (Anthropic for Claude Code). |
 | instance (poskytovatele) | instance | A runner's provider instance. |
 | konektor | connector | An MCP server the runner can reach. |

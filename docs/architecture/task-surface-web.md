@@ -664,9 +664,11 @@ message may use are fixed in its `glossary.md`; translator notes are in
 - **Namespaces follow the lazy chunks.** A lazy component that needs its
   own namespace is created with `lazyWithNamespaces(() => import("./X"),
   ["x"])`, which loads the chunk and the namespace together
-  (`GraphView` → `graph`, `SessionChat` → `chat`). The detail pane and
-  settings load `node`, `files` and `settings` when their texts move into
-  the catalog.
+  (`GraphView` → `graph`, `SessionChat` → `chat`, `DetailPane` → `node`
+  and `files`, in both `App.tsx` and `WorkspaceView.tsx`). Settings load
+  `settings` when their texts move into the catalog. A `Record` of
+  selectors at module level passes `{ ns: "<namespace>" }` on each call:
+  the extractor cannot infer the namespace from a `t` parameter.
 - **Shared labels and enums.** A label shown on several surfaces lives
   in the catalog once: the POPP node types in `common` `node_type.*`
   through `lib/node-type-labels.ts` (`nodeTypeLabel(type, t)`), the

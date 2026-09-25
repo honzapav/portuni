@@ -31,7 +31,6 @@ import { shownChatSessionId } from "../lib/session-views";
 import type { FileEditor } from "../lib/use-file-editor";
 import { scopedKey } from "../lib/workspace-storage";
 import WorkspaceEmpty from "./WorkspaceEmpty";
-import DetailPane from "./DetailPane";
 import EditorPane, { type EditorMode } from "./EditorPane";
 import { lazyWithNamespaces } from "../i18n";
 
@@ -40,6 +39,7 @@ import { lazyWithNamespaces } from "../i18n";
 // open -- lazy-loaded so it lands in its own chunk instead of every
 // window's startup bundle.
 const SessionChat = lazyWithNamespaces(() => import("./SessionChat"), ["chat"]);
+const DetailPane = lazyWithNamespaces(() => import("./DetailPane"), ["node", "files"]);
 
 type Props = {
   graph: GraphPayload | null;
@@ -161,24 +161,26 @@ export default function WorkspaceView({
         onExpand={onExpandEditor}
       />
     ) : (
-      <DetailPane
-        node={nodeDetail}
-        graph={graph}
-        loading={nodeDetailLoading}
-        error={nodeDetailError}
-        onSelect={(id) => onSelectNode(id)}
-        canGoBack={false}
-        onBack={() => {
-          // No-op: workspace doesn't keep a back-stack like graph does.
-        }}
-        onMutate={onMutate}
-        onOpenFile={onOpenFile}
-        embedded
-        onCollapse={collapsible ? toggleDetail : undefined}
-        onSessionStarted={onSessionStarted}
-        onOpenChat={onOpenChat}
-        liveSessionStates={liveSessionStates}
-      />
+      <Suspense fallback={null}>
+        <DetailPane
+          node={nodeDetail}
+          graph={graph}
+          loading={nodeDetailLoading}
+          error={nodeDetailError}
+          onSelect={(id) => onSelectNode(id)}
+          canGoBack={false}
+          onBack={() => {
+            // No-op: workspace doesn't keep a back-stack like graph does.
+          }}
+          onMutate={onMutate}
+          onOpenFile={onOpenFile}
+          embedded
+          onCollapse={collapsible ? toggleDetail : undefined}
+          onSessionStarted={onSessionStarted}
+          onOpenChat={onOpenChat}
+          liveSessionStates={liveSessionStates}
+        />
+      </Suspense>
     );
 
   // Which pane is on screen. Null (nothing selected, or the selected node

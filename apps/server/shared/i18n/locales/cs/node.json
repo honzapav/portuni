@@ -1,5 +1,323 @@
 {
+  "access": {
+    "chip": {
+      "remove": "Odebrat"
+    },
+    "confirm": {
+      "cancel": "Zrušit",
+      "clear_override": "Vlastní sdílení tohoto uzlu bude zrušeno a node začne znovu přebírat sdílení z nadřazeného uzlu (nebo bude nezúžené, pokud žádný nadřazený uzel sdílení neomezuje).",
+      "confirm": "Potvrdit",
+      "last_entry": "Odebráním posledního příjemce se sdílení zruší a node bude Soukromý.",
+      "switch_few": "Přepnutím odebereš {{count}} sdílení.",
+      "switch_many": "Přepnutím odebereš {{count}} sdílení.",
+      "switch_one": "Přepnutím odebereš {{count}} sdílení.",
+      "switch_other": "Přepnutím odebereš {{count}} sdílení."
+    },
+    "inherited": {
+      "heading": {
+        "area": "Přebírá sdílení z oblasti {{sourceName}}",
+        "organization": "Přebírá sdílení z organizace {{sourceName}}",
+        "parent": "Přebírá sdílení z nadřazeného uzlu",
+        "principle": "Přebírá sdílení z principu {{sourceName}}",
+        "process": "Přebírá sdílení z procesu {{sourceName}}",
+        "project": "Přebírá sdílení z projektu {{sourceName}}",
+        "untyped": "Přebírá sdílení z {{sourceName}}"
+      },
+      "set_own": "Nastavit vlastní sdílení pro tento uzel"
+    },
+    "load_error": "Nepodařilo se načíst sdílení",
+    "loading": "Načítám...",
+    "mode": {
+      "aria_label": "Režim omezení",
+      "private": {
+        "description": "Node je pro ostatní úplně neviditelný.",
+        "label": "Skryté pro ostatní",
+        "readonly": "Režim: <value>Skryté pro ostatní</value>",
+        "summary": "Skupina · skryté pro ostatní"
+      },
+      "request": {
+        "description": "Ostatní vidí, že node existuje, a mohou požádat o přístup.",
+        "label": "Na vyžádání (ostatní vidí název a mohou požádat)",
+        "readonly": "Režim: <value>Na vyžádání</value>",
+        "summary": "Skupina · na vyžádání"
+      }
+    },
+    "own": {
+      "add": "Přidat skupinu nebo uživatele…",
+      "cancel": "Zrušit",
+      "clear": "Zrušit vlastní sdílení a přebírat z organizace",
+      "empty_error": "Přidej alespoň jednoho příjemce.",
+      "heading": "Vlastní sdílení tohoto uzlu",
+      "peek_hint": "Nahradí sdílení přebírané z organizace. Platí jen pro tento uzel a uzly pod ním.",
+      "save": "Uložit",
+      "unsaved_hint": "Zatím neuloženo – sdílení pro skupinu se uloží s prvním příjemcem. Bez příjemců node uvidí jen správci."
+    },
+    "picker": {
+      "no_match": "Nic neodpovídá.",
+      "search_placeholder": "Hledat…"
+    },
+    "requests": {
+      "heading_few": "Žádosti o přístup ({{count}})",
+      "heading_many": "Žádosti o přístup ({{count}})",
+      "heading_one": "Žádosti o přístup ({{count}})",
+      "heading_other": "Žádosti o přístup ({{count}})"
+    },
+    "save_error": "Uložení se nepovedlo. Zkus to znovu.",
+    "status": {
+      "saved": "Uloženo",
+      "saving": "Ukládám…"
+    },
+    "visibility": {
+      "aria_label": "Sdílení",
+      "group": {
+        "label": "Skupina"
+      },
+      "legend": "Všichni = celý tým · Soukromé = jen autor a správci · Skupina = vybraní lidé a skupiny",
+      "private": {
+        "description": "Vidí jen tvůrce a správci.",
+        "label": "Soukromé"
+      },
+      "team": {
+        "description": "Vidí všichni přihlášení.",
+        "disabled_inherited": "Node dědí omezení z nadřazeného uzlu – nelze ho zpřístupnit všem, jen nastavit vlastní sdílení.",
+        "label": "Všichni"
+      }
+    }
+  },
+  "detail": {
+    "actor": {
+      "automation": "Automatizace",
+      "automation_placeholder": "Automatizace (placeholder)",
+      "placeholder_name": "{{name}} (placeholder)"
+    },
+    "archive": {
+      "button": "Archivovat tento uzel",
+      "hint": "Uzel bude skryt z grafu, ale jeho vazby a události zůstanou v databázi pro audit."
+    },
+    "assignee_picker": {
+      "empty": "Žádní další aktéři k přiřazení.",
+      "loading": "Načítám…"
+    },
+    "attribute": {
+      "data_source": {
+        "add": "Přidat datový zdroj",
+        "delete": "Smazat datový zdroj",
+        "edit": "Upravit datový zdroj",
+        "new_title": "Nový datový zdroj"
+      },
+      "description_placeholder": "Popis (volitelné)",
+      "empty": "Žádné záznamy.",
+      "link_placeholder": "Odkaz (volitelné)",
+      "link_placeholder_example": "Odkaz (volitelné, např. https://…)",
+      "name_placeholder": "Název",
+      "tool": {
+        "add": "Přidat nástroj",
+        "delete": "Smazat nástroj",
+        "edit": "Upravit nástroj",
+        "new_title": "Nový nástroj"
+      }
+    },
+    "connections": {
+      "add": "Přidat propojení",
+      "cancel_edit": "Zrušit",
+      "change_relation": "Změnit typ vazby",
+      "empty": "Zatím žádná propojení.",
+      "flip_direction": "Otočit směr",
+      "new_title": "Nové propojení",
+      "remove": "Odebrat vazbu",
+      "restricted": "Přístup na vyžádání",
+      "save_relation": "Uložit relaci",
+      "submit": "Přidat propojení",
+      "submitting": "Přidávám…"
+    },
+    "description": {
+      "edit_title": "Upravit popis",
+      "empty": "Nevyplněno",
+      "placeholder": "Popište, co tento uzel reprezentuje…"
+    },
+    "error": {
+      "create_file_failed": "Soubor se nepodařilo vytvořit: {{error}}",
+      "delete_failed": "Smazání selhalo: {{error}}",
+      "presentation_failed": "Prezentaci se nepodařilo založit: {{error}}",
+      "remote_delete_repair": "Soubor se nepodařilo smazat z remote úložiště. Lokální kopie i záznam zůstaly zachovány.",
+      "rename_failed": "Přejmenování selhalo: {{error}}"
+    },
+    "events": {
+      "empty": "Zatím žádné události."
+    },
+    "files": {
+      "empty": "Zatím žádné soubory."
+    },
+    "form": {
+      "cancel": "Zrušit",
+      "close": "Zavřít",
+      "create": "Vytvořit",
+      "creating": "Vytvářím…",
+      "save": "Uložit",
+      "save_changes": "Uložit změny",
+      "saving": "Ukládám…"
+    },
+    "goal": {
+      "edit_title": "Upravit účel",
+      "empty": "Nevyplněno",
+      "placeholder": "Proč tento uzel existuje, čeho má dosáhnout…"
+    },
+    "header": {
+      "copy_id_title": "Kliknutím zkopírujete ID",
+      "copy_path_title": "{{path}}\nKliknutím zkopírujete cestu",
+      "create_mirror": "Vytvořit pracovní složku",
+      "creating_mirror": "Vytvářím…",
+      "open_in_finder": "Otevřít složku ve Finderu",
+      "remote": {
+        "copy_link_drive": "Kopírovat odkaz na Google Drive",
+        "copy_link_generic": "Kopírovat odkaz na remote",
+        "copy_link_named": "Kopírovat odkaz na {{remoteName}}",
+        "open_drive": "Otevřít na Google Drive",
+        "open_generic": "Otevřít na remote",
+        "open_named": "Otevřít na {{remoteName}}"
+      }
+    },
+    "health": {
+      "change_title": "Změnit zdraví projektu"
+    },
+    "lifecycle": {
+      "change_title": "Změnit stav životního cyklu",
+      "unset_badge": "nevyplněno",
+      "unset_option": "— nevyplněno —"
+    },
+    "loading": "Načítám…",
+    "meta": {
+      "toggle": "Meta"
+    },
+    "node_picker": {
+      "empty": "Žádné výsledky",
+      "placeholder": "Vyberte uzel…",
+      "search_placeholder": "Hledat…"
+    },
+    "organization": {
+      "empty": "Žádné organizace nejsou k dispozici.",
+      "none": "— Bez organizace —"
+    },
+    "owner": {
+      "empty": "Žádní aktéři nejsou k dispozici.",
+      "loading": "Načítám aktéry…",
+      "no_match": "Nic neodpovídá „{{query}}“.",
+      "none": "— Žádný —",
+      "none_option": "— Žádný —",
+      "search_placeholder": "Hledat aktéra…"
+    },
+    "pane": {
+      "back": "Zpět",
+      "close": "Zavřít detail",
+      "collapse": "Skrýt detail",
+      "edit": "Upravit",
+      "edit_title": "Upravit uzel"
+    },
+    "responsibilities": {
+      "add": "Přidat úlohu",
+      "assign": "přiřadit",
+      "assignees_label": "Přiřazení",
+      "delete": "Smazat úlohu",
+      "description_placeholder": "Popis (volitelné)",
+      "edit": "Upravit úlohu",
+      "empty": "Žádné úlohy zatím nejsou.",
+      "loading_actors": "Načítám…",
+      "move_down": "Posunout dolů",
+      "move_up": "Posunout nahoru",
+      "new_title": "Nová úloha",
+      "no_assignees": "— Nikdo zatím",
+      "registry_empty": "Registr aktérů je prázdný.",
+      "title_placeholder": "Název úlohy",
+      "unassign": "Odebrat"
+    },
+    "section": {
+      "danger_zone": "Nebezpečná oblast",
+      "data_sources": "Datové zdroje",
+      "description": "Popis",
+      "goal": "Účel",
+      "organization": "Organizace",
+      "owner": "Vlastník",
+      "responsibilities": "Úlohy",
+      "tools": "Nástroje"
+    },
+    "sync_dot": {
+      "clean": "Vše synchronizováno",
+      "conflict": "Konflikt v souborech",
+      "pending": "Soubory čekají na synchronizaci",
+      "remote_missing": "Některé soubory chybí na remote"
+    },
+    "tab": {
+      "connections": "Propojení",
+      "events": "Události",
+      "files": "Soubory",
+      "overview": "Přehled",
+      "sessions": "Relace",
+      "sharing": "Sdílení"
+    }
+  },
+  "events": {
+    "add": {
+      "content_placeholder": "Co se stalo?",
+      "failed": "Událost se nepodařilo přidat: {{error}}",
+      "heading": "Nová událost",
+      "open": "Přidat událost",
+      "submit": "Přidat událost",
+      "submitting": "Přidávám…"
+    },
+    "card": {
+      "archive": "Archivovat",
+      "archive_failed": "Archivace selhala: {{error}}",
+      "cancel": "Zrušit",
+      "edit": "Upravit",
+      "mark_resolved": "Označit jako vyřešené",
+      "resolve_failed": "Označení selhalo: {{error}}",
+      "resolved_badge": "vyřešeno",
+      "save": "Uložit",
+      "save_failed": "Uložení selhalo: {{error}}",
+      "saving": "Ukládám…"
+    }
+  },
   "sample": {
     "message": "Podrobnosti uzlu {{nodeName}}."
+  },
+  "sessions": {
+    "handoffs": {
+      "continue": "Navázat na handoff",
+      "continuing": "Navazuji…",
+      "heading": "Předání k navázání",
+      "view": "Zobrazit handoff"
+    },
+    "list": {
+      "empty": "Zatím žádné relace.",
+      "loading": "Načítám relace…",
+      "show_archived": "Zobrazit archivované"
+    },
+    "resume": {
+      "continues_conversation": "další zpráva naváže na konverzaci",
+      "handoff_changed": "(handoff upraven od pozastavení)",
+      "handoff_uncheckable": "(nelze ověřit handoff na tomto zařízení)",
+      "server_suspended": {
+        "boot_sweep": "(pozastaveno serverem, restart serveru)",
+        "disconnect": "(pozastaveno serverem, odpojení)",
+        "handoff": "(pozastaveno serverem, předání na jiné zařízení)",
+        "host_lost": "(pozastaveno serverem, proces osiřel po restartu)",
+        "idle": "(pozastaveno serverem, nečinnost 30 min)",
+        "no_reason": "(pozastaveno serverem)",
+        "suspend_timeout": "(pozastaveno serverem, agent nestihl předání)",
+        "terminal_exit": "(pozastaveno serverem, ukončení terminálu)"
+      },
+      "starts_from_summary": "další zpráva ji spustí ze shrnutí"
+    },
+    "row": {
+      "cancel_rename": "Zrušit",
+      "close": "Uzavřít",
+      "open_chat": "Otevřít chat",
+      "rename": "Přejmenovat",
+      "runner_unknown": "neznámý",
+      "save_name": "Uložit název",
+      "view_handoff": "Zobrazit handoff",
+      "write_scope": "Zápis: {{writeCount}}",
+      "write_scope_title": "Počet uzlů v zápisovém rozsahu této relace"
+    }
   }
 }

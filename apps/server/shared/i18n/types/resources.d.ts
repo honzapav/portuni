@@ -624,8 +624,320 @@ export default interface Resources {
     }
   },
   "node": {
+    "access": {
+      "chip": {
+        "remove": "Remove"
+      },
+      "confirm": {
+        "cancel": "Cancel",
+        "clear_override": "This node's own sharing will be removed and the node will inherit sharing from its parent node again (or be unrestricted if no parent node restricts sharing).",
+        "confirm": "Confirm",
+        "last_entry": "Removing the last recipient ends the sharing and the node becomes private.",
+        "switch": "Switching removes access for {{count}} recipient." | "Switching removes access for {{count}} recipients."
+      },
+      "inherited": {
+        "heading": {
+          "area": "Inherits sharing from the area {{sourceName}}",
+          "organization": "Inherits sharing from the organization {{sourceName}}",
+          "parent": "Inherits sharing from the parent node",
+          "principle": "Inherits sharing from the principle {{sourceName}}",
+          "process": "Inherits sharing from the process {{sourceName}}",
+          "project": "Inherits sharing from the project {{sourceName}}",
+          "untyped": "Inherits sharing from {{sourceName}}"
+        },
+        "set_own": "Set own sharing for this node"
+      },
+      "load_error": "Could not load sharing.",
+      "loading": "Loading…",
+      "mode": {
+        "aria_label": "Restriction mode",
+        "private": {
+          "description": "The node is completely invisible to others.",
+          "label": "Hidden from others",
+          "readonly": "Mode: <value>Hidden from others</value>",
+          "summary": "Group · hidden from others"
+        },
+        "request": {
+          "description": "Others can see that the node exists and can ask for access.",
+          "label": "On request (others see the name and can ask for access)",
+          "readonly": "Mode: <value>On request</value>",
+          "summary": "Group · on request"
+        }
+      },
+      "own": {
+        "add": "Add a group or user…",
+        "cancel": "Cancel",
+        "clear": "Remove own sharing and inherit from the organization",
+        "empty_error": "Add at least one recipient.",
+        "heading": "This node's own sharing",
+        "peek_hint": "Replaces the sharing inherited from the organization. Applies only to this node and the nodes below it.",
+        "save": "Save",
+        "unsaved_hint": "Not saved yet – group sharing is saved with the first recipient. With no recipients, only admins can see the node."
+      },
+      "picker": {
+        "no_match": "Nothing matches.",
+        "search_placeholder": "Search…"
+      },
+      "requests": {
+        "heading": "Access requests ({{count}})" | "Access requests ({{count}})"
+      },
+      "save_error": "Saving failed. Try again.",
+      "status": {
+        "saved": "Saved",
+        "saving": "Saving…"
+      },
+      "visibility": {
+        "aria_label": "Sharing",
+        "group": {
+          "label": "Group"
+        },
+        "legend": "Everyone = the whole team · Private = only the author and admins · Group = selected people and groups",
+        "private": {
+          "description": "Only the creator and admins can see it.",
+          "label": "Private"
+        },
+        "team": {
+          "description": "Everyone who is signed in can see it.",
+          "disabled_inherited": "This node inherits a restriction from a parent node. It cannot be opened to everyone, only given its own sharing.",
+          "label": "Everyone"
+        }
+      }
+    },
+    "detail": {
+      "actor": {
+        "automation": "Automation",
+        "automation_placeholder": "Automation (placeholder)",
+        "placeholder_name": "{{name}} (placeholder)"
+      },
+      "archive": {
+        "button": "Archive this node",
+        "hint": "The node will be hidden from the graph, but its relations and events stay in the database for audit."
+      },
+      "assignee_picker": {
+        "empty": "No other actors to assign.",
+        "loading": "Loading…"
+      },
+      "attribute": {
+        "data_source": {
+          "add": "Add data source",
+          "delete": "Delete data source",
+          "edit": "Edit data source",
+          "new_title": "New data source"
+        },
+        "description_placeholder": "Description (optional)",
+        "empty": "No entries.",
+        "link_placeholder": "Link (optional)",
+        "link_placeholder_example": "Link (optional, e.g. https://…)",
+        "name_placeholder": "Name",
+        "tool": {
+          "add": "Add tool",
+          "delete": "Delete tool",
+          "edit": "Edit tool",
+          "new_title": "New tool"
+        }
+      },
+      "connections": {
+        "add": "Add relation",
+        "cancel_edit": "Cancel",
+        "change_relation": "Change relation type",
+        "empty": "No relations yet.",
+        "flip_direction": "Reverse direction",
+        "new_title": "New relation",
+        "remove": "Remove relation",
+        "restricted": "Access on request",
+        "save_relation": "Save relation type",
+        "submit": "Add relation",
+        "submitting": "Adding…"
+      },
+      "description": {
+        "edit_title": "Edit description",
+        "empty": "Not filled in",
+        "placeholder": "Describe what this node represents…"
+      },
+      "error": {
+        "create_file_failed": "Couldn't create the file: {{error}}",
+        "delete_failed": "Delete failed: {{error}}",
+        "presentation_failed": "Couldn't create the presentation: {{error}}",
+        "remote_delete_repair": "Couldn't delete the file from the remote. The local copy and its record were kept.",
+        "rename_failed": "Rename failed: {{error}}"
+      },
+      "events": {
+        "empty": "No events yet."
+      },
+      "files": {
+        "empty": "No files yet."
+      },
+      "form": {
+        "cancel": "Cancel",
+        "close": "Close",
+        "create": "Create",
+        "creating": "Creating…",
+        "save": "Save",
+        "save_changes": "Save changes",
+        "saving": "Saving…"
+      },
+      "goal": {
+        "edit_title": "Edit goal",
+        "empty": "Not filled in",
+        "placeholder": "Why this node exists and what it should achieve…"
+      },
+      "header": {
+        "copy_id_title": "Click to copy the ID",
+        "copy_path_title": "{{path}}\nClick to copy the path",
+        "create_mirror": "Create mirror",
+        "creating_mirror": "Creating…",
+        "open_in_finder": "Open folder in Finder",
+        "remote": {
+          "copy_link_drive": "Copy link to Google Drive",
+          "copy_link_generic": "Copy link to the remote",
+          "copy_link_named": "Copy link to {{remoteName}}",
+          "open_drive": "Open on Google Drive",
+          "open_generic": "Open on the remote",
+          "open_named": "Open on {{remoteName}}"
+        }
+      },
+      "health": {
+        "change_title": "Change project health"
+      },
+      "lifecycle": {
+        "change_title": "Change lifecycle state",
+        "unset_badge": "not set",
+        "unset_option": "— not set —"
+      },
+      "loading": "Loading…",
+      "meta": {
+        "toggle": "Meta"
+      },
+      "node_picker": {
+        "empty": "No results",
+        "placeholder": "Select a node…",
+        "search_placeholder": "Search…"
+      },
+      "organization": {
+        "empty": "No organizations available.",
+        "none": "— No organization —"
+      },
+      "owner": {
+        "empty": "No actors available.",
+        "loading": "Loading actors…",
+        "no_match": "Nothing matches “{{query}}”.",
+        "none": "— None —",
+        "none_option": "— None —",
+        "search_placeholder": "Search actors…"
+      },
+      "pane": {
+        "back": "Back",
+        "close": "Close detail",
+        "collapse": "Hide detail",
+        "edit": "Edit",
+        "edit_title": "Edit node"
+      },
+      "responsibilities": {
+        "add": "Add responsibility",
+        "assign": "assign",
+        "assignees_label": "Assignees",
+        "delete": "Delete responsibility",
+        "description_placeholder": "Description (optional)",
+        "edit": "Edit responsibility",
+        "empty": "No responsibilities yet.",
+        "loading_actors": "Loading…",
+        "move_down": "Move down",
+        "move_up": "Move up",
+        "new_title": "New responsibility",
+        "no_assignees": "— Nobody yet",
+        "registry_empty": "The actor registry is empty.",
+        "title_placeholder": "Responsibility name",
+        "unassign": "Remove"
+      },
+      "section": {
+        "danger_zone": "Danger zone",
+        "data_sources": "Data sources",
+        "description": "Description",
+        "goal": "Goal",
+        "organization": "Organization",
+        "owner": "Owner",
+        "responsibilities": "Responsibilities",
+        "tools": "Tools"
+      },
+      "sync_dot": {
+        "clean": "Everything synced",
+        "conflict": "Conflicts in files",
+        "pending": "Files are waiting to sync",
+        "remote_missing": "Some files are missing on the remote"
+      },
+      "tab": {
+        "connections": "Relations",
+        "events": "Events",
+        "files": "Files",
+        "overview": "Overview",
+        "sessions": "Threads",
+        "sharing": "Sharing"
+      }
+    },
+    "events": {
+      "add": {
+        "content_placeholder": "What happened?",
+        "failed": "Couldn't add the event: {{error}}",
+        "heading": "New event",
+        "open": "Add event",
+        "submit": "Add event",
+        "submitting": "Adding…"
+      },
+      "card": {
+        "archive": "Archive",
+        "archive_failed": "Couldn't archive the event: {{error}}",
+        "cancel": "Cancel",
+        "edit": "Edit",
+        "mark_resolved": "Mark as resolved",
+        "resolve_failed": "Couldn't mark the event as resolved: {{error}}",
+        "resolved_badge": "resolved",
+        "save": "Save",
+        "save_failed": "Couldn't save the event: {{error}}",
+        "saving": "Saving…"
+      }
+    },
     "sample": {
       "message": "Details of the node {{nodeName}}."
+    },
+    "sessions": {
+      "handoffs": {
+        "continue": "Continue from handoff",
+        "continuing": "Continuing…",
+        "heading": "Handoffs to continue from",
+        "view": "View handoff"
+      },
+      "list": {
+        "empty": "No threads yet.",
+        "loading": "Loading threads…",
+        "show_archived": "Show archived"
+      },
+      "resume": {
+        "continues_conversation": "the next message continues the conversation",
+        "handoff_changed": "(handoff edited since it was suspended)",
+        "handoff_uncheckable": "(the handoff can't be checked on this device)",
+        "server_suspended": {
+          "boot_sweep": "(suspended by the server, server restart)",
+          "disconnect": "(suspended by the server, disconnected)",
+          "handoff": "(suspended by the server, handed off to another device)",
+          "host_lost": "(suspended by the server, the process was orphaned after a restart)",
+          "idle": "(suspended by the server, inactive for 30 min)",
+          "no_reason": "(suspended by the server)",
+          "suspend_timeout": "(suspended by the server, the agent didn't finish the handoff in time)",
+          "terminal_exit": "(suspended by the server, terminal closed)"
+        },
+        "starts_from_summary": "the next message starts it from the summary"
+      },
+      "row": {
+        "cancel_rename": "Cancel",
+        "close": "Close",
+        "open_chat": "Open chat",
+        "rename": "Rename",
+        "runner_unknown": "unknown",
+        "save_name": "Save name",
+        "view_handoff": "View handoff",
+        "write_scope": "Write: {{writeCount}}",
+        "write_scope_title": "Number of nodes in this thread's write scope"
+      }
     }
   },
   "server": {

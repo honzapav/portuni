@@ -8,6 +8,8 @@
 
 import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Lock, Pencil, Plus, Search, User, Users, X } from "lucide-react";
 import type {
   NodeAccessEntry,
@@ -32,6 +34,10 @@ import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { isNodeType } from "../lib/node-type-labels";
+import type { NodeType } from "../../../server/shared/popp";
+
+type NodeT = TFunction<"node">;
 
 // Local shape used for both the informational (read-only) entries coming
 // back from GET and the in-progress draft being edited. display_name is
@@ -71,26 +77,42 @@ function entryKey(d: DraftEntry): string {
 
 type AccessMode = "private" | "request";
 
-// Lowercase phrasing used inline in the "Skupina · ..." inherited summary
-// and as the basis for the capitalized read-only "Režim: ..." label.
-function modeWordLower(m: AccessMode | null): string {
-  return m === "request" ? "na vyžádání" : "skryté pro ostatní";
-}
+// The "Skupina · ..." inherited summary line, one whole message per mode
+// (no mode word is interpolated or capitalised at runtime). A null mode
+// reads as "private", the server's default.
+const MODE_SUMMARY: Record<AccessMode, (t: NodeT) => string> = {
+  private: (t) => t(($) => $.access.mode.private.summary, { ns: "node" }),
+  request: (t) => t(($) => $.access.mode.request.summary, { ns: "node" }),
+};
 
-function modeLabel(m: AccessMode | null): string {
-  const w = modeWordLower(m);
-  return w.charAt(0).toUpperCase() + w.slice(1);
-}
+// The read-only "Režim: <value>...</value>" line, one message per mode.
+const MODE_READONLY: Record<AccessMode, (t: NodeT) => React.ReactNode> = {
+  private: (t) => (
+    <Trans
+      t={t}
+      ns="node"
+      i18nKey={($) => $.access.mode.private.readonly}
+      components={{ value: <span className="font-medium text-[var(--color-text-muted)]" /> }}
+    />
+  ),
+  request: (t) => (
+    <Trans
+      t={t}
+      ns="node"
+      i18nKey={($) => $.access.mode.request.readonly}
+      components={{ value: <span className="font-medium text-[var(--color-text-muted)]" /> }}
+    />
+  ),
+};
 
-// Genitive form of each node type, for "Přebírá sdílení z <typu> <jméno>".
-// Kept local to this file: no other component needs to phrase a type this
-// way, and the node type enum is small/stable.
-const TYPE_GENITIVE: Record<string, string> = {
-  organization: "organizace",
-  project: "projektu",
-  process: "procesu",
-  area: "oblasti",
-  principle: "principu",
+// "Přebírá sdílení z <typu> <jméno>": one message per node type, since the
+// type word is inflected differently in each language.
+const INHERITED_HEADING: Record<NodeType, (t: NodeT, sourceName: string) => string> = {
+  organization: (t, sourceName) => t(($) => $.access.inherited.heading.organization, { sourceName, ns: "node" }),
+  project: (t, sourceName) => t(($) => $.access.inherited.heading.project, { sourceName, ns: "node" }),
+  process: (t, sourceName) => t(($) => $.access.inherited.heading.process, { sourceName, ns: "node" }),
+  area: (t, sourceName) => t(($) => $.access.inherited.heading.area, { sourceName, ns: "node" }),
+  principle: (t, sourceName) => t(($) => $.access.inherited.heading.principle, { sourceName, ns: "node" }),
 };
 
 // The unified sharing selector's three modes -- one dimension stored in
@@ -113,6 +135,7 @@ export function AccessSection({
   // the graph is already loaded for the rest of the app.
   graph: GraphPayload | null;
 }) {
+  const { t } = useTranslation("node");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [restricted, setRestricted] = useState(false);
@@ -234,7 +257,7 @@ export function AccessSection({
         applyView(res);
       })
       .catch(() => {
-        if (!cancelled) setLoadError("Nepodařilo se načíst sdílení");
+        if (!cancelled) setLoadError(t(($) => $.access.load_error));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -242,7 +265,7 @@ export function AccessSection({
     return () => {
       cancelled = true;
     };
-  }, [nodeId, applyView]);
+  }, [nodeId, applyView, t]);
 
   useEffect(() => {
     void loadRequests();
@@ -292,7 +315,7 @@ export function AccessSection({
       await onMutate();
     } catch (e) {
       console.error(e);
-      setSaveError("Uložení se nepovedlo. Zkus to znovu.");
+      setSaveError(t(($) => $.access.save_error));
     } finally {
       setSaving(false);
     }
@@ -363,7 +386,7 @@ export function AccessSection({
   // access entry" 400 is never reached from the UI.
   const saveOverride = () => {
     if (draft.length === 0) {
-      setOverrideSaveError("Přidej alespoň jednoho příjemce.");
+      setOverrideSaveError(t(($) => $.access.own.empty_error));
       return;
     }
     setOverrideSaveError(null);
@@ -385,7 +408,7 @@ export function AccessSection({
 
   if (loading) {
     return (
-      <p className="text-[14px] text-[var(--color-text-dim)]">Načítám...</p>
+      <p className="text-[14px] text-[var(--color-text-dim)]">{t(($) => $.access.loading)}</p>
     );
   }
 
@@ -449,25 +472,24 @@ export function AccessSection({
         disabledOptions={
           effectiveInherited
             ? {
-                team: "Node dědí omezení z nadřazeného uzlu – nelze ho zpřístupnit všem, jen nastavit vlastní sdílení.",
+                team: t(($) => $.access.visibility.team.disabled_inherited),
               }
             : undefined
         }
       />
       <p className="text-[11.5px] text-[var(--color-text-dim)]">
-        Všichni = celý tým · Soukromé = jen autor a správci · Skupina =
-        vybraní lidé a skupiny
+        {t(($) => $.access.visibility.legend)}
       </p>
 
       {displayedMode === "team" && (
         <p className="text-[14px] text-[var(--color-text-muted)]">
-          Vidí všichni přihlášení.
+          {t(($) => $.access.visibility.team.description)}
         </p>
       )}
 
       {displayedMode === "private" && (
         <p className="text-[14px] text-[var(--color-text-muted)]">
-          Vidí jen tvůrce a správci.
+          {t(($) => $.access.visibility.private.description)}
         </p>
       )}
 
@@ -490,10 +512,7 @@ export function AccessSection({
         <>
           {restricted && !canManage && (
             <p className="text-[13px] text-[var(--color-text-dim)]">
-              Režim:{" "}
-              <span className="font-medium text-[var(--color-text-muted)]">
-                {modeLabel(mode)}
-              </span>
+              {MODE_READONLY[mode ?? "private"](t)}
             </p>
           )}
 
@@ -533,17 +552,17 @@ export function AccessSection({
         <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
           <p className="text-[12.5px] text-[var(--color-text-muted)]">
             {confirm.kind === "last-entry"
-              ? "Odebráním posledního příjemce se sdílení zruší a node bude Soukromý."
+              ? t(($) => $.access.confirm.last_entry)
               : confirm.kind === "clear-override"
-                ? "Vlastní sdílení tohoto uzlu bude zrušeno a node začne znovu přebírat sdílení z nadřazeného uzlu (nebo bude nezúžené, pokud žádný nadřazený uzel sdílení neomezuje)."
-                : `Přepnutím odebereš ${entries.length} sdílení.`}
+                ? t(($) => $.access.confirm.clear_override)
+                : t(($) => $.access.confirm.switch, { count: entries.length })}
           </p>
           <div className="flex gap-2">
             <Button variant="destructive" size="sm" onClick={confirmSwitch} disabled={saving}>
-              {saving ? "…" : "Potvrdit"}
+              {saving ? "…" : t(($) => $.access.confirm.confirm)}
             </Button>
             <Button variant="outline" size="sm" onClick={() => setConfirm(null)} disabled={saving}>
-              Zrušit
+              {t(($) => $.access.confirm.cancel)}
             </Button>
           </div>
         </div>
@@ -552,7 +571,7 @@ export function AccessSection({
       {canManage && pendingRequests.length > 0 && (
         <div className="space-y-1.5 border-t border-[var(--color-border)] pt-3">
           <p className="text-[12.5px] font-medium text-[var(--color-text-muted)]">
-            Žádosti o přístup ({pendingRequests.length})
+            {t(($) => $.access.requests.heading, { count: pendingRequests.length })}
           </p>
           <AccessRequestList
             requests={pendingRequests}
@@ -562,10 +581,10 @@ export function AccessSection({
       )}
 
       {saving && (
-        <p className="text-[12px] text-[var(--color-text-dim)]">Ukládám…</p>
+        <p className="text-[12px] text-[var(--color-text-dim)]">{t(($) => $.access.status.saving)}</p>
       )}
       {!saving && justSaved && !saveError && (
-        <p className="text-[12px] text-[var(--color-text-dim)]">Uloženo</p>
+        <p className="text-[12px] text-[var(--color-text-dim)]">{t(($) => $.access.status.saved)}</p>
       )}
       {saveError && (
         <p className="text-[12px]" style={{ color: "var(--color-danger)" }}>
@@ -594,16 +613,18 @@ function InheritedSummary({
   canManage: boolean;
   onStartOverride: () => void;
 }) {
-  const sourceLabel = sourceName ?? "nadřazeného uzlu";
-  const typeGenitive = sourceType ? TYPE_GENITIVE[sourceType] : undefined;
-  const heading = typeGenitive
-    ? `Přebírá sdílení z ${typeGenitive} ${sourceLabel}`
-    : `Přebírá sdílení z ${sourceLabel}`;
+  const { t } = useTranslation("node");
+  const heading =
+    sourceName === null
+      ? t(($) => $.access.inherited.heading.parent)
+      : sourceType && isNodeType(sourceType)
+        ? INHERITED_HEADING[sourceType](t, sourceName)
+        : t(($) => $.access.inherited.heading.untyped, { sourceName });
   return (
     <div className="space-y-2">
       <p className="text-[13px] font-medium text-[var(--color-text)]">{heading}</p>
       <p className="text-[12.5px] text-[var(--color-text-dim)]">
-        Skupina · {modeWordLower(mode)}
+        {MODE_SUMMARY[mode ?? "private"](t)}
       </p>
       {entries.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -615,7 +636,7 @@ function InheritedSummary({
       {canManage && (
         <Button variant="outline" size="sm" onClick={onStartOverride} className="text-muted-foreground">
           <Pencil />
-          Nastavit vlastní sdílení pro tento uzel
+          {t(($) => $.access.inherited.set_own)}
         </Button>
       )}
     </div>
@@ -660,15 +681,15 @@ function OwnAccessCard({
   onCancel: () => void;
   onClearOverride: () => void;
 }) {
+  const { t } = useTranslation("node");
   return (
     <div className="space-y-2.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">
       <p className="text-[13px] font-medium text-[var(--color-text)]">
-        Vlastní sdílení tohoto uzlu
+        {t(($) => $.access.own.heading)}
       </p>
       {isPeek && (
         <p className="text-[12px] text-[var(--color-text-dim)]">
-          Nahradí sdílení přebírané z organizace. Platí jen pro tento uzel a
-          uzly pod ním.
+          {t(($) => $.access.own.peek_hint)}
         </p>
       )}
       <ModeToggle value={draftMode} onChange={onChangeMode} disabled={saving} />
@@ -685,14 +706,13 @@ function OwnAccessCard({
         ) : (
           <Button variant="outline" size="sm" onClick={onAddOpen} className="text-muted-foreground">
             <Plus />
-            Přidat skupinu nebo uživatele…
+            {t(($) => $.access.own.add)}
           </Button>
         )}
       </div>
       {!isPeek && draft.length === 0 && (
         <p className="text-[12px] text-[var(--color-text-dim)]">
-          Zatím neuloženo – sdílení pro skupinu se uloží s prvním příjemcem.
-          Bez příjemců node uvidí jen správci.
+          {t(($) => $.access.own.unsaved_hint)}
         </p>
       )}
       {overrideSaveError && (
@@ -703,10 +723,10 @@ function OwnAccessCard({
       {isPeek ? (
         <div className="flex gap-2">
           <Button size="sm" onClick={onSave} disabled={saving}>
-            {saving ? "…" : "Uložit"}
+            {saving ? "…" : t(($) => $.access.own.save)}
           </Button>
           <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
-            Zrušit
+            {t(($) => $.access.own.cancel)}
           </Button>
         </div>
       ) : (
@@ -718,7 +738,7 @@ function OwnAccessCard({
             disabled={saving}
             className="text-muted-foreground decoration-dotted"
           >
-            Zrušit vlastní sdílení a přebírat z organizace
+            {t(($) => $.access.own.clear)}
           </Button>
         )
       )}
@@ -744,14 +764,15 @@ function VisibilitySelector({
   // below the ancestor's restriction is impossible.
   disabledOptions?: Partial<Record<VisibilityMode, string>>;
 }) {
+  const { t } = useTranslation("node");
   const options: { value: VisibilityMode; label: string; Icon: typeof Users }[] = [
-    { value: "team", label: "Všichni", Icon: Users },
-    { value: "private", label: "Soukromé", Icon: Lock },
-    { value: "group", label: "Skupina", Icon: Users },
+    { value: "team", label: t(($) => $.access.visibility.team.label), Icon: Users },
+    { value: "private", label: t(($) => $.access.visibility.private.label), Icon: Lock },
+    { value: "group", label: t(($) => $.access.visibility.group.label), Icon: Users },
   ];
   const pressed = "aria-pressed:bg-muted aria-pressed:text-foreground dark:aria-pressed:bg-muted";
   return (
-    <ButtonGroup aria-label="Sdílení">
+    <ButtonGroup aria-label={t(($) => $.access.visibility.aria_label)}>
       {options.map((opt) => {
         const active = value === opt.value;
         const optReason = disabledOptions?.[opt.value];
@@ -790,14 +811,15 @@ function ModeToggle({
   onChange: (mode: AccessMode) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation("node");
   const options: { value: AccessMode; label: string }[] = [
-    { value: "private", label: "Skryté pro ostatní" },
-    { value: "request", label: "Na vyžádání (ostatní vidí název a mohou požádat)" },
+    { value: "private", label: t(($) => $.access.mode.private.label) },
+    { value: "request", label: t(($) => $.access.mode.request.label) },
   ];
   const pressed = "aria-pressed:bg-muted aria-pressed:text-foreground dark:aria-pressed:bg-muted";
   return (
     <div className="space-y-1">
-      <ButtonGroup aria-label="Režim omezení">
+      <ButtonGroup aria-label={t(($) => $.access.mode.aria_label)}>
         {options.map((opt) => {
           const active = value === opt.value;
           return (
@@ -817,8 +839,8 @@ function ModeToggle({
       </ButtonGroup>
       <p className="text-[11px] text-[var(--color-text-dim)]">
         {value === "request"
-          ? "Ostatní vidí, že node existuje, a mohou požádat o přístup."
-          : "Node je pro ostatní úplně neviditelný."}
+          ? t(($) => $.access.mode.request.description)
+          : t(($) => $.access.mode.private.description)}
       </p>
     </div>
   );
@@ -831,6 +853,7 @@ function Chip({
   entry: DraftEntry;
   onRemove?: () => void;
 }) {
+  const { t } = useTranslation("node");
   const label =
     entry.kind === "group"
       ? entry.display_email ?? entry.principal
@@ -848,7 +871,7 @@ function Chip({
           variant="destructive"
           size="icon-xs"
           onClick={onRemove}
-          title="Odebrat"
+          title={t(($) => $.access.chip.remove)}
           className="ml-0.5 shrink-0 rounded-full"
         >
           <X />
@@ -880,6 +903,7 @@ function EntryPicker({
   onPick: (entry: DraftEntry) => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation("node");
   const [query, setQuery] = useState("");
   const [groups, setGroups] = useState<DirectoryGroup[]>([]);
   const [groupsAvailable, setGroupsAvailable] = useState(true);
@@ -963,7 +987,7 @@ function EntryPicker({
           className="border-[var(--color-accent-dim)] text-[var(--color-accent)]"
         >
           <Plus />
-          Přidat skupinu nebo uživatele…
+          {t(($) => $.access.own.add)}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[260px] gap-0 overflow-hidden p-0">
@@ -976,14 +1000,14 @@ function EntryPicker({
             onKeyDown={(e) => {
               if (e.key === "Escape") onClose();
             }}
-            placeholder="Hledat…"
+            placeholder={t(($) => $.access.picker.search_placeholder)}
             className="flex-1 border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
           />
         </div>
         <div className="scroll-thin max-h-[240px] overflow-y-auto py-1">
           {groupCandidates.length === 0 && userCandidates.length === 0 ? (
             <div className="px-3 py-2 text-[13px] text-[var(--color-text-dim)]">
-              Nic neodpovídá.
+              {t(($) => $.access.picker.no_match)}
             </div>
           ) : (
             <>
