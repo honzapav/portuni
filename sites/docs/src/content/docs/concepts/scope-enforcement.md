@@ -224,7 +224,10 @@ the first message, every event of the transcript, the inline handoff
 summary. The central server holds the record, because the MCP handshake,
 scope enforcement and the write gate key on it. The content is written to
 the **device that ran the thread**, in the sidecar's own database, and is
-never sent to the central server.
+never sent to the central server. The central database has no place for it
+either: no transcript table, no first-message or summary column. Content
+an older desktop version had sent there was copied back to the device that
+wrote it, and then dropped.
 
 So `GET /sessions/:id/events` is a device-local route: it answers from the
 machine you are asking, which is the machine that has the log. Asked on a

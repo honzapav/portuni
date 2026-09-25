@@ -164,18 +164,12 @@ export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     instance_id TEXT,
     agent_session_id TEXT,
     terminal_id TEXT,
-    brief TEXT,
     runner TEXT,
     host_id TEXT,
     waiting_since TEXT,
     state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived','draft')),
     handoff_path TEXT,
     handoff_hash TEXT,
-    -- Server-generated handoff text (#329) for a session with no local
-    -- mirror on this device -- writeHandoffAndSuspend's normal file write
-    -- has nowhere to land, so suspendSessionServerSide stores the content
-    -- here instead. NULL whenever handoff_path is set (a real file exists).
-    handoff_inline TEXT,
     name TEXT NOT NULL DEFAULT '',
     name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
     -- #375: the thread's own model/effort override (session -> instance
@@ -217,21 +211,6 @@ export const DDL_SESSION_RUNS = `CREATE TABLE IF NOT EXISTS session_runs (
   )`;
 
 export const INDEX_SESSION_RUNS_SESSION = `CREATE INDEX IF NOT EXISTS idx_session_runs_session ON session_runs(session_id)`;
-
-// Append-only canonical event log -- the record the chat renders from
-// (streamed deltas are never persisted here, see the runner spec's "Live
-// channel"). seq is assigned by domain/runner/store.ts, monotonic per
-// session, never reused.
-export const DDL_SESSION_EVENTS = `CREATE TABLE IF NOT EXISTS session_events (
-    id TEXT PRIMARY KEY CHECK(length(id) = 26),
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    run_id TEXT REFERENCES session_runs(id) ON DELETE SET NULL,
-    seq INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(session_id, seq)
-  )`;
 
 // One row per (session, node) currently in the session's read-scope set --
 // membership, not an append-only event log (an expansion that re-adds an
@@ -279,7 +258,6 @@ export const DDL = [
   INDEX_SESSION_SCOPE_SESSION,
   DDL_SESSION_RUNS,
   INDEX_SESSION_RUNS_SESSION,
-  DDL_SESSION_EVENTS,
   `CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),

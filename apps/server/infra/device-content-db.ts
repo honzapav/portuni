@@ -10,9 +10,9 @@
 // file next to `runners.json` in the runner data dir, opened by the
 // sidecar in a personal workspace and by the sync agent in a team
 // workspace alike. The central server never opens one: getDeviceContentDb()
-// refuses there (isCentralServer()), and the central server's own session
-// content is only the legacy graph-db rows an older sidecar wrote
-// (domain/runner/store-content.ts, LegacyGraphContentStore).
+// refuses there (isCentralServer()), and the central server holds no
+// session content at all (domain/runner/store-content.ts,
+// CentralNoContentStore; migration 040, #462).
 //
 // It deliberately does NOT go through `getDb()`, `schema.ts` or
 // `MIGRATIONS`:
@@ -29,10 +29,12 @@
 //   1. session_content, session_events, device_schema (the DDL below).
 //   2. The one-time import of the session content that predates this db
 //      (boot/content-import.ts): a personal workspace copies it out of its
-//      own graph db, a sync agent downloads its own threads' legacy rows
-//      from the central server. No DDL change, so a db created fresh still
-//      starts at version 1 and a complete import raises it to 2; a failed
-//      one leaves it at 1 and runs again on the next boot.
+//      own graph db, before migration 040 drops them there (#462). A sync
+//      agent used to download its own threads' legacy rows from the
+//      central server here; that ended with the same migration. No DDL
+//      change, so a db created fresh still starts at version 1 and a
+//      complete import raises it to 2; a failed one leaves it at 1 and runs
+//      again on the next boot.
 //
 // Timestamps are written by the store (infra/sql.ts dbTimestamp, the
 // "YYYY-MM-DD HH:MM:SS" UTC shape every driver reads back); the DDL has no

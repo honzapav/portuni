@@ -247,9 +247,8 @@ One line each; the linked doc carries the mechanism and the reasoning.
   sync-agent mode), the content store never does -- it is always
   `SessionContentStore` over this device's `content.db`. Nothing on the
   device sends events, `brief` or `handoff_inline` to the central server;
-  the central server never opens a `content.db` and writes no summary, and
-  its legacy rows (read back to older sidecars) are downloaded once by
-  each sync agent at boot.
+  the central server never opens a `content.db`, writes no summary and
+  holds no content at all (migration 040).
   Access is enforced once, on the central server, by
   `auth/session-access.ts`, whose table is one line: a thread is its
   owner's, for every action, `manage` included; anyone else gets
@@ -276,13 +275,14 @@ One line each; the linked doc carries the mechanism and the reasoning.
   touch it. The adapter always uses streaming input, never starts a process
   to answer `models()`, and ends a run on a `result` that carries an error.
 - Migration 036 carries `draft`, `model`, `effort`; migration 039 the
-  context counters; the 030 and 036 rebuilds, `DDL_SESSIONS` and
+  context counters; migration 040 (#462, the central migration) rebuilds
+  `sessions` without `brief`/`handoff_inline` and drops the graph db's
+  `session_events`. The 030, 036 and 040 rebuilds, `DDL_SESSIONS` and
   `PG_BASELINE_DDL` carry the current full shape too. A new `sessions`
   column goes into all of them. `content.db` has its own DDL and version
-  row (`infra/device-content-db.ts`) and never a `MIGRATIONS` entry;
-  `sessions.brief`, `sessions.handoff_inline` and the graph db's
-  `session_events` are write-only leftovers for older sidecars until the
-  central migration drops them.
+  row (`infra/device-content-db.ts`) and never a `MIGRATIONS` entry; a
+  personal workspace copies its old content into it before `ensureSchema`
+  and holds 040 back until that copy is complete.
 
 ### MCP and scope (`mcp-scope-and-integrations.md`)
 

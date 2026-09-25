@@ -21,7 +21,6 @@ import {
 } from "../apps/server/domain/sessions.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
-import { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 import { installTestContentDb } from "./helpers/content-db.js";
 
 describe("createSession / getSession / listSessions", () => {
@@ -237,7 +236,7 @@ describe("closeSessionIfRunning (#218, GC backstop; #329 suspends)", () => {
     await closeSessionIfRunning(db, row.id, "disconnect");
     const updated = await getSession(db, row.id);
     assert.equal(updated?.state, "suspended");
-    assert.equal(updated?.handoff_inline, null, "nothing content-shaped stays on the record");
+    assert.equal("handoff_inline" in (updated ?? {}), false, "nothing content-shaped stays on the record");
     assert.equal(updated?.handoff_path, null);
     assert.equal(updated?.handoff_hash, null);
     assert.equal((await content.getContent(row.id))?.handoff_inline ?? null, null);
@@ -413,43 +412,6 @@ describe("autoArchiveClosedSessions", () => {
     const fetched = await getSession(db, row.id);
     assert.equal(fetched?.state, "running");
   });
-
-  // #317 retention: the event log of an archived session is dropped once
-  // closed_at is older than the retention window; runs, the row and the
-  // handoff stay, and a younger archived session or a merely closed one
-  // keeps its events.
-  it("deletes session_events only of archived sessions closed longer ago than the retention window", async () => {
-    const { db, nodeId } = await makeSharedDb();
-    // The retention sweep prunes the graph db's own `session_events`, which
-    // stays until the central migration (#462) even though nothing writes
-    // it after #456 -- a content store over the graph db writes exactly
-    // that table, which is what makes this assertable at all.
-    const legacyEvents = new SessionContentStore(db);
-    const oldArchived = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
-    const youngArchived = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
-    const closedOnly = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
-    for (const s of [oldArchived, youngArchived, closedOnly]) {
-      await legacyEvents.appendEvents(s.id, null, [{ kind: "assistant_message", payload: { text: "hi" } }]);
-      await transitionSessionState(db, "U1", s.id, "closed");
-    }
-    const days = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
-    await db.execute({ sql: "UPDATE sessions SET closed_at = ? WHERE id = ?", args: [days(120), oldArchived.id] });
-    await db.execute({ sql: "UPDATE sessions SET closed_at = ? WHERE id = ?", args: [days(45), youngArchived.id] });
-    await db.execute({ sql: "UPDATE sessions SET closed_at = ? WHERE id = ?", args: [days(120), closedOnly.id] });
-    for (const id of [oldArchived.id, youngArchived.id]) {
-      await db.execute({ sql: "UPDATE sessions SET state = 'archived' WHERE id = ?", args: [id] });
-    }
-    // Archive window longer than any closed_at here, so this pass archives
-    // nothing and only the retention step acts.
-    await autoArchiveClosedSessions(db, 365 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000);
-
-    assert.equal((await getSession(db, oldArchived.id))?.state, "archived");
-    assert.equal((await getSession(db, youngArchived.id))?.state, "archived");
-    assert.equal((await getSession(db, closedOnly.id))?.state, "closed");
-    assert.equal((await legacyEvents.listEvents(oldArchived.id)).length, 0);
-    assert.equal((await legacyEvents.listEvents(youngArchived.id)).length, 1);
-    assert.equal((await legacyEvents.listEvents(closedOnly.id)).length, 1);
-  });
 });
 
 // #329 wrote a real file here when the device had a mirror; #497: a suspend
@@ -479,7 +441,7 @@ describe("closeSessionIfRunning with a local mirror (#329)", () => {
       const after = await getSession(db, row.id);
       assert.equal(after?.state, "suspended");
       assert.equal(after?.handoff_path, null, "a mirror here changes nothing: no file is written");
-      assert.equal(after?.handoff_inline, null);
+      assert.equal("handoff_inline" in (after ?? {}), false);
       await assert.rejects(() => readFile(join(mirrorRoot, `wip/sessions/${row.id}-handoff.md`), "utf8"));
       const files = await db.execute({ sql: "SELECT id FROM files WHERE node_id = ?", args: [nodeId] });
       assert.equal(files.rows.length, 0);

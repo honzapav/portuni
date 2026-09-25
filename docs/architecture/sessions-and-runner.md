@@ -79,34 +79,33 @@ record/content split).
   `domain/runner/store-content.ts`'s `SessionContentStore`, which also
   owns `session_content(brief, handoff_inline)`. Every event kind and
   payload is in `domain/runner/types.ts`'s `CanonicalEvent` union. The
-  `sessions.brief` and `sessions.handoff_inline` columns and the graph
-  db's own `session_events` table still exist; nothing writes them after
-  #456 except the central routes that keep accepting them for a sidecar
-  released before it, and the central migration drops them.
+  graph db has no `session_events` and `sessions` has no `brief` or
+  `handoff_inline`: migration 040 (#462, the central migration) dropped
+  them, and the record routes no longer take either field.
 - **The central server never opens a `content.db`** (`getDeviceContentDb`
-  refuses when `isCentralServer()`). Its content store,
-  `sessionContentStoreForProcess()`, is `LegacyGraphContentStore`: the
-  graph db's `session_events` plus the two `sessions` columns. That is
-  where an older sidecar's `POST /sessions/:id/events` writes and where
-  its `GET /sessions/:id/events` and `resume-info` read, so it reads back
-  what it wrote. On a device (sidecar, sync agent, a standalone personal
-  server) the same function answers the device's `content.db`.
+  refuses when `isCentralServer()`), and it holds no content at all. Its
+  content store, `sessionContentStoreForProcess()`, is
+  `CentralNoContentStore`: every read answers empty (so its
+  `GET /sessions/:id/events` is an empty list with `transcript_host`), a
+  clear is a no-op, a write is refused. There is no
+  `POST /sessions/:id/events`. On a device (sidecar, sync agent, a
+  standalone personal server) the same function answers the device's
+  `content.db`.
 - **The history that predates `content.db` is imported once**
   (`boot/content-import.ts`, step 2 of `content.db`'s version history).
-  A personal workspace copies its graph db's rows at boot, before serving
-  (`importPersonalWorkspaceSessionContentOnBoot`, called by both
-  `index.ts` and `desktop.ts`'s local branch). A sync agent downloads,
-  in the background after it binds, the legacy content of its user's
-  threads that ran on this device (the record's `host_id` or a run's):
-  `CentralClient.listLegacySessionContent(hostId)` and
-  `getLegacySessionContent(id, {after})` over the central, owner-only
-  `GET /sessions/legacy-content?host_id=…` and
-  `GET /sessions/:id/legacy-content` (500 events a page). The central copy
-  stays. Each thread is copied in one transaction and skipped when an
-  earlier attempt already copied it; events a thread got here before a
-  retried import stay after the imported ones. The version is raised only
-  when every thread went through, so a failure runs again on the next
-  boot. Imported timestamps are normalised to `YYYY-MM-DD HH:MM:SS`.
+  A personal workspace copies its graph db's rows at boot, before
+  `ensureSchema` and before serving (`ensurePersonalWorkspaceSchema`,
+  called by both `index.ts` and `desktop.ts`'s local branch); a boot
+  whose copy did not complete holds migration 040 back, so nothing is
+  dropped before it is in `content.db`. Each thread is copied in one
+  transaction and skipped when an earlier attempt already copied it;
+  events a thread got here before a retried import stay after the
+  imported ones. The version is raised only when every thread went
+  through, so a failure runs again on the next boot. Imported timestamps
+  are normalised to `YYYY-MM-DD HH:MM:SS`. The sync agent's one-time
+  download of its threads' legacy content from the central server
+  (`/sessions/legacy-content`) ran on every device before migration 040
+  and was removed with it.
 - `GET /sessions/:id/events` answers from the `content.db` of the device
   serving it, in both routers. When that device has no rows for the thread
   and the record's `host_id` is another device, the answer carries
@@ -297,10 +296,9 @@ orientation, translates events, ends and suspends) is one implementation,
   `createRun`/`listRuns`) because `patchRun(runId, patch)` carries no
   session id. **There is no event method on it and none on
   `CentralClient`**: the transcript never crosses to the central server.
-  `POST /sessions/:id/events` and the `brief`/`handoff_inline` fields of
-  `POST /sessions/record` and `PATCH /sessions/:id` stay on the central
-  server only so a sidecar released before #456 keeps working; the central
-  migration removes them.
+  Since the central migration (#462) there is no `POST /sessions/:id/events`,
+  and `POST /sessions/record` and `PATCH /sessions/:id` take no `brief` or
+  `handoff_inline`.
 - Where each write goes: `promoteDraftAndStart` puts the first message in
   `session_content.brief` and the `user_message` event in the device's
   `session_events`, then patches the record (`state`, `name`, `runner`,
@@ -337,9 +335,7 @@ agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
 `signals`, `resume-info`, `questions/:request_id`. The record half stays on the
 central server: bare `GET`/`PATCH /sessions/:id`, `/state`, `/scope`,
 `/runs...`, `/sessions/record`, plus `GET /nodes/:id/sessions` and
-`/overview`. The two legacy-content routes (`/sessions/legacy-content`,
-`/sessions/:id/legacy-content`) are central too; only the sync agent's
-boot import calls them, through `CentralClient`.
+`/overview`.
 `resume-info` is device-local (#456) because both of its inputs are the
 device's: the inline handoff summary in `content.db` and the handoff file
 in this device's mirror, which it hashes to report `handoff_changed`.

@@ -383,7 +383,7 @@ describe("task REST endpoints under /sessions", () => {
     const updated = JSON.parse(getRes.body) as { state: string; runner: string; brief: string; name: string; name_is_custom: number };
     assert.equal(updated.state, "running");
     assert.equal(updated.runner, "fake");
-    assert.equal(updated.brief, null, "#456: the first message is content, not a record column");
+    assert.equal("brief" in updated, false, "#462: the first message is content, not a record column");
     assert.equal(
       (await content.getContent(draft.id))?.brief,
       "Fix the login bug please, it throws on empty passwords",

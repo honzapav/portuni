@@ -15,6 +15,7 @@ import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { PG_BASELINE_DDL } from "../apps/server/infra/schema.pg.js";
 import { PG_BASELINE_TRIGGERS } from "../apps/server/infra/schema-triggers.pg.js";
 import type { DbClient } from "../apps/server/infra/db.js";
+import { columnExistsSql, tableExistsSql } from "../apps/server/infra/sql.js";
 
 async function freshPgDb(): Promise<DbClient> {
   const db = createPgliteDbClient();
@@ -57,7 +58,6 @@ describe("Postgres baseline (PGlite): tables", () => {
       "oauth_codes",
       "sessions",
       "session_runs",
-      "session_events",
       "session_scope",
       "audit_log",
       "pending_file_ops",
@@ -302,27 +302,14 @@ describe("Postgres baseline (PGlite): audit_log generated column", () => {
   });
 });
 
-describe("Postgres baseline (PGlite): session_events primary key", () => {
-  it("uses (session_id, seq) as the primary key, not a bare id", async () => {
+describe("Postgres baseline (PGlite): no session content (#462)", () => {
+  it("has no session_events table and no brief/handoff_inline on sessions", async () => {
     const db = await freshPgDb();
-    const u = await seedUser(db);
-    const project = await seedNode(db, "project", u);
-    const sessionId = ulid();
-    await db.execute({
-      sql: "INSERT INTO sessions (id, node_id, user_id, session_type) VALUES (?, ?, ?, 'interactive_task')",
-      args: [sessionId, project, u],
-    });
-    await db.execute({
-      sql: "INSERT INTO session_events (id, session_id, seq, kind, payload) VALUES (?, ?, 1, 'run_started', '{}')",
-      args: [ulid(), sessionId],
-    });
-    // A second row at the same (session_id, seq) violates the PK, even with
-    // a different `id` -- proving `id` alone is no longer the constraint.
-    await assert.rejects(
-      db.execute({
-        sql: "INSERT INTO session_events (id, session_id, seq, kind, payload) VALUES (?, ?, 1, 'run_started', '{}')",
-        args: [ulid(), sessionId],
-      }),
-    );
+    const tables = await db.execute({ sql: tableExistsSql("postgres"), args: ["session_events"] });
+    assert.equal(tables.rows.length, 0);
+    for (const col of ["brief", "handoff_inline"]) {
+      const res = await db.execute({ sql: columnExistsSql("postgres"), args: ["sessions", col] });
+      assert.equal(res.rows.length, 0, col);
+    }
   });
 });

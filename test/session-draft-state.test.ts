@@ -24,7 +24,7 @@ describe("createDraftSession", () => {
     const draft = await createDraftSession(db, "U1", nodeId);
     assert.equal(draft.state, "draft");
     assert.equal(draft.name, "Nový úkol");
-    assert.equal(draft.brief, null);
+    assert.equal("brief" in draft, false);
     assert.equal(draft.runner, null);
     assert.equal(draft.instance_id, null);
   });

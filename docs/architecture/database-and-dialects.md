@@ -58,8 +58,9 @@ content is the device's, and it lives in a second libsql file,
 - Three tables, no foreign keys, keyed by the central session id:
   `session_content(session_id PRIMARY KEY, brief, handoff_inline)`,
   `session_events(id, session_id, run_id, seq, kind, payload, created_at,
-  UNIQUE(session_id, seq))` in the shape `session_events` has in
-  `schema.ts`, and `device_schema(version)` with exactly one row.
+  UNIQUE(session_id, seq))` in the shape the graph db's `session_events`
+  had before migration 040, and `device_schema(version)` with exactly one
+  row.
 - **A schema change here is never a `MIGRATIONS` entry.** It is a new
   numbered step in the version history comment at the top of
   `device-content-db.ts` plus a raised `DEVICE_CONTENT_SCHEMA_VERSION`;
@@ -71,28 +72,37 @@ content is the device's, and it lives in a second libsql file,
   modes (before the central-mode branch), `index.ts` only in a personal
   workspace; `getDeviceContentDb()` is a lazy, idempotent process singleton
   for everything else and **refuses on the central server**, which never
-  opens a `content.db`. There, `LegacyGraphContentStore` (the same store
-  over the graph db's `session_events` and the two `sessions` columns)
-  serves an older sidecar's content until the central migration.
+  opens a `content.db`. There, `CentralNoContentStore` answers every read
+  empty, treats a clear as a no-op and refuses a write: the central server
+  holds no content at all since migration 040.
 - Timestamps follow the rule below: the store writes `created_at` as
   `YYYY-MM-DD HH:MM:SS` UTC (`infra/sql.ts` `dbTimestamp`); the DDL has no
   `datetime('now')` default.
 - **The one-time import** (`boot/content-import.ts`, step 2 of the version
-  history, no DDL change). A personal workspace's existing transcripts,
-  briefs and inline summaries are in its graph db:
-  `importPersonalWorkspaceSessionContentOnBoot`, run by both `index.ts`
-  and `desktop.ts`'s local branch before serving, copies them. A sync
-  agent's are on the central server: `importTeamWorkspaceSessionContentOnBoot`
-  downloads those of its user's threads that ran on this device. Both
-  check each source table and column explicitly (none left after the
-  central migration is not an error; a failing read is), copy each thread
-  in one `batch` transaction, skip a thread an earlier attempt copied
-  (its first event id is here), keep events a thread got here before a
-  retried import after the imported ones, normalise imported timestamps,
-  and raise `device_schema.version` to 2 only when every thread went
-  through -- otherwise the next boot tries again. The graph db's own
-  `session_events` table and the two `sessions` columns stay until the
-  central migration drops them.
+  history, no DDL change). A personal workspace's older transcripts,
+  briefs and inline summaries are in its graph db until migration 040:
+  `ensurePersonalWorkspaceSchema`, run by both `index.ts` and
+  `desktop.ts`'s local branch, copies them **before** `ensureSchema`. It
+  checks each source table and column explicitly (none left is not an
+  error; a failing read is), copies each thread in one `batch`
+  transaction, skips a thread an earlier attempt copied (its first event
+  id is here), keeps events a thread got here before a retried import
+  after the imported ones, normalises imported timestamps, and raises
+  `device_schema.version` to 2 only when every thread went through --
+  otherwise the next boot tries again, and this boot's `ensureSchema`
+  holds migration 040 back (`holdSessionContentDrop`), so the graph db
+  keeps the content until `content.db` has it. The sync agent's download
+  of its threads' legacy content from the central server ran on every
+  device before 040 and is gone with it.
+- **Migration 040** (`040_sessions_drop_content`, #462) is the central
+  migration: one `executeMultiple` that drops the graph db's
+  `session_events` and rebuilds `sessions` without `brief` and
+  `handoff_inline`, keeping every other column and the four indexes.
+  `DDL_SESSIONS`, the 030 and 036 rebuilds and `PG_BASELINE_DDL` carry
+  the same shape; `db-export.ts`/`db-import.ts` have no `session_events`.
+  Its `isApplied` is false while a `sessions_new` exists
+  (`docs/lessons-learned.md` §7, point 4), so a rebuild that died midway
+  fails loudly on the next boot instead of reading as done.
 - There is no backup. Losing the device's `content.db` loses its
   transcripts; the records on the central server and the handoff files in
   the nodes remain.
@@ -177,10 +187,9 @@ libsql migration list. Translation rules, applied uniformly:
 | `WHEN <cond> BEGIN ... END` trigger guard | `IF <cond> THEN ... END IF;` in the function body |
 | `UPDATE OF col` trigger | unchanged |
 
-Two deliberate differences from the libsql shape:
+One deliberate difference from the libsql shape (a second, the
+`session_events` composite key, left with the table in #462):
 
-- `session_events`' primary key is `(session_id, seq)`; `id` stays a
-  `NOT NULL` ULID column without its own uniqueness constraint.
 - `nodes_owner_must_be_real_person` is ported (exported as
   `PG_TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON`) but not part of
   `PG_BASELINE_TRIGGERS`, matching a fresh libsql install where migration
@@ -310,7 +319,7 @@ Conventions:
   applies the baseline and exercises the same trigger behaviors the libsql
   trigger tests cover (org invariant, attachment validation, lifecycle
   derivation, `sync_key` guards, `idx_files_unique_remote`, the generated
-  column, the `session_events` composite key, idempotency of a second
+  column, the absence of session content (#462), idempotency of a second
   `ensureSchemaOn`).
 - A test that introspects the schema uses `tableExistsSql(dialect)`; one
   that inserts fixtures uses `insertIgnore`/`nowExpr` and skips `PRAGMA` on
