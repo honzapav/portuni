@@ -1,0 +1,10 @@
+{
+  "sample": {
+    "items_one": "{{count}} položka",
+    "items_few": "{{count}} položky",
+    "items_many": "{{count}} položky",
+    "items_other": "{{count}} položek",
+    "link": "Otevřít <link>nastavení</link>.",
+    "message": "Vítejte v Portuni, {{userName}}."
+  }
+}

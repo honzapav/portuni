@@ -1,0 +1,13 @@
+{
+  "chat:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{runnerName}}: a name from the data, never translated.",
+  "common:sample.items": "Sample plural from the i18n foundation (#528). {{count}}: a number of items.",
+  "common:sample.link": "Sample <Trans> message from the i18n foundation (#528). <link> wraps the clickable part.",
+  "common:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{userName}}: a name from the data, never translated.",
+  "desktop:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{userName}}: a name from the data, never translated.",
+  "errors:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{requestId}}: a name from the data, never translated.",
+  "files:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{nodeName}}: a name from the data, never translated.",
+  "graph:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{workspaceName}}: a name from the data, never translated.",
+  "node:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{nodeName}}: a name from the data, never translated.",
+  "server:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{userName}}: a name from the data, never translated.",
+  "settings:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{workspaceName}}: a name from the data, never translated."
+}

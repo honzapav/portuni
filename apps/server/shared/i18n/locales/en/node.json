@@ -1,0 +1,5 @@
+{
+  "sample": {
+    "message": "Details of the node {{nodeName}}."
+  }
+}

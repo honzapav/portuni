@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
@@ -54,13 +54,14 @@ import {
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
 // bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
 // initial bundle by ~70 % and keeps the marketing/docs sites snappy.
-const GraphView = lazy(() => import("./components/GraphView"));
+const GraphView = lazyWithNamespaces(() => import("./components/GraphView"), ["graph"]);
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import { loadOpenNodes, saveOpenNodes } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
 import { handoffErrorText } from "./lib/handoff-refusal";
+import { lazyWithNamespaces } from "./i18n";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
 // Náhled by default; everything else starts in the source editor.

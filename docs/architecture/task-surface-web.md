@@ -635,6 +635,63 @@ Hotovo / Archiv) and `sessionStatusChip` (chat header: Uzavřeno /
 Archivováno). "Čeká na mě" overrides "Běží" in both whenever
 `waiting_since` is set.
 
+## Language: boot and namespaces
+
+The UI's text comes from one catalog shared with the server,
+`apps/server/shared/i18n/` (spec:
+`docs/superpowers/specs/2026-09-25-localization-design.md`). The terms a
+message may use are fixed in its `glossary.md`; translator notes are in
+`locales/_notes.json`.
+
+- **One instance, one config.** `createI18n()` (`shared/i18n/create.ts`)
+  builds every instance. The web's (`apps/web/src/i18n.ts`) bundles
+  English `common` into the main chunk and loads every other language and
+  namespace through `i18next-resources-to-backend` over an
+  `import.meta.glob` of `locales/*/*.json` (one small chunk per file;
+  `server` and `desktop` are excluded). `react.useSuspense` is off and
+  `bindI18nStore: "added"` re-renders when a bundle arrives. The server's
+  instance (`shared/i18n/server.ts`) bundles everything, inits
+  synchronously, escapes values and is only ever read through
+  `getFixedT(locale, ns)`; it never changes language, so concurrent
+  requests in different languages cannot leak into each other.
+- **Boot.** `main.tsx` awaits `bootI18n()` before `createRoot`: the
+  language is this window's cache `portuni:<ws_id>:locale`, else the first
+  supported primary subtag of `navigator.languages`, else `en`
+  (`lib/locale.ts`, `resolveBootLocale`); `common` and `errors` of that
+  language (and of English, the fallback) are loaded and
+  `<html lang>` is set before anything renders. A failed catalog load
+  still renders, falling back to the bundled English `common`.
+- **Namespaces follow the lazy chunks.** A lazy component that needs its
+  own namespace is created with `lazyWithNamespaces(() => import("./X"),
+  ["x"])`, which loads the chunk and the namespace together
+  (`GraphView` → `graph`, `SessionChat` → `chat`). The detail pane and
+  settings load `node`, `files` and `settings` when their texts move into
+  the catalog.
+- **Typed keys.** Call sites use the selector form
+  `t(($) => $.composer.send)`. `shared/i18n/types/resources.d.ts` is
+  generated from the English catalog by `npm run i18n:types`;
+  `types/i18next.d.ts` sets `enableSelector: "optimize"` and is included
+  by both the root and the web `tsconfig.json`.
+- **Pseudo-locale.** A dev build accepts `pseudo` in the window cache: the
+  English catalog through a postProcessor that wraps each message in
+  `⟦…⟧`, adds diacritics and pads it by 35 %, leaving `{{placeholders}}`
+  and `<Trans>` tags intact.
+- **Catalog HMR.** Vite answers an edited JSON module with a full page
+  reload. The `portuni-i18n-hmr` plugin (`vite.config.ts`) sends the new
+  file on a `portuni:i18n-update` event instead, and `i18n.ts` swaps the
+  bundle in place.
+- **Gate.** `npm run i18n:check` (`scripts/i18n-check.sh`, in
+  `scripts/agent-gate.sh` and `ci.yml`) fails on stale key types, a
+  missing or empty Czech value (plural forms included) and an unused key;
+  `extract --ci --dry-run` and `lint` only report until every namespace
+  is converted. `test/i18n-catalog.test.ts` checks that placeholders and
+  tags match between `en` and `cs` and that every Czech plural renders its
+  own form for 1, 2, 5 and 1.5.
+- **One copy of i18next.** It is installed in the root `node_modules`
+  only; `apps/web/.npmrc` (`legacy-peer-deps`) keeps npm from adding a
+  second one for `react-i18next`'s peer, so the root is installed before
+  `apps/web`.
+
 ## Helpers and tests
 
 Pure helpers live in `lib/session-chat.ts` (event types, chip, delta

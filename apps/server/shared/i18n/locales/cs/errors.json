@@ -1,0 +1,5 @@
+{
+  "sample": {
+    "message": "Něco se pokazilo (požadavek {{requestId}})."
+  }
+}

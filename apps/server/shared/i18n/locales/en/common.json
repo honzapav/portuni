@@ -1,0 +1,8 @@
+{
+  "sample": {
+    "items_one": "{{count}} item",
+    "items_other": "{{count}} items",
+    "link": "Open <link>settings</link>.",
+    "message": "Welcome to Portuni, {{userName}}."
+  }
+}

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
@@ -23,6 +24,36 @@ const warnMissingAuthToken: Plugin = {
     }
   },
 };
+// Catalog HMR (dev only). A catalog JSON file is imported by the i18n module
+// (statically for en/common, through import.meta.glob for the rest), and a
+// JSON module does not accept hot updates, so Vite's default answer to an
+// edited catalog is a full page reload. Instead, push the new content on a
+// custom event; src/i18n.ts swaps the resource bundle in place and
+// react-i18next re-renders (bindI18nStore: "added").
+const CATALOG_FILE = /\/apps\/server\/shared\/i18n\/locales\/([a-z]+)\/([a-z]+)\.json$/;
+const catalogHotReload: Plugin = {
+  name: "portuni-i18n-hmr",
+  apply: "serve",
+  handleHotUpdate({ file, server }) {
+    const match = CATALOG_FILE.exec(file.replaceAll("\\", "/"));
+    if (!match) return;
+    let resources: unknown;
+    try {
+      resources = JSON.parse(readFileSync(file, "utf8"));
+    } catch (err) {
+      // A half-saved file: keep the page, report once, wait for the next save.
+      server.config.logger.warn(`[portuni] catalog ${file} is not valid JSON: ${String(err)}`);
+      return [];
+    }
+    server.ws.send({
+      type: "custom",
+      event: "portuni:i18n-update",
+      data: { lng: match[1], ns: match[2], resources },
+    });
+    return [];
+  },
+};
+
 // Dev-mode stand-in for the desktop Tauri host's api_request proxy (#213):
 // proves a request came through this dev proxy, not a spawned agent
 // terminal holding the same PORTUNI_AUTH_TOKEN. In the packaged app the
@@ -35,7 +66,7 @@ const warnMissingAuthToken: Plugin = {
 const WEBVIEW_PROXY_SECRET = (process.env.PORTUNI_WEBVIEW_PROXY_SECRET ?? "").trim();
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), warnMissingAuthToken],
+  plugins: [react(), tailwindcss(), warnMissingAuthToken, catalogHotReload],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

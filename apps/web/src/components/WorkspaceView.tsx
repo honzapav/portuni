@@ -20,7 +20,7 @@
 // for. `inert` keeps a hidden pane out of the tab order and out of reach
 // of the pointer.
 
-import { lazy, Suspense, useState } from "react";
+import { Suspense, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
@@ -32,12 +32,13 @@ import { scopedKey } from "../lib/workspace-storage";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
 import EditorPane, { type EditorMode } from "./EditorPane";
+import { lazyWithNamespaces } from "../i18n";
 
 // SessionChat pulls in the AI Elements/shadcn/Streamdown stack (radix-ui,
 // shiki, motion, streamdown...), dead weight until a thread is actually
 // open -- lazy-loaded so it lands in its own chunk instead of every
 // window's startup bundle.
-const SessionChat = lazy(() => import("./SessionChat"));
+const SessionChat = lazyWithNamespaces(() => import("./SessionChat"), ["chat"]);
 
 type Props = {
   graph: GraphPayload | null;

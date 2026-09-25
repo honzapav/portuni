@@ -1,0 +1,5 @@
+{
+  "sample": {
+    "message": "Something went wrong (request {{requestId}})."
+  }
+}

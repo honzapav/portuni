@@ -21,6 +21,7 @@ jobs:
       - run: npm ci
       - run: npm run lint:strict
       - run: npx tsc --noEmit
+      - run: npm run i18n:check
       - run: npm test
       - run: npm run test:pglite
       - run: npm run build
@@ -34,7 +35,12 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            apps/web/package-lock.json
+      # The web resolves i18next from the root install: the repo holds one
+      # copy, shared with the server's catalog module (apps/web/.npmrc).
+      - run: npm ci
       - run: npm ci --prefix apps/web
       - run: npx --prefix apps/web tsc -b apps/web --noEmit
       - run: npm --prefix apps/web run build

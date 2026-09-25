@@ -358,7 +358,13 @@ One line each; the linked doc carries the mechanism and the reasoning.
   package; local types mirror `CanonicalEvent`.
 - Pure helpers live in `apps/web/src/lib/*.ts` and are tested from the
   server's `node:test` runner. Client-side access echoes are UX only; the
-  server is the gate. UI strings are Czech with diacritics.
+  server is the gate. UI strings are Czech with diacritics until their
+  namespace moves into the catalog (localization batch, #543).
+- UI text comes from the shared catalog `apps/server/shared/i18n/`
+  (`createI18n()`, one `i18next` copy in the root `node_modules`); the web
+  boots its language before `createRoot`, the server reads only
+  `getFixedT(locale, ns)`. Terms per `glossary.md`; `npm run i18n:check`
+  is in the gate. Boot and namespaces: `task-surface-web.md`.
 
 ## Security rules (from the auth refactor post-mortem)
 
