@@ -292,7 +292,11 @@ reasoning as a collapsible aside, `tool_call` collapsed from its `started`
 and `completed`/`failed` pair into one row showing the title (click it to
 expand the input summary and output excerpt), `file_change` linking into
 the Files tab, and `compaction`, `handoff`, `state_changed` and
-`run_ended` as centered system markers. Both assistant text and reasoning
+`run_ended` as centered system markers. What the runner itself says in
+the chat — a question card's title, its own error, why it denied a tool
+call — is stored as a code and shown in your language; what the agent, a
+tool or the provider wrote is shown exactly as it came, never translated.
+Both assistant text and reasoning
 stream in from `delta` frames — a `channel: "text"` delta builds up
 towards the next `assistant_message` event, a `channel: "reasoning"` one
 towards the next `reasoning` event — and each buffer clears once its own

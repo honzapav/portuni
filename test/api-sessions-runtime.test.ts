@@ -455,7 +455,7 @@ describe("task REST endpoints under /sessions", () => {
           request_id: "req-1",
           type: "approval",
           tool: "mcp__portuni__portuni_expand_scope",
-          title: "Rozšířit rozsah?",
+          title: "Expand the scope?",
           detail: "detail",
           options: null,
           decision: null,

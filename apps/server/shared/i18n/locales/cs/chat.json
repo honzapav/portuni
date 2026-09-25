@@ -1,4 +1,43 @@
 {
+  "event": {
+    "denied": {
+      "connector_disabled": "Tento konektor je pro běh vypnutý. Agent má použít server Portuni.",
+      "denied_by_user": "Zamítli jste.",
+      "not_answered": "Na otázku nikdo neodpověděl.",
+      "run_ended": "Běh skončil dřív, než přišla odpověď.",
+      "turn_stopped": "Tah byl zastaven dřív, než přišla odpověď.",
+      "write_no_path": "Volání {{tool}} nemá {{field}}, zápis se nedal ověřit.",
+      "write_outside_mirror": "Zápis do {{path}} byl zablokován: je mimo mirror tohoto uzlu.",
+      "write_outside_root": "Zápis do {{path}} byl zablokován: je mimo složku Portuni."
+    },
+    "error": {
+      "browser_sign_in_declined": "{{server}} žádá přihlášení v prohlížeči. Chat ho otevřít neumí, žádost byla odmítnuta.",
+      "provider_failed": "Běh skončil chybou poskytovatele ({{subtype}}).",
+      "provider_not_logged_in": "Claude Code není na tomto zařízení přihlášený."
+    },
+    "question": {
+      "agent_question": {
+        "title": "Otázka od agenta"
+      },
+      "mcp_confirmation": {
+        "title": "Potvrzení pro {{server}}"
+      },
+      "plan_approval": {
+        "title": "Schválit plán?"
+      },
+      "scope_expand": {
+        "detail": "Agent chce přečíst uzel mimo aktuální rozsah tohoto vlákna.",
+        "title": "Rozšířit rozsah vlákna?"
+      }
+    }
+  },
+  "model": {
+    "description": {
+      "balanced": "Vyvážený model pro každodenní práci.",
+      "fastest": "Nejrychlejší a nejlevnější model.",
+      "most_capable": "Nejschopnější model, pomalejší a dražší."
+    }
+  },
   "sample": {
     "message": "Vlákno s {{runnerName}}."
   }

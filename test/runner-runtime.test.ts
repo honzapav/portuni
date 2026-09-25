@@ -124,7 +124,7 @@ describe("session runtime: question / answer", () => {
           request_id: "req-1",
           type: "approval",
           tool: "mcp__portuni__portuni_expand_scope",
-          title: "Rozšířit rozsah?",
+          title: "Expand the scope?",
           detail: "detail",
           options: null,
           decision: null,
@@ -492,7 +492,7 @@ describe("session runtime: resume by writing (#378)", () => {
     const { runs, lastStart, resumeMode } = await profileResume({ transcript: false });
     assert.equal(runs.length, 2);
     assert.equal(lastStart?.resume, null);
-    assert.match(lastStart?.orientation ?? "", /Předání \(obnovení ze shrnutí\)/);
+    assert.match(lastStart?.orientation ?? "", /Handoff \(resumed from a summary\)/);
     assert.equal(resumeMode, "handoff");
   });
 
@@ -551,7 +551,7 @@ describe("session runtime: resume by writing (#378)", () => {
     await runtime.sendMessage(session.id, "keep going");
 
     assert.ok(capturedOrientation);
-    assert.match(capturedOrientation!, /Předání \(obnovení ze shrnutí\)/);
+    assert.match(capturedOrientation!, /Handoff \(resumed from a summary\)/);
     assert.match(capturedOrientation!, /Poslední zprávy/); // the summary content itself
     // Built from this device's transcript at resume: the first run's brief.
     assert.match(capturedOrientation!, /\*\*Uživatel:\*\* x/);
@@ -637,7 +637,7 @@ describe("session runtime: writing into a closed thread reopens it (#498)", () =
     assert.equal((await store.listRuns(session.id)).length, 2);
     const start = adapter.getLastRunStart();
     assert.equal(start?.resume, null);
-    assert.match(start?.orientation ?? "", /Předání \(obnovení ze shrnutí\)/);
+    assert.match(start?.orientation ?? "", /Handoff \(resumed from a summary\)/);
     assert.match(start?.orientation ?? "", /\*\*Uživatel:\*\* první zadání/);
     assert.equal(start?.brief, "pokračuj");
   });
@@ -672,7 +672,7 @@ describe("session runtime: event ordering", () => {
       request_id: "req-closed",
       type: "approval" as const,
       tool: "mcp__portuni",
-      title: "Potvrzení: portuni",
+      title: "Confirm: portuni",
       detail: "Allow writing?",
       options: null,
     };

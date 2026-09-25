@@ -75,6 +75,7 @@ never Title Case. Czech keeps its own casing and „…“ quotes.
 | Uzavřít / uzavřené | Close / closed | Only Close and the archive sweep reach `closed`. |
 | Uzavřít vlákno | Close thread | |
 | Přerušit | Interrupt | Cancels the current turn only. |
+| tah | turn | One prompt and the agent's answer to it within a run. |
 | model | model | |
 | úsilí (effort) | effort | |
 | kontext | context | The context window. |
@@ -93,7 +94,9 @@ never Title Case. Czech keeps its own casing and „…“ quotes.
 | přístup / sdílení | access / sharing | |
 | žádost o přístup | access request | |
 | oprávnění | permission | |
+| poskytovatel | provider | The service behind a runner (Anthropic for Claude Code). |
 | instance (poskytovatele) | instance | A runner's provider instance. |
+| konektor | connector | An MCP server the runner can reach. |
 | token | token | |
 | připojená aplikace | connected app | An OAuth grant. |
 | přepis | transcript | A thread's conversation on the device. |

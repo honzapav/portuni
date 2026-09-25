@@ -112,7 +112,7 @@ This works the same in a personal workspace and in a team workspace: the route i
 
 ### GET /runners/:runner/models
 
-Returns `{ models: RunnerModel[] }`, each `{ id, displayName, description, supportsEffort, effortLevels }` — `id` is what a caller sends back as `model`. Requires `read` scope; 404 `UNKNOWN_RUNNER` for an unregistered runner id.
+Returns `{ models: RunnerModel[] }`, each `{ id, displayName, description, description_code?, supportsEffort, effortLevels }` — `id` is what a caller sends back as `model`. A model the runner knows without asking the provider (Claude's `sonnet`, `opus`, `haiku` aliases before the first run) has an empty `description` and a `description_code` (`balanced`, `most_capable`, `fastest`) the app shows in the user's language; a list the provider answered carries the provider's own `description` and no code. Requires `read` scope; 404 `UNKNOWN_RUNNER` for an unregistered runner id.
 
 The Claude adapter never starts a process just to answer this: before this server process has run any task under this runner, it returns the three documented aliases (`sonnet`, `opus`, `haiku` — the SDK accepts any of these as a bare `model` string) with `supportsEffort: false`, since the real per-model answer isn't known yet. The first live run fills a process-wide cache from the SDK's own `Query.supportedModels()`, and every call after — for any session, on this device — serves that cached list instead. A model not in the list can still be sent as free text; the picker in the app doesn't restrict to it.
 

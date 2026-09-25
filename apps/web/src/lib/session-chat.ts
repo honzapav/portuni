@@ -11,6 +11,12 @@
 // server domain code) -- this is a deliberate parallel definition of the
 // wire shape, not an import across that boundary.
 
+import type {
+  ChatEventParams,
+  DenyCode,
+  QuestionCode,
+  RunErrorCode,
+} from "../../../server/shared/chat-event-codes";
 import type { SessionState } from "../types";
 import { sessionRowChip } from "./session-views";
 
@@ -70,6 +76,9 @@ export interface ToolCallEvent {
     status: ToolCallStatus;
     output_excerpt: string | null;
     truncated: boolean;
+    // #532: a call the runner denied; lib/chat-event-text.ts renders it.
+    output_code?: DenyCode;
+    output_params?: ChatEventParams;
   };
 }
 export interface FileChangeEvent {
@@ -82,7 +91,10 @@ export interface QuestionEvent {
     request_id: string;
     type: QuestionType;
     tool: string;
+    // Shown as stored when `code` is absent (a row written before #532).
     title: string;
+    code?: QuestionCode;
+    params?: ChatEventParams;
     detail: string;
     options: string[] | null;
     questions?: AskPrompt[];
@@ -109,7 +121,9 @@ export interface StateChangedEvent {
 }
 export interface ErrorEvent {
   kind: "error";
-  payload: { class: ErrorClass; message: string };
+  // #532: `code` for the runner's own text; without one, `message` is the
+  // provider's (or a row written before codes) and is shown as stored.
+  payload: { class: ErrorClass; message: string; code?: RunErrorCode; params?: ChatEventParams };
 }
 
 // v2 task surface (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md,
@@ -419,11 +433,13 @@ export type TranscriptRow =
   | { kind: "prompt"; key: string; text: string }
   | { kind: "answer"; key: string; text: string }
   | ActivityRow
-  | { kind: "question"; key: string; title: string }
+  | { kind: "question"; key: string; title: string; code?: QuestionCode; params?: ChatEventParams }
   | { kind: "compaction"; key: string }
   | { kind: "summary"; key: string }
   | { kind: "note"; key: string; text: string }
-  | { kind: "error"; key: string; message: string };
+  // `content`: the provider's own text (never translated); a row with a
+  // `code` is rendered from the catalog.
+  | { kind: "error"; key: string; message: string; code?: RunErrorCode; params?: ChatEventParams; content: boolean };
 
 export function runEndReasonLabel(reason: string): string {
   const labels: Record<string, string> = {
@@ -490,13 +506,23 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
         if (event.payload.reason === "interrupted") {
           rows.push({ kind: "note", key: `e${seq}`, text: "Přerušeno" });
         } else if (event.payload.reason !== "completed" && event.payload.reason !== "suspended") {
-          rows.push({ kind: "error", key: `e${seq}`, message: `Běh skončil: ${runEndReasonLabel(event.payload.reason)}` });
+          rows.push({
+            kind: "error",
+            key: `e${seq}`,
+            message: `Běh skončil: ${runEndReasonLabel(event.payload.reason)}`,
+            content: false,
+          });
         }
         currentRun = null;
         break;
       case "question":
         close();
-        rows.push({ kind: "question", key: `e${seq}`, title: event.payload.title });
+        rows.push({
+          kind: "question",
+          key: `e${seq}`,
+          title: event.payload.title,
+          ...(event.payload.code ? { code: event.payload.code, params: event.payload.params } : {}),
+        });
         break;
       case "compaction":
         close();
@@ -508,7 +534,13 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
         break;
       case "error":
         close();
-        rows.push({ kind: "error", key: `e${seq}`, message: event.payload.message });
+        rows.push({
+          kind: "error",
+          key: `e${seq}`,
+          message: event.payload.message,
+          ...(event.payload.code ? { code: event.payload.code, params: event.payload.params } : {}),
+          content: event.payload.code === undefined,
+        });
         break;
       default:
         break;

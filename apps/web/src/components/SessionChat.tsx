@@ -19,6 +19,15 @@
 // suspend/resume, handoffs, access control -- stays ours.
 
 import { displayError } from "../errors";
+import { useTranslation } from "react-i18next";
+import {
+  modelDescriptionText,
+  questionDetailIsContent,
+  questionDetailText,
+  questionTitleText,
+  runErrorText,
+  toolOutputText,
+} from "../lib/chat-event-text";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { composerStatePlaceholder, hostDisplayName, threadAcceptsMessages, threadCloseAction } from "../lib/session-views";
 import type { SessionStore } from "../lib/session-store";
@@ -162,6 +171,7 @@ export default function SessionChat({
   sessionsClient: SessionsClient;
   onOpenFile?: (relPath: string) => void;
 }) {
+  const { t } = useTranslation("chat");
   const locale = useLocale();
   const session = useSessionStore(
     sessionStore,
@@ -820,7 +830,7 @@ export default function SessionChat({
                 </PromptInputSelectTrigger>
                 <PromptInputSelectContent>
                   {models.map((m) => (
-                    <PromptInputSelectItem key={m.id} value={m.id} title={m.description}>
+                    <PromptInputSelectItem key={m.id} value={m.id} title={modelDescriptionText(m, t)}>
                       {m.displayName}
                     </PromptInputSelectItem>
                   ))}
@@ -946,11 +956,12 @@ function SystemMarker({ children }: { children: React.ReactNode }) {
 // activity is one folded group per turn, bookkeeping is no row at all
 // (lib/session-chat.ts's deriveTranscriptRows decides).
 function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile?: (relPath: string) => void }) {
+  const { t } = useTranslation("chat");
   switch (row.kind) {
     case "prompt":
       return (
         <Message from="user">
-          <MessageContent className="group-[.is-user]:border group-[.is-user]:border-[var(--color-border)] group-[.is-user]:bg-[var(--color-accent-soft)]">
+          <MessageContent translate="no" className="group-[.is-user]:border group-[.is-user]:border-[var(--color-border)] group-[.is-user]:bg-[var(--color-accent-soft)]">
             <MessageResponse>{row.text}</MessageResponse>
           </MessageContent>
         </Message>
@@ -958,7 +969,7 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
     case "answer":
       return (
         <Message from="assistant">
-          <MessageContent>
+          <MessageContent translate="no">
             <MessageResponse>{row.text}</MessageResponse>
           </MessageContent>
         </Message>
@@ -966,7 +977,11 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
     case "activity":
       return <ActivityGroupRow row={row} onOpenFile={onOpenFile} />;
     case "question":
-      return <SystemMarker>Otázka: {row.title}</SystemMarker>;
+      return (
+        <SystemMarker>
+          Otázka: <span translate={row.code ? undefined : "no"}>{questionTitleText(row, t)}</span>
+        </SystemMarker>
+      );
     case "compaction":
       return (
         <Checkpoint className="justify-center text-[11px]">
@@ -981,7 +996,9 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
     case "error":
       return (
         <SystemMarker>
-          <span style={{ color: "var(--color-danger)" }}>{row.message}</span>
+          <span style={{ color: "var(--color-danger)" }} translate={row.content ? "no" : undefined}>
+            {row.code ? runErrorText(row, t) : row.message}
+          </span>
         </SystemMarker>
       );
     default:
@@ -1018,6 +1035,7 @@ function ActivityGroupRow({ row, onOpenFile }: { row: ActivityRow; onOpenFile?: 
 }
 
 function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relPath: string) => void }) {
+  const { t } = useTranslation("chat");
   if (item.kind === "reasoning") {
     return (
       <ChainOfThoughtStep label="Uvažování" icon={BrainIcon}>
@@ -1050,13 +1068,20 @@ function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relP
   }
   const p = item.call;
   const failed = p.status === "failed";
+  // A denial of the runner's own is shown in the UI language; any other
+  // output is the tool's and stays as it came.
+  const output = toolOutputText(p, t);
   return (
     <ChainOfThoughtStep label={p.title || p.tool} status={p.status === "started" ? "active" : "complete"}>
       <Tool defaultOpen={false} className="mb-0 bg-[var(--color-surface)]">
         <ToolHeader title={p.title || undefined} tool={p.tool} state={p.status} className="p-2.5" />
         <ToolContent>
           {p.input_summary && <ToolInput input={p.input_summary} />}
-          <ToolOutput output={failed ? null : p.output_excerpt} errorText={failed ? p.output_excerpt : null} />
+          <ToolOutput
+            output={failed ? null : output}
+            errorText={failed ? output : null}
+            translate={p.output_code ? undefined : "no"}
+          />
         </ToolContent>
       </Tool>
     </ChainOfThoughtStep>
@@ -1092,6 +1117,7 @@ function QuestionConfirmation({
   question: Extract<CanonicalEvent, { kind: "question" }>;
   onAnswer: (value: QuestionAnswer) => void;
 }) {
+  const { t } = useTranslation("chat");
   const [text, setText] = useState("");
   const [picks, setPicks] = useState<AskPicks>({});
   const prompts = question.payload.type === "input" ? askPrompts(question.payload) : [];
@@ -1113,11 +1139,19 @@ function QuestionConfirmation({
     <div className="border-t border-[var(--color-border)]">
       <div className={`${THREAD_COLUMN} py-2.5`}>
       <Confirmation state="requested" className="border-none bg-[var(--color-surface)] p-0">
-        <ConfirmationTitle className="text-[13px] font-medium text-[var(--color-text)]">
-          {question.payload.title}
+        <ConfirmationTitle
+          className="text-[13px] font-medium text-[var(--color-text)]"
+          translate={question.payload.code ? undefined : "no"}
+        >
+          {questionTitleText(question.payload, t)}
         </ConfirmationTitle>
         {question.payload.detail && !perQuestion && (
-          <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]">{question.payload.detail}</p>
+          <p
+            className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]"
+            translate={questionDetailIsContent(question.payload) ? "no" : undefined}
+          >
+            {questionDetailText(question.payload, t)}
+          </p>
         )}
         <ConfirmationRequest>
           {question.payload.type === "approval" ? (
@@ -1133,13 +1167,16 @@ function QuestionConfirmation({
               {prompts.map((prompt) => (
                 <Fragment key={prompt.question}>
                   {perQuestion && (
-                    <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]">{prompt.question}</p>
+                    <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]" translate="no">
+                      {prompt.question}
+                    </p>
                   )}
                   {prompt.options.length > 0 && (
                     <ConfirmationActions>
                       {prompt.options.map((label) => (
                         <ConfirmationAction
                           key={label}
+                          translate="no"
                           // One single-choice dotaz answers on the click,
                           // like approval; otherwise a pick is shown until
                           // the rest is answered.

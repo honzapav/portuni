@@ -15,6 +15,7 @@ import {
   categorizeTool,
   consumeSendUuids,
   createClaudeAdapter,
+  providerResultFailure,
   resolveClaudeExecutable,
   toolTitle,
   waitForPidDeadOrTimeout,
@@ -1279,7 +1280,7 @@ describe("Claude adapter: canUseTool", () => {
     await handle.close();
   });
 
-  it("rejecting an ask denies with the Czech refusal message", async () => {
+  it("rejecting an ask denies with the English refusal message", async () => {
     const { query, options, release } = makeFakeQuery([], { hold: true });
     const adapter = createClaudeAdapter({ query });
     const events: (CanonicalEvent | DeltaFrame)[] = [];
@@ -1293,7 +1294,7 @@ describe("Claude adapter: canUseTool", () => {
     await handle.answer("req-4", { by: "U1", value: false, at: new Date().toISOString() });
     const result = (await pending) as PermissionResult;
     assert.equal(result.behavior, "deny");
-    assert.equal((result as { message: string }).message, "Zamítnuto uživatelem.");
+    assert.equal((result as { message: string }).message, "Denied by the user.");
     release();
     await handle.close();
   });
@@ -1544,7 +1545,7 @@ describe("Claude adapter: MCP elicitation", () => {
     await handle.answer("req-true", { by: "U1", value: true, at: new Date().toISOString() });
     const result = (await pending) as PermissionResult;
     assert.equal(result.behavior, "deny");
-    assert.equal((result as { message: string }).message, "Uživatel na otázku neodpověděl.");
+    assert.equal((result as { message: string }).message, "The user did not answer the question.");
     release();
     await handle.close();
   });
@@ -2012,7 +2013,7 @@ describe("Claude adapter: models()", () => {
       models.map((m) => m.id),
       ["sonnet", "opus", "haiku"],
     );
-    assert.ok(models.every((m) => m.displayName.length > 0 && m.description.length > 0));
+    assert.ok(models.every((m) => m.displayName.length > 0 && m.description_code !== undefined));
   });
 
   it("fills its cache from the first live run's own supportedModels(), and serves it after", async () => {
@@ -2605,5 +2606,106 @@ describe("Claude adapter: reasoning time restarts with each turn (#502)", () => 
     assert.deepEqual(run.durations(), [5_000]);
     run.fake.release();
     await run.handle.close();
+  });
+});
+
+// #532: the runner's own text in the chat is stored as a code the web
+// renders; what the agent reads stays an English sentence.
+describe("Claude adapter: coded chat events (#532)", () => {
+  function toolCalls(events: (CanonicalEvent | DeltaFrame)[]) {
+    return events.filter((e) => "kind" in e && e.kind === "tool_call") as Extract<
+      CanonicalEvent,
+      { kind: "tool_call" }
+    >[];
+  }
+
+  it("a write the runner denies reads English to the agent and carries its code on the failed tool_call", async () => {
+    const fake = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query: fake.query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart({ cwd: "/tmp/root/a", portuniRoot: "/tmp/root", mirrors: ["/tmp/root/a"] }), (e) => events.push(e));
+    fake.inject({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "tu-deny", name: "Write", input: { file_path: "/elsewhere/x.md" } }] },
+      parent_tool_use_id: null,
+    } as unknown as SDKMessage);
+    const result = (await fake.options()!.canUseTool!("Write", { file_path: "/elsewhere/x.md" }, {
+      requestId: "req-deny",
+      toolUseID: "tu-deny",
+      signal: new AbortController().signal,
+    } as never)) as PermissionResult;
+    assert.equal(result.behavior, "deny");
+    const message = (result as { message: string }).message;
+    assert.match(message, /^Target is outside PORTUNI_ROOT/);
+    fake.inject({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu-deny", is_error: true, content: message }] },
+      parent_tool_use_id: null,
+    } as unknown as SDKMessage);
+    fake.release();
+    await handle.close();
+    const failed = toolCalls(events).find((e) => e.payload.status === "failed");
+    assert.ok(failed, "the denied call ends failed");
+    assert.equal(failed.payload.output_code, "write_outside_root");
+    assert.deepEqual(failed.payload.output_params, { path: "/elsewhere/x.md" });
+    assert.equal(failed.payload.output_excerpt, message);
+  });
+
+  it("an AskUserQuestion card carries the agent_question code; a refusal is coded denied_by_user", async () => {
+    const fake = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query: fake.query });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const input = { questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }] };
+    fake.inject({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "tu-ask", name: "AskUserQuestion", input }] },
+      parent_tool_use_id: null,
+    } as unknown as SDKMessage);
+    const pending = fake.options()!.canUseTool!("AskUserQuestion", input, {
+      requestId: "req-ask",
+      toolUseID: "tu-ask",
+      signal: new AbortController().signal,
+    } as never);
+    const question = events.find((e) => "kind" in e && e.kind === "question") as Extract<CanonicalEvent, { kind: "question" }>;
+    assert.equal(question.payload.code, "agent_question");
+    assert.equal(question.payload.title, "Question from the agent");
+    assert.equal(question.payload.detail, "Continue?", "the agent's question is stored as it came");
+    await handle.answer("req-ask", { by: "U1", value: false, at: new Date().toISOString() });
+    const result = (await pending) as PermissionResult;
+    assert.equal((result as { message: string }).message, "Denied by the user.");
+    fake.inject({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu-ask", is_error: true, content: "Denied by the user." }] },
+      parent_tool_use_id: null,
+    } as unknown as SDKMessage);
+    fake.release();
+    await handle.close();
+    const failed = toolCalls(events).find((e) => e.payload.status === "failed");
+    assert.equal(failed?.payload.output_code, "denied_by_user");
+  });
+
+  it("a failed result without text of its own is coded provider_failed; the provider's own text is not coded", () => {
+    const base = { type: "result", is_error: true, uuid: "u", session_id: "s" };
+    const own = providerResultFailure({ ...base, subtype: "error_during_execution", errors: [] } as never);
+    assert.equal(own?.code, "provider_failed");
+    assert.deepEqual(own?.params, { subtype: "error_during_execution" });
+    assert.equal(own?.message, "The run ended with a provider error (error_during_execution).");
+    const provider = providerResultFailure({ ...base, subtype: "success", result: "Overloaded" } as never);
+    assert.equal(provider?.message, "Overloaded");
+    assert.equal(provider?.code, undefined);
+  });
+
+  it("the alias models describe themselves with codes, not sentences", async () => {
+    const adapter = createClaudeAdapter({ query: makeFakeQuery([]).query });
+    const models = await adapter.models();
+    assert.deepEqual(
+      models.map((m) => [m.id, m.description, m.description_code]),
+      [
+        ["sonnet", "", "balanced"],
+        ["opus", "", "most_capable"],
+        ["haiku", "", "fastest"],
+      ],
+    );
   });
 });

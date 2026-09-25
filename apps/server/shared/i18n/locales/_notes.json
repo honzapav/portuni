@@ -1,4 +1,11 @@
 {
+  "chat:event.denied.denied_by_user": "Shown on a tool call the user refused in a question card; addresses the user.",
+  "chat:event.denied.write_no_path": "A file-writing tool call without its path argument. {{tool}}: the tool's name; {{field}}: the argument's name. Both never translated.",
+  "chat:event.denied.write_outside_mirror": "{{path}}: the file path the agent tried to write, never translated.",
+  "chat:event.denied.write_outside_root": "{{path}}: the file path the agent tried to write, never translated. \"Portuni folder\" is PORTUNI_ROOT.",
+  "chat:event.error.browser_sign_in_declined": "An MCP server wanted the user to sign in in a browser window. {{server}}: the server's name, never translated.",
+  "chat:event.error.provider_failed": "The runner's provider (Claude Code) ended the run with an error and gave no text. {{subtype}}: the provider's technical error name, never translated.",
+  "chat:event.question.mcp_confirmation.title": "Title of a confirmation card an MCP server asked for without a title of its own. {{server}}: the server's name, never translated.",
   "chat:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{runnerName}}: a name from the data, never translated.",
   "common:sample.items": "Sample plural from the i18n foundation (#528). {{count}}: a number of items.",
   "common:sample.link": "Sample <Trans> message from the i18n foundation (#528). <link> wraps the clickable part.",

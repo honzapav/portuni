@@ -67,9 +67,9 @@ export async function provisionRun(input: ProvisionRunInput): Promise<ProvisionR
   let orientation = summary ? buildOrientationHint(handoffResume ? { ...summary, handoff: null } : summary) : "";
   if (handoffResume && input.resume?.handoffPath) {
     orientation +=
-      `\n## Předání (obnovení z handoffu)\n\n` +
-      `Konverzace se neobnovuje přímo; pokračuješ ze zápisu na \`${input.resume.handoffPath}\`. ` +
-      `Přečti si ho, než začneš.\n`;
+      `\n## Handoff (resumed from a handoff file)\n\n` +
+      `The conversation is not restored directly; you continue from the notes at \`${input.resume.handoffPath}\`. ` +
+      `Read them before you start.\n`;
   }
 
   const url = appendHomeNodeIdToUrl(resolvePortuniMcpUrl(), input.nodeId);

@@ -1467,7 +1467,7 @@ describe("agent-router: sessions/tasks", () => {
           request_id: "req-q",
           type: "input",
           tool: "AskUserQuestion",
-          title: "Otázka od agenta",
+          title: "Question from the agent",
           detail: "Which environment?\n\nDry run first?",
           options: null,
           questions,
@@ -1496,6 +1496,76 @@ describe("agent-router: sessions/tasks", () => {
       .find((p) => p.decision !== null);
     assert.deepEqual(answered?.decision.value, value);
     assert.deepEqual(answered?.questions, questions);
+  });
+  // #532, team workspace: the runner's question card and its own error are
+  // stored in this device's content.db as code + params and reach the web
+  // over the live channel with them, so the web renders them in its language.
+  it("a coded question and a coded runner error reach the web over the live channel with code and params (#532)", async () => {
+    stubScript([
+      {
+        kind: "error",
+        payload: {
+          class: "permission",
+          message: "Server Drive asked for a sign-in in a browser; the chat cannot open one, so the request was declined.",
+          code: "browser_sign_in_declined",
+          params: { server: "Drive" },
+        },
+      },
+      {
+        kind: "question",
+        payload: {
+          request_id: "req-coded",
+          type: "approval",
+          tool: "mcp__portuni__portuni_expand_scope",
+          title: "Expand the thread's scope?",
+          code: "scope_expand",
+          params: {},
+          detail: "The agent wants to read a node outside this thread's current scope.",
+          options: null,
+          decision: null,
+        },
+      },
+      { wait: "answer" },
+    ]);
+    const res = await authFetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "coded", runner: "fake" }),
+    });
+    assert.equal(res.status, 201);
+    const { session } = (await res.json()) as { session: SessionRow };
+    assert.ok(fake.sessions.get(session.id)?.waiting_since, "the question is open on central");
+
+    const ws = new WebSocket(`${base.replace(/^http/, "ws")}/sessions/ws`, { headers: authHeaders() });
+    const frames: Array<{ id?: string; type: string; payload: unknown }> = [];
+    const waiters: Array<{ pred: (f: (typeof frames)[number]) => boolean; resolve: () => void }> = [];
+    ws.on("message", (data) => {
+      const frame = JSON.parse(data.toString("utf8")) as (typeof frames)[number];
+      frames.push(frame);
+      for (const w of waiters.splice(0)) {
+        if (w.pred(frame)) w.resolve();
+        else waiters.push(w);
+      }
+    });
+    const waitFor = (pred: (f: (typeof frames)[number]) => boolean): Promise<void> =>
+      frames.some(pred) ? Promise.resolve() : new Promise((resolve) => waiters.push({ pred, resolve }));
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    ws.send(JSON.stringify({ id: "sub", type: "subscribe", payload: { session_id: session.id, after: 0 } }));
+    await waitFor((f) => f.id === "sub");
+    const replayed = frames
+      .filter((f) => f.type === "events")
+      .flatMap((f) => (f.payload as { events: { kind: string; payload: Record<string, unknown> }[] }).events);
+    const question = replayed.find((e) => e.kind === "question");
+    assert.equal(question?.payload.code, "scope_expand");
+    assert.deepEqual(question?.payload.params, {});
+    const error = replayed.find((e) => e.kind === "error");
+    assert.equal(error?.payload.code, "browser_sign_in_declined");
+    assert.deepEqual(error?.payload.params, { server: "Drive" });
+    ws.close();
+    await new Promise<void>((resolve) => ws.once("close", () => resolve()));
   });
   it("GET /sessions/ws is mounted in agent mode: a task started over REST streams on the socket", async () => {
     stubScript([{ wait: "message" }, { kind: "assistant_message", payload: { text: "done" } }]);

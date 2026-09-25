@@ -1158,7 +1158,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       if (summary) {
         runProvisioned = {
           ...provisioned,
-          orientation: `${provisioned.orientation}\n\n## Předání (obnovení ze shrnutí)\n\nKonverzace se neobnovuje přímo; pokračuješ z tohoto shrnutí:\n\n${summary}`,
+          orientation: `${provisioned.orientation}\n\n## Handoff (resumed from a summary)\n\nThe conversation is not restored directly; you continue from this summary:\n\n${summary}`,
         };
       }
     }
@@ -1476,9 +1476,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const seededProvisioned = {
       ...provisioned,
       orientation:
-        `${provisioned.orientation}\n\n## Navázání na handoff\n\n` +
-        `Navazuješ na vlákno z jiného zařízení; konverzace se nepřenáší, ` +
-        `pokračuješ z tohoto shrnutí (\`${input.handoffPath}\`):\n\n${summary}`,
+        `${provisioned.orientation}\n\n## Continuing from a handoff\n\n` +
+        `You are picking up a thread from another device; the conversation does not carry over, ` +
+        `you continue from this summary (\`${input.handoffPath}\`):\n\n${summary}`,
     };
 
     const run = await store.createRun({
@@ -1595,10 +1595,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const seededProvisioned = {
       ...provisioned,
       orientation: written
-        ? `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n` +
-          `Navazuješ na předchozí vlákno; konverzace se nepřenáší, ` +
-          `pokračuješ z tohoto shrnutí (\`${written.handoffPath}\`):\n\n${summary}`
-        : `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n${summary}`,
+        ? `${provisioned.orientation}\n\n## Continuing from the previous session\n\n` +
+          `You are picking up the previous thread; the conversation does not carry over, ` +
+          `you continue from this summary (\`${written.handoffPath}\`):\n\n${summary}`
+        : `${provisioned.orientation}\n\n## Continuing from the previous session\n\n${summary}`,
     };
 
     const run = await store.createRun({

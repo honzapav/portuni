@@ -224,7 +224,7 @@ record on this device (`runner`/`instance_id` resolved as for a draft,
 `host_id` this device, `name` from the summary's own H1 via
 `extractHandoffTitle`, `name_is_custom` left 0 so this thread's own first
 summary may rename it), and a first run with no brief whose orientation
-carries the file's content under "## Navázání na handoff", the way a resume
+carries the file's content under "## Continuing from a handoff", the way a resume
 from a summary does -- generalised to a file that belongs to another
 session. No events are imported: the transcript starts on this device, and
 the source thread's record, file and transcript are never touched, which is
@@ -455,7 +455,7 @@ human verification.
   `updatedInput: {...originalInput, answers}`, `answers` keyed by question
   text -- the field the tool reads (`sdk-tools.d.ts`); `false` denies as
   the user's refusal and a bare `true`, which carries no answer, denies
-  with "Uživatel na otázku neodpověděl." -- never an allow with nothing
+  with "The user did not answer the question." -- never an allow with nothing
   answered. The decision is a string (it
   answers every dotaz) or a map `{ [question text]: answer }`
   (`askUserQuestionAnswers`); the `question` event carries every dotaz
@@ -624,8 +624,38 @@ human verification.
   method rejects into the existing `.catch`); a failure leaves it `null`
   and the next run retries. Until then `models()` answers
   `CLAUDE_ALIAS_MODELS` (`sonnet`, `opus`, `haiku`, each
-  `supportsEffort: false`). `GET /runners/:runner/models` just calls it.
+  `supportsEffort: false`, `description: ""` with a `description_code`
+  the web renders from `chat:model.description.*`; a list the provider
+  answered carries the provider's own `description` and no code).
+  `GET /runners/:runner/models` just calls it.
   `FakeRunnerAdapter.models()` returns its constructor's `models` option.
+
+- **The runner's own text in the chat is a code (#532).** Codes live in
+  `shared/chat-event-codes.ts`; the web renders them with
+  `apps/web/src/lib/chat-event-text.ts` from the `chat` namespace.
+  - A `question` event carries `code` + `params` next to an English
+    `title` (`scope_expand`, `agent_question`, `plan_approval`, and
+    `mcp_confirmation` with `{ server }` for an MCP dialog without a title
+    of its own; a dialog's own title is the server's text and has no
+    code). `scope_expand` also covers the card's detail; every other
+    detail is the agent's or the server's and is shown as stored.
+  - An `error` event the runner writes itself carries `code` + `params`
+    (`provider_failed` with `{ subtype }` for a failed result with no
+    text, `provider_not_logged_in`, `browser_sign_in_declined` with
+    `{ server }`); a provider's own text has no code.
+  - A denial (`permissions.ts` returns `code`/`params` with its English
+    `message`; the adapter's own `DENY_MESSAGES`) goes to the agent as an
+    English tool result. The adapter remembers it by `toolUseID`, and the
+    failed `tool_call` its `tool_result` produces carries `output_code` +
+    `output_params`; `output_excerpt` keeps what the agent read.
+  - A row without a code (written before #532, or a code this build does
+    not know) is shown as stored. Content -- the agent's questions,
+    options and answers, a provider's error, a tool's output -- is never
+    translated and carries `translate="no"` in the chat.
+  - The orientation's resume and handoff sections (`provision.ts`,
+    `provision-central.ts`, `session-runtime.ts`) are English, like the
+    rest of the prompt. All of this lives in the device's `content.db`;
+    the central server stores and relays none of it.
 
 ## Thread lifecycle
 

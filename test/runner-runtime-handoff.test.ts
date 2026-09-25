@@ -333,7 +333,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
     );
 
     const orientation = adapter.getLastRunStart()?.orientation ?? "";
-    assert.match(orientation, /Pokračování z předchozí session/);
+    assert.match(orientation, /Continuing from the previous session/);
     assert.ok(orientation.includes(`(\`${relPath}\`)`), "the new thread's orientation names the file");
     assert.ok(orientation.includes(onDisk), "and carries its content");
     await runtime.closeSession(newSession.id);
@@ -534,7 +534,7 @@ describe("session runtime: startFromHandoff (#460 Navázat na handoff)", () => {
     assert.equal(started?.runId, run.id);
     assert.equal(started?.brief, null);
     assert.ok(started!.orientation.includes(fileContent), "the file's content is the new run's orientation");
-    assert.match(started!.orientation, /Navázání na handoff/);
+    assert.match(started!.orientation, /Continuing from a handoff/);
 
     // No events are imported: the transcript starts here.
     const newEvents = await content.listEvents(session.id);

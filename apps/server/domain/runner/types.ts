@@ -6,6 +6,14 @@
 // issues land (#318 adds them); for now it holds only what the storage layer
 // (store.ts) needs to type and cap event payloads.
 
+import type {
+  ChatEventParams,
+  DenyCode,
+  ModelDescriptionCode,
+  QuestionCode,
+  RunErrorCode,
+} from "../../shared/chat-event-codes.js";
+
 export type RunEndReason = "completed" | "interrupted" | "suspended" | "error" | "limit" | "host_lost";
 
 export type ToolCallCategory = "command" | "file_read" | "file_change" | "mcp" | "other";
@@ -75,6 +83,10 @@ export interface ToolCallEvent {
     status: ToolCallStatus;
     output_excerpt: string | null;
     truncated: boolean;
+    // #532: a call the runner denied -- the chat shows the denial from the
+    // code; output_excerpt holds the English message the agent read.
+    output_code?: DenyCode;
+    output_params?: ChatEventParams;
   };
 }
 
@@ -89,7 +101,11 @@ export interface QuestionEvent {
     request_id: string;
     type: QuestionType;
     tool: string;
+    // English fallback for logs and rows written before #532; the web
+    // renders `code` with `params` when present.
     title: string;
+    code?: QuestionCode;
+    params?: ChatEventParams;
     detail: string;
     options: string[] | null;
     // AskUserQuestion (#492): each dotaz with its own options; absent for
@@ -124,7 +140,9 @@ export interface StateChangedEvent {
 
 export interface ErrorEvent {
   kind: "error";
-  payload: { class: ErrorClass; message: string };
+  // #532: `code` for a message the runner wrote itself (the web renders
+  // it); a provider's own text has no code and is shown as stored.
+  payload: { class: ErrorClass; message: string; code?: RunErrorCode; params?: ChatEventParams };
 }
 
 // v2 task surface (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md,
@@ -232,7 +250,9 @@ export interface RunnerAvailability {
 export interface RunnerModel {
   id: string;
   displayName: string;
+  // The provider's own text; empty when description_code is set (#532).
   description: string;
+  description_code?: ModelDescriptionCode;
   supportsEffort: boolean;
   effortLevels: readonly EffortLevel[];
 }
