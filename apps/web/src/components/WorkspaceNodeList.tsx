@@ -50,9 +50,8 @@ type Props = {
   // Inline rename (#374, "sub-rows ... inline rename").
   onRenameTask: (session: SessionSummary, name: string) => void;
   // The × on a thread's own row: a draft with no first message yet is
-  // deleted outright (nothing to lose); anything else is Uzavřít, which
-  // asks first -- #378 is what will replace this stand-in confirm() with
-  // a real dialog carrying the session's summary.
+  // deleted outright (nothing to lose); anything else is Uzavřít, without
+  // a dialog (#498: a closed thread reopens by writing into it).
   onCloseTask: (session: SessionSummary) => void;
   // #459 "Předat": ends the turn and the run and writes the thread's
   // handoff file into the node's mirror, so another machine can pick the
@@ -282,8 +281,7 @@ function taskTitle(s: Pick<SessionSummary, "state" | "waiting_since">): string {
 // the only dots in a row are the node-type dot above and the node's own
 // summary dot. Double-click renames inline; the × (revealed on hover,
 // same pattern as the node row's own + / ×) closes the thread -- a draft
-// is deleted outright, anything else asks first (#374's stand-in for
-// #378's own confirmation).
+// is deleted outright, anything else is Uzavřít without a dialog (#498).
 function TaskRow({
   session,
   title,

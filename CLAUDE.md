@@ -59,7 +59,11 @@ npm run build                                       # tsc -> dist/, ~2 s
 tmux send-keys -t portuni-mcp C-c Up Enter          # restart server
 ```
 
-Started once: `tmux new -d -s portuni-mcp 'varlock run -- node dist/index.js 2>&1 | tee /tmp/portuni-mcp.log'`.
+Started once: `tmux new -d -s portuni-mcp 'PORTUNI_AUTH_TOKEN="$(security find-generic-password -s mcp.portuni-dev.auth-token -w)" varlock run -- node dist/index.js 2>&1 | tee /tmp/portuni-mcp.log'`.
+The server never starts without `PORTUNI_AUTH_TOKEN` (#521); the dev token
+lives in the Keychain entry `mcp.portuni-dev.auth-token`, never in
+`.env.schema`, and your shell exports the same value as `PORTUNI_MCP_TOKEN`
+for Claude Code in mirror dirs.
 Logs at `/tmp/portuni-mcp.log` and in the tmux pane. This loop is a local
 workspace; set `PORTUNI_WATCH_MIRRORS=1` for the watcher. The central half of
 a change is proven against the fake `CentralClient` in the tests, not here.
@@ -67,7 +71,8 @@ a change is proven against the fake `CentralClient` in the tests, not here.
 ### Frontend (Vite, port 4010)
 
 ```bash
-varlock run -- npm --prefix apps/web run dev
+PORTUNI_AUTH_TOKEN="$(security find-generic-password -s mcp.portuni-dev.auth-token -w)" \
+  varlock run -- npm --prefix apps/web run dev
 ```
 
 Open `http://portuni.test` (localias) or `http://localhost:4010`. Vite proxies
@@ -251,7 +256,8 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `SESSION_NOT_FOUND`, and every list route filters on `user_id`. A new session verb lands in
   `router.ts`, `agent-router.ts`, `sessions-ws.ts`, `min-scopes.ts` and
   `device-local-routes.json` together.
-- Nothing but Uzavřít and the auto-archive sweep reaches `closed`. Every other
+- Nothing but Uzavřít and the auto-archive sweep reaches `closed`; writing
+  into a closed thread reopens it like a suspended one (#498). Every other
   end (idle `PORTUNI_RUN_IDLE_MS`, provider limit or error, boot sweep, a
   hand-opened CLI's connection dropping) suspends with no summary; a
   handoff file is written only by Předat and Pokračovat v nové session,

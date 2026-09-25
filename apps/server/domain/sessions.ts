@@ -349,9 +349,11 @@ export async function setSessionCli(db: DbClient, id: string, cli: string): Prom
 }
 
 // State machine. running/suspended are the live states (a session can
-// bounce between them via suspend/resume, #190); closed is terminal from the
-// user's point of view but auto-archives (a view filter, never a delete) as
-// the only way out of closed. archived itself is terminal. draft (#374) is
+// bounce between them via suspend/resume, #190); closed is "done, off the
+// active lists", not "never again": writing into it reopens it exactly the
+// way it reopens a suspended thread (#498, session-runtime.ts's
+// sendMessage), and otherwise it auto-archives (a view filter, never a
+// delete). archived itself is terminal. draft (#374) is
 // a thread before its first message: its only transition is to running (the
 // first message, session-runtime.ts's sendMessage), and its only other exit
 // is deletion (deleteDraftSession/pruneStaleDraftSessions), never a state
@@ -360,7 +362,7 @@ const ALLOWED_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   draft: ["running"],
   running: ["suspended", "closed"],
   suspended: ["running", "closed"],
-  closed: ["archived"],
+  closed: ["running", "archived"],
   archived: [],
 };
 
@@ -380,7 +382,9 @@ export async function transitionSessionState(
   }
 
   const now = new Date().toISOString();
-  const closedAt = toState === "closed" ? now : existing.closed_at;
+  // A reopened thread (#498: closed -> running) is no longer closed; a
+  // stale closed_at would read as "closed at" on a running row.
+  const closedAt = toState === "closed" ? now : toState === "running" ? null : existing.closed_at;
 
   await db.execute({
     sql: "UPDATE sessions SET state = ?, last_active_at = ?, closed_at = ? WHERE id = ?",

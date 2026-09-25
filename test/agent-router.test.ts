@@ -1,3 +1,4 @@
+import { TEST_BEARER, authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
@@ -293,9 +294,8 @@ beforeEach(async () => {
   originalEnv = process.env.PORTUNI_WORKSPACE_ROOT;
   originalToken = process.env.PORTUNI_AUTH_TOKEN;
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
-  // Loopback + no token = trusted local access (the desktop passes a
-  // per-launch token in production; the identity resolution is identical).
-  delete process.env.PORTUNI_AUTH_TOKEN;
+  // The desktop passes a per-launch token in production (#521).
+  useTestBearer();
   resetLocalDbForTests();
 
   fake = new FakeCentral();
@@ -328,33 +328,34 @@ afterEach(async () => {
   resetLocalDbForTests();
   if (originalEnv === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalEnv;
-  if (originalToken !== undefined) process.env.PORTUNI_AUTH_TOKEN = originalToken;
+  if (originalToken === undefined) delete process.env.PORTUNI_AUTH_TOKEN;
+  else process.env.PORTUNI_AUTH_TOKEN = originalToken;
   await rm(workspace, { recursive: true, force: true });
 });
 
 describe("agent router over HTTP", () => {
   it("POST /nodes/:id/mirror creates the mirror (201) and is idempotent (200)", async () => {
-    const r1 = await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r1 = await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     assert.equal(r1.status, 201);
     const b1 = (await r1.json()) as { local_path: string; created: boolean };
     assert.equal(b1.created, true);
     assert.equal(b1.local_path, mirrorRoot);
 
-    const r2 = await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r2 = await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     assert.equal(r2.status, 200);
   });
 
   it("GET /nodes/:id/sync-status reports untracked files; POST /sync adopts them", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await writeFile(join(mirrorRoot, "wip", "a.md"), "hello agent");
 
-    const st1 = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const st1 = await authFetch(`${base}/nodes/${NODE_ID}/sync-status`);
     assert.equal(st1.status, 200);
     const s1 = (await st1.json()) as { files: unknown[]; untracked: Array<{ filename: string }> };
     assert.equal(s1.untracked.length, 1);
     assert.equal(s1.untracked[0].filename, "a.md");
 
-    const run = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const run = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     assert.equal(run.status, 200);
     const r = (await run.json()) as { adopted: unknown[]; errors: unknown[] };
     assert.equal(r.adopted.length, 1);
@@ -365,7 +366,7 @@ describe("agent router over HTTP", () => {
       "hello agent",
     );
 
-    const st2 = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const st2 = await authFetch(`${base}/nodes/${NODE_ID}/sync-status`);
     const s2 = (await st2.json()) as {
       files: Array<{ sync_class: string }>;
       untracked: unknown[];
@@ -375,9 +376,9 @@ describe("agent router over HTTP", () => {
   });
 
   it("GET /sync/pending aggregates across mirrors", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await writeFile(join(mirrorRoot, "wip", "pending.md"), "x");
-    const r = await fetch(`${base}/sync/pending`);
+    const r = await authFetch(`${base}/sync/pending`);
     assert.equal(r.status, 200);
     const body = (await r.json()) as { total: number; nodes: Array<{ node_name: string }> };
     assert.equal(body.total, 1);
@@ -385,10 +386,10 @@ describe("agent router over HTTP", () => {
   });
 
   it("POST /sync/jobs, GET /sync/jobs/:id, GET /sync/jobs/current -- central-mode job runs syncRunCentral per node (#273)", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await writeFile(join(mirrorRoot, "wip", "job.md"), "central job");
 
-    const start = await fetch(`${base}/sync/jobs`, {
+    const start = await authFetch(`${base}/sync/jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ node_ids: [NODE_ID] }),
@@ -397,14 +398,14 @@ describe("agent router over HTTP", () => {
     const job = (await start.json()) as { id: string; total: number; status: string };
     assert.equal(job.total, 1);
 
-    const cur = await fetch(`${base}/sync/jobs/current`);
+    const cur = await authFetch(`${base}/sync/jobs/current`);
     assert.equal(cur.status, 200);
     const curBody = (await cur.json()) as { job: { id: string } | null };
     assert.equal(curBody.job?.id, job.id);
 
     let finalStatus = "";
     for (let i = 0; i < 200; i++) {
-      const r = await fetch(`${base}/sync/jobs/${job.id}`);
+      const r = await authFetch(`${base}/sync/jobs/${job.id}`);
       assert.equal(r.status, 200);
       const body = (await r.json()) as { status: string };
       finalStatus = body.status;
@@ -420,15 +421,15 @@ describe("agent router over HTTP", () => {
   });
 
   it("GET /sync/jobs/:id for an unknown id is 404", async () => {
-    const r = await fetch(`${base}/sync/jobs/nonexistent`);
+    const r = await authFetch(`${base}/sync/jobs/nonexistent`);
     assert.equal(r.status, 404);
   });
 
   it("unknown node maps to 404; graph routes answer 501 agent_mode", async () => {
-    const r404 = await fetch(`${base}/nodes/NOPE/sync-status`);
+    const r404 = await authFetch(`${base}/nodes/NOPE/sync-status`);
     assert.equal(r404.status, 404);
 
-    const r501 = await fetch(`${base}/graph`);
+    const r501 = await authFetch(`${base}/graph`);
     assert.equal(r501.status, 501);
     const body = (await r501.json()) as { error: string };
     assert.equal(body.error, "agent_mode");
@@ -436,7 +437,7 @@ describe("agent router over HTTP", () => {
 
   it("GET /nodes/:id/mirror returns the registered device mirror", async () => {
     await registerMirror(SOLO_USER, NODE_ID, mirrorRoot);
-    const res = await fetch(`${base}/nodes/${NODE_ID}/mirror`);
+    const res = await authFetch(`${base}/nodes/${NODE_ID}/mirror`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       node_id: string;
@@ -448,7 +449,7 @@ describe("agent router over HTTP", () => {
   });
 
   it("GET /nodes/:id/mirror returns null local_mirror when unregistered", async () => {
-    const res = await fetch(`${base}/nodes/${NODE_ID}/mirror`);
+    const res = await authFetch(`${base}/nodes/${NODE_ID}/mirror`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { node_id: string; local_mirror: unknown };
     assert.equal(body.node_id, NODE_ID);
@@ -458,10 +459,10 @@ describe("agent router over HTTP", () => {
   // File content over the local mirror: the editor/preview must open files
   // that exist only on this device (registered or untracked, not yet pushed).
   it("GET /nodes/:id/file serves an unsynced local file from the mirror", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await writeFile(join(mirrorRoot, "wip", "draft.md"), "# jen lokálně");
 
-    const res = await fetch(
+    const res = await authFetch(
       `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/draft.md")}`,
     );
     assert.equal(res.status, 200);
@@ -478,11 +479,11 @@ describe("agent router over HTTP", () => {
   });
 
   it("GET /nodes/:id/file falls back to central when the file is not on disk", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     // Pull-pending: registered on central with bytes, absent locally.
     fake.bytes.set(posix.join(NODE_ROOT, "wip/remote.md"), Buffer.from("remote body"));
 
-    const res = await fetch(
+    const res = await authFetch(
       `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/remote.md")}`,
     );
     assert.equal(res.status, 200);
@@ -492,20 +493,20 @@ describe("agent router over HTTP", () => {
   });
 
   it("GET /nodes/:id/file is 404 when the file exists nowhere", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
-    const res = await fetch(
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const res = await authFetch(
       `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/missing.md")}`,
     );
     assert.equal(res.status, 404);
   });
 
   it("PUT /nodes/:id/file writes the local mirror and detects conflicts", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const abs = join(mirrorRoot, "wip", "edit.md");
     await writeFile(abs, "v1");
     const baseVersion = sha(Buffer.from("v1"));
 
-    const ok = await fetch(
+    const ok = await authFetch(
       `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/edit.md")}`,
       {
         method: "PUT",
@@ -518,7 +519,7 @@ describe("agent router over HTTP", () => {
     assert.equal(okBody.version, sha(Buffer.from("v2")));
 
     // Stale baseVersion -> 409 CONFLICT with the current version.
-    const conflict = await fetch(
+    const conflict = await authFetch(
       `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/edit.md")}`,
       {
         method: "PUT",
@@ -533,7 +534,7 @@ describe("agent router over HTTP", () => {
   });
 
   it("PUT /nodes/:id/file forwards to central when no device mirror exists", async () => {
-    const res = await fetch(
+    const res = await authFetch(
       `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/away.md")}`,
       {
         method: "PUT",
@@ -551,10 +552,10 @@ describe("agent router over HTTP", () => {
 
 describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
   async function seedConflict(filename: string): Promise<string> {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const abs = join(mirrorRoot, "wip", filename);
     await writeFile(abs, "v1");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     assert.equal(sync1.status, 200);
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     assert.equal(synced1.adopted.length, 1, `expected one adopted file, got ${JSON.stringify(synced1)}`);
@@ -571,7 +572,7 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
   it("keep_local force-pushes local bytes past a stale remote hash", async () => {
     const fileId = await seedConflict("a.md");
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "keep_local" }),
@@ -595,7 +596,7 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
   it("take_remote overwrites the local edit with the remote version", async () => {
     const fileId = await seedConflict("b.md");
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "take_remote" }),
@@ -617,7 +618,7 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
   it("rejects an unknown action with 400", async () => {
     const fileId = await seedConflict("c.md");
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "nope" }),
@@ -626,8 +627,8 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
   });
 
   it("404s for a file id not on any mirror this device has", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/NOPE/resolve`, {
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/NOPE/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "keep_local" }),
@@ -636,16 +637,16 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
   });
 
   it("404s when the file belongs to a different node than the URL (IDOR)", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await writeFile(join(mirrorRoot, "wip", "h.md"), "v1");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
     // findEntryByFileId fans out across every node this device has mirrored;
     // OTHER_NODE_ID is not where this file lives, so it must not resolve.
     const OTHER_NODE_ID = "N0000000000000000000OTHER";
-    const r = await fetch(`${base}/nodes/${OTHER_NODE_ID}/files/${fileId}/resolve`, {
+    const r = await authFetch(`${base}/nodes/${OTHER_NODE_ID}/files/${fileId}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "keep_local" }),
@@ -665,16 +666,16 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
   });
 
   it("restore over a dirty local copy returns 409 instead of clobbering it", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await writeFile(join(mirrorRoot, "wip", "i.md"), "v1");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
     // Unpushed local edit -- pullFileCentral's dirty guard must refuse.
     await writeFile(join(mirrorRoot, "wip", "i.md"), "unpushed local edit");
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "restore" }),
@@ -693,15 +694,15 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
 
 describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
   it("removes the record, the remote object, AND the local mirror copy", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const abs = join(mirrorRoot, "wip", "gone.md");
     await writeFile(abs, "obsah");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
     assert.ok(fake.bytes.has(posix.join(NODE_ROOT, "wip/gone.md")), "precondition: pushed to remote");
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
       method: "DELETE",
     });
     assert.equal(r.status, 200);
@@ -714,17 +715,17 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
   });
 
   it("keeps the local copy and file_state when central answers repair_needed", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const abs = join(mirrorRoot, "wip", "kept.md");
     await writeFile(abs, "obsah");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
     await writeFile(abs, "unsynced local edit");
 
     fake.deleteRepairNeeded = true;
     try {
-      const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
         method: "DELETE",
       });
       assert.equal(r.status, 200);
@@ -734,7 +735,7 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
       fake.deleteRepairNeeded = false;
     }
     assert.equal(await readFile(abs, "utf8"), "unsynced local edit");
-    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const st = await authFetch(`${base}/nodes/${NODE_ID}/sync-status`);
     const s = (await st.json()) as { files: Array<{ local_path: string | null; sync_class: string }> };
     // Fast status trusts the cached hash (no watcher in this harness), so
     // only the record's survival is asserted here, not its classification.
@@ -750,10 +751,10 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
   // needs to recognize a leftover local copy as this exact confirmed
   // deletion rather than new content to re-adopt and push back.
   it("preserves file_state when the local removal itself fails, so the leftover copy is never resurrected", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const abs = join(mirrorRoot, "wip", "blocked.md");
     await writeFile(abs, "obsah");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
@@ -764,7 +765,7 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
     await rm(abs);
     await mkdir(abs);
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
       method: "DELETE",
     });
     assert.equal(r.status, 200);
@@ -783,13 +784,13 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
   });
 
   it("rejects a delete without confirmed=true", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await writeFile(join(mirrorRoot, "wip", "keep.md"), "obsah");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}`, { method: "DELETE" });
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}`, { method: "DELETE" });
     assert.equal(r.status, 400);
     assert.equal(fake.deleted.length, 0);
     await readFile(join(mirrorRoot, "wip", "keep.md"), "utf8"); // still there
@@ -802,7 +803,7 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
     const reg = await fake.registerFile(NODE_ID, "wip/remote-only.md");
     fake.bytes.set(posix.join(NODE_ROOT, "wip/remote-only.md"), Buffer.from("obsah"));
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${reg.id}?confirmed=true`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${reg.id}?confirmed=true`, {
       method: "DELETE",
     });
     assert.equal(r.status, 200);
@@ -812,14 +813,14 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
   });
 
   it("404s when the file belongs to a different node than the URL (IDOR)", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await writeFile(join(mirrorRoot, "wip", "j.md"), "obsah");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
     const OTHER_NODE_ID = "N0000000000000000000OTHER";
-    const r = await fetch(`${base}/nodes/${OTHER_NODE_ID}/files/${fileId}?confirmed=true`, {
+    const r = await authFetch(`${base}/nodes/${OTHER_NODE_ID}/files/${fileId}?confirmed=true`, {
       method: "DELETE",
     });
     assert.equal(r.status, 404);
@@ -830,14 +831,14 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
 
 describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
   it("renames the central record AND the local mirror copy, leaving the file clean", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const oldAbs = join(mirrorRoot, "wip", "before.md");
     await writeFile(oldAbs, "obsah");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_filename: "after.md" }),
@@ -850,7 +851,7 @@ describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
     await assert.rejects(() => readFile(oldAbs), "old local name must be gone");
     assert.equal(await readFile(join(mirrorRoot, "wip", "after.md"), "utf8"), "obsah");
 
-    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const st = await authFetch(`${base}/nodes/${NODE_ID}/sync-status`);
     const s = (await st.json()) as {
       files: Array<{ local_path: string | null; sync_class: string }>;
       untracked: unknown[];
@@ -862,19 +863,19 @@ describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
   });
 
   it("waits for a create's in-flight background push before renaming", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     let releasePush: (() => void) | undefined;
     fake.putDelay = new Promise<void>((r) => {
       releasePush = r;
     });
-    const created = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    const created = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "draft.md", content: "v1" }),
     });
     const { id: fileId } = (await created.json()) as { id: string };
     let renameDone = false;
-    const ren = fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+    const ren = authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_filename: "final.md" }),
@@ -894,10 +895,10 @@ describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
   });
 
   it("reports repair_needed instead of a raw 500 when the local rename fails (#279 finding 13)", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const oldAbs = join(mirrorRoot, "wip", "old.md");
     await writeFile(oldAbs, "obsah");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
@@ -906,7 +907,7 @@ describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
     // already committed the record + remote rename.
     await mkdir(join(mirrorRoot, "wip", "new.md", "child"), { recursive: true });
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_filename: "new.md" }),
@@ -923,7 +924,7 @@ describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
 
   it("forwards to central's own rename when this device has no mirror for the node", async () => {
     const reg = await fake.registerFile(NODE_ID, "wip/remote-only.md");
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${reg.id}/rename`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${reg.id}/rename`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_filename: "remote-renamed.md" }),
@@ -935,8 +936,8 @@ describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
   });
 
   it("rejects a filename with a path separator", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/F1/rename`, {
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/F1/rename`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_filename: "../escape.md" }),
@@ -947,14 +948,14 @@ describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
 
 describe("POST /nodes/:id/files/:fileId/move (agent mode, #278)", () => {
   it("same-node move relocates the record, remote object, and the local mirror copy", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const oldAbs = join(mirrorRoot, "wip", "a.md");
     await writeFile(oldAbs, "obsah");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_section: "outputs", confirmed: true }),
@@ -968,7 +969,7 @@ describe("POST /nodes/:id/files/:fileId/move (agent mode, #278)", () => {
     await assert.rejects(() => readFile(oldAbs), "old local path must be gone");
     assert.equal(await readFile(join(mirrorRoot, "outputs", "a.md"), "utf8"), "obsah");
 
-    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const st = await authFetch(`${base}/nodes/${NODE_ID}/sync-status`);
     const s = (await st.json()) as {
       files: Array<{ local_path: string | null; sync_class: string }>;
       untracked: unknown[];
@@ -980,19 +981,19 @@ describe("POST /nodes/:id/files/:fileId/move (agent mode, #278)", () => {
   });
 
   it("cross-node move relocates the local copy into the target node's own mirror", async () => {
-    const src = await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const src = await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const { local_path: srcMirrorRoot } = (await src.json()) as { local_path: string };
-    const dst = await fetch(`${base}/nodes/${NODE_ID2}/mirror`, { method: "POST" });
+    const dst = await authFetch(`${base}/nodes/${NODE_ID2}/mirror`, { method: "POST" });
     const { local_path: dstMirrorRoot } = (await dst.json()) as { local_path: string };
 
     const oldAbs = join(srcMirrorRoot, "wip", "shared.md");
     await mkdir(join(srcMirrorRoot, "wip"), { recursive: true });
     await writeFile(oldAbs, "cross-node content");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_node_id: NODE_ID2, new_section: "wip", confirmed: true }),
@@ -1011,19 +1012,19 @@ describe("POST /nodes/:id/files/:fileId/move (agent mode, #278)", () => {
   });
 
   it("waits for a create's in-flight background push before moving", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     let releasePush: (() => void) | undefined;
     fake.putDelay = new Promise<void>((r) => {
       releasePush = r;
     });
-    const created = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    const created = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "draft.md", content: "v1" }),
     });
     const { id: fileId } = (await created.json()) as { id: string };
     let moveDone = false;
-    const mv = fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
+    const mv = authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_section: "outputs", confirmed: true }),
@@ -1043,15 +1044,15 @@ describe("POST /nodes/:id/files/:fileId/move (agent mode, #278)", () => {
   });
 
   it("reports repair_needed when the target node has no local mirror on this device", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     // NODE_ID2 is known to central (fake.nodeExists) but never mirrored here.
     const oldAbs = join(mirrorRoot, "wip", "orphan.md");
     await writeFile(oldAbs, "stranded");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_node_id: NODE_ID2, new_section: "wip", confirmed: true }),
@@ -1068,14 +1069,14 @@ describe("POST /nodes/:id/files/:fileId/move (agent mode, #278)", () => {
   });
 
   it("an unconfirmed move returns the preview without touching local disk", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const oldAbs = join(mirrorRoot, "wip", "a.md");
     await writeFile(oldAbs, "obsah");
-    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const sync1 = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
     const fileId = synced1.adopted[0].file_id;
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/move`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_section: "outputs" }),
@@ -1090,14 +1091,14 @@ describe("POST /nodes/:id/files/:fileId/move (agent mode, #278)", () => {
 
 describe("POST /nodes/:id/files (agent mode, #266)", () => {
   it("writes the file into the mirror and registers it, without waiting for the background push", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
 
     let releasePush: (() => void) | undefined;
     fake.putDelay = new Promise<void>((r) => {
       releasePush = r;
     });
 
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "new.md", content: "obsah" }),
@@ -1145,12 +1146,12 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
   });
 
   it("a delete right after create waits for the background push instead of racing it", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     let releasePush: (() => void) | undefined;
     fake.putDelay = new Promise<void>((r) => {
       releasePush = r;
     });
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "gone-fast.md", content: "v1" }),
@@ -1163,7 +1164,7 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
     // the push has landed, and the end state must be "deleted", not an
     // orphaned remote object recreated by a late put.
     let deleteDone = false;
-    const del = fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+    const del = authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
       method: "DELETE",
     }).then((res) => {
       deleteDone = true;
@@ -1181,12 +1182,12 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
   });
 
   it("an edit landing while the background push is in flight stays push, not clean", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     let releasePush: (() => void) | undefined;
     fake.putDelay = new Promise<void>((r) => {
       releasePush = r;
     });
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "edited.md", content: "v1" }),
@@ -1210,7 +1211,7 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
     assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/edited.md"))?.toString("utf8"), "v1");
 
     type StatusRow = { local_path: string | null; sync_class: string };
-    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const st = await authFetch(`${base}/nodes/${NODE_ID}/sync-status`);
     const status = (await st.json()) as { files: StatusRow[] };
     const row = status.files.find((f) => f.local_path?.endsWith("/wip/edited.md"));
     assert.ok(row, "record exists");
@@ -1218,8 +1219,8 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
   });
 
   it("routes section/subpath into the mirror layout", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "report.md", section: "outputs", subpath: "q3" }),
@@ -1232,10 +1233,10 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
   });
 
   it("409s when the file already exists in the mirror", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await mkdir(join(mirrorRoot, "wip"), { recursive: true });
     await writeFile(join(mirrorRoot, "wip", "dup.md"), "already here");
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "dup.md" }),
@@ -1245,8 +1246,8 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
   });
 
   it("400s for an invalid filename", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "../escape.md" }),
@@ -1256,7 +1257,7 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
 
   it("falls back to central's mirror-less create when this device has no mirror for the node", async () => {
     // No POST .../mirror first -- getMirrorPath resolves null.
-    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    const r = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "remote-only.md", content: "central bytes" }),
@@ -1289,12 +1290,12 @@ describe("agent-mode REST write gate (hardened posture)", () => {
   it("refuses file lifecycle mutations without the webview-proxy marker, allows them with it", async () => {
     const proven = { "X-Portuni-Webview-Proxy": "test-webview-secret" };
     // Mirror create is gated too.
-    const bare = await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const bare = await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     assert.equal(bare.status, 403);
-    const ok = await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST", headers: proven });
+    const ok = await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST", headers: proven });
     assert.ok(ok.status === 201 || ok.status === 200);
 
-    const bareCreate = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    const bareCreate = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: "gated.md", content: "x" }),
@@ -1302,7 +1303,7 @@ describe("agent-mode REST write gate (hardened posture)", () => {
     assert.equal(bareCreate.status, 403);
     const body = (await bareCreate.json()) as { error: string };
     assert.equal(body.error, "write_refused");
-    const created = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+    const created = await authFetch(`${base}/nodes/${NODE_ID}/files`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...proven },
       body: JSON.stringify({ filename: "gated.md", content: "x" }),
@@ -1310,35 +1311,35 @@ describe("agent-mode REST write gate (hardened posture)", () => {
     assert.equal(created.status, 201);
     const { id: fileId } = (await created.json()) as { id: string };
 
-    const bareRename = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+    const bareRename = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ new_filename: "nope.md" }),
     });
     assert.equal(bareRename.status, 403);
-    const bareResolve = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+    const bareResolve = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "keep_local" }),
     });
     assert.equal(bareResolve.status, 403);
-    const barePut = await fetch(`${base}/nodes/${NODE_ID}/file?path=wip/gated.md`, {
+    const barePut = await authFetch(`${base}/nodes/${NODE_ID}/file?path=wip/gated.md`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: "y" }),
     });
     assert.equal(barePut.status, 403);
-    const bareSync = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const bareSync = await authFetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
     assert.equal(bareSync.status, 403);
-    const bareDelete = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+    const bareDelete = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
       method: "DELETE",
     });
     assert.equal(bareDelete.status, 403);
     assert.equal(fake.deleted.length, 0);
     // Reads stay open.
-    const status = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const status = await authFetch(`${base}/nodes/${NODE_ID}/sync-status`);
     assert.equal(status.status, 200);
-    const provenDelete = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+    const provenDelete = await authFetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
       method: "DELETE",
       headers: proven,
     });
@@ -1352,11 +1353,11 @@ describe("agent router: /runners (device-local registry, #319)", () => {
     const previousDataDir = process.env.PORTUNI_DATA_DIR;
     process.env.PORTUNI_DATA_DIR = dataDir;
     try {
-      const runners = await fetch(`${base}/runners`);
+      const runners = await authFetch(`${base}/runners`);
       assert.equal(runners.status, 200);
       assert.ok(Array.isArray(((await runners.json()) as { runners: unknown[] }).runners));
 
-      const created = await fetch(`${base}/runners/instances`, {
+      const created = await authFetch(`${base}/runners/instances`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: "Práce", runner: "claude", env: { CLAUDE_CONFIG_DIR: "~/.claude-work" } }),
@@ -1365,20 +1366,20 @@ describe("agent router: /runners (device-local registry, #319)", () => {
       const instance = (await created.json()) as { id: string; env_keys: string[] };
       assert.deepEqual(instance.env_keys, ["CLAUDE_CONFIG_DIR"]);
 
-      const setDefault = await fetch(`${base}/runners/instances/${instance.id}/org-default`, {
+      const setDefault = await authFetch(`${base}/runners/instances/${instance.id}/org-default`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ org_id: "org-1" }),
       });
       assert.equal(setDefault.status, 200);
-      const cleared = await fetch(`${base}/runners/org-defaults/org-1`, { method: "DELETE" });
+      const cleared = await authFetch(`${base}/runners/org-defaults/org-1`, { method: "DELETE" });
       assert.equal(cleared.status, 200);
 
-      const listed = await fetch(`${base}/runners/instances`);
+      const listed = await authFetch(`${base}/runners/instances`);
       const body = (await listed.json()) as { instances: { id: string; org_defaults: string[] }[] };
       assert.deepEqual(body.instances.find((i) => i.id === instance.id)?.org_defaults, []);
 
-      const deleted = await fetch(`${base}/runners/instances/${instance.id}`, { method: "DELETE" });
+      const deleted = await authFetch(`${base}/runners/instances/${instance.id}`, { method: "DELETE" });
       assert.equal(deleted.status, 200);
     } finally {
       if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
@@ -1390,7 +1391,7 @@ describe("agent router: /runners (device-local registry, #319)", () => {
 
 describe("agent router: /auth/handoff", () => {
   const post = (path: string, body: unknown, token?: string) =>
-    fetch(`${base}${path}`, {
+    globalThis.fetch(`${base}${path}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1400,15 +1401,15 @@ describe("agent router: /auth/handoff", () => {
     });
 
   it("mint -> exchange round trip carries the launch token, MCP URL, name and mirror", async () => {
-    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
-    const mint = await post("/auth/handoff", { node_id: NODE_ID }, "launch-token");
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const mint = await post("/auth/handoff", { node_id: NODE_ID }, TEST_BEARER);
     assert.equal(mint.status, 200);
     const { code } = (await mint.json()) as { code: string };
 
     const ex = await post("/auth/handoff/exchange", { code });
     assert.equal(ex.status, 200);
     const body = (await ex.json()) as Record<string, unknown>;
-    assert.equal(body.token, "launch-token");
+    assert.equal(body.token, TEST_BEARER);
     assert.equal(body.mcp_url, `${base}/mcp?home_node_id=${NODE_ID}`);
     assert.equal(body.home_node_id, NODE_ID);
     assert.equal(body.node_name, "Stan GWS");
@@ -1418,7 +1419,7 @@ describe("agent router: /auth/handoff", () => {
   });
 
   it("mint 404s for a node central does not know, 401s without a bearer", async () => {
-    assert.equal((await post("/auth/handoff", { node_id: "N0000000000000000000000000" }, "t")).status, 404);
+    assert.equal((await post("/auth/handoff", { node_id: "N0000000000000000000000000" }, TEST_BEARER)).status, 404);
     assert.equal((await post("/auth/handoff", { node_id: NODE_ID })).status, 401);
   });
 });

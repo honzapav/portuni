@@ -5,8 +5,9 @@
 
 process.env.PORT = "14933";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -64,7 +65,7 @@ afterEach(async () => {
 
 describe("GET /sync/health", () => {
   it("returns an empty list when nothing has been recorded", async () => {
-    const res = await fetch(`${base}/sync/health`);
+    const res = await authFetch(`${base}/sync/health`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { errors: unknown[] };
     assert.deepEqual(body.errors, []);
@@ -72,7 +73,7 @@ describe("GET /sync/health", () => {
 
   it("surfaces a recorded watcher error", async () => {
     recordWatcherError(shared.nodeId, "wip/broken.md", new Error("no remote routing configured"));
-    const res = await fetch(`${base}/sync/health`);
+    const res = await authFetch(`${base}/sync/health`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       errors: Array<{ node_id: string; path: string; message: string; at: string }>;
@@ -86,7 +87,7 @@ describe("GET /sync/health", () => {
 
 describe("GET /nodes/:id/sync-status watcher_errors field", () => {
   it("omits the field entirely when the node has no watcher errors", async () => {
-    const res = await fetch(`${base}/nodes/${shared.nodeId}/sync-status`);
+    const res = await authFetch(`${base}/nodes/${shared.nodeId}/sync-status`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as Record<string, unknown>;
     assert.ok(!("watcher_errors" in body));
@@ -94,7 +95,7 @@ describe("GET /nodes/:id/sync-status watcher_errors field", () => {
 
   it("includes watcher_errors for a node that has one", async () => {
     recordWatcherError(shared.nodeId, "wip/broken.md", new Error("boom"));
-    const res = await fetch(`${base}/nodes/${shared.nodeId}/sync-status`);
+    const res = await authFetch(`${base}/nodes/${shared.nodeId}/sync-status`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       watcher_errors?: Array<{ node_id: string; path: string; message: string }>;
@@ -105,7 +106,7 @@ describe("GET /nodes/:id/sync-status watcher_errors field", () => {
 
   it("does not leak another node's watcher error", async () => {
     recordWatcherError("N-OTHER-NODE", "wip/other.md", new Error("boom"));
-    const res = await fetch(`${base}/nodes/${shared.nodeId}/sync-status`);
+    const res = await authFetch(`${base}/nodes/${shared.nodeId}/sync-status`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as Record<string, unknown>;
     assert.ok(!("watcher_errors" in body));

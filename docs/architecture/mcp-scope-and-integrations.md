@@ -76,7 +76,18 @@ Rules that hold in every mode:
   `PORTUNI_MCP_TOKEN` (standalone) or `PORTUNI_MCP_TOKEN_<ID>` (a desktop
   workspace, `<ID>` from `PORTUNI_WORKSPACE_ID`). The desktop app has no
   terminal of its own to inject it into; a shell outside the app exports
-  it itself (Settings → MCP Server shows the `export` line).
+  it itself (Settings → MCP Server shows the `export` line). The server
+  never reads that variable; it verifies its own `PORTUNI_AUTH_TOKEN`,
+  always required in env mode (`infra/auth-config.ts`, #521), so an unset
+  client variable is an empty bearer and a 401 (`BEARER_MISSING`; a wrong
+  one is `BEARER_MISMATCH`).
+- **The guard hook fails closed on a refused token.** The `PreToolUse`
+  command sets `PORTUNI_GUARD_TOKEN="${<client var>:-}"` and
+  `PORTUNI_GUARD_TOKEN_VAR=<client var>`; when `/scope` answers 401/403,
+  `scripts/portuni-guard.sh` blocks the write (exit 2) saying the token is
+  missing or does not match and naming the variable to export. An
+  unreachable server stays a soft allow. The guard still accepts the old
+  `PORTUNI_AUTH_TOKEN` input as a fallback.
 - **Mistral Vibe and Cursor connect user-scoped only.** Portuni writes no
   per-mirror `.vibe/config.toml` or `.cursor/rules`; a Vibe session reads
   `~/.vibe/config.toml` (`install_vibe_global`), starts unscoped and seeds

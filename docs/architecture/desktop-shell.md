@@ -25,7 +25,12 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
   sequence).
 - Per-mirror MCP configs reference the token as `PORTUNI_MCP_TOKEN_<ID>`
   (the server learns its id from `PORTUNI_WORKSPACE_ID`; a standalone
-  server without one keeps `PORTUNI_MCP_TOKEN`). Global MCP entries are
+  server without one keeps `PORTUNI_MCP_TOKEN`). The name comes from
+  `workspace::token_env_var` in Rust and `clientTokenEnvVar()` on the
+  server; both are tested against `apps/server/shared/token-env-var-cases.json`
+  (#521). The sidecar itself verifies `PORTUNI_AUTH_TOKEN`, which the host
+  always passes: a sidecar without it refuses to start and the host shows
+  the `PORTUNI_BACKEND_ERROR=` line. Global MCP entries are
   named `portuni-<id>`; a workspace migrated from the single-workspace
   layout keeps the historical `portuni` entry.
 - **Every config.json load-modify-save goes through `ConfigLock`**, a
@@ -128,6 +133,14 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   means this window's own), and `auth.rs`'s `auth_status`,
   `google_login`, `auth_refresh`, `auth_logout`, `central_request`
   (`load_auth_config` takes an explicit `ws_id`).
+- `regenerate_mcp_token` writes the fresh token to Keychain and
+  `AuthTokens`, then restarts that workspace's sidecar (in a team
+  workspace, its sync agent) with it through the same kill + spawn as
+  `restart_sidecar` (#522): the sidecar checks the `PORTUNI_AUTH_TOKEN` it
+  was spawned with, so without the restart every proxied request answers
+  401 until the app restarts. A failed respawn reaches the window as
+  `backend-error`, like a failed start; the live channel reconnects with the
+  new token on its own.
 - App-global commands keep `AppHandle` and never call `ws_of`, because a
   `bootstrap` window legitimately calls them: workspace list and CRUD,
   updater, clipboard, `open_external`, exit, `workspace_migration_status`,

@@ -326,6 +326,31 @@ describe("session REST endpoints", () => {
     assert.equal(row.instance_id, "01INST");
   });
 
+  // #498, the central half: a team-workspace device reopens a closed thread
+  // with the same record patch it resumes a suspended one with
+  // (CentralSessionStore.patchSession -> PATCH /sessions/:id), and the lists
+  // show it running again.
+  test("PATCH state running reopens a closed thread and the running list shows it (#498)", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task", runner: "claude" });
+    const closed = await call(makeIdentity(SOLO), "POST", `/sessions/${session.id}/state`, { state: "closed" });
+    assert.equal(closed.statusCode, 200);
+
+    const res = await call(makeIdentity(SOLO), "PATCH", `/sessions/${session.id}`, { state: "running" });
+    assert.equal(res.statusCode, 200);
+    const row = JSON.parse(res.body) as { state: string; closed_at: string | null };
+    assert.equal(row.state, "running");
+    assert.equal(row.closed_at, null);
+
+    const running = await call(makeIdentity(SOLO), "GET", "/sessions?state=running");
+    const ids = (JSON.parse(running.body) as { sessions: { id: string }[] }).sessions.map((s) => s.id);
+    assert.ok(ids.includes(session.id));
+    const closedList = await call(makeIdentity(SOLO), "GET", "/sessions?state=closed");
+    const closedIds = (JSON.parse(closedList.body) as { sessions: { id: string }[] }).sessions.map((s) => s.id);
+    assert.ok(!closedIds.includes(session.id));
+
+    await db.execute({ sql: "DELETE FROM sessions WHERE id = ?", args: [session.id] });
+  });
+
   test("PATCH /sessions/:id renames a session the caller owns", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity(SOLO), "PATCH", `/sessions/${session.id}`, { name: "Renamed" });

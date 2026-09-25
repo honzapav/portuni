@@ -4,10 +4,11 @@
 
 process.env.PORT = "14927";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 delete process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_ID;
 delete process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET;
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { openTestDb } from "./helpers/db.js";
@@ -40,7 +41,7 @@ describe("GET /auth/desktop-config", () => {
   it("404s when the desktop client env vars are not set", async () => {
     delete process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_ID;
     delete process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET;
-    const res = await fetch(`${base}/auth/desktop-config`);
+    const res = await authFetch(`${base}/auth/desktop-config`);
     assert.equal(res.status, 404);
   });
 
@@ -48,7 +49,7 @@ describe("GET /auth/desktop-config", () => {
     process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_ID = "123-abc.apps.googleusercontent.com";
     process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET = "GOCSPX-test-secret";
     try {
-      const res = await fetch(`${base}/auth/desktop-config`);
+      const res = await authFetch(`${base}/auth/desktop-config`);
       assert.equal(res.status, 200);
       const body = (await res.json()) as Record<string, unknown>;
       assert.equal(body.google_client_id, "123-abc.apps.googleusercontent.com");
@@ -62,7 +63,7 @@ describe("GET /auth/desktop-config", () => {
   it("404s again when one of the two vars is missing", async () => {
     process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_ID = "123-abc.apps.googleusercontent.com";
     try {
-      const res = await fetch(`${base}/auth/desktop-config`);
+      const res = await authFetch(`${base}/auth/desktop-config`);
       assert.equal(res.status, 404);
     } finally {
       delete process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_ID;

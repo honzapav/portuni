@@ -15,13 +15,8 @@ import { createSessionsWsServer, type SessionsWsServer } from "../api/sessions-w
 import { webviewMutationAllowed } from "../api/write-gate.js";
 import { minScopeForRoute } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
-import {
-  AUTH_ENABLED,
-  applyGates,
-  assertAuthRequiredIfNotLoopback,
-  checkUpgradeAuth,
-  respondError,
-} from "./middleware.js";
+import { applyGates, checkUpgradeAuth, respondError } from "./middleware.js";
+import { assertAuthConfig, authSummary } from "../infra/auth-config.js";
 import { getOrCreateLimiter, rateLimitKey } from "./rate-limit.js";
 
 export interface HttpServerHandle {
@@ -61,7 +56,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
   const registerSigint = opts.registerSigint ?? true;
   const route = opts.router ?? routeApiRequest;
 
-  assertAuthRequiredIfNotLoopback(host);
+  assertAuthConfig();
 
   const mcp = opts.mcpTransport ?? (opts.mountMcp === false ? null : createMcpTransport());
 
@@ -145,13 +140,10 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       const address = httpServer.address();
       const boundPort =
         address && typeof address !== "string" ? address.port : port;
-      // Read the env var directly rather than the AUTH_ENABLED constant:
-      // tests (and any future runtime token rotation) need a live answer,
-      // and the constant is captured at module import.
       const body = {
         url: `http://${host}:${boundPort}/mcp`,
         port: boundPort,
-        has_auth_token: (process.env.PORTUNI_AUTH_TOKEN ?? "").trim().length > 0,
+        has_auth_token: authSummary().has_auth_token,
       };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -218,11 +210,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
   httpServer.listen(port, host, () => {
     console.log(`Portuni MCP server listening on http://${host}:${port}`);
     console.log(`Streamable HTTP endpoint: http://${host}:${port}/mcp`);
-    console.log(
-      AUTH_ENABLED
-        ? "Auth: bearer token required (Authorization: Bearer <PORTUNI_AUTH_TOKEN>)"
-        : "Auth: DISABLED (PORTUNI_AUTH_TOKEN unset). Loopback-only access trusted.",
-    );
+    console.log(authSummary().banner);
   });
 
   const shutdown = async (): Promise<void> => {

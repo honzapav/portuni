@@ -3,12 +3,14 @@
 //   - DB path derived from PORTUNI_DATA_DIR
 //   - port from PORTUNI_PORT (0 = OS-assigned), printed on stdout so the
 //     parent process can read it back as PORTUNI_LISTENING_PORT=<n>
-//   - no AUTH_TOKEN by default — loopback-only is the security boundary
+//   - PORTUNI_AUTH_TOKEN always passed by the Tauri host; without it the
+//     sidecar refuses to start (PORTUNI_BACKEND_ERROR=..., #521)
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { startHttpServer, type HttpServerHandle } from "./http/server.js";
+import { assertAuthConfig } from "./infra/auth-config.js";
 import { getDb } from "./infra/db.js";
 import { getDeviceContentDb } from "./infra/device-content-db.js";
 import {
@@ -343,6 +345,9 @@ async function agentMain(client: CentralClient): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // The front door always needs a bearer (#521); fail before any boot work
+  // so the host shows the reason instead of a half-started sidecar.
+  assertAuthConfig();
   const dataDir = process.env.PORTUNI_DATA_DIR;
   if (!dataDir) {
     throw new Error("PORTUNI_DATA_DIR must be set in desktop mode");

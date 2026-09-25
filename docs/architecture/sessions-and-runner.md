@@ -26,19 +26,19 @@ record/content split).
   existing row; it never creates a second one.
 - **The run's MCP bearer is the front door's own token** (#507).
   `provisionRun` and `createProvisionRunCentral` both take it from
-  `resolveRunnerMcpToken()` (`domain/write-scope.ts`), which reads
-  `PORTUNI_AUTH_TOKEN` -- the token `http/middleware.ts` verifies and the
-  desktop gives every sidecar -- never `resolveTokenEnvVar()`'s
-  `PORTUNI_MCP_TOKEN[_<WS>]`, which is only the name per-mirror configs
-  expand in a user's own shell and is never set in the sidecar. With no
-  token the provision throws `RunnerMcpTokenMissingError` before any mirror
-  work; a run never starts with an empty `Authorization: Bearer `. The
-  runtime provisions before it creates or changes anything: `startTask`
-  and Navázat na handoff before the record, a draft's first message
-  before the draft is promoted, Pokračovat v nové session before the old
-  thread is closed -- a refused run leaves no half-made thread. REST
-  answers the refusal with 503 `RUNNER_MCP_TOKEN_MISSING`
-  (`respondError`), the live channel with an error reply of that code.
+  `resolveRunnerMcpToken()` (`domain/write-scope.ts`), which returns
+  `serverBearerToken()` from `infra/auth-config.ts` -- the
+  `PORTUNI_AUTH_TOKEN` the front door verifies and the desktop gives every
+  sidecar -- never `clientTokenEnvVar()`'s `PORTUNI_MCP_TOKEN[_<WS>]`,
+  which is only the name per-mirror configs expand in a user's own shell
+  and is never set in the sidecar. An env-mode server does not start
+  without the token (#521), so a run never meets an empty one; the former
+  `RunnerMcpTokenMissingError` and its 503 are gone as unreachable. The
+  token is still read before any mirror work. The runtime provisions
+  before it creates or changes anything: `startTask` and Navázat na
+  handoff before the record, a draft's first message before the draft is
+  promoted, Pokračovat v nové session before the old thread is closed --
+  a refused run leaves no half-made thread.
   `test/runner-mcp-front-door.test.ts` connects a runner-style client with
   the provisioned URL and token to the real front door in both workspaces.
 - `createMcpServer` returns `bindSession(cli?)`; the caller invokes it at its
@@ -126,10 +126,20 @@ record/content split).
 | `draft` | `running` (deletion is the only other exit, `deleteDraftSession`) |
 | `running` | `suspended`, `closed` |
 | `suspended` | `running`, `closed` |
-| `closed` | `archived` |
+| `closed` | `running` (writing into it, #498), `archived` |
 
 `closed` is reached only by the user's explicit Uzavřít (or `continue`, see
-below) and `archived` only by the auto-archive sweep
+below). It means "done, off the active lists", not "never again" (#498):
+`sendMessage` into a closed thread reopens it exactly the way it resumes a
+suspended one (`resumeByWriting`: `--resume` on the last run's
+conversation while it exists, else a summary built from this device's
+transcript, or Předat's / Pokračovat's file when one exists), publishes
+`state_changed {from: "closed", to: "running"}` and clears `closed_at`.
+The transition is validated once, in `transitionSessionState`, which is
+what both the local store and the central record route
+(`PATCH /sessions/:id`, `CentralSessionStore.patchSession` in a team
+workspace) go through. `archived` has no composer and no way back.
+`archived` is reached only by the auto-archive sweep
 (`sweepArchivedSessionsOnBoot` in `boot/session-sweep.ts`, run at boot of the
 process that owns the graph db: closed for more than 30 days moves to
 archived, an archived session's event log is dropped after 90 days; the
@@ -784,8 +794,9 @@ human verification.
   file fails (logged; the old run is already ended by then), the summary
   goes into the orientation only. The new run is provisioned before the
   old thread is touched. It answers `{session, run}` (the WS reply carries `toSummary`'s
-  `SessionSummary`). Web labels: "Pokračovat v nové session" on an open
-  thread, "Navázat" on a closed one.
+  `SessionSummary`). Web label: "Pokračovat v nové session" on a running
+  or suspended thread; a closed thread has no Navázat (#498), writing
+  into it reopens it.
 - No context-usage ring exists: `RunEndedEvent.payload.usage` is
   adapter-reported and untyped, so nothing tracks tokens per thread.
 

@@ -4,9 +4,10 @@
 // a stale connection -- both funnel through the same transport.onclose, so
 // this is the one place that distinction can be tested end to end.
 //
-// PORTUNI_AUTH_TOKEN and the short GC timers must be set before any
-// apps/server module that reads them at load time is imported -- same
-// reasoning and pattern as mcp-transport-session-leak.test.ts.
+// The short GC timers must be set before mcp/transport.ts is evaluated (it
+// reads them at load time), and static imports are evaluated before any of
+// this file's own top-level code, so the server modules are imported
+// dynamically below. The bearer is read live (#521).
 process.env.PORTUNI_AUTH_TOKEN = "test-token";
 // TTL must comfortably outlast how long a deliberate client.close() takes
 // to actually reach the server's onclose (observed up to ~1s for the SDK's
