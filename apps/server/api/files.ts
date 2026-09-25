@@ -42,6 +42,7 @@ const FILE_BODY_MAX_BYTES = Number(
   process.env.PORTUNI_MAX_FILE_BODY_BYTES ?? 160 * 1024 * 1024,
 );
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
+import { NodeNotFoundError } from "../domain/sync/node-info.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
 import { guardRestNodeWrite, guardHeadlessFileWrite } from "./write-gate.js";
@@ -251,7 +252,7 @@ export async function handleGetSyncInfo(
     const info = await getNodeSyncInfo(db, nodeId);
     respondJson(res, 200, info);
   } catch (err) {
-    if (err instanceof Error && /not found/i.test(err.message)) {
+    if (err instanceof NodeNotFoundError) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }
@@ -292,7 +293,7 @@ export async function handleRegisterFile(
     respondJson(res, 201, r);
   } catch (err) {
     if (handleFileContentError(res, err)) return;
-    if (err instanceof Error && /not found/i.test(err.message)) {
+    if (err instanceof NodeNotFoundError) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }
@@ -325,7 +326,7 @@ export async function handleRegisterFilesBatch(
     respondJson(res, 201, { files: results });
   } catch (err) {
     if (handleFileContentError(res, err)) return;
-    if (err instanceof Error && /not found/i.test(err.message)) {
+    if (err instanceof NodeNotFoundError) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }

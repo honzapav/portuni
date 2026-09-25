@@ -59,6 +59,17 @@ import type {
 // instance for it, if one is set.
 export class NoRunnerAvailableError extends Error {}
 
+// #530: the session has no live run to take a message or an answer right
+// now. The REST, agent-router and live-channel layers answer 409 with
+// `code`; the code comes from this type, never from the message text.
+export class NoLiveRunError extends Error {
+  readonly code = "NO_LIVE_RUN" as const;
+  constructor(op: string, readonly sessionId: string) {
+    super(`${op}: session ${sessionId} has no live run`);
+    this.name = "NoLiveRunError";
+  }
+}
+
 // #459 (Předat): the thread cannot be handed to another machine right now.
 // `code` is what the REST/live-channel layer answers with (409); `message`
 // is Czech, because it is shown to the user as-is.
@@ -998,7 +1009,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await resumeByWriting(sessionId, session, text, logged);
       return;
     }
-    throw new Error(`sendMessage: session ${sessionId} has no live run`);
+    throw new NoLiveRunError("sendMessage", sessionId);
   }
 
   // #489: waits for the run that is ending (never a clock -- the run's own
@@ -1026,7 +1037,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   async function promoteDraftAndStart(sessionId: string, text: string): Promise<void> {
     const session = await store.getSession(sessionId);
     if (!session) throw new Error(`sendMessage: session ${sessionId} not found`);
-    if (session.state !== "draft") throw new Error(`sendMessage: session ${sessionId} has no live run`);
+    if (session.state !== "draft") throw new NoLiveRunError("sendMessage", sessionId);
     if (!session.node_id) throw new Error(`sendMessage: draft session ${sessionId} has no anchor node`);
 
     const { runner, instanceId } = session.runner
@@ -1194,7 +1205,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // state) is recorded before the adapter learns the decision.
   async function answerLocked(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
     const live = liveRuns.get(sessionId);
-    if (!live) throw new Error(`answer: session ${sessionId} has no live run`);
+    if (!live) throw new NoLiveRunError("answer", sessionId);
     touchActivity(sessionId);
 
     const pending = pendingQuestions.get(sessionId);

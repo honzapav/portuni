@@ -190,8 +190,10 @@ Předat leaves one), the same suspend code writes the file now
 from the transcript here, or, only when there is no transcript here, the
 inline summary in `content.db` (nothing refreshes it at suspend, so it can
 be older than the transcript). Every refusal is a `SessionHandoffError` (REST 409, Czech
-message; `api/session-handoff-errors.ts` is the one mapping the local
-router, the agent router and the socket share) and comes before any side
+message; `api/session-refusals.ts` is the one mapping the local
+router, the agent router and the socket share, for `NoLiveRunError`'s
+`NO_LIVE_RUN` too, and it reads the code off the error's type, never its
+message text, #530) and comes before any side
 effect -- nothing is interrupted, ended or suspended:
 `HANDOFF_NOT_ALLOWED` (a `draft` or `closed` thread), `HANDOFF_NO_MIRROR`
 (no mirror of the node on this device: nowhere to write the file),

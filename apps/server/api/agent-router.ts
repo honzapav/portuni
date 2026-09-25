@@ -57,7 +57,7 @@ import {
   sessionResumeInfoPayload,
 } from "./sessions.js";
 import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
-import { respondHandoffRefusal } from "./session-handoff-errors.js";
+import { respondSessionRefusal } from "./session-refusals.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -102,26 +102,6 @@ function respondCentral404(res: ServerResponse, err: unknown): boolean {
     (err instanceof MirrorCreateError && err.code === "NODE_NOT_FOUND");
   if (unknownNode) {
     respondJson(res, 404, { error: "node not found" });
-    return true;
-  }
-  return false;
-}
-
-// Same substring-matched runtime errors api/sessions.ts's REST routes map
-// to 409s -- the session runtime throws plain Errors, not typed ones, so
-// both callers key off the same message fragments.
-function respondAgentSessionError(res: ServerResponse, err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  if (err.message.includes("has no live run")) {
-    respondJson(res, 409, { error: err.message, code: "NO_LIVE_RUN" });
-    return true;
-  }
-  if (err.message.includes("already has a live run")) {
-    respondJson(res, 409, { error: err.message, code: "ALREADY_RUNNING" });
-    return true;
-  }
-  if (err.message.includes("no resumable conversation")) {
-    respondJson(res, 409, { error: err.message, code: "NOT_RESUMABLE" });
     return true;
   }
   return false;
@@ -481,7 +461,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           const updated = await sessionRuntime.getSession(session.id);
           respondJson(res, 201, { session: updated ?? session, run });
         } catch (err) {
-          if (respondHandoffRefusal(res, err)) return true;
+          if (respondSessionRefusal(res, err)) return true;
           if (err instanceof NoRunnerAvailableError) {
             respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
             return true;
@@ -552,8 +532,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         respondJson(res, 202, { ok: true });
       } catch (err) {
         // #497: a resume with nothing to continue from on this device.
-        if (respondHandoffRefusal(res, err)) return true;
-        if (respondAgentSessionError(res, err)) return true;
+        if (respondSessionRefusal(res, err)) return true;
         respondError(res, `POST /sessions/${sessionId}/messages`, err);
       }
       return true;
@@ -653,7 +632,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         const { session, run } = await sessionRuntime.continueSession(sessionId);
         respondJson(res, 200, { session, run });
       } catch (err) {
-        if (respondAgentSessionError(res, err)) return true;
+        if (respondSessionRefusal(res, err)) return true;
         respondError(res, `POST /sessions/${sessionId}/continue`, err);
       }
       return true;
@@ -684,8 +663,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         const { session, handoff_path } = await sessionRuntime.handoff(sessionId);
         respondJson(res, 200, { session, handoff_path });
       } catch (err) {
-        if (respondHandoffRefusal(res, err)) return true;
-        if (respondAgentSessionError(res, err)) return true;
+        if (respondSessionRefusal(res, err)) return true;
         respondError(res, `POST /sessions/${sessionId}/handoff`, err);
       }
       return true;

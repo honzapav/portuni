@@ -39,7 +39,7 @@ import { getSessionRuntime } from "../boot/session-runtime.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import { listSessions } from "../domain/sessions.js";
 import { scopeAtLeast } from "../auth/roles.js";
-import { handoffRefusal } from "./session-handoff-errors.js";
+import { sessionRefusal } from "./session-refusals.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 import { logAudit } from "../infra/audit.js";
@@ -422,12 +422,9 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     try {
       await deps.runtime().sendMessage(sessionId, text);
     } catch (err) {
-      if (err instanceof Error && err.message.includes("has no live run")) {
-        sendErrorReply(conn.ws, frame.id, "NO_LIVE_RUN", err.message);
-        return;
-      }
-      // #497: a resume with nothing to continue from on this device.
-      const refusal = handoffRefusal(err);
+      // #497: a resume with nothing to continue from on this device; #530:
+      // NO_LIVE_RUN from the error's type.
+      const refusal = sessionRefusal(err);
       if (refusal) {
         sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message);
         return;
@@ -530,7 +527,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       await deps.audit(conn.identity, "session_handoff", sessionId, { handoff_path });
       sendReply(conn.ws, frame.id, { session: await toSummary(session), handoff_path });
     } catch (err) {
-      const refusal = handoffRefusal(err);
+      const refusal = sessionRefusal(err);
       if (refusal) {
         sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message);
         return;

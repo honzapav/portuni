@@ -90,7 +90,7 @@ import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { logAudit } from "../infra/audit.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
 import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
-import { respondHandoffRefusal } from "./session-handoff-errors.js";
+import { respondSessionRefusal } from "./session-refusals.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv, instanceClaudeConfigDir } from "../domain/runner/instances.js";
 import { resolveHostLabel, transcriptHostLabel } from "../domain/runner/hosts.js";
@@ -608,7 +608,7 @@ export async function handleStartSession(
         const updated = await getSession(db, session.id);
         respondJson(res, 201, { session: await toSummary(updated ?? session), run });
       } catch (err) {
-        if (respondHandoffRefusal(res, err)) return;
+        if (respondSessionRefusal(res, err)) return;
         if (err instanceof NoRunnerAvailableError) {
           respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
           return;
@@ -717,14 +717,11 @@ export async function handleSendSessionMessage(
     try {
       await getSessionRuntime().sendMessage(sessionId, body.text);
     } catch (err) {
-      // #497: a resume with nothing to continue from on this device.
-      if (respondHandoffRefusal(res, err)) return;
+      // #497: a resume with nothing to continue from on this device; #530:
+      // NO_LIVE_RUN from the error's type.
+      if (respondSessionRefusal(res, err)) return;
       if (err instanceof NoRunnerAvailableError) {
         respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
-        return;
-      }
-      if (err instanceof Error && err.message.includes("has no live run")) {
-        respondJson(res, 409, { error: err.message, code: "NO_LIVE_RUN" });
         return;
       }
       throw err;
@@ -808,6 +805,8 @@ export async function handleContinueSession(
     await logAudit(identity.userId, "session_continue", "session", sessionId, { new_session_id: session.id });
     respondJson(res, 200, { session: await toSummary(session), run });
   } catch (err) {
+    // Same refusal mapping the agent router's continue route applies.
+    if (respondSessionRefusal(res, err)) return;
     respondError(res, `${req.method} /sessions/${sessionId}/continue`, err);
   }
 }
@@ -833,7 +832,7 @@ export async function handleHandoffSession(
       await logAudit(identity.userId, "session_handoff", "session", sessionId, { handoff_path });
       respondJson(res, 200, { session: await toSummary(session), handoff_path });
     } catch (err) {
-      if (respondHandoffRefusal(res, err)) return;
+      if (respondSessionRefusal(res, err)) return;
       throw err;
     }
   } catch (err) {

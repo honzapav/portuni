@@ -4,7 +4,7 @@ import { getDb, type InValue } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
 import { EVENT_TYPES, EVENT_STATUSES } from "../../infra/schema.js";
 import { EventRow } from "../../shared/types.js";
-import { supersedeEventInternal } from "../../domain/events.js";
+import { EventNotFoundError, supersedeEventInternal } from "../../domain/events.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../../auth/node-access.js";
@@ -229,7 +229,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           meta: args.meta,
         });
       } catch (e) {
-        if (e instanceof Error && /not found/.test(e.message)) {
+        if (e instanceof EventNotFoundError) {
           return {
             content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
             isError: true,

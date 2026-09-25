@@ -190,20 +190,20 @@ export async function storeFile(db: DbClient, a: StoreFileArgs): Promise<StoreFi
     // no hash, future S3/Dropbox vary. We use whichever the backend reports as
     // the canonical "what I last saw" so that statusScan compares like-for-like.
     let hash = sha256Buffer(content);
+    let stat: Awaited<ReturnType<typeof adapter.stat>> = null;
     try {
-      const stat = await adapter.stat(remotePath);
-      if (stat?.hash) {
-        const expected = stat.hash.length === 32 ? md5Buffer(content) : hash;
-        if (stat.hash.toLowerCase() !== expected.toLowerCase()) {
-          throw new Error(
-            `Post-upload hash verification failed: expected ${expected}, adapter reported ${stat.hash}`,
-          );
-        }
-        hash = stat.hash.toLowerCase();
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("Post-upload hash")) throw e;
+      stat = await adapter.stat(remotePath);
+    } catch {
       // Adapter may not support stat or may have transient failure - treat as soft warning.
+    }
+    if (stat?.hash) {
+      const expected = stat.hash.length === 32 ? md5Buffer(content) : hash;
+      if (stat.hash.toLowerCase() !== expected.toLowerCase()) {
+        throw new Error(
+          `Post-upload hash verification failed: expected ${expected}, adapter reported ${stat.hash}`,
+        );
+      }
+      hash = stat.hash.toLowerCase();
     }
 
     // Upsert files row. Single statement against the idx_files_unique_remote
