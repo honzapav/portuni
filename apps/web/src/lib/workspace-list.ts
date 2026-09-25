@@ -32,3 +32,16 @@ export function taskGroupOf(s: Pick<SessionSummary, "state" | "waiting_since">):
   if (s.state === "draft") return "draft";
   return "done";
 }
+
+// The Práce tab's badge: the tasks the Stav view lists across the open
+// nodes, minus the done ones -- tasks, not nodes, are what the user works
+// through.
+export function countOpenTasks(
+  threadsByNode: Record<string, readonly Pick<SessionSummary, "state" | "waiting_since">[]>,
+): number {
+  let n = 0;
+  for (const tasks of Object.values(threadsByNode)) {
+    for (const t of tasks) if (taskGroupOf(t) !== "done") n++;
+  }
+  return n;
+}
