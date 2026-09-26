@@ -8,7 +8,8 @@
       "osobni": "sandcastle.claude-code.oauth-token",
       "tempo": "sandcastle.claude-code.oauth-token-tempo",
       "jrd": "skill.sandcastle-jrd.claude-oauth-token"
-    }
+    },
+    "notifySecrets": { "NTFY_TOPIC": "sandcastle.ntfy.topic" }
   },
   "branchPrefix": "ralph/backlog",
   "maxIterations": 10,
@@ -59,5 +60,5 @@
     },
     "logUserPrompts": false
   },
-  "notify": "curl -s -m 8 -H \"Title: sandcastle $SANDCASTLE_PROJECT: $SANDCASTLE_EVENT\" -d \"$SANDCASTLE_MESSAGE\" https://ntfy.sh/sandcastle-honzapav-8159501a >/dev/null"
+  "notify": "curl -s -m 8 -H \"Title: sandcastle $SANDCASTLE_PROJECT: $SANDCASTLE_EVENT\" -d \"$SANDCASTLE_MESSAGE\" https://ntfy.sh/$NTFY_TOPIC >/dev/null"
 }
