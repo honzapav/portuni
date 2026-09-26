@@ -8,9 +8,9 @@
       "osobni": "sandcastle.claude-code.oauth-token",
       "tempo": "sandcastle.claude-code.oauth-token-tempo",
       "jrd": "skill.sandcastle-jrd.claude-oauth-token"
-    }
+    },
+    "notifySecrets": { "NTFY_TOPIC": "sandcastle.ntfy.topic" }
   },
-  "model": "opus",
   "branchPrefix": "ralph/backlog",
   "maxIterations": 10,
   "maxRuns": 24,
@@ -52,11 +52,6 @@
   "promptProject": ".sandcastle/prompt.project.md",
   "mainBranch": "main",
   "requireMain": true,
-  "review": {
-    "model": "claude-fable-5-1",
-    "fallbackModel": "opus",
-    "when": "run"
-  },
   "telemetry": {
     "endpoint": "https://otlp-gateway-prod-eu-west-2.grafana.net/otlp",
     "headerKeychainService": "skill.grafana-cloud.otlp-auth-header",
@@ -65,5 +60,5 @@
     },
     "logUserPrompts": false
   },
-  "notify": "curl -s -m 8 -H \"Title: sandcastle $SANDCASTLE_PROJECT: $SANDCASTLE_EVENT\" -d \"$SANDCASTLE_MESSAGE\" https://ntfy.sh/sandcastle-honzapav-8159501a >/dev/null"
+  "notify": "curl -s -m 8 -H \"Title: sandcastle $SANDCASTLE_PROJECT: $SANDCASTLE_EVENT\" -d \"$SANDCASTLE_MESSAGE\" https://ntfy.sh/$NTFY_TOPIC >/dev/null"
 }

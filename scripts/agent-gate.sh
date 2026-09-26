@@ -14,6 +14,9 @@ npm run qa
 echo "== i18n: catalog types, status, unused keys, extract, lint, no text outside the catalog"
 npm run i18n:check
 
+echo "== fallow: changed code against origin/main"
+scripts/fallow-gate.sh origin/main
+
 echo "== web: typecheck, build"
 npx --prefix apps/web tsc -b apps/web --noEmit
 npm --prefix apps/web run build

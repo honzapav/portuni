@@ -11,7 +11,7 @@ specific.
 
 | File | Purpose |
 |---|---|
-| `config.json` | Project id, image, Keychain entries, model, sandbox setup commands (harness README: Config) |
+| `config.json` | Project id, image, Keychain entries, sandbox setup commands; model and review come from the harness defaults (harness README: Config) |
 | `prompt.project.md` | Project section of the prompt: gate, tests, docs, repo rules |
 | `Dockerfile` | node:22 + gh + claude-code + Rust toolchain + Tauri Linux deps |
 | `package.json` | Pins the harness version |
