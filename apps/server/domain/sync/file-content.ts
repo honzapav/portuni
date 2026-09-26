@@ -55,12 +55,40 @@ export class FileContentError extends Error {
 
 // Editable = text-ish. Unknown extension (null mime) is treated as text so
 // .mdx/.yaml/.toml open; known binary types are rejected. A NUL byte in the
-// bytes is a hard binary signal even if the extension lied.
-function isEditableMime(mime: string | null): boolean {
+// bytes is a hard binary signal even if the extension lied. Shared with
+// file-content-remote.ts.
+export function isEditableMime(mime: string | null): boolean {
   if (mime === null) return true;
   if (mime.startsWith("text/")) return true;
   if (mime === "application/json") return true;
   return false;
+}
+
+export function fileNotFoundError(relPath: string): FileContentError {
+  return new FileContentError(`file not found: ${relPath}`, "NOT_FOUND", undefined, { path: relPath });
+}
+
+export function notEditableTextError(relPath: string): FileContentError {
+  return new FileContentError(`file is not editable text: ${relPath}`, "NOT_EDITABLE", undefined, { path: relPath });
+}
+
+// The editor-facing answer for bytes just read, from the mirror
+// (readFileContent) or the remote (readFileContentRemote).
+export function editableTextContent<L extends string | null>(
+  buf: Buffer,
+  relPath: string,
+  filename: string,
+  mime: string | null,
+  localPath: L,
+): { content: string; version: string; filename: string; mime_type: string | null; local_path: L } {
+  if (!isEditableMime(mime) || buf.includes(0)) throw notEditableTextError(relPath);
+  return {
+    content: buf.toString("utf8"),
+    version: sha256Buffer(buf),
+    filename,
+    mime_type: mime,
+    local_path: localPath,
+  };
 }
 
 export function resolveMirrorAbs(mirrorRoot: string, relPath: string): string {
@@ -95,21 +123,10 @@ export async function readFileContent(
   try {
     buf = await readFile(abs);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND", undefined, { path: a.relPath });
-    }
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") throw fileNotFoundError(a.relPath);
     throw e;
   }
-  if (!isEditableMime(mime) || buf.includes(0)) {
-    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
-  return {
-    content: buf.toString("utf8"),
-    version: sha256Buffer(buf),
-    filename,
-    mime_type: mime,
-    local_path: abs,
-  };
+  return editableTextContent(buf, a.relPath, filename, mime, abs);
 }
 
 export async function writeFileContent(

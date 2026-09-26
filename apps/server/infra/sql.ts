@@ -153,7 +153,7 @@ export function constraintViolation(err: Error): { code: ErrorCode; message: str
 // already the trigger's raw text (or a reasonably readable constraint
 // message); libsql wraps it as "SQLite error: <text>", so that shape still
 // needs the regex extraction it always has.
-export function constraintViolationMessage(err: Error): string | null {
+function constraintViolationMessage(err: Error): string | null {
   const code = (err as { code?: unknown }).code;
   if (typeof code === "string" && (code === "P0001" || /^23\d{3}$/.test(code))) {
     return err.message;

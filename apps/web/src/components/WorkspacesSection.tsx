@@ -11,7 +11,7 @@
 // workspace's health is visible at all.
 
 import { displayError } from "../errors";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -30,11 +30,10 @@ import {
   slugify,
   type WorkspaceInfo,
 } from "../lib/workspaces";
+import { useFormAction, useListLoad, usePendingIds } from "../lib/use-list-load";
+import { ErrorActionAlert } from "./ErrorActionAlert";
 
-type ListState =
-  | { kind: "loading" }
-  | { kind: "error"; reason: string }
-  | { kind: "ok"; workspaces: WorkspaceInfo[] };
+const fetchWorkspaces = async () => ({ workspaces: await listWorkspaces() });
 
 const DATA_MODE_TEXT: Record<
   WorkspaceInfo["data_mode"],
@@ -46,44 +45,21 @@ const DATA_MODE_TEXT: Record<
 
 export default function WorkspacesSection() {
   const { t } = useTranslation("settings");
-  const [state, setState] = useState<ListState>({ kind: "loading" });
+  const { state, load: loadList, mountedRef } = useListLoad(fetchWorkspaces);
   const [rowError, setRowError] = useState<string | null>(null);
-  const [pending, setPending] = useState<Set<string>>(() => new Set());
+  const { pending, withPending } = usePendingIds(mountedRef);
   // Inline two-step delete confirm: window.confirm is a silent no-op in the
   // Tauri webview on macOS (see DetailPane.tsx). Holds the id of the row whose
   // delete is awaiting confirmation; the row swaps its Delete button for the
   // warning + Really delete/Cancel while set.
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
   const load = useCallback(async () => {
-    if (!mountedRef.current) return;
     // Whenever the list reloads, an armed "Really delete" must not survive
     // -- the row set it belonged to may have just changed underneath it.
     setConfirmDeleteId(null);
-    setState({ kind: "loading" });
-    try {
-      const workspaces = await listWorkspaces();
-      if (mountedRef.current) setState({ kind: "ok", workspaces });
-    } catch (e) {
-      if (mountedRef.current) {
-        setState({
-          kind: "error",
-          reason: displayError(e),
-        });
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+    await loadList();
+  }, [loadList]);
 
   // Cross-window sync (#226): Rust broadcasts "workspaces-changed" after
   // every config mutation, from ANY window -- replacing the old
@@ -117,18 +93,6 @@ export default function WorkspacesSection() {
   const reloadAfterMutation = useCallback(async () => {
     await load();
   }, [load]);
-
-  function withPending<T>(id: string, fn: () => Promise<T>): Promise<T> {
-    setPending((prev) => new Set([...prev, id]));
-    return fn().finally(() => {
-      if (!mountedRef.current) return;
-      setPending((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    });
-  }
 
   async function handleOpen(id: string) {
     // Row action: an armed delete confirm elsewhere in the table must not
@@ -187,20 +151,12 @@ export default function WorkspacesSection() {
         </p>
 
         {rowError && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertDescription className="flex items-start justify-between gap-3">
-              <span className="min-w-0 break-words">{rowError}</span>
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                onClick={() => setRowError(null)}
-                className="shrink-0 text-destructive"
-              >
-                {t(($) => $.workspaces.list.dismiss_error)}
-              </Button>
-            </AlertDescription>
-          </Alert>
+          <ErrorActionAlert
+            message={rowError}
+            actionLabel={t(($) => $.workspaces.list.dismiss_error)}
+            onAction={() => setRowError(null)}
+            className="mb-4"
+          />
         )}
 
         {state.kind === "loading" && (
@@ -210,20 +166,11 @@ export default function WorkspacesSection() {
         )}
 
         {state.kind === "error" && (
-          <Alert variant="destructive">
-            <AlertDescription className="flex items-start justify-between gap-3">
-              <span className="min-w-0 break-words">{state.reason}</span>
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                onClick={() => void load()}
-                className="shrink-0 text-destructive"
-              >
-                {t(($) => $.workspaces.list.retry)}
-              </Button>
-            </AlertDescription>
-          </Alert>
+          <ErrorActionAlert
+            message={state.reason}
+            actionLabel={t(($) => $.workspaces.list.retry)}
+            onAction={() => void load()}
+          />
         )}
 
         {state.kind === "ok" && state.workspaces.length === 0 && (
@@ -408,16 +355,8 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
   const [googleClientSecret, setGoogleClientSecret] = useState("");
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [workspaceRootTouched, setWorkspaceRootTouched] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { busy, error, setError, run, mountedRef } = useFormAction();
   const [createdHint, setCreatedHint] = useState(false);
-
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
 
   const id = slugify(name);
   const effectiveWorkspaceRoot = workspaceRootTouched
@@ -440,10 +379,8 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
       setError(t(($) => $.workspaces.create.invalid_name));
       return;
     }
-    setBusy(true);
-    setError(null);
     setCreatedHint(false);
-    try {
+    await run(async () => {
       await createWorkspace({
         id,
         label: name.trim() || undefined,
@@ -459,11 +396,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
       reset();
       onCreated();
       if (wasLocal && mountedRef.current) setCreatedHint(true);
-    } catch (e) {
-      if (mountedRef.current) setError(displayError(e));
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
+    });
   }
 
   return (

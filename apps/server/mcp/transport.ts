@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./server.js";
-import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
+import { parseMcpBody, routeToExistingSession, writeInternalError } from "./http-session.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { autoSeedFromHome, parseHomeNodeIdFromUrl, parseResumeSessionIdFromUrl } from "./auto-seed.js";
 import {
@@ -61,47 +61,12 @@ export function createMcpTransport(): McpTransport {
   sessionGc.unref?.();
 
   async function handle(req: IncomingMessage, res: ServerResponse, identity: RequestIdentity): Promise<void> {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    let body: unknown;
-    try {
-      body = await parseBody(req);
-    } catch (err) {
-      if (err instanceof RequestBodyTooLargeError) {
-        res.writeHead(413, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Request body too large", code: "BODY_TOO_LARGE" }));
-        return;
-      }
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid JSON body", code: "INVALID_JSON" }));
-      return;
-    }
+    const parsed = await parseMcpBody(req, res);
+    if (!parsed.ok) return;
+    const body = parsed.body;
 
     try {
-      const existing = sessionId ? sessions.get(sessionId) : undefined;
-      if (existing) {
-        // Session pinning: reject cross-user session reuse.
-        if (existing.userId !== identity.userId) {
-          res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Session belongs to a different user", code: "MCP_SESSION_FORBIDDEN" }));
-          return;
-        }
-        existing.lastUsedAt = Date.now();
-        await existing.transport.handleRequest(req, res, body);
-        return;
-      }
-
-      if (sessionId && !existing) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Session not found", code: "MCP_SESSION_NOT_FOUND" }));
-        return;
-      }
-
-      if (sessions.size >= MAX_SESSIONS) {
-        res.writeHead(503, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Session capacity reached", code: "MCP_CAPACITY_REACHED" }));
-        return;
-      }
+      if (await routeToExistingSession(sessions, MAX_SESSIONS, req, res, identity, body)) return;
 
       // Parsed here (before createMcpServer) because session_type
       // derivation needs it: a headless-flagged device token is refused
@@ -310,10 +275,7 @@ export function createMcpTransport(): McpTransport {
       await transport.handleRequest(req, res, body);
     } catch (error) {
       console.error("MCP error:", error);
-      if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Internal server error", code: "INTERNAL_ERROR" }));
-      }
+      writeInternalError(res);
     }
   }
 

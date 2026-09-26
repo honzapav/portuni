@@ -5,184 +5,37 @@
 // test/session-chat-helpers.test.ts can exercise it directly against
 // fixture event arrays, same convention as lib/sessions.ts.
 //
-// CanonicalEvent mirrors apps/server/domain/runner/types.ts's own union
-// exactly. domain/runner/types.ts is server-only (not under shared/, which
-// exists precisely so the web can type REST responses without importing
-// server domain code) -- this is a deliberate parallel definition of the
-// wire shape, not an import across that boundary.
+// CanonicalEvent is the server's own union, defined once in
+// apps/server/shared/session-events.ts (type-only, like the rest of
+// shared/) and re-exported here for the web's imports.
 
 import type {
   ChatEventParams,
-  DenyCode,
   QuestionCode,
   RunErrorCode,
 } from "../../../server/shared/chat-event-codes";
+import type {
+  AskPrompt,
+  CanonicalEvent,
+  FileChangeOp,
+  QuestionEvent,
+  ToolCallEvent,
+} from "../../../server/shared/session-events";
 import type { TFunction } from "i18next";
 import type { SessionState } from "../types";
 
 type ChatT = TFunction<"chat">;
 import { sessionRowChip } from "./session-views";
 
-export type RunEndReason = "completed" | "interrupted" | "suspended" | "error" | "limit" | "host_lost";
-export type ToolCallCategory = "command" | "file_read" | "file_change" | "mcp" | "other";
-export type ToolCallStatus = "started" | "completed" | "failed";
-export type FileChangeOp = "create" | "edit" | "delete" | "rename";
-export type QuestionType = "approval" | "input";
-export type ErrorClass = "provider" | "transport" | "permission" | "unknown";
-
-// Mirrors the server's QuestionAnswer: a map answers an AskUserQuestion ask
-// question by question, keyed by the question text (#492).
-export type QuestionAnswer = string | boolean | Record<string, string>;
-
-export interface QuestionDecision {
-  by: string;
-  value: QuestionAnswer;
-  at: string;
-}
-
-export interface RunStartedEvent {
-  kind: "run_started";
-  payload: {
-    run_id: string;
-    runner: string;
-    instance_id: string | null;
-    resume: null | "conversation" | "handoff";
-    // A redelivered message (#489) is logged before this event; the run
-    // starts with it as its first turn.
-    carried_messages?: number;
-  };
-}
-export interface RunEndedEvent {
-  kind: "run_ended";
-  payload: { run_id: string; reason: RunEndReason; usage: unknown };
-}
-export interface UserMessageEvent {
-  kind: "user_message";
-  payload: { text: string; source: "chat" | "system" };
-}
-export interface AssistantMessageEvent {
-  kind: "assistant_message";
-  payload: { text: string };
-}
-export interface ReasoningEvent {
-  kind: "reasoning";
-  payload: { summary: string; duration_ms?: number };
-}
-export interface ToolCallEvent {
-  kind: "tool_call";
-  payload: {
-    tool_use_id: string;
-    tool: string;
-    category: ToolCallCategory;
-    title: string;
-    input_summary: string;
-    status: ToolCallStatus;
-    output_excerpt: string | null;
-    truncated: boolean;
-    // #532: a call the runner denied; lib/chat-event-text.ts renders it.
-    output_code?: DenyCode;
-    output_params?: ChatEventParams;
-  };
-}
-export interface FileChangeEvent {
-  kind: "file_change";
-  payload: { path: string; op: FileChangeOp };
-}
-export interface QuestionEvent {
-  kind: "question";
-  payload: {
-    request_id: string;
-    type: QuestionType;
-    tool: string;
-    // Shown as stored when `code` is absent (a row written before #532).
-    title: string;
-    code?: QuestionCode;
-    params?: ChatEventParams;
-    detail: string;
-    options: string[] | null;
-    questions?: AskPrompt[];
-    decision: QuestionDecision | null;
-  };
-}
-export interface AskPrompt {
-  question: string;
-  options: string[];
-  multi_select: boolean;
-}
-export interface CompactionEvent {
-  kind: "compaction";
-  payload: { trigger: "auto" | "manual" };
-}
-// #378: always server-written now -- no more generated_by to distinguish.
-export interface HandoffEvent {
-  kind: "handoff";
-  payload: { path: string | null; hash: string | null };
-}
-export interface StateChangedEvent {
-  kind: "state_changed";
-  payload: { from: string; to: string; waiting: boolean; by?: string };
-}
-export interface ErrorEvent {
-  kind: "error";
-  // #532: `code` for the runner's own text; without one, `message` is the
-  // provider's (or a row written before codes) and is shown as stored.
-  payload: { class: ErrorClass; message: string; code?: RunErrorCode; params?: ChatEventParams };
-}
-
-// v2 task surface (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md,
-// "The context ring"): emitted by the adapter after every provider
-// assistant message and every result. used_tokens is what the model's
-// context currently holds (input + cache creation + cache read of the
-// latest assistant usage); max_tokens is the model's window from the
-// latest result, null until one arrived. Persisted like every event, so a
-// replay rebuilds the ring; the runtime also folds the latest one onto
-// sessions.context_used_tokens / context_max_tokens.
-export interface ContextUsageEvent {
-  kind: "context_usage";
-  payload: {
-    run_id: string;
-    model: string | null;
-    used_tokens: number;
-    max_tokens: number | null;
-    input_tokens: number;
-    cached_tokens: number;
-    output_tokens: number;
-  };
-}
-
-// The turn-complete signal (server: TurnEndedEvent). A live run is not a
-// working agent: between turns the process only waits for the next
-// message, and this is the event that says the last turn is over.
-export interface TurnEndedEvent {
-  kind: "turn_ended";
-  payload: {
-    run_id: string;
-    // #490: how many sent messages this turn answered (server:
-    // TurnEndedEvent). One turn can answer several messages -- the runner
-    // folds sends that land while it works into the running turn -- so the
-    // chat subtracts this, not one, per turn. Absent on an older event and
-    // from a runner that cannot tell: one message then.
-    consumed_messages?: number;
-  };
-}
-
-export type CanonicalEvent =
-  | RunStartedEvent
-  | RunEndedEvent
-  | TurnEndedEvent
-  | UserMessageEvent
-  | AssistantMessageEvent
-  | ReasoningEvent
-  | ToolCallEvent
-  | FileChangeEvent
-  | QuestionEvent
-  | CompactionEvent
-  | HandoffEvent
-  | StateChangedEvent
-  | ErrorEvent
-  | ContextUsageEvent;
-
-export type CanonicalEventKind = CanonicalEvent["kind"];
+export type {
+  ToolCallStatus,
+  FileChangeOp,
+  QuestionAnswer,
+  ToolCallEvent,
+  QuestionEvent,
+  AskPrompt,
+  CanonicalEvent,
+} from "../../../server/shared/session-events";
 
 export interface ChatEvent {
   seq: number;

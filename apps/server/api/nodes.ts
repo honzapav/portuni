@@ -3,7 +3,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { stat as fsStat } from "node:fs/promises";
-import { getDb } from "../infra/db.js";
+import { getDb, type DbClient } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
 import {
   NODE_TYPES,
@@ -32,7 +32,7 @@ import {
   createMirrorForNode,
   MirrorCreateError,
 } from "../domain/sync/mirror-create.js";
-import type { SyncStatusResponse, SyncWatchResponse, UntrackedFile } from "../shared/api-types.js";
+import type { NodeDetail, SyncStatusResponse, SyncWatchResponse, UntrackedFile } from "../shared/api-types.js";
 import { isLocalWorkspace } from "../infra/server-config.js";
 import { remoteWatchStatus } from "../domain/sync/remote-watch-status.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
@@ -50,6 +50,34 @@ import {
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
 import { guardRestNodeWrite, filterRestWritableNodeIds, guardHeadlessFileWrite } from "./write-gate.js";
 import { z } from "zod";
+import {
+  findVisibleNodeRow,
+  mirrorCreatePayload,
+  openVisibleNode,
+  openWritableNode,
+  respondMirrorCreateError,
+  respondNodeNotFound,
+} from "./node-route-helpers.js";
+
+function requireNodeId(res: ServerResponse, nodeId: string): boolean {
+  if (!nodeId) {
+    respondApiError(res, 400, "INVALID_REQUEST", "node id required");
+    return false;
+  }
+  return true;
+}
+
+// The node's detail view, or null after answering 404 when it is gone.
+async function loadNodeDetailOr404(
+  res: ServerResponse,
+  db: DbClient,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<NodeDetail | null> {
+  const node = await loadNodeDetail(db, identity.userId, nodeId, identity);
+  if (!node) respondNodeNotFound(res, nodeId);
+  return node;
+}
 
 export async function handleGetNode(
   req: IncomingMessage,
@@ -57,21 +85,12 @@ export async function handleGetNode(
   identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
-  if (!nodeId) {
-    respondApiError(res, 400, "INVALID_REQUEST", "node id required");
-    return;
-  }
+  if (!requireNodeId(res, nodeId)) return;
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
-    const node = await loadNodeDetail(db, identity.userId, nodeId, identity);
-    if (!node) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
+    const db = await openVisibleNode(res, identity, nodeId);
+    if (!db) return;
+    const node = await loadNodeDetailOr404(res, db, identity, nodeId);
+    if (!node) return;
     respondJson(res, 200, node);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}`, err);
@@ -168,16 +187,13 @@ export async function handlePatchNode(
       return;
     }
     if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
+      respondNodeNotFound(res, nodeId);
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     await updateNodeInternal(getDb(), identity.userId, update);
-    const node = await loadNodeDetail(getDb(), identity.userId, nodeId, identity);
-    if (!node) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
+    const node = await loadNodeDetailOr404(res, getDb(), identity, nodeId);
+    if (!node) return;
     respondJson(res, 200, node);
   } catch (err) {
     if (err instanceof NodeVisibilityManagedError) {
@@ -205,7 +221,7 @@ export async function handleMoveNode(
       return;
     }
     if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
+      respondNodeNotFound(res, nodeId);
       return;
     }
     // The destination org is an FK from the request body -- validate the
@@ -222,11 +238,8 @@ export async function handleMoveNode(
       nodeId,
       body.new_org_id,
     );
-    const node = await loadNodeDetail(getDb(), identity.userId, nodeId, identity);
-    if (!node) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
+    const node = await loadNodeDetailOr404(res, getDb(), identity, nodeId);
+    if (!node) return;
     respondJson(res, 200, { ...result, node });
   } catch (err) {
     if (err instanceof EdgeError) {
@@ -302,12 +315,8 @@ export async function handleDeleteNode(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await db.execute({
-      sql: "SELECT id FROM nodes WHERE id = ?",
-      args: [nodeId],
-    });
-    if (existing.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
+    if (!(await findVisibleNodeRow(db, identity, nodeId))) {
+      respondNodeNotFound(res, nodeId);
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -334,11 +343,8 @@ export async function handleSyncStatus(
   nodeId: string,
 ): Promise<void> {
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
+    const db = await openVisibleNode(res, identity, nodeId);
+    if (!db) return;
     const result = await statusScan(db, {
       userId: identity.userId,
       nodeId,
@@ -552,11 +558,8 @@ export async function handleGetNodeOrientation(
   nodeId: string,
 ): Promise<void> {
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
+    const db = await openVisibleNode(res, identity, nodeId);
+    if (!db) return;
     const orientation = await orientationForNode(nodeId, identity.userId);
     respondJson(res, 200, { orientation });
   } catch (err) {
@@ -575,17 +578,14 @@ export async function handleFolderUrl(
   nodeId: string,
 ): Promise<void> {
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
+    const db = await openVisibleNode(res, identity, nodeId);
+    if (!db) return;
     const nodeRow = await db.execute({
       sql: "SELECT id, type, sync_key FROM nodes WHERE id = ?",
       args: [nodeId],
     });
     if (nodeRow.rows.length === 0) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
+      respondNodeNotFound(res, nodeId);
       return;
     }
     const n = nodeRow.rows[0];
@@ -650,11 +650,8 @@ export async function handleFileUrl(
   nodeId: string,
 ): Promise<void> {
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
+    const db = await openVisibleNode(res, identity, nodeId);
+    if (!db) return;
     const url = new URL(req.url ?? "", "http://internal");
     const fileId = url.searchParams.get("file_id");
     if (!fileId) {
@@ -680,7 +677,7 @@ export async function handleFileUrl(
       args: [nodeId],
     });
     if (nodeRow.rows.length === 0) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
+      respondNodeNotFound(res, nodeId);
       return;
     }
     const nodeType = nodeRow.rows[0].type as string;
@@ -737,12 +734,8 @@ export async function handleSyncRun(
   nodeId: string,
 ): Promise<void> {
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
-    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
+    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    if (!db) return;
     // The same per-node lock the background job pool takes (#417): this
     // route and the remote watcher's catch-up sweep of the same node would
     // otherwise interleave (double adopt, double tombstone, unique-
@@ -766,12 +759,8 @@ export async function handleRemoteSweep(
   nodeId: string,
 ): Promise<void> {
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
-    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
+    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    if (!db) return;
     // Same node lock as the sync run above and the job pool (#417) -- an
     // agent-mode device asking for this sweep must not overlap the
     // watcher's own catch-up of that node.
@@ -816,11 +805,8 @@ export async function handleResolveFile(
       respondApiError(res, 400, "INVALID_RESOLVE_ACTION", "action must be keep_local | take_remote | restore");
       return;
     }
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
+    const db = await openVisibleNode(res, identity, nodeId);
+    if (!db) return;
     // IDOR guard: the URL's nodeId only gates node-level visibility above --
     // pullFile resolves everything else (mirror, path) from the file's OWN
     // node_id and ignores the URL entirely, and deriveLocalPath's prefix
@@ -907,17 +893,10 @@ export async function handleCreateNodeMirror(
   identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
-  if (!nodeId) {
-    respondApiError(res, 400, "INVALID_REQUEST", "node id required");
-    return;
-  }
+  if (!requireNodeId(res, nodeId)) return;
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
+    const db = await openWritableNode(req, res, identity, nodeId, guardRestNodeWrite);
+    if (!db) return;
     const result = await createMirrorForNode(db, identity.userId, { nodeId });
     // Best-effort folder URL on the routed remote — not part of the
     // happy-path mirror creation. We don't await any heavy listing here;
@@ -928,24 +907,10 @@ export async function handleCreateNodeMirror(
     } catch {
       remoteUrl = null;
     }
-    respondJson(res, result.created ? 201 : 200, {
-      node_id: result.node_id,
-      local_path: result.local_path,
-      created: result.created,
-      remote_url: remoteUrl,
-      subdirs: result.subdirs,
-      remote_scaffold: result.remote_scaffold,
-      scope_config: result.scope_config,
-    });
+    respondJson(res, result.created ? 201 : 200, mirrorCreatePayload(result, remoteUrl));
   } catch (err) {
     if (err instanceof MirrorCreateError) {
-      const status =
-        err.code === "NODE_NOT_FOUND"
-          ? 404
-          : err.code === "PATH_TRAVERSAL"
-            ? 400
-            : 500;
-      respondApiError(res, status, err.code, err.message, err.params);
+      respondMirrorCreateError(res, err);
       return;
     }
     respondError(res, `${req.method} /nodes/${nodeId}/mirror`, err);

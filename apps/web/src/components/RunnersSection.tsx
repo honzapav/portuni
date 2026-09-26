@@ -6,8 +6,7 @@
 // lives on the sidecar, not in the desktop's own config.json.
 
 import { displayError } from "../errors";
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { MutableRefObject } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -40,11 +39,10 @@ import { fetchGraph } from "../api";
 import type { GraphNode } from "../types";
 import { compareText } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
+import { useFormAction, useListLoad, usePendingIds } from "../lib/use-list-load";
+import { ErrorActionAlert } from "./ErrorActionAlert";
 
-type ListState =
-  | { kind: "loading" }
-  | { kind: "error"; reason: string }
-  | { kind: "ok"; instances: RunnerInstanceSummary[] };
+const fetchInstances = async () => ({ instances: await listRunnerInstances() });
 
 // Radix Select refuses an empty-string item value, so "no default instance"
 // travels as this sentinel and is mapped back to null at the call site.
@@ -55,35 +53,17 @@ const FIELD_LABEL =
 const ROW_FIELD_LABEL =
   "mb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-text-dim)]";
 
-// React 18 StrictMode double-invokes effects in dev (setup -> cleanup ->
-// setup again) synchronously, before any fetch can possibly resolve --
-// resetting to true on setup (not just false on cleanup) is what keeps a
-// real async response after that dance from being silently dropped for the
-// rest of the mount's lifetime.
-function useMountedRef(): MutableRefObject<boolean> {
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-  return mountedRef;
-}
-
 export default function RunnersSection() {
   const { t } = useTranslation("settings");
   const locale = useLocale();
   const [runners, setRunners] = useState<RunnerInfo[] | null>(null);
   const [runnersError, setRunnersError] = useState<string | null>(null);
-  const [state, setState] = useState<ListState>({ kind: "loading" });
+  const { state, load: loadList, mountedRef } = useListLoad(fetchInstances);
   const [orgs, setOrgs] = useState<GraphNode[]>([]);
   const [rowError, setRowError] = useState<string | null>(null);
-  const [pending, setPending] = useState<Set<string>>(() => new Set());
+  const { pending, withPending } = usePendingIds(mountedRef);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-
-  const mountedRef = useMountedRef();
 
   useEffect(() => {
     listRunners()
@@ -96,22 +76,9 @@ export default function RunnersSection() {
   }, []);
 
   const load = useCallback(async () => {
-    if (!mountedRef.current) return;
     setConfirmDeleteId(null);
-    setState({ kind: "loading" });
-    try {
-      const instances = await listRunnerInstances();
-      if (mountedRef.current) setState({ kind: "ok", instances });
-    } catch (e) {
-      if (mountedRef.current) {
-        setState({ kind: "error", reason: displayError(e) });
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+    await loadList();
+  }, [loadList]);
 
   useEffect(() => {
     fetchGraph()
@@ -127,18 +94,6 @@ export default function RunnersSection() {
         // The org-default picker just stays empty -- not fatal to the tab.
       });
   }, []);
-
-  function withPending<T>(id: string, fn: () => Promise<T>): Promise<T> {
-    setPending((prev) => new Set([...prev, id]));
-    return fn().finally(() => {
-      if (!mountedRef.current) return;
-      setPending((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    });
-  }
 
   async function handleDelete(instance: RunnerInstanceSummary) {
     setConfirmDeleteId(null);
@@ -248,20 +203,12 @@ export default function RunnersSection() {
         </p>
 
         {rowError && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertDescription className="flex items-start justify-between gap-3">
-              <span className="min-w-0 break-words">{rowError}</span>
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                onClick={() => setRowError(null)}
-                className="shrink-0 text-destructive"
-              >
-                {t(($) => $.runners.instances.dismiss_error)}
-              </Button>
-            </AlertDescription>
-          </Alert>
+          <ErrorActionAlert
+            message={rowError}
+            actionLabel={t(($) => $.runners.instances.dismiss_error)}
+            onAction={() => setRowError(null)}
+            className="mb-4"
+          />
         )}
 
         {state.kind === "loading" && (
@@ -269,20 +216,11 @@ export default function RunnersSection() {
         )}
 
         {state.kind === "error" && (
-          <Alert variant="destructive">
-            <AlertDescription className="flex items-start justify-between gap-3">
-              <span className="min-w-0 break-words">{state.reason}</span>
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                onClick={() => void load()}
-                className="shrink-0 text-destructive"
-              >
-                {t(($) => $.runners.instances.retry)}
-              </Button>
-            </AlertDescription>
-          </Alert>
+          <ErrorActionAlert
+            message={state.reason}
+            actionLabel={t(($) => $.runners.instances.retry)}
+            onAction={() => void load()}
+          />
         )}
 
         {state.kind === "ok" && instances.length === 0 && (
@@ -570,10 +508,7 @@ function CreateInstanceForm({
   const [name, setName] = useState("");
   const [runner, setRunner] = useState("");
   const [envText, setEnvText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const mountedRef = useMountedRef();
+  const { busy, error, setError, run } = useFormAction();
 
   async function handleCreate() {
     if (!name.trim()) {
@@ -590,19 +525,13 @@ function CreateInstanceForm({
       setError(envIssue);
       return;
     }
-    setBusy(true);
-    setError(null);
-    try {
+    await run(async () => {
       await createRunnerInstance({ name: name.trim(), runner: runner.trim(), env });
       setName("");
       setRunner("");
       setEnvText("");
       onCreated();
-    } catch (e) {
-      if (mountedRef.current) setError(displayError(e));
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
+    });
   }
 
   return (

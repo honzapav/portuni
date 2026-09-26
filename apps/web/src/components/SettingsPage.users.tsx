@@ -4,21 +4,19 @@
 // component assumes it's only ever rendered for an admin.
 
 import { displayError } from "../errors";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fetchUsersAdmin, inviteUser, UserExistsError } from "../api";
-import type { UserAdmin } from "../types";
 import { formatDateTime } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
+import { useListLoad } from "../lib/use-list-load";
+import { ErrorActionAlert } from "./ErrorActionAlert";
 
-type UsersState =
-  | { kind: "loading" }
-  | { kind: "error"; reason: string }
-  | { kind: "ok"; users: UserAdmin[] };
+const fetchUsers = async () => ({ users: await fetchUsersAdmin() });
 
 // Simple format check, mirrors the server's zod z.string().email() closely
 // enough to catch typos before a round-trip -- not a full RFC validator.
@@ -27,42 +25,14 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export default function SettingsUsersPanel() {
   const locale = useLocale();
   const { t } = useTranslation("settings");
-  const [state, setState] = useState<UsersState>({ kind: "loading" });
+  // mountedRef guards setState calls that resolve after the panel has
+  // unmounted (tab switch mid-fetch, admin bounced back to "general", etc.),
+  // shared across load() and handleInvite() since both call async work
+  // outside a single effect body.
+  const { state, load, mountedRef } = useListLoad(fetchUsers);
   const [email, setEmail] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
-
-  // Guards setState calls that resolve after the panel has unmounted
-  // (tab switch mid-fetch, admin bounced back to "general", etc.) --
-  // same cancelled-flag intent as the fetchMe effect in SettingsPage.tsx,
-  // shared across load() and handleInvite() via a ref since both call
-  // async work outside a single effect body.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const load = useCallback(async () => {
-    if (!mountedRef.current) return;
-    setState({ kind: "loading" });
-    try {
-      const users = await fetchUsersAdmin();
-      if (mountedRef.current) setState({ kind: "ok", users });
-    } catch (e) {
-      if (mountedRef.current) {
-        setState({
-          kind: "error",
-          reason: displayError(e),
-        });
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   async function handleInvite() {
     const trimmed = email.trim();
@@ -138,20 +108,11 @@ export default function SettingsUsersPanel() {
       )}
 
       {state.kind === "error" && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex items-start justify-between gap-3">
-            <span className="min-w-0 break-words">{state.reason}</span>
-            <Button
-              type="button"
-              variant="link"
-              size="sm"
-              onClick={() => void load()}
-              className="shrink-0 text-destructive"
-            >
-              {t(($) => $.users.retry)}
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <ErrorActionAlert
+          message={state.reason}
+          actionLabel={t(($) => $.users.retry)}
+          onAction={() => void load()}
+        />
       )}
 
       {state.kind === "ok" && state.users.length === 0 && (

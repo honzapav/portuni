@@ -25,7 +25,7 @@
     "pre-push": "npm run qa"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.270",

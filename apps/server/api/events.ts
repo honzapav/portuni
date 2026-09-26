@@ -3,7 +3,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { ulid } from "ulid";
-import { getDb } from "../infra/db.js";
+import { getDb, type DbClient } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
 import { EVENT_TYPES, EVENT_STATUSES } from "../infra/schema.js";
 import {
@@ -65,6 +65,28 @@ export async function handleCreateEvent(
   }
 }
 
+// An event is written through its node: a missing event and one on a node
+// the caller cannot see answer the same 404, a visible one must pass the
+// write gate. False once a response is sent.
+async function guardEventWrite(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  db: DbClient,
+  eventId: string,
+): Promise<boolean> {
+  const eventRow = await db.execute({
+    sql: "SELECT node_id FROM events WHERE id = ?",
+    args: [eventId],
+  });
+  const eventNodeId = eventRow.rows.length === 0 ? null : (eventRow.rows[0].node_id as string);
+  if (eventNodeId === null || !(await nodeVisibleTo(db, identity, eventNodeId))) {
+    respondApiError(res, 404, "EVENT_NOT_FOUND", "event not found", { eventId });
+    return false;
+  }
+  return guardRestNodeWrite(req, res, identity, eventNodeId);
+}
+
 export async function handleUpdateEvent(
   req: IncomingMessage,
   res: ServerResponse,
@@ -80,20 +102,7 @@ export async function handleUpdateEvent(
       return;
     }
     const db = getDb();
-    const existing = await db.execute({
-      sql: "SELECT id, status, node_id FROM events WHERE id = ?",
-      args: [eventId],
-    });
-    if (existing.rows.length === 0) {
-      respondApiError(res, 404, "EVENT_NOT_FOUND", "event not found", { eventId });
-      return;
-    }
-    const eventNodeId = existing.rows[0].node_id as string;
-    if (!(await nodeVisibleTo(db, identity, eventNodeId))) {
-      respondApiError(res, 404, "EVENT_NOT_FOUND", "event not found", { eventId });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, eventNodeId))) return;
+    if (!(await guardEventWrite(req, res, identity, db, eventId))) return;
     const updates: string[] = [];
     const values: (string | null)[] = [];
     if (typeof body.content === "string" && body.content.trim().length > 0) {
@@ -164,20 +173,7 @@ export async function handleArchiveEvent(
 ): Promise<void> {
   try {
     const db = getDb();
-    const eventRow = await db.execute({
-      sql: "SELECT node_id FROM events WHERE id = ?",
-      args: [eventId],
-    });
-    if (eventRow.rows.length === 0) {
-      respondApiError(res, 404, "EVENT_NOT_FOUND", "event not found", { eventId });
-      return;
-    }
-    const eventNodeId = eventRow.rows[0].node_id as string;
-    if (!(await nodeVisibleTo(db, identity, eventNodeId))) {
-      respondApiError(res, 404, "EVENT_NOT_FOUND", "event not found", { eventId });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, eventNodeId))) return;
+    if (!(await guardEventWrite(req, res, identity, db, eventId))) return;
     const result = await db.execute({
       sql: "UPDATE events SET status = 'archived' WHERE id = ? AND status != 'archived'",
       args: [eventId],

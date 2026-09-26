@@ -396,20 +396,28 @@ function TaskRow({
           <Share2 />
         </Button>
       )}
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        title={t(($) => $.node_list.task.close)}
-        aria-label={t(($) => $.node_list.task.close)}
-        className="absolute right-1 hidden text-muted-foreground group-hover/task:inline-flex group-focus-within/task:inline-flex"
-      >
-        <X />
-      </Button>
+      <TaskCloseButton onClose={onClose} />
     </div>
+  );
+}
+
+// The hover-revealed x at a task row's right edge.
+function TaskCloseButton({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation("common");
+  return (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
+      title={t(($) => $.node_list.task.close)}
+      aria-label={t(($) => $.node_list.task.close)}
+      className="absolute right-1 hidden text-muted-foreground group-hover/task:inline-flex group-focus-within/task:inline-flex"
+    >
+      <X />
+    </Button>
   );
 }
 
@@ -469,19 +477,7 @@ function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat, onC
                       a draft is deleted, a running or suspended thread goes
                       to Uzavřít; a finished one has nothing to close. */}
                   {threadCloseAction(task.state) !== null && (
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onCloseTask(task);
-                      }}
-                      title={t(($) => $.node_list.task.close)}
-                      aria-label={t(($) => $.node_list.task.close)}
-                      className="absolute right-1 hidden text-muted-foreground group-hover/task:inline-flex group-focus-within/task:inline-flex"
-                    >
-                      <X />
-                    </Button>
+                    <TaskCloseButton onClose={() => onCloseTask(task)} />
                   )}
                 </li>
               ))}

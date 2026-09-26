@@ -8,8 +8,7 @@
 //   SettingsAccessRequestsPanel -- Settings > Access requests: the
 //                            caller's whole queue across visible nodes.
 
-import { displayError } from "../errors";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, KeyRound, X } from "lucide-react";
 import type { AccessRequest } from "../types";
@@ -25,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatDateTime } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
+import { useListLoad } from "../lib/use-list-load";
 
 // --- Non-member side -------------------------------------------------------
 
@@ -246,10 +246,9 @@ export function AccessRequestList({
   );
 }
 
-type QueueState =
-  | { kind: "loading" }
-  | { kind: "error"; reason: string }
-  | { kind: "ok"; requests: AccessRequest[] };
+const fetchPendingRequests = async () => ({
+  requests: await fetchAccessRequests("pending"),
+});
 
 // Settings > Access requests. Visible gating (manage/admin) happens in
 // SettingsPage.tsx; the list itself is already filtered server-side to
@@ -261,30 +260,7 @@ export default function SettingsAccessRequestsPanel({
   onChanged?: () => void;
 }) {
   const { t } = useTranslation("settings");
-  const [state, setState] = useState<QueueState>({ kind: "loading" });
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const load = useCallback(async () => {
-    if (!mountedRef.current) return;
-    setState({ kind: "loading" });
-    try {
-      const requests = await fetchAccessRequests("pending");
-      if (mountedRef.current) setState({ kind: "ok", requests });
-    } catch (e) {
-      if (mountedRef.current) {
-        setState({ kind: "error", reason: displayError(e) });
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const { state, setState, load } = useListLoad(fetchPendingRequests);
 
   return (
     <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">

@@ -65,7 +65,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DbClient } from "../infra/db.js";
-import { z } from "zod";
+import { z, type ZodType } from "zod";
 import { getDb } from "../infra/db.js";
 import {
   parseJsonBody,
@@ -74,7 +74,7 @@ import {
   respondJson,
   type RequestIdentity,
 } from "../http/middleware.js";
-import { nodeVisibleTo } from "../auth/node-access.js";
+import { findVisibleNodeRow } from "./node-route-helpers.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import {
   deleteDraftSession,
@@ -192,11 +192,7 @@ export async function handleListNodeSessions(
 ): Promise<void> {
   try {
     const db = getDb();
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [nodeId] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
-      return;
-    }
+    if (!(await requireSessionNode(res, db, identity, nodeId))) return;
 
     const includeArchived = url.searchParams.get("include_archived") === "1";
     // The node's own read gate above decides whether the tab exists at all;
@@ -234,6 +230,37 @@ async function guardSessionAccess(
     }
     throw err;
   }
+}
+
+// guardSessionAccess followed by the body parse of the mutating
+// single-session routes; null once either has answered.
+async function guardSessionBody<T>(
+  req: IncomingMessage,
+  res: ServerResponse,
+  db: DbClient,
+  identity: RequestIdentity,
+  sessionId: string,
+  action: SessionAccessAction,
+  schema: ZodType<T>,
+): Promise<{ existing: SessionRow; body: T } | null> {
+  const existing = await guardSessionAccess(res, db, identity, sessionId, action);
+  if (!existing) return null;
+  const body = await parseJsonBody(req, res, schema);
+  if (!body) return null;
+  return { existing, body };
+}
+
+// A thread's node must exist and be visible to the caller; answers 404
+// NODE_NOT_FOUND and returns false otherwise.
+async function requireSessionNode(
+  res: ServerResponse,
+  db: DbClient,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<boolean> {
+  if (await findVisibleNodeRow(db, identity, nodeId)) return true;
+  respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
+  return false;
 }
 
 // Raw SessionRow, not the curated SessionSummary other routes return: this
@@ -298,10 +325,9 @@ export async function handlePatchSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, PatchSessionBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", PatchSessionBody);
+    if (!guarded) return;
+    const { existing, body } = guarded;
 
     const isPlainRename = body.name !== undefined && Object.keys(body).length === 1;
     if (isPlainRename) {
@@ -369,10 +395,9 @@ export async function handleSetSessionModel(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, SetSessionModelBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", SetSessionModelBody);
+    if (!guarded) return;
+    const { body } = guarded;
     const updated = await getSessionRuntime().setModelAndEffort(sessionId, body);
     respondJson(res, 200, updated);
   } catch (err) {
@@ -396,10 +421,9 @@ export async function handleRenameSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, RenameSessionBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", RenameSessionBody);
+    if (!guarded) return;
+    const { existing, body } = guarded;
     const updated = await getSessionRuntime().renameSession(sessionId, body.name);
     await logAudit(identity.userId, "session_rename", "session", sessionId, { from: existing.name, to: updated.name });
     respondJson(res, 200, await toSummary(updated));
@@ -420,10 +444,9 @@ export async function handleTransitionSessionState(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, StateBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "stop", StateBody);
+    if (!guarded) return;
+    const { existing, body } = guarded;
     const target: SessionState = body.state;
     try {
       const updated = await transitionSessionState(db, identity.userId, sessionId, target);
@@ -603,11 +626,7 @@ export async function handleStartSession(
     const body = await parseJsonBody(req, res, StartSessionBody);
     if (!body) return;
 
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
-      return;
-    }
+    if (!(await requireSessionNode(res, db, identity, body.node_id))) return;
 
     // #460 "Navázat na handoff": a new thread from a handoff file of this
     // node -- the runtime reads the file off this device's mirror, resolves
@@ -735,10 +754,9 @@ export async function handleSendSessionMessage(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, MessageBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", MessageBody);
+    if (!guarded) return;
+    const { body } = guarded;
 
     try {
       await getSessionRuntime().sendMessage(sessionId, body.text, { locale: body.locale });
@@ -772,10 +790,9 @@ export async function handleAnswerSessionQuestion(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, AnswerBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", AnswerBody);
+    if (!guarded) return;
+    const { body } = guarded;
 
     const runtime = getSessionRuntime();
     const pending = runtime.pendingQuestion(sessionId);
@@ -825,10 +842,9 @@ export async function handleContinueSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "resume");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, SessionLocaleBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "resume", SessionLocaleBody);
+    if (!guarded) return;
+    const { body } = guarded;
     const { session, run } = await getSessionRuntime().continueSession(sessionId, { locale: body.locale });
     await logAudit(identity.userId, "session_continue", "session", sessionId, { new_session_id: session.id });
     respondJson(res, 200, { session: await toSummary(session), run });
@@ -853,10 +869,9 @@ export async function handleHandoffSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, SessionLocaleBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "stop", SessionLocaleBody);
+    if (!guarded) return;
+    const { body } = guarded;
     try {
       const { session, handoff_path } = await getSessionRuntime().handoff(sessionId, { locale: body.locale });
       await logAudit(identity.userId, "session_handoff", "session", sessionId, { handoff_path });
@@ -973,11 +988,7 @@ export async function handleCreateSessionRecord(
     const body = await parseJsonBody(req, res, RecordSessionBody);
     if (!body) return;
 
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
-      return;
-    }
+    if (!(await requireSessionNode(res, db, identity, body.node_id))) return;
 
     const store = new DbSessionStore(db);
     const session =
@@ -1025,10 +1036,9 @@ export async function handleCreateSessionRun(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, CreateRunBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", CreateRunBody);
+    if (!guarded) return;
+    const { body } = guarded;
 
     const run = await new DbSessionStore(db).createRun({
       session_id: sessionId,

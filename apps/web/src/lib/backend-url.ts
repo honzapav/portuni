@@ -131,7 +131,7 @@ async function pollBackendReady(): Promise<void> {
 }
 
 // The error a `backend-error` event's payload stands for.
-export function backendErrorFromPayload(payload: unknown): unknown {
+function backendErrorFromPayload(payload: unknown): unknown {
   if (typeof payload === "string") {
     return new ClientError("UNKNOWN_DETAIL", `backend failed to start: ${payload}`, { detail: payload });
   }

@@ -285,8 +285,8 @@ Never match a driver's error text. `infra/sql.ts` provides:
 - `isUniqueViolation(err)`: libsql's `LibsqlError` code and message, or
   SQLSTATE `23505` from pg/PGlite. Used for the concurrent-invite race in
   `auth/users.ts` (`UserExistsError`).
-- `constraintViolationMessage(err)`: a trigger or constraint rejection to
-  surface as a friendly 409 (`http/middleware.ts`'s `respondError`).
+- `constraintViolation(err)`: a trigger or constraint rejection as the code
+  and message of a friendly 409 (`http/middleware.ts`'s `respondError`).
   Matches libsql's `SQLITE_CONSTRAINT` wrapping (still needing the regex
   extraction of the inner text) and Postgres's `P0001` (`RAISE EXCEPTION`)
   or any `23xxx` class, whose message is already the trigger's own text.

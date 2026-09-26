@@ -63,9 +63,9 @@ export class NoRunnerAvailableError extends Error {}
 
 // #530: the session has no live run to take a message or an answer right
 // now. The REST, agent-router and live-channel layers answer 409 with
-// `code`; the code comes from this type, never from the message text.
+// NO_LIVE_RUN (api/session-refusals.ts); the code comes from this type,
+// never from the message text.
 export class NoLiveRunError extends Error {
-  readonly code = "NO_LIVE_RUN" as const;
   constructor(op: string, readonly sessionId: string) {
     super(`${op}: session ${sessionId} has no live run`);
     this.name = "NoLiveRunError";

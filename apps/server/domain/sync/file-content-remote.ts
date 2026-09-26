@@ -35,23 +35,20 @@ import {
   RemotePathError,
   type Section,
 } from "./remote-path.js";
-import { FileContentError } from "./file-content.js";
+import {
+  editableTextContent,
+  FileContentError,
+  fileNotFoundError,
+  isEditableMime,
+  notEditableTextError,
+} from "./file-content.js";
+import type { FileAdapter, FileRef } from "./types.js";
 import { enqueuePendingOp, completePendingOp, failPendingOp } from "./pending-ops.js";
 import { withPathLock } from "./path-lock.js";
 import { relocateRemoteObject, writeRelocatedRecord } from "./file-relocation.js";
 import { persistRemoteFileId } from "./remote-sweep.js";
 
 const SECTIONS = ["wip", "outputs", "resources"] as const;
-
-// Editable = text-ish. Unknown extension (null mime) is treated as text so
-// .mdx/.yaml/.toml open; known binary types are rejected. Mirrors the
-// isEditableMime in file-content.ts (kept in sync deliberately).
-function isEditableMime(mime: string | null): boolean {
-  if (mime === null) return true;
-  if (mime.startsWith("text/")) return true;
-  if (mime === "application/json") return true;
-  return false;
-}
 
 export interface ParsedRelPath {
   section: Section;
@@ -191,6 +188,97 @@ async function backfillRemoteHash(
   });
 }
 
+function nativeTextError(relPath: string): FileContentError {
+  return new FileContentError(`file is a native format, not editable text: ${relPath}`, "NOT_EDITABLE", undefined, { path: relPath });
+}
+
+function nativeBytesError(relPath: string): FileContentError {
+  return new FileContentError(`file is a native format, no byte round-trip: ${relPath}`, "NOT_EDITABLE", undefined, { path: relPath });
+}
+
+// The text read/write's shared front half: resolve the remote object, refuse
+// a native or non-text file before touching the remote, open the adapter.
+async function resolveTextTarget(db: DbClient, a: { nodeId: string; relPath: string }) {
+  const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
+  const mime = mimeFor(filename);
+
+  const record = await getFileRecord(db, a.nodeId, remotePath);
+  if (record?.isNative) throw nativeTextError(a.relPath);
+  if (!isEditableMime(mime)) throw notEditableTextError(a.relPath);
+
+  const adapter = await getAdapter(db, remoteName);
+  return { remoteName, remotePath, filename, mime, record, adapter };
+}
+
+// The byte read/write's shared front half: resolve the remote object, refuse
+// a native file (no byte round-trip), open the adapter.
+async function resolveBytesTarget(db: DbClient, a: { nodeId: string; relPath: string }) {
+  const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
+  const record = await getFileRecord(db, a.nodeId, remotePath);
+  if (record?.isNative) throw nativeBytesError(a.relPath);
+  const adapter = await getAdapter(db, remoteName);
+  return { remoteName, remotePath, filename, record, adapter };
+}
+
+// stat first: distinguishes "file absent" (NOT_FOUND) from adapter errors
+// and short-circuits a native object even when no DB record exists.
+async function statReadable(
+  adapter: FileAdapter,
+  remotePath: string,
+  relPath: string,
+  nativeError: (relPath: string) => FileContentError,
+): Promise<FileRef> {
+  const stat = await adapter.stat(remotePath);
+  if (!stat) throw fileNotFoundError(relPath);
+  if (stat.is_native_format) throw nativeError(relPath);
+  return stat;
+}
+
+// The baseVersion conflict contract of both writes: baseVersion is the
+// sha256 of the remote bytes the writer last saw. Stat-gated so a genuine
+// adapter.get() failure is never silently treated as "no current bytes".
+async function assertBaseVersion(
+  adapter: FileAdapter,
+  remotePath: string,
+  a: { relPath: string; baseVersion?: string; force?: boolean },
+  nativeError: (relPath: string) => FileContentError,
+): Promise<void> {
+  if (!a.baseVersion || a.force) return;
+  const stat = await adapter.stat(remotePath);
+  if (!stat) return;
+  if (stat.is_native_format) throw nativeError(a.relPath);
+  const current = await adapter.get(remotePath);
+  const currentVersion = sha256Buffer(current);
+  if (currentVersion !== a.baseVersion) {
+    throw new FileContentError(
+      "file changed on the remote since it was opened",
+      "CONFLICT",
+      currentVersion,
+    );
+  }
+}
+
+// Refresh the file record after a put so the graph plane matches the bytes
+// now on the remote. remote_name is also (re)written here (#201):
+// getFileRecord's lookup does not filter on it, so the record may be a row
+// registered locally before this remote existed (remote_name NULL) -- this
+// backfills it, same as storeFile's upsert.
+async function recordRemotePush(
+  db: DbClient,
+  recordId: string,
+  remoteName: string,
+  canonicalHash: string,
+  userId: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `UPDATE files
+          SET remote_name = ?, current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
+          WHERE id = ?`,
+    args: [remoteName, canonicalHash, userId, now, now, recordId],
+  });
+}
+
 export async function readFileContentRemote(
   db: DbClient,
   a: { userId: string; nodeId: string; relPath: string },
@@ -201,39 +289,10 @@ export async function readFileContentRemote(
   mime_type: string | null;
   local_path: string | null;
 }> {
-  const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
-  const mime = mimeFor(filename);
-
-  const record = await getFileRecord(db, a.nodeId, remotePath);
-  if (record?.isNative) {
-    throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
-  if (!isEditableMime(mime)) {
-    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
-
-  const adapter = await getAdapter(db, remoteName);
-  // stat first: distinguishes "file absent" (NOT_FOUND) from adapter errors
-  // and short-circuits a native object even when no DB record exists.
-  const stat = await adapter.stat(remotePath);
-  if (!stat) {
-    throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND", undefined, { path: a.relPath });
-  }
-  if (stat.is_native_format) {
-    throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
-
+  const { remotePath, filename, mime, adapter } = await resolveTextTarget(db, a);
+  await statReadable(adapter, remotePath, a.relPath, nativeTextError);
   const buf = await adapter.get(remotePath);
-  if (buf.includes(0)) {
-    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
-  return {
-    content: buf.toString("utf8"),
-    version: sha256Buffer(buf),
-    filename,
-    mime_type: mime,
-    local_path: null,
-  };
+  return editableTextContent<string | null>(buf, a.relPath, filename, mime, null);
 }
 
 export async function writeFileContentRemote(
@@ -247,18 +306,7 @@ export async function writeFileContentRemote(
     force?: boolean;
   },
 ): Promise<{ version: string }> {
-  const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
-  const mime = mimeFor(filename);
-
-  const record = await getFileRecord(db, a.nodeId, remotePath);
-  if (record?.isNative) {
-    throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
-  if (!isEditableMime(mime)) {
-    throw new FileContentError(`file is not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
-
-  const adapter = await getAdapter(db, remoteName);
+  const { remoteName, remotePath, mime, record, adapter } = await resolveTextTarget(db, a);
 
   // Serialized per remote path (#277 finding 3's coordinator, mirror-less
   // half): this is only an in-process lock, not a real storage-level
@@ -267,45 +315,18 @@ export async function writeFileContentRemote(
   // from another process/device. A real fix needs adapter-level conditional
   // writes (Drive ETag/If-Match); tracked as a known gap.
   return withPathLock(`${remoteName}:${remotePath}`, async () => {
-    // Conflict check against the current REMOTE bytes. stat-gated so a genuine
-    // adapter.get() failure is never silently treated as "no current bytes".
-    if (a.baseVersion && !a.force) {
-      const stat = await adapter.stat(remotePath);
-      if (stat) {
-        if (stat.is_native_format) {
-          throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-        }
-        const current = await adapter.get(remotePath);
-        const currentVersion = sha256Buffer(current);
-        if (currentVersion !== a.baseVersion) {
-          throw new FileContentError(
-            "file changed on the remote since it was opened",
-            "CONFLICT",
-            currentVersion,
-          );
-        }
-      }
-    }
+    // Conflict check against the current REMOTE bytes.
+    await assertBaseVersion(adapter, remotePath, a, nativeTextError);
 
     const bytes = Buffer.from(a.content, "utf8");
     const ref = await adapter.put(remotePath, bytes, mime ? { mimeType: mime } : undefined);
 
-    // Refresh the canonical hash on the file record so the graph plane matches
-    // the bytes now on the remote. Use whatever the backend reports as its
-    // canonical hash (Drive: md5, fs: sha256), falling back to sha256 of the
-    // bytes -- the same selection storeFile makes. remote_name is also
-    // (re)written here (#201): getFileRecord's lookup no longer filters on it,
-    // so `record` may be a row registered locally before this remote existed
-    // (remote_name NULL) -- this backfills it, same as storeFile's upsert.
+    // Use whatever the backend reports as its canonical hash (Drive: md5,
+    // fs: sha256), falling back to sha256 of the bytes -- the same selection
+    // storeFile makes.
     if (record) {
       const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(bytes);
-      const now = new Date().toISOString();
-      await db.execute({
-        sql: `UPDATE files
-              SET remote_name = ?, current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
-              WHERE id = ?`,
-        args: [remoteName, canonicalHash, a.userId, now, now, record.id],
-      });
+      await recordRemotePush(db, record.id, remoteName, canonicalHash, a.userId);
     }
 
     return { version: sha256Buffer(bytes) };
@@ -330,12 +351,7 @@ export async function readFileBytesRemote(
   db: DbClient,
   a: { nodeId: string; relPath: string },
 ): Promise<{ bytes: Buffer; version: string; canonical_hash: string; filename: string; mime_type: string | null }> {
-  const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
-  const record = await getFileRecord(db, a.nodeId, remotePath);
-  if (record?.isNative) {
-    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
-  const adapter = await getAdapter(db, remoteName);
+  const { remotePath, filename, record, adapter } = await resolveBytesTarget(db, a);
 
   // Fast path for tracked records (the sync agent's pull materialization):
   // the record already carries the native flag and the canonical-hash
@@ -352,9 +368,7 @@ export async function readFileBytesRemote(
       // Disambiguate a genuinely missing object from a transient adapter
       // failure with a single follow-up stat (error path only).
       const stat = await adapter.stat(remotePath).catch(() => null);
-      if (!stat) {
-        throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND", undefined, { path: a.relPath });
-      }
+      if (!stat) throw fileNotFoundError(a.relPath);
       throw e;
     }
     const canonical =
@@ -368,13 +382,7 @@ export async function readFileBytesRemote(
     };
   }
 
-  const stat = await adapter.stat(remotePath);
-  if (!stat) {
-    throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND", undefined, { path: a.relPath });
-  }
-  if (stat.is_native_format) {
-    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
+  const stat = await statReadable(adapter, remotePath, a.relPath, nativeBytesError);
   const buf = await adapter.get(remotePath);
   const canonicalHash = stat.hash ? stat.hash.toLowerCase() : sha256Buffer(buf);
   // This device just proved the remote object's identity by downloading
@@ -411,12 +419,7 @@ export async function writeFileBytesRemote(
     force?: boolean;
   },
 ): Promise<{ version: string; canonical_hash: string }> {
-  const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
-  const record = await getFileRecord(db, a.nodeId, remotePath);
-  if (record?.isNative) {
-    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-  }
-  const adapter = await getAdapter(db, remoteName);
+  const { remoteName, remotePath, filename, record, adapter } = await resolveBytesTarget(db, a);
 
   // Serialized per remote path (#277 finding 3's coordinator, same in-process
   // caveat as writeFileContentRemote) -- every precondition check and the
@@ -425,9 +428,7 @@ export async function writeFileBytesRemote(
     // Stat-only preconditions (sync agent path): no byte download needed.
     if ((a.ifAbsent || a.baseCanonicalHash) && !a.force) {
       const stat = await adapter.stat(remotePath);
-      if (stat?.is_native_format) {
-        throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-      }
+      if (stat?.is_native_format) throw nativeBytesError(a.relPath);
       if (a.ifAbsent && stat) {
         // The object's presence -- and, when the backend reports one on
         // stat, its hash -- is proven right here; persist it before throwing
@@ -460,40 +461,15 @@ export async function writeFileBytesRemote(
       }
     }
 
-    // Same conflict contract as the text write: baseVersion is the sha256 of
-    // the remote bytes the writer last saw; stat-gated so an adapter failure
-    // is never treated as "no current bytes".
-    if (a.baseVersion && !a.force) {
-      const stat = await adapter.stat(remotePath);
-      if (stat) {
-        if (stat.is_native_format) {
-          throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE", undefined, { path: a.relPath });
-        }
-        const current = await adapter.get(remotePath);
-        const currentVersion = sha256Buffer(current);
-        if (currentVersion !== a.baseVersion) {
-          throw new FileContentError(
-            "file changed on the remote since it was opened",
-            "CONFLICT",
-            currentVersion,
-          );
-        }
-      }
-    }
+    // Same conflict contract as the text write.
+    await assertBaseVersion(adapter, remotePath, a, nativeBytesError);
 
     const mime = mimeFor(filename);
     const ref = await adapter.put(remotePath, a.bytes, mime ? { mimeType: mime } : undefined);
     const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(a.bytes);
 
     if (record) {
-      const now = new Date().toISOString();
-      // remote_name backfill: see writeFileContentRemote's identical comment.
-      await db.execute({
-        sql: `UPDATE files
-              SET remote_name = ?, current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
-              WHERE id = ?`,
-        args: [remoteName, canonicalHash, a.userId, now, now, record.id],
-      });
+      await recordRemotePush(db, record.id, remoteName, canonicalHash, a.userId);
       await persistRemoteFileId(db, record.id, ref.remote_file_id);
     }
 

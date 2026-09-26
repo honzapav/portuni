@@ -107,7 +107,7 @@ export async function bootI18n(): Promise<UiLocale> {
   // The desktop shell follows the UI language (native menu, sign-in pages).
   if ("__TAURI_INTERNALS__" in window) {
     void import("./lib/desktop-locale")
-      .then((m) => m.startDesktopLocaleSync(i18n))
+      .then(({ startDesktopLocaleSync }) => startDesktopLocaleSync(i18n))
       .catch((e: unknown) => console.error("[i18n] desktop locale sync failed to load:", e));
   }
   return bootLocale;

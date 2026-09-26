@@ -81,13 +81,10 @@ export class InstanceEnvKeyRefusedError extends Error {
   constructor(
     readonly key: string,
     readonly code: InstanceEnvKeyRefusal,
+    readonly params: { key: string } = { key },
   ) {
     super(`Environment key '${key}' refused: ${ENV_KEY_REASON[code]}`);
     this.name = "InstanceEnvKeyRefusedError";
-  }
-
-  get params(): { key: string } {
-    return { key: this.key };
   }
 }
 
@@ -103,6 +100,9 @@ export class InstanceDefaultsKeyRefusedError extends Error {
     readonly key: string,
     readonly code: InstanceDefaultsRefusal = "INSTANCE_DEFAULTS_KEY_UNKNOWN",
     readonly value?: string,
+    readonly params: Record<string, string> = code === "INSTANCE_DEFAULTS_EFFORT_INVALID"
+      ? { effort: value ?? "", allowed: EFFORT_LEVELS.join(", ") }
+      : { key },
   ) {
     super(
       code === "INSTANCE_DEFAULTS_EFFORT_INVALID"
@@ -110,12 +110,6 @@ export class InstanceDefaultsKeyRefusedError extends Error {
         : `Unknown key '${key}' in instance defaults; only 'model' and 'effort' are allowed`,
     );
     this.name = "InstanceDefaultsKeyRefusedError";
-  }
-
-  get params(): Record<string, string> {
-    return this.code === "INSTANCE_DEFAULTS_EFFORT_INVALID"
-      ? { effort: this.value ?? "", allowed: EFFORT_LEVELS.join(", ") }
-      : { key: this.key };
   }
 }
 

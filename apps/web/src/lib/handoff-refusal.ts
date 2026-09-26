@@ -10,6 +10,7 @@
 // status line; `message` is the server's English log text.
 
 import type { ErrorParams } from "../../../server/shared/error-codes";
+import { readErrorParams } from "../../../server/shared/error-params";
 
 export class HandoffRefusedError extends Error {
   constructor(
@@ -22,15 +23,6 @@ export class HandoffRefusedError extends Error {
   }
 }
 
-function readParams(value: unknown): ErrorParams {
-  const out: ErrorParams = {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
-  for (const [k, v] of Object.entries(value)) {
-    if (typeof v === "string" || typeof v === "number") out[k] = v;
-  }
-  return out;
-}
-
 // The refusal carried by a 409 answer's body (`{ error, code, params? }`),
 // or null when the answer is anything else.
 export function parseHandoffRefusal(status: number, bodyText: string): HandoffRefusedError | null {
@@ -38,7 +30,7 @@ export function parseHandoffRefusal(status: number, bodyText: string): HandoffRe
   try {
     const body = JSON.parse(bodyText) as { error?: unknown; code?: unknown; params?: unknown };
     if (typeof body.error === "string" && typeof body.code === "string" && body.code.startsWith("HANDOFF_")) {
-      return new HandoffRefusedError(body.code, body.error, readParams(body.params));
+      return new HandoffRefusedError(body.code, body.error, readErrorParams(body.params));
     }
   } catch {
     /* not JSON */

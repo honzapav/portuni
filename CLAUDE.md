@@ -315,7 +315,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
   the DDL replay.
 - Call sites use `infra/sql.ts` (`nowExpr`, `jsonField`,
   `jsonArrayElementsText`, `insertIgnore`, `isUniqueViolation`,
-  `constraintViolationMessage`, `tableExistsSql`); no `PRAGMA`,
+  `constraintViolation`, `tableExistsSql`); no `PRAGMA`,
   `datetime('now')`, `INSERT OR IGNORE`, `json_extract`, `COLLATE NOCASE`,
   lenient `GROUP BY` or SQL-side relative dates in runtime code.
 - Timestamps read back as `YYYY-MM-DD HH:MM:SS` UTC text on every driver.

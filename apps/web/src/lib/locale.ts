@@ -17,7 +17,7 @@ import { scopedKey, type StorageLike } from "./workspace-storage";
 
 // localStorage key of the window cache: "portuni:<ws_id>:locale". Per
 // window, because each workspace window can belong to another account.
-export const LOCALE_STORAGE_KEY = "locale";
+const LOCALE_STORAGE_KEY = "locale";
 
 export interface BootLocaleInput {
   cached: string | null;

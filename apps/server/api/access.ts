@@ -17,8 +17,9 @@ import {
   respondJson,
   type RequestIdentity,
 } from "../http/middleware.js";
-import { nodeVisibleTo, resolveAccessChain } from "../auth/node-access.js";
+import { resolveAccessChain } from "../auth/node-access.js";
 import { guardRestNodeWrite } from "./write-gate.js";
+import { findVisibleNodeRow, respondNodeNotFound } from "./node-route-helpers.js";
 
 const AccessEntryBody = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("group"), principal: z.string().min(1), display_email: z.string().email() }),
@@ -129,9 +130,8 @@ export async function handleGetNodeAccess(
     // "unrestricted", not "hidden") -- so nodeVisibleTo alone would answer
     // true for an id that doesn't exist at all. Both checks are required to
     // 404 correctly.
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [nodeId] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
+    if (!(await findVisibleNodeRow(db, identity, nodeId))) {
+      respondNodeNotFound(res, nodeId);
       return;
     }
     const view = await buildAccessView(db, nodeId);
@@ -151,12 +151,9 @@ export async function handlePutNodeAccess(
     const db = getDb();
     // See handleGetNodeAccess above: the existence SELECT is load-bearing,
     // not redundant with nodeVisibleTo (which answers true for a missing id).
-    const nodeRow = await db.execute({
-      sql: "SELECT id, visibility FROM nodes WHERE id = ?",
-      args: [nodeId],
-    });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
+    const nodeRow = await findVisibleNodeRow(db, identity, nodeId, "id, visibility");
+    if (!nodeRow) {
+      respondNodeNotFound(res, nodeId);
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -169,7 +166,7 @@ export async function handlePutNodeAccess(
     // atomic unit (the unified sharing control); team/private force the
     // entries empty, group requires at least one. When absent, fall back to
     // the legacy derive-from-entries behaviour.
-    const wasGroup = String(nodeRow.rows[0].visibility) === "group";
+    const wasGroup = String(nodeRow.visibility) === "group";
     let effectiveEntries = body.entries;
     let newVisibility: string;
     let newAccessMode: "private" | "request";
@@ -197,7 +194,7 @@ export async function handlePutNodeAccess(
           ? "group"
           : wasGroup
             ? "team"
-            : String(nodeRow.rows[0].visibility);
+            : String(nodeRow.visibility);
       newAccessMode = body.entries.length > 0 ? (body.mode ?? "private") : "private";
     }
 

@@ -22,7 +22,7 @@ import { NoLiveRunError, SessionHandoffError } from "../domain/runner/session-ru
 
 export interface SessionRefusal {
   status: 409;
-  code: SessionHandoffError["code"] | NoLiveRunError["code"];
+  code: SessionHandoffError["code"] | "NO_LIVE_RUN";
   message: string;
   params?: ErrorParams;
 }
@@ -37,7 +37,7 @@ export function sessionRefusal(err: unknown): SessionRefusal | null {
     };
   }
   if (err instanceof NoLiveRunError) {
-    return { status: 409, code: err.code, message: err.message };
+    return { status: 409, code: "NO_LIVE_RUN", message: err.message };
   }
   return null;
 }

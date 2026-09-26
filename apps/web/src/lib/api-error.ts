@@ -16,6 +16,7 @@ import {
   type ErrorCode,
   type ErrorParams,
 } from "../../../server/shared/error-codes";
+import { readErrorParams } from "../../../server/shared/error-params";
 
 // Codes only the web (or the desktop shell in front of it) produces.
 export const WEB_ERROR_CODES = [
@@ -114,15 +115,6 @@ export class ClientError extends Error {
   }
 }
 
-function readParams(value: unknown): ErrorParams {
-  const out: ErrorParams = {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
-  for (const [k, v] of Object.entries(value)) {
-    if (typeof v === "string" || typeof v === "number") out[k] = v;
-  }
-  return out;
-}
-
 // The error a non-ok answer stands for. `label` names the request in the
 // log message when the body is not an error body.
 export function parseApiError(status: number, bodyText: string, label: string): ApiError {
@@ -139,7 +131,7 @@ export function parseApiError(status: number, bodyText: string, label: string): 
   const message =
     typeof body.error === "string" ? `${label}: ${status} ${body.error}` : `${label}: ${status} ${bodyText}`.trim();
   const requestId = typeof body.request_id === "string" ? body.request_id : null;
-  return new ApiError(status, code, message, readParams(body.params), requestId, body);
+  return new ApiError(status, code, message, readErrorParams(body.params), requestId, body);
 }
 
 // The code an error carries, if any: an ApiError's or ClientError's, or a
@@ -342,7 +334,7 @@ export function errorText(err: unknown, t: TFunction<"errors">): string {
     const params =
       err instanceof ClientError
         ? err.params
-        : readParams((err as { params?: unknown }).params);
+        : readErrorParams((err as { params?: unknown }).params);
     return MESSAGES[code](t, params);
   }
   const detail = err instanceof Error ? err.message : String(err);

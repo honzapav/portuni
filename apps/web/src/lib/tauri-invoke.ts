@@ -12,6 +12,7 @@
 // the module stays out of the main chunk.
 
 import type { ErrorParams } from "../../../server/shared/error-codes";
+import { readErrorParams } from "../../../server/shared/error-params";
 
 export class DesktopError extends Error {
   constructor(
@@ -24,15 +25,6 @@ export class DesktopError extends Error {
   }
 }
 
-function readParams(value: unknown): ErrorParams {
-  const out: ErrorParams = {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
-  for (const [k, v] of Object.entries(value)) {
-    if (typeof v === "string" || typeof v === "number") out[k] = v;
-  }
-  return out;
-}
-
 // The error a command's rejection (or a `backend-error` payload) stands for:
 // a DesktopError for a `{ code, ... }` object; anything else (an Error, a
 // legacy string from an older shell) unchanged, which errorText renders as
@@ -42,7 +34,7 @@ export function toDesktopError(raw: unknown): unknown {
   if (raw && typeof raw === "object" && typeof (raw as { code?: unknown }).code === "string") {
     const obj = raw as { code: string; params?: unknown; message?: unknown };
     const message = typeof obj.message === "string" && obj.message ? obj.message : obj.code;
-    return new DesktopError(obj.code, message, readParams(obj.params));
+    return new DesktopError(obj.code, message, readErrorParams(obj.params));
   }
   return raw;
 }

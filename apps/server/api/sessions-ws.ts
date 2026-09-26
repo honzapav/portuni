@@ -436,6 +436,15 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     sendReply(conn.ws, frame.id, { ok: true });
   }
 
+  // A session refusal (#497, #530) is a coded error reply, not a crash;
+  // true once the reply is sent, false for anything the caller rethrows.
+  function replyRefusal(conn: Connection, frame: { id?: string }, err: unknown): boolean {
+    const refusal = sessionRefusal(err);
+    if (!refusal) return false;
+    sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message, refusal.params);
+    return true;
+  }
+
   async function handleMessage(conn: Connection, frame: Extract<ClientFrame, { type: "message" }>): Promise<void> {
     const { session_id: sessionId, text } = frame.payload;
     if (!refuseUnlessMutationAllowed(conn, frame)) return;
@@ -453,11 +462,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     } catch (err) {
       // #497: a resume with nothing to continue from on this device; #530:
       // NO_LIVE_RUN from the error's type.
-      const refusal = sessionRefusal(err);
-      if (refusal) {
-        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message, refusal.params);
-        return;
-      }
+      if (replyRefusal(conn, frame, err)) return;
       throw err;
     }
     await deps.audit(conn.identity, "session_message", sessionId, {});
@@ -556,11 +561,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       await deps.audit(conn.identity, "session_handoff", sessionId, { handoff_path });
       sendReply(conn.ws, frame.id, { session: await toSummary(session), handoff_path });
     } catch (err) {
-      const refusal = sessionRefusal(err);
-      if (refusal) {
-        sendErrorReply(conn.ws, frame.id, refusal.code, refusal.message, refusal.params);
-        return;
-      }
+      if (replyRefusal(conn, frame, err)) return;
       throw err;
     }
   }

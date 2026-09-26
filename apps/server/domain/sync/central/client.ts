@@ -14,6 +14,7 @@ import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
 import type { ErrorParams } from "../../../shared/error-codes.js";
+import { readErrorParams } from "../../../shared/error-params.js";
 import type {
   CreateDraftSessionInput,
   CreateRunInput,
@@ -40,11 +41,7 @@ export class CentralHttpError extends Error {
 
 // Keeps only the string/number values of an error body's `params`.
 function readParams(value: unknown): ErrorParams | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const out: ErrorParams = {};
-  for (const [k, v] of Object.entries(value)) {
-    if (typeof v === "string" || typeof v === "number") out[k] = v;
-  }
+  const out = readErrorParams(value);
   return Object.keys(out).length > 0 ? out : undefined;
 }
 

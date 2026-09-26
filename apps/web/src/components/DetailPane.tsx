@@ -970,7 +970,8 @@ function DetailPaneBody({
         {tab === "overview" && (
           <>
         <Section title={t(($) => $.detail.section.description)}>
-          <EditableDescription
+          <EditableTextField
+            field="description"
             nodeId={node.id}
             value={node.description}
             onMutate={onMutate}
@@ -997,7 +998,8 @@ function DetailPaneBody({
           node.type === "process" ||
           node.type === "area") && (
           <Section title={t(($) => $.detail.section.goal)}>
-            <EditableGoal
+            <EditableTextField
+              field="goal"
               nodeId={node.id}
               value={node.goal}
               onMutate={onMutate}
@@ -2011,110 +2013,19 @@ function HealthDropdown({
   );
 }
 
-// Inline editor for the `goal` field. Read-mode shows the current value
-// (or a muted placeholder). Clicking Edit reveals a textarea with
-// Save/Cancel buttons. Empty goal saves as null.
-// Inline editor for node.description. Same interaction pattern as
-// EditableGoal: click to edit, Save/Cancel on commit. Freed from the
-// node-level "Upravit" dialog so it works the same as other inline fields.
-function EditableDescription({
+// Inline editor for node.description and the `goal` field. Read-mode shows
+// the current value (or a muted placeholder). Clicking Edit reveals a
+// textarea with Save/Cancel buttons. An empty value saves as null. Freed
+// from the node-level "Upravit" dialog so it works the same as other inline
+// fields.
+function EditableTextField({
+  field,
   nodeId,
   value,
   onMutate,
   onError,
 }: {
-  nodeId: string;
-  value: string | null;
-  onMutate: () => Promise<void>;
-  onError: (msg: string | null) => void;
-}) {
-  const { t } = useTranslation("node");
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value ?? "");
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setDraft(value ?? "");
-    setEditing(false);
-  }, [nodeId, value]);
-
-  const save = async () => {
-    setSaving(true);
-    onError(null);
-    try {
-      const trimmed = draft.trim();
-      await updateNode(nodeId, { description: trimmed ? trimmed : null });
-      await onMutate();
-      setEditing(false);
-    } catch (e) {
-      onError(displayError(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const cancel = () => {
-    setDraft(value ?? "");
-    setEditing(false);
-    onError(null);
-  };
-
-  if (!editing) {
-    return (
-      <div className="group flex items-start gap-2">
-        <div className="flex-1">
-          {value ? (
-            <p className="text-[14px] leading-relaxed text-[var(--color-text-muted)]">
-              {value}
-            </p>
-          ) : (
-            <p className="text-[14px] italic leading-relaxed text-[var(--color-text-dim)]">
-              {t(($) => $.detail.description.empty)}
-            </p>
-          )}
-        </div>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          onClick={() => setEditing(true)}
-          title={t(($) => $.detail.description.edit_title)}
-          className="text-muted-foreground opacity-0 transition-all group-hover:opacity-100"
-        >
-          <Pencil />
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-2">
-      <Textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        rows={5}
-        autoFocus
-        placeholder={t(($) => $.detail.description.placeholder)}
-        className="field-sizing-fixed resize-y leading-relaxed"
-      />
-      <div className="flex gap-2">
-        <Button size="sm" onClick={save} disabled={saving}>
-          <Save />
-          {saving ? t(($) => $.detail.form.saving) : t(($) => $.detail.form.save)}
-        </Button>
-        <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
-          {t(($) => $.detail.form.cancel)}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function EditableGoal({
-  nodeId,
-  value,
-  onMutate,
-  onError,
-}: {
+  field: "description" | "goal";
   nodeId: string;
   value: string | null;
   onMutate: () => Promise<void>;
@@ -2136,7 +2047,7 @@ function EditableGoal({
     onError(null);
     try {
       const trimmed = draft.trim();
-      await updateNode(nodeId, { goal: trimmed ? trimmed : null });
+      await updateNode(nodeId, { [field]: trimmed ? trimmed : null });
       await onMutate();
       setEditing(false);
     } catch (e) {
@@ -2162,7 +2073,7 @@ function EditableGoal({
             </p>
           ) : (
             <p className="text-[14px] italic leading-relaxed text-[var(--color-text-dim)]">
-              {t(($) => $.detail.goal.empty)}
+              {t(($) => $.detail[field].empty)}
             </p>
           )}
         </div>
@@ -2170,7 +2081,7 @@ function EditableGoal({
           variant="ghost"
           size="icon-xs"
           onClick={() => setEditing(true)}
-          title={t(($) => $.detail.goal.edit_title)}
+          title={t(($) => $.detail[field].edit_title)}
           className="text-muted-foreground opacity-0 transition-all group-hover:opacity-100"
         >
           <Pencil />
@@ -2184,20 +2095,38 @@ function EditableGoal({
       <Textarea
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
-        rows={4}
+        rows={field === "description" ? 5 : 4}
         autoFocus
-        placeholder={t(($) => $.detail.goal.placeholder)}
+        placeholder={t(($) => $.detail[field].placeholder)}
         className="field-sizing-fixed resize-y leading-relaxed"
       />
-      <div className="flex gap-2">
-        <Button size="sm" onClick={save} disabled={saving}>
-          <Save />
-          {saving ? t(($) => $.detail.form.saving) : t(($) => $.detail.form.save)}
-        </Button>
-        <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
-          {t(($) => $.detail.form.cancel)}
-        </Button>
-      </div>
+      <SaveCancelButtons saving={saving} onSave={save} onCancel={cancel} />
+    </div>
+  );
+}
+
+// The Save/Cancel pair under an inline editor.
+function SaveCancelButtons({
+  saving,
+  saveDisabled = false,
+  onSave,
+  onCancel,
+}: {
+  saving: boolean;
+  saveDisabled?: boolean;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation("node");
+  return (
+    <div className="flex gap-2">
+      <Button size="sm" onClick={onSave} disabled={saving || saveDisabled}>
+        <Save />
+        {saving ? t(($) => $.detail.form.saving) : t(($) => $.detail.form.save)}
+      </Button>
+      <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
+        {t(($) => $.detail.form.cancel)}
+      </Button>
     </div>
   );
 }
@@ -2813,15 +2742,12 @@ function ResponsibilityItem({
             placeholder={t(($) => $.detail.responsibilities.description_placeholder)}
             className="field-sizing-fixed resize-y leading-relaxed"
           />
-          <div className="flex gap-2">
-            <Button size="sm" onClick={save} disabled={saving || !draftTitle.trim()}>
-              <Save />
-              {saving ? t(($) => $.detail.form.saving) : t(($) => $.detail.form.save)}
-            </Button>
-            <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
-              {t(($) => $.detail.form.cancel)}
-            </Button>
-          </div>
+          <SaveCancelButtons
+            saving={saving}
+            saveDisabled={!draftTitle.trim()}
+            onSave={save}
+            onCancel={cancel}
+          />
         </div>
       </li>
     );
@@ -2943,29 +2869,8 @@ function AddResponsibilityForm({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const [actors, setActors] = useState<Actor[] | null>(null);
-  const [loadingActors, setLoadingActors] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const { actors, loading: loadingActors, fetchError } = useActorRegistry();
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingActors(true);
-    setFetchError(null);
-    fetchActors()
-      .then((list) => {
-        if (!cancelled) setActors(list);
-      })
-      .catch((e) => {
-        if (!cancelled) setFetchError(displayError(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingActors(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const toggle = (id: string) => {
     setSelected((s) =>
@@ -3042,7 +2947,6 @@ function AddResponsibilityForm({
           ) : (
             <div className="scroll-thin max-h-[180px] space-y-1 overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5">
               {actors?.map((a) => {
-                const isPlaceholder = a.is_placeholder === 1;
                 const checked = selected.includes(a.id);
                 return (
                   <Label
@@ -3050,18 +2954,7 @@ function AddResponsibilityForm({
                     className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11.5px] font-normal hover:bg-[var(--color-surface)]"
                   >
                     <Checkbox checked={checked} onCheckedChange={() => toggle(a.id)} />
-                    <span
-                      className={`flex-1 truncate ${
-                        isPlaceholder
-                          ? "italic text-[var(--color-text-dim)]"
-                          : "text-[var(--color-text)]"
-                      }`}
-                    >
-                      {isPlaceholder
-                        ? t(($) => $.detail.actor.placeholder_name, { name: a.name })
-                        : a.name}
-                    </span>
-                    <ActorBadge type={a.type} placeholder={isPlaceholder} />
+                    <ActorOptionLabel actor={a} />
                   </Label>
                 );
               })}
@@ -3069,14 +2962,12 @@ function AddResponsibilityForm({
           )}
         </div>
       </div>
-      <div className="mt-2 flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
-          {t(($) => $.detail.form.cancel)}
-        </Button>
-        <Button size="sm" onClick={submit} disabled={!title.trim() || saving}>
-          {saving ? t(($) => $.detail.form.creating) : t(($) => $.detail.form.create)}
-        </Button>
-      </div>
+      <CreateCancelFooter
+        saving={saving}
+        createDisabled={!title.trim()}
+        onCreate={submit}
+        onCancel={onCancel}
+      />
     </div>
   );
 }
@@ -3303,15 +3194,12 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
           placeholder={t(($) => $.detail.attribute.description_placeholder)}
           className="resize-y"
         />
-        <div className="flex gap-2">
-          <Button size="sm" onClick={save} disabled={saving || !name.trim()}>
-            <Save />
-            {saving ? t(($) => $.detail.form.saving) : t(($) => $.detail.form.save)}
-          </Button>
-          <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
-            {t(($) => $.detail.form.cancel)}
-          </Button>
-        </div>
+        <SaveCancelButtons
+          saving={saving}
+          saveDisabled={!name.trim()}
+          onSave={save}
+          onCancel={cancel}
+        />
       </li>
     );
   }
@@ -3437,50 +3325,22 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
           placeholder={t(($) => $.detail.attribute.link_placeholder_example)}
         />
       </div>
-      <div className="mt-2 flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
-          {t(($) => $.detail.form.cancel)}
-        </Button>
-        <Button size="sm" onClick={submit} disabled={!name.trim() || saving}>
-          {saving ? t(($) => $.detail.form.creating) : t(($) => $.detail.form.create)}
-        </Button>
-      </div>
+      <CreateCancelFooter
+        saving={saving}
+        createDisabled={!name.trim()}
+        onCreate={submit}
+        onCancel={onCancel}
+      />
     </div>
   );
 }
 
-// Inline picker shown when user clicks "+ přiřadit" on an existing
-// responsibility. Lazy-loads the global actor registry, filters out those
-// already assigned, and closes on outside click.
-function AssigneePicker({
-  existing,
-  onPick,
-  onClose,
-  disabled,
-}: {
-  existing: string[];
-  onPick: (actorId: string) => Promise<void>;
-  onClose: () => void;
-  disabled: boolean;
-}) {
-  const { t } = useTranslation("node");
+// The global actor registry, loaded once on mount (AddResponsibilityForm,
+// AssigneePicker).
+function useActorRegistry() {
   const [actors, setActors] = useState<Actor[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3500,6 +3360,104 @@ function AssigneePicker({
       cancelled = true;
     };
   }, []);
+
+  return { actors, loading, fetchError };
+}
+
+// An actor's name (placeholder actors dimmed and marked) and type badge, as
+// one row of an actor list.
+function ActorOptionLabel({ actor }: { actor: Actor }) {
+  const { t } = useTranslation("node");
+  const isPlaceholder = actor.is_placeholder === 1;
+  return (
+    <>
+      <span
+        className={`flex-1 truncate ${
+          isPlaceholder
+            ? "italic text-[var(--color-text-dim)]"
+            : "text-[var(--color-text)]"
+        }`}
+      >
+        {isPlaceholder
+          ? t(($) => $.detail.actor.placeholder_name, { name: actor.name })
+          : actor.name}
+      </span>
+      <ActorBadge type={actor.type} placeholder={isPlaceholder} />
+    </>
+  );
+}
+
+// The Cancel/Create pair at the foot of an "add" form.
+function CreateCancelFooter({
+  saving,
+  createDisabled,
+  onCreate,
+  onCancel,
+}: {
+  saving: boolean;
+  createDisabled: boolean;
+  onCreate: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation("node");
+  return (
+    <div className="mt-2 flex justify-end gap-2">
+      <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
+        {t(($) => $.detail.form.cancel)}
+      </Button>
+      <Button size="sm" onClick={onCreate} disabled={createDisabled || saving}>
+        {saving ? t(($) => $.detail.form.creating) : t(($) => $.detail.form.create)}
+      </Button>
+    </div>
+  );
+}
+
+// Copies a text to the clipboard and raises `copied` for 1.2 s; a rejected
+// clipboard write leaves it down.
+function useCopiedFlag(): [boolean, (text: string) => Promise<void>] {
+  const [copied, setCopied] = useState(false);
+  const copy = async (text: string) => {
+    try {
+      await copyText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard write rejected; skip copied state */
+    }
+  };
+  return [copied, copy];
+}
+
+// Inline picker shown when user clicks "+ přiřadit" on an existing
+// responsibility. Lazy-loads the global actor registry, filters out those
+// already assigned, and closes on outside click.
+function AssigneePicker({
+  existing,
+  onPick,
+  onClose,
+  disabled,
+}: {
+  existing: string[];
+  onPick: (actorId: string) => Promise<void>;
+  onClose: () => void;
+  disabled: boolean;
+}) {
+  const { t } = useTranslation("node");
+  const { actors, loading, fetchError } = useActorRegistry();
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        onClose();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
 
   const candidates = (actors ?? []).filter((a) => !existing.includes(a.id));
 
@@ -3527,32 +3485,18 @@ function AssigneePicker({
           </div>
         ) : (
           <div className="scroll-thin max-h-[220px] overflow-y-auto">
-            {candidates.map((a) => {
-              const isPlaceholder = a.is_placeholder === 1;
-              return (
-                <Button
-                  key={a.id}
-                  variant="ghost"
-                  size="sm"
-                  disabled={disabled}
-                  onClick={() => onPick(a.id)}
-                  className="w-full justify-start gap-2 rounded-none px-3 font-normal text-[11.5px]"
-                >
-                  <span
-                    className={`flex-1 truncate ${
-                      isPlaceholder
-                        ? "italic text-[var(--color-text-dim)]"
-                        : "text-[var(--color-text)]"
-                    }`}
-                  >
-                    {isPlaceholder
-                      ? t(($) => $.detail.actor.placeholder_name, { name: a.name })
-                      : a.name}
-                  </span>
-                  <ActorBadge type={a.type} placeholder={isPlaceholder} />
-                </Button>
-              );
-            })}
+            {candidates.map((a) => (
+              <Button
+                key={a.id}
+                variant="ghost"
+                size="sm"
+                disabled={disabled}
+                onClick={() => onPick(a.id)}
+                className="w-full justify-start gap-2 rounded-none px-3 font-normal text-[11.5px]"
+              >
+                <ActorOptionLabel actor={a} />
+              </Button>
+            ))}
           </div>
         )}
       </div>
@@ -3562,16 +3506,10 @@ function AssigneePicker({
 
 function IdCopy({ id }: { id: string }) {
   const { t } = useTranslation("node");
-  const [copied, setCopied] = useState(false);
-  const handle = async (e: React.MouseEvent) => {
+  const [copied, copy] = useCopiedFlag();
+  const handle = (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await copyText(id);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* clipboard write rejected; skip copied state */
-    }
+    void copy(id);
   };
   return (
     <Button
@@ -3746,16 +3684,10 @@ function CreateMirrorButton({
 // the two share the same "inline identifier" feel.
 function PathCopy({ path }: { path: string }) {
   const { t } = useTranslation("node");
-  const [copied, setCopied] = useState(false);
-  const handle = async (e: React.MouseEvent) => {
+  const [copied, copy] = useCopiedFlag();
+  const handle = (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await copyText(path);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* clipboard write rejected; skip copied state */
-    }
+    void copy(path);
   };
   // `shrink min-w-0` overrides Button's base `shrink-0`: without it the
   // button keeps its full intrinsic width, the truncating span never engages

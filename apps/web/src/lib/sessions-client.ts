@@ -149,8 +149,7 @@ export interface DirectWsTransportOptions {
   minBackoffMs?: number;
   maxBackoffMs?: number;
   // The WebSocket constructor to use; defaults to the global one. The
-  // server-side test runner (CI is Node 20, which has no global WebSocket)
-  // passes the `ws` package's class instead.
+  // server-side test runner passes the `ws` package's class instead.
   WebSocket?: WebSocketLike;
   // How long a socket may sit in CONNECTING before this transport gives up
   // on it and schedules a reconnect. A TCP connect to a host that accepts

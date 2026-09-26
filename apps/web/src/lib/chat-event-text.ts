@@ -94,12 +94,6 @@ export function runErrorText(
   return isRunErrorCode(payload.code) ? RUN_ERRORS[payload.code](t, payload.params) : payload.message;
 }
 
-// Whether an error event's text is the runner's own (translated) or the
-// provider's (content, shown as stored).
-export function runErrorIsContent(payload: { code?: string }): boolean {
-  return !isRunErrorCode(payload.code);
-}
-
 // The output of a finished tool call: for a call the runner denied, the
 // denial in the UI language; otherwise the excerpt as stored.
 export function toolOutputText(

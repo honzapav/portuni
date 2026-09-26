@@ -23,7 +23,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import type { DragEvent as ReactDragEvent } from "react";
+import type { ReactNode, DragEvent as ReactDragEvent } from "react";
 import type { TFunction } from "i18next";
 import type {
   DetailFile,
@@ -191,28 +191,47 @@ export function NewFileForm({
     }
   };
   return (
+    <InlineCreateForm onCancel={onCancel} error={error}>
+      <Input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void submit();
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder={t(($) => $.new_file.placeholder)}
+        className="min-w-0 flex-1"
+      />
+      <Button
+        size="sm"
+        disabled={!name.trim() || busy}
+        onClick={() => void submit()}
+        className="shrink-0"
+      >
+        {busy && <Loader2 className="animate-spin" />}
+        {busy ? t(($) => $.new_file.creating) : t(($) => $.new_file.create)}
+      </Button>
+    </InlineCreateForm>
+  );
+}
+
+// The shell of NewFileForm and NewFolderForm: the input row (the caller's
+// input and create button, then Cancel) and the refusal under it.
+function InlineCreateForm({
+  onCancel,
+  error,
+  children,
+}: {
+  onCancel: () => void;
+  error: string | null;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation("files");
+  return (
     <div className="mb-3">
       <div className="flex items-center gap-2">
-        <Input
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void submit();
-            if (e.key === "Escape") onCancel();
-          }}
-          placeholder={t(($) => $.new_file.placeholder)}
-          className="min-w-0 flex-1"
-        />
-        <Button
-          size="sm"
-          disabled={!name.trim() || busy}
-          onClick={() => void submit()}
-          className="shrink-0"
-        >
-          {busy && <Loader2 className="animate-spin" />}
-          {busy ? t(($) => $.new_file.creating) : t(($) => $.new_file.create)}
-        </Button>
+        {children}
         <Button variant="outline" size="sm" onClick={onCancel} className="shrink-0">
           {t(($) => $.form.cancel)}
         </Button>
@@ -251,35 +270,25 @@ export function NewFolderForm({
     setError(refusal);
   };
   return (
-    <div className="mb-3">
-      <div className="flex items-center gap-2">
-        <Input
-          autoFocus
-          value={path}
-          onChange={(e) => {
-            setPath(e.target.value);
-            setError(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
-            if (e.key === "Escape") onCancel();
-          }}
-          placeholder={t(($) => $.new_folder.placeholder)}
-          className="min-w-0 flex-1"
-        />
-        <Button size="sm" disabled={!path.trim()} onClick={submit} className="shrink-0">
-          {t(($) => $.new_folder.create)}
-        </Button>
-        <Button variant="outline" size="sm" onClick={onCancel} className="shrink-0">
-          {t(($) => $.form.cancel)}
-        </Button>
-      </div>
-      {error && (
-        <div className="mt-1 text-[11px]" style={{ color: "var(--color-danger)" }}>
-          {planReasonText(error, t)}
-        </div>
-      )}
-    </div>
+    <InlineCreateForm onCancel={onCancel} error={error ? planReasonText(error, t) : null}>
+      <Input
+        autoFocus
+        value={path}
+        onChange={(e) => {
+          setPath(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder={t(($) => $.new_folder.placeholder)}
+        className="min-w-0 flex-1"
+      />
+      <Button size="sm" disabled={!path.trim()} onClick={submit} className="shrink-0">
+        {t(($) => $.new_folder.create)}
+      </Button>
+    </InlineCreateForm>
   );
 }
 
@@ -1143,17 +1152,7 @@ function SectionHeading({
         (drag.highlighted ? DROP_TARGET_CLASS : "")
       }
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        title={isCollapsed ? t(($) => $.tree.expand) : t(($) => $.tree.collapse)}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-      >
-        {isCollapsed ? (
-          <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-        ) : (
-          <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-        )}
+      <FolderToggleButton isCollapsed={isCollapsed} onToggle={onToggle}>
         <span className="min-w-0 truncate font-medium text-[var(--color-text-muted)]">
           {name}
         </span>
@@ -1167,12 +1166,41 @@ function SectionHeading({
         )}
         <span className="flex-1" />
         {dot && <SyncDot dot={dot} />}
-      </button>
+      </FolderToggleButton>
       <span
         aria-hidden
         className="absolute inset-x-2 -bottom-px h-px bg-[var(--color-border)]"
       />
     </div>
+  );
+}
+
+// The expand/collapse button of a section or folder row: chevron first,
+// then the row's own face.
+function FolderToggleButton({
+  isCollapsed,
+  onToggle,
+  children,
+}: {
+  isCollapsed: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation("files");
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={isCollapsed ? t(($) => $.tree.expand) : t(($) => $.tree.collapse)}
+      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+    >
+      {isCollapsed ? (
+        <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+      ) : (
+        <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+      )}
+      {children}
+    </button>
   );
 }
 
@@ -1261,17 +1289,7 @@ function FolderRow({
         }
         style={{ paddingLeft: indent + 8, opacity: drag.dragging ? 0.45 : undefined }}
       >
-        <button
-          type="button"
-          onClick={onToggle}
-          title={isCollapsed ? t(($) => $.tree.expand) : t(($) => $.tree.collapse)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-        >
-          {isCollapsed ? (
-            <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-          ) : (
-            <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-          )}
+        <FolderToggleButton isCollapsed={isCollapsed} onToggle={onToggle}>
           {virtual ? (
             <Folder
               size={14}
@@ -1309,7 +1327,7 @@ function FolderRow({
             </>
           )}
           <span className="flex-1" />
-        </button>
+        </FolderToggleButton>
         {renaming && (
           <Input
             autoFocus

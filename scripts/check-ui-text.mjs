@@ -23,7 +23,7 @@ const ALLOWED = [
   "apps/server/shared/i18n/pseudo.ts",
 ];
 const SKIP_DIRS = new Set(["node_modules", "dist", "target", "gen"]);
-export const CZECH = /[áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]/;
+const CZECH = /[áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]/;
 
 /** Rust source with every comment removed; strings and chars kept. */
 export function stripRustComments(src) {
@@ -87,7 +87,7 @@ export function stripRustComments(src) {
 }
 
 /** TypeScript/JavaScript source with types and comments removed. */
-export function stripTsComments(src, file) {
+function stripTsComments(src, file) {
   const loader = file.endsWith(".tsx")
     ? "tsx"
     : file.endsWith(".ts") || file.endsWith(".mts")

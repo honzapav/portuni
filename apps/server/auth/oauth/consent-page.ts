@@ -18,7 +18,7 @@ import type { ErrorParams } from "../../shared/error-codes.js";
 // The languages of an Accept-Language header, most preferred first: the
 // q-values ordered descending (stable, so equal weights keep header order),
 // `q=0` dropped.
-export function acceptLanguageTags(header: string | string[] | undefined | null): string[] {
+function acceptLanguageTags(header: string | string[] | undefined | null): string[] {
   const raw = Array.isArray(header) ? header.join(",") : (header ?? "");
   return raw
     .split(",")
