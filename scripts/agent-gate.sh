@@ -12,7 +12,7 @@ npm run qa
 # change still runs it here by hand before the PR claims both drivers.
 
 echo "== fallow: changed code against origin/main"
-npx -y fallow@3.28.0 audit --base origin/main
+scripts/fallow-gate.sh origin/main
 
 echo "== web: typecheck, build"
 npx --prefix apps/web tsc -b apps/web --noEmit

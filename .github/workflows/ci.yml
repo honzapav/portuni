@@ -26,8 +26,8 @@ jobs:
       - run: npm run build
 
   fallow:
-    # Dead code, duplicates, cycles and complexity, judged only on what the
-    # PR changes against its base: inherited findings never block.
+    # Unused code and duplication the PR introduces fail; complexity is
+    # reported. Inherited findings never block. See scripts/fallow-gate.sh.
     name: Fallow (changed code)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -40,7 +40,7 @@ jobs:
           node-version: 20
       - env:
           BASE_REF: ${{ github.base_ref }}
-        run: npx -y fallow@3.28.0 audit --base "origin/$BASE_REF"
+        run: scripts/fallow-gate.sh "origin/$BASE_REF"
 
   app:
     name: App (typecheck, build)
