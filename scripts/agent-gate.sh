@@ -11,6 +11,9 @@ npm run qa
 # container's concurrency cap) is CI's job on every PR; a schema or query
 # change still runs it here by hand before the PR claims both drivers.
 
+echo "== fallow: changed code against origin/main"
+npx -y fallow@3.28.0 audit --base origin/main
+
 echo "== web: typecheck, build"
 npx --prefix apps/web tsc -b apps/web --noEmit
 npm --prefix apps/web run build
