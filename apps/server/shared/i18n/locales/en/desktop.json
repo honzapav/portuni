@@ -1,5 +1,9 @@
 {
-  "sample": {
-    "message": "Portuni for {{userName}}."
+  "login": {
+    "failure": "Sign-in failed. Return to Portuni and try again.",
+    "success": "Sign-in complete. You can return to Portuni."
+  },
+  "menu": {
+    "quit": "Quit Portuni"
   }
 }

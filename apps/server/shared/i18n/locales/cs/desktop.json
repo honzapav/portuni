@@ -1,5 +1,9 @@
 {
-  "sample": {
-    "message": "Portuni pro {{userName}}."
+  "login": {
+    "failure": "Přihlášení selhalo. Vrať se do Portuni a zkus to znovu.",
+    "success": "Přihlášení dokončeno. Můžeš se vrátit do Portuni."
+  },
+  "menu": {
+    "quit": "Ukončit Portuni"
   }
 }

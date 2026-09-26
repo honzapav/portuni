@@ -18,6 +18,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+use crate::desktop_i18n::{login_page, UiLocale, UiLocaleState};
+use crate::errors::CmdError;
 use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
@@ -263,7 +266,7 @@ async fn central_login(
     client: &Client,
     server_url: &str,
     id_token: &str,
-) -> Result<CentralLoginResponse, String> {
+) -> Result<CentralLoginResponse, CmdError> {
     let url = format!("{}/auth/login", server_url.trim_end_matches('/'));
     let body = serde_json::json!({ "id_token": id_token });
     let res = client
@@ -271,25 +274,23 @@ async fn central_login(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Central login request failed: {e}"))?;
+        .map_err(|e| CmdError::ServerUnreachable {
+            detail: e.to_string(),
+        })?;
     let status = res.status().as_u16();
     if status == 401 {
-        return Err("Central server rejected the Google token (401)".to_string());
+        return Err(CmdError::LoginRejected);
     }
     if status == 404 {
-        return Err(
-            "Central server is not yet configured for Google login (404). \
-             Enable google auth mode and set PORTUNI_GOOGLE_CLIENT_IDS."
-                .to_string(),
-        );
+        return Err(CmdError::LoginNotEnabled);
     }
     if !res.status().is_success() {
         let body = res.text().await.unwrap_or_default();
-        return Err(format!("Central login returned {status}: {body}"));
+        return Err(CmdError::from_http_answer(status, &body));
     }
     res.json::<CentralLoginResponse>()
         .await
-        .map_err(|e| format!("Central login parse failed: {e}"))
+        .map_err(|e| CmdError::Failed(format!("central login parse failed: {e}")))
 }
 
 // ─── Loopback callback listener ───────────────────────────────────────────────
@@ -364,23 +365,16 @@ fn send_html_response(stream: &mut TcpStream, body: &str) {
     let _ = stream.write_all(response.as_bytes());
 }
 
-const SUCCESS_HTML: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Portuni</title>\
-<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;\
-min-height:100vh;margin:0;background:#0a0f1e;color:#e0e6f0;}</style></head>\
-<body><p>Přihlášení dokončeno, vraťte se do aplikace.</p></body></html>";
-
-const ERROR_HTML: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Portuni</title>\
-<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;\
-min-height:100vh;margin:0;background:#0a0f1e;color:#e0e6f0;}</style></head>\
-<body><p>Přihlášení selhalo.</p></body></html>";
-
 /// Spin up a loopback TCP listener, return (port, receiver).
 /// The receiver yields Result<(code, state), error_string> exactly once,
 /// then the background thread exits. The caller should use recv_timeout
 /// on the returned receiver to enforce the overall deadline.
 type LoopbackResult = Result<(String, String), String>;
 
-fn start_loopback() -> Result<(u16, mpsc::Receiver<LoopbackResult>), String> {
+// `locale` picks the language of the page the browser lands on.
+fn start_loopback(
+    locale: UiLocale,
+) -> Result<(u16, mpsc::Receiver<LoopbackResult>), String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("failed to bind loopback: {e}"))?;
     let port = listener
@@ -402,11 +396,11 @@ fn start_loopback() -> Result<(u16, mpsc::Receiver<LoopbackResult>), String> {
                 let first_line = reader.lines().next().and_then(|r| r.ok());
                 match first_line.and_then(|l| parse_callback(&l)) {
                     Some((code, state)) => {
-                        send_html_response(&mut stream, SUCCESS_HTML);
+                        send_html_response(&mut stream, &login_page(locale, true));
                         let _ = tx.send(Ok((code, state)));
                     }
                     None => {
-                        send_html_response(&mut stream, ERROR_HTML);
+                        send_html_response(&mut stream, &login_page(locale, false));
                         let _ = tx.send(Err("callback did not contain code/state".to_string()));
                     }
                 }
@@ -459,17 +453,21 @@ pub fn auth_status(window: tauri::Window) -> AuthStatus {
 /// 7. Store refresh_token + session JWT in Keychain.
 /// 8. Return user JSON from server response.
 #[tauri::command]
-pub async fn google_login(window: tauri::Window) -> Result<Value, String> {
+pub async fn google_login(window: tauri::Window) -> Result<Value, CmdError> {
     let ws_id = crate::ws_of(&window)?;
     let app = window.app_handle().clone();
     let config = load_auth_config(&app, &ws_id)
-        .ok_or_else(|| "server_url and google_client_id must be set in config.json".to_string())?;
+        .ok_or(CmdError::LoginNotConfigured)?;
 
     let verifier = pkce_verifier();
     let challenge = pkce_challenge(&verifier);
     let state_param = random_state();
 
-    let (port, rx) = start_loopback()?;
+    let locale = app
+        .try_state::<UiLocaleState>()
+        .map(|s| s.get())
+        .unwrap_or_default();
+    let (port, rx) = start_loopback(locale)?;
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
     let auth_url = format!(
@@ -490,14 +488,17 @@ pub async fn google_login(window: tauri::Window) -> Result<Value, String> {
     );
 
     info!("google_login: opening browser for OAuth");
-    open::that(&auth_url).map_err(|e| format!("failed to open browser: {e}"))?;
+    open::that(&auth_url).map_err(|e| CmdError::BrowserOpenFailed {
+        detail: e.to_string(),
+    })?;
 
     // Wait up to 120 s for the browser callback. Use recv_timeout so the
     // async executor isn't held and the user gets a clear timeout message.
     let timeout = Duration::from_secs(120);
     let result = tauri::async_runtime::spawn_blocking(move || {
         rx.recv_timeout(timeout)
-            .unwrap_or_else(|_| Err("login timed out waiting for browser callback (120 s)".to_string()))
+            .map_err(|_| CmdError::LoginTimeout)
+            .and_then(|r| r.map_err(CmdError::from))
     })
     .await
     .map_err(|e| format!("thread join failed: {e}"))?;
@@ -510,7 +511,7 @@ pub async fn google_login(window: tauri::Window) -> Result<Value, String> {
     let (code, returned_state) = result?;
 
     if returned_state != state_param {
-        return Err("CSRF: state parameter mismatch".to_string());
+        return Err(CmdError::LoginStateMismatch);
     }
 
     let client = crate::http_client();
@@ -556,17 +557,17 @@ pub async fn google_login(window: tauri::Window) -> Result<Value, String> {
 /// Refresh the session using the stored Google refresh token.
 /// Returns the updated user JSON from the central server.
 #[tauri::command]
-pub async fn auth_refresh(window: tauri::Window) -> Result<Value, String> {
+pub async fn auth_refresh(window: tauri::Window) -> Result<Value, CmdError> {
     // Resolved from THIS window (#223), never re-derived via the globally
     // "active" workspace: api_request's 401 retry passes its own already-
     // resolved window along so a refresh always targets the same workspace
     // the request that triggered it was for.
     let ws_id = crate::ws_of(&window)?;
     let config = load_auth_config(window.app_handle(), &ws_id)
-        .ok_or_else(|| "server_url and google_client_id must be set in config.json".to_string())?;
+        .ok_or(CmdError::LoginNotConfigured)?;
 
     let refresh_token = keychain_get_ws(KEYCHAIN_GOOGLE_REFRESH, &ws_id)
-        .ok_or_else(|| "not logged in: no refresh token in Keychain".to_string())?;
+        .ok_or(CmdError::NotLoggedIn)?;
 
     let client = crate::http_client();
     let id_token = refresh_google_token(
@@ -586,7 +587,7 @@ pub async fn auth_refresh(window: tauri::Window) -> Result<Value, String> {
 
 /// Delete this window's workspace's Keychain entries. Idempotent.
 #[tauri::command]
-pub fn auth_logout(window: tauri::Window) -> Result<(), String> {
+pub fn auth_logout(window: tauri::Window) -> Result<(), CmdError> {
     let ws_id = crate::ws_of(&window)?;
     keychain_delete_ws(KEYCHAIN_GOOGLE_REFRESH, &ws_id);
     keychain_delete_ws(KEYCHAIN_SESSION_JWT, &ws_id);
@@ -612,13 +613,12 @@ pub async fn central_request(
     method: String,
     path: String,
     body: Option<Value>,
-) -> Result<CentralResponse, String> {
+) -> Result<CentralResponse, CmdError> {
     let ws_id = crate::ws_of(&window)?;
     let config = load_auth_config(window.app_handle(), &ws_id)
-        .ok_or_else(|| "server_url is not configured".to_string())?;
+        .ok_or(CmdError::LoginNotConfigured)?;
 
-    let jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id)
-        .ok_or_else(|| "not logged in: no session JWT in Keychain".to_string())?;
+    let jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id).ok_or(CmdError::NotLoggedIn)?;
 
     let resp = do_central_request(&config.server_url, &method, &path, body.as_ref(), &jwt).await?;
 
@@ -633,8 +633,11 @@ pub async fn central_request(
             }
             Ok(_) => {
                 let new_jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id)
-                    .ok_or_else(|| "not logged in after refresh".to_string())?;
-                return do_central_request(&config.server_url, &method, &path, body.as_ref(), &new_jwt).await;
+                    .ok_or(CmdError::NotLoggedIn)?;
+                return Ok(
+                    do_central_request(&config.server_url, &method, &path, body.as_ref(), &new_jwt)
+                        .await?,
+                );
             }
         }
     }

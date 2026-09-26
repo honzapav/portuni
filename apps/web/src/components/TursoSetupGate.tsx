@@ -20,6 +20,7 @@ import { displayError } from "../errors";
 import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { isTauri } from "../lib/backend-url";
+import { invoke } from "../lib/tauri-invoke";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -54,7 +55,6 @@ export default function TursoSetupGate({ children }: Props) {
     }
     void (async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const result = await invoke<TursoStatus>("get_turso_status");
         if (cancelled) return;
         if (!result.config_exists) {
@@ -89,7 +89,6 @@ export default function TursoSetupGate({ children }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("set_turso_token", { token: trimmed });
       await invoke("restart_sidecar");
       // Reload so backend-url.ts's ready gate, fetchGraph caches, etc.
@@ -110,7 +109,6 @@ export default function TursoSetupGate({ children }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("setup_central", { serverUrl: trimmed });
       // No reload: the Rust host opens the new ws:<id> window itself and
       // closes this bootstrap one (#222). CentralLoginGate sees
@@ -126,7 +124,6 @@ export default function TursoSetupGate({ children }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("save_config", { tursoUrl: null });
       // No restart, no reload: the sidecar is already running in local
       // fallback mode (that's what happens when config.json is missing),

@@ -27,10 +27,56 @@ export const WEB_ERROR_CODES = [
 ] as const;
 export type WebErrorCode = (typeof WEB_ERROR_CODES)[number];
 
-export type DisplayErrorCode = ErrorCode | WebErrorCode;
+// Codes a Tauri command of the desktop shell rejects with (apps/desktop,
+// `{ code, params, message }`, see lib/tauri-invoke.ts). A command may also
+// reject with a server code or one of the web codes above (UNKNOWN_DETAIL,
+// SYNC_AGENT_DOWN...), which render from their own entries.
+export const DESKTOP_ERROR_CODES = [
+  "DESKTOP_WORKSPACE_UNKNOWN",
+  "DESKTOP_WORKSPACE_DISABLED",
+  "DESKTOP_WORKSPACE_EXISTS",
+  "DESKTOP_WORKSPACE_ID_INVALID",
+  "DESKTOP_WORKSPACE_LAST",
+  "DESKTOP_WORKSPACE_WINDOW_OPEN",
+  "DESKTOP_NOT_WORKSPACE_WINDOW",
+  "DESKTOP_CONFIG_NOT_MIGRATED",
+  "DESKTOP_CONFIG_MISSING",
+  "DESKTOP_CONFIG_INVALID",
+  "DESKTOP_LOGIN_NOT_CONFIGURED",
+  "DESKTOP_LOGIN_TIMEOUT",
+  "DESKTOP_LOGIN_STATE_MISMATCH",
+  "DESKTOP_LOGIN_REJECTED",
+  "DESKTOP_LOGIN_NOT_ENABLED",
+  "DESKTOP_BROWSER_OPEN_FAILED",
+  "DESKTOP_SERVER_URL_REQUIRED",
+  "DESKTOP_SERVER_URL_INSECURE",
+  "DESKTOP_SERVER_URL_SCHEME",
+  "DESKTOP_SERVER_UNREACHABLE",
+  "DESKTOP_SERVER_ERROR",
+  "DESKTOP_BACKEND_NOT_READY",
+  "DESKTOP_BACKEND_FAILED",
+  "DESKTOP_BACKEND_EXITED",
+  "DESKTOP_PATH_NOT_FOUND",
+  "DESKTOP_PATH_OUT_OF_SCOPE",
+  "DESKTOP_NOT_HTML",
+  "DESKTOP_NOT_SHOWTIME_DECK",
+  "DESKTOP_NO_WIP_DIR",
+  "DESKTOP_SHOWTIME_OUTDATED",
+  "DESKTOP_UNSUPPORTED_OS",
+  "DESKTOP_OPEN_FAILED",
+  "DESKTOP_MCP_INSTALL_PARTIAL",
+  "DESKTOP_URL_REFUSED",
+] as const;
+export type DesktopErrorCode = (typeof DESKTOP_ERROR_CODES)[number];
+
+export type DisplayErrorCode = ErrorCode | WebErrorCode | DesktopErrorCode;
 
 export function isDisplayErrorCode(value: unknown): value is DisplayErrorCode {
-  return isErrorCode(value) || (WEB_ERROR_CODES as readonly string[]).includes(value as string);
+  return (
+    isErrorCode(value) ||
+    (WEB_ERROR_CODES as readonly string[]).includes(value as string) ||
+    (DESKTOP_ERROR_CODES as readonly string[]).includes(value as string)
+  );
 }
 
 // An error answer from the server (REST, agent router) or the live channel.
@@ -240,6 +286,40 @@ const MESSAGES: Record<DisplayErrorCode, Render> = {
   MCP_SCOPE_UNAVAILABLE: (t) => t(($) => $.MCP_SCOPE_UNAVAILABLE, { ns: "errors" }),
   SESSION_BIND_REFUSED: (t) => t(($) => $.SESSION_BIND_REFUSED, { ns: "errors" }),
   CENTRAL_UNREACHABLE: (t) => t(($) => $.CENTRAL_UNREACHABLE, { ns: "errors" }),
+  DESKTOP_WORKSPACE_UNKNOWN: (t, p) => t(($) => $.DESKTOP_WORKSPACE_UNKNOWN, { ns: "errors", id: s(p.id) }),
+  DESKTOP_WORKSPACE_DISABLED: (t, p) => t(($) => $.DESKTOP_WORKSPACE_DISABLED, { ns: "errors", id: s(p.id) }),
+  DESKTOP_WORKSPACE_EXISTS: (t, p) => t(($) => $.DESKTOP_WORKSPACE_EXISTS, { ns: "errors", id: s(p.id) }),
+  DESKTOP_WORKSPACE_ID_INVALID: (t) => t(($) => $.DESKTOP_WORKSPACE_ID_INVALID, { ns: "errors" }),
+  DESKTOP_WORKSPACE_LAST: (t) => t(($) => $.DESKTOP_WORKSPACE_LAST, { ns: "errors" }),
+  DESKTOP_WORKSPACE_WINDOW_OPEN: (t) => t(($) => $.DESKTOP_WORKSPACE_WINDOW_OPEN, { ns: "errors" }),
+  DESKTOP_NOT_WORKSPACE_WINDOW: (t) => t(($) => $.DESKTOP_NOT_WORKSPACE_WINDOW, { ns: "errors" }),
+  DESKTOP_CONFIG_NOT_MIGRATED: (t) => t(($) => $.DESKTOP_CONFIG_NOT_MIGRATED, { ns: "errors" }),
+  DESKTOP_CONFIG_MISSING: (t) => t(($) => $.DESKTOP_CONFIG_MISSING, { ns: "errors" }),
+  DESKTOP_CONFIG_INVALID: (t, p) => t(($) => $.DESKTOP_CONFIG_INVALID, { ns: "errors", detail: s(p.detail) }),
+  DESKTOP_LOGIN_NOT_CONFIGURED: (t) => t(($) => $.DESKTOP_LOGIN_NOT_CONFIGURED, { ns: "errors" }),
+  DESKTOP_LOGIN_TIMEOUT: (t) => t(($) => $.DESKTOP_LOGIN_TIMEOUT, { ns: "errors" }),
+  DESKTOP_LOGIN_STATE_MISMATCH: (t) => t(($) => $.DESKTOP_LOGIN_STATE_MISMATCH, { ns: "errors" }),
+  DESKTOP_LOGIN_REJECTED: (t) => t(($) => $.DESKTOP_LOGIN_REJECTED, { ns: "errors" }),
+  DESKTOP_LOGIN_NOT_ENABLED: (t) => t(($) => $.DESKTOP_LOGIN_NOT_ENABLED, { ns: "errors" }),
+  DESKTOP_BROWSER_OPEN_FAILED: (t, p) => t(($) => $.DESKTOP_BROWSER_OPEN_FAILED, { ns: "errors", detail: s(p.detail) }),
+  DESKTOP_SERVER_URL_REQUIRED: (t) => t(($) => $.DESKTOP_SERVER_URL_REQUIRED, { ns: "errors" }),
+  DESKTOP_SERVER_URL_INSECURE: (t) => t(($) => $.DESKTOP_SERVER_URL_INSECURE, { ns: "errors" }),
+  DESKTOP_SERVER_URL_SCHEME: (t, p) => t(($) => $.DESKTOP_SERVER_URL_SCHEME, { ns: "errors", url: s(p.url) }),
+  DESKTOP_SERVER_UNREACHABLE: (t, p) => t(($) => $.DESKTOP_SERVER_UNREACHABLE, { ns: "errors", detail: s(p.detail) }),
+  DESKTOP_SERVER_ERROR: (t, p) => t(($) => $.DESKTOP_SERVER_ERROR, { ns: "errors", status: s(p.status) }),
+  DESKTOP_BACKEND_NOT_READY: (t) => t(($) => $.DESKTOP_BACKEND_NOT_READY, { ns: "errors" }),
+  DESKTOP_BACKEND_FAILED: (t, p) => t(($) => $.DESKTOP_BACKEND_FAILED, { ns: "errors", detail: s(p.detail) }),
+  DESKTOP_BACKEND_EXITED: (t, p) => t(($) => $.DESKTOP_BACKEND_EXITED, { ns: "errors", exitCode: s(p.exitCode) }),
+  DESKTOP_PATH_NOT_FOUND: (t, p) => t(($) => $.DESKTOP_PATH_NOT_FOUND, { ns: "errors", path: s(p.path) }),
+  DESKTOP_PATH_OUT_OF_SCOPE: (t) => t(($) => $.DESKTOP_PATH_OUT_OF_SCOPE, { ns: "errors" }),
+  DESKTOP_NOT_HTML: (t) => t(($) => $.DESKTOP_NOT_HTML, { ns: "errors" }),
+  DESKTOP_NOT_SHOWTIME_DECK: (t) => t(($) => $.DESKTOP_NOT_SHOWTIME_DECK, { ns: "errors" }),
+  DESKTOP_NO_WIP_DIR: (t) => t(($) => $.DESKTOP_NO_WIP_DIR, { ns: "errors" }),
+  DESKTOP_SHOWTIME_OUTDATED: (t) => t(($) => $.DESKTOP_SHOWTIME_OUTDATED, { ns: "errors" }),
+  DESKTOP_UNSUPPORTED_OS: (t) => t(($) => $.DESKTOP_UNSUPPORTED_OS, { ns: "errors" }),
+  DESKTOP_OPEN_FAILED: (t, p) => t(($) => $.DESKTOP_OPEN_FAILED, { ns: "errors", detail: s(p.detail) }),
+  DESKTOP_MCP_INSTALL_PARTIAL: (t, p) => t(($) => $.DESKTOP_MCP_INSTALL_PARTIAL, { ns: "errors", detail: s(p.detail) }),
+  DESKTOP_URL_REFUSED: (t, p) => t(($) => $.DESKTOP_URL_REFUSED, { ns: "errors", scheme: s(p.scheme) }),
 };
 
 // What the user reads for `err`, in the language of `t`: the message for its
@@ -264,4 +344,8 @@ export function errorText(err: unknown, t: TFunction<"errors">): string {
 }
 
 // For tests and the catalog check.
-export const ALL_DISPLAY_ERROR_CODES: readonly DisplayErrorCode[] = [...ERROR_CODES, ...WEB_ERROR_CODES];
+export const ALL_DISPLAY_ERROR_CODES: readonly DisplayErrorCode[] = [
+  ...ERROR_CODES,
+  ...WEB_ERROR_CODES,
+  ...DESKTOP_ERROR_CODES,
+];

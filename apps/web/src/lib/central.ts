@@ -18,6 +18,7 @@ export { isTauri };
 // this module is where the rest of the app already looks for it.
 export { getDataMode, isCentralMode, type DataMode } from "./data-mode";
 import { getDataModeCached, type DataMode } from "./data-mode";
+import { invoke } from "./tauri-invoke";
 
 // Hook: resolves data mode once on mount and caches the result.
 // Returns null while loading (team-workspace features should be optimistically
@@ -92,7 +93,6 @@ export async function authStatus(): Promise<AuthStatus> {
   if (!isTauri()) {
     return { configured: false, logged_in: false, user: null };
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<AuthStatus>("auth_status");
 }
 
@@ -100,13 +100,11 @@ export async function googleLogin(): Promise<UserInfo> {
   if (!isTauri()) {
     throw new Error("Přihlášení přes Google je dostupné jen v desktop aplikaci.");
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<UserInfo>("google_login");
 }
 
 export async function authLogout(): Promise<void> {
   if (!isTauri()) return;
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("auth_logout");
 }
 
@@ -125,7 +123,6 @@ export async function centralFetch<T>(
   if (!isTauri()) {
     throw new Error("Centrální server je dostupný jen v desktop aplikaci.");
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   const res = await invoke<CentralResponse>("central_request", {
     method: method.toUpperCase(),
     path,

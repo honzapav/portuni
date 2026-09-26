@@ -12,6 +12,7 @@
 // lib.rs), not by an opaque per-call id -- the spec is explicit about one
 // connection per window, and every `ws:<id>` window maps 1:1 to a workspace.
 
+use crate::errors::CmdError;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -157,7 +158,7 @@ fn emit_connection_status(app: &AppHandle, ws_id: &str, status: &'static str) {
 }
 
 #[tauri::command]
-pub(crate) async fn sessions_connect(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+pub(crate) async fn sessions_connect(app: AppHandle, window: tauri::Window) -> Result<(), CmdError> {
     let ws_id = crate::ws_of(&window)?;
     let outbox = Arc::new(Outbox::default());
     let generation = {
@@ -185,7 +186,7 @@ pub(crate) async fn sessions_connect(app: AppHandle, window: tauri::Window) -> R
 }
 
 #[tauri::command]
-pub(crate) fn sessions_disconnect(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+pub(crate) fn sessions_disconnect(app: AppHandle, window: tauri::Window) -> Result<(), CmdError> {
     let ws_id = crate::ws_of(&window)?;
     disconnect_for_ws(&app, &ws_id);
     Ok(())
@@ -209,7 +210,7 @@ pub(crate) fn disconnect_for_ws(app: &AppHandle, ws_id: &str) {
 }
 
 #[tauri::command]
-pub(crate) fn sessions_send(app: AppHandle, window: tauri::Window, frame: String) -> Result<(), String> {
+pub(crate) fn sessions_send(app: AppHandle, window: tauri::Window, frame: String) -> Result<(), CmdError> {
     let ws_id = crate::ws_of(&window)?;
     let state = app.state::<SessionsWsState>();
     let conns = state.connections.lock().map_err(|e| e.to_string())?;
@@ -223,7 +224,7 @@ pub(crate) fn sessions_send(app: AppHandle, window: tauri::Window, frame: String
 // Takes a frame the webview gave up on out of the outbox, if it is still
 // queued (#496).
 #[tauri::command]
-pub(crate) fn sessions_cancel(app: AppHandle, window: tauri::Window, id: String) -> Result<(), String> {
+pub(crate) fn sessions_cancel(app: AppHandle, window: tauri::Window, id: String) -> Result<(), CmdError> {
     let ws_id = crate::ws_of(&window)?;
     let state = app.state::<SessionsWsState>();
     let conns = state.connections.lock().map_err(|e| e.to_string())?;

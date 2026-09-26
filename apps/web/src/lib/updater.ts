@@ -10,6 +10,7 @@ import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "./backend-url";
 import { createUpdateScheduler, shouldCheckOnFocus, windowTimerDeps } from "./update-schedule";
+import { invoke } from "./tauri-invoke";
 
 export type UpdateInfo = {
   version: string;
@@ -18,22 +19,18 @@ export type UpdateInfo = {
 };
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<UpdateInfo | null>("check_update");
 }
 
 export async function installUpdate(): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("install_update");
 }
 
 export async function restartApp(): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("restart_app");
 }
 
 export async function getAppVersion(): Promise<string> {
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("get_app_version");
 }
 

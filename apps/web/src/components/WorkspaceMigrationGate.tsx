@@ -10,7 +10,7 @@
 import { displayError } from "../errors";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/tauri-invoke";
 import { isTauri } from "../lib/backend-url";
 import { slugify } from "../lib/workspaces";
 import { Button } from "@/components/ui/button";

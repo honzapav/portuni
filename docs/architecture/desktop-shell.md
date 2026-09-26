@@ -248,6 +248,48 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   `record_pending_backend_error`, `retire_pending_backend_error`.
 - In a team workspace before login the replayed `backend-ready` carries the
   sentinel port `0`.
+- The `backend-error` payload is a `CmdError` (below):
+  `DESKTOP_BACKEND_FAILED` with the sidecar's `PORTUNI_BACKEND_ERROR=` text
+  as `detail`, `DESKTOP_BACKEND_EXITED` with `exitCode`, or
+  `DESKTOP_CONFIG_INVALID` when `config.json` cannot be read at boot.
+
+## Language and command errors (#540)
+
+- **One UI language for the app.** `UiLocaleState` (managed,
+  `desktop_i18n.rs`) holds `en` or `cs`, English until a window reports
+  its own. The web calls `set_ui_locale { locale }` after boot, on every
+  i18next `languageChanged` and on window `focus`
+  (`apps/web/src/lib/desktop-locale.ts`); a call from a window without
+  focus changes nothing, so the language follows the focused window --
+  windows of different accounts can run in different languages. Anything
+  but `en`/`cs` (the dev pseudo-locale included) is sent as `en` by the web
+  and ignored by Rust.
+- **Texts from the catalog.** The Quit item of the macOS app menu and the
+  two loopback pages the browser lands on after Google sign-in come from
+  the `desktop` namespace (`apps/server/shared/i18n/locales/*/desktop.json`,
+  embedded with `include_str!`). `build_app_menu` builds the menu;
+  `set_ui_locale` rebuilds it when the language changes. `google_login`
+  reads the language when the flow starts and hands it to the loopback
+  listener.
+- **`CFBundleLocalizations`** `en`, `cs` (and `CFBundleDevelopmentRegion`
+  `en`) come from `apps/desktop/Info.plist`, merged through
+  `bundle.macOS.infoPlist` in `tauri.conf.json`, so macOS localizes its own
+  menu items and dialogs.
+- **Command errors are codes.** Every `#[tauri::command]` returns
+  `Result<_, CmdError>` (`errors.rs`), serialized as
+  `{ code, params, message }`. `code` is a `DESKTOP_*` code, a shared one
+  (`UNAUTHORIZED`, `SYNC_AGENT_DOWN`, `NO_MIRROR`, `INVALID_PATH`,
+  `DESKTOP_CONFIG_UNAVAILABLE`), a server code passed through
+  (`CmdError::from_http_answer`, e.g. a refused Showtime handoff), or
+  `UNKNOWN_DETAIL` for plumbing failures (`From<String>`: I/O, HTTP, a
+  poisoned lock), whose raw text is shown as data. `message` is English and
+  only for logs. The web wraps `invoke` (`apps/web/src/lib/tauri-invoke.ts`)
+  into a `DesktopError` and renders it with `displayError`; the web's
+  `DESKTOP_ERROR_CODES` list and both `errors.json` catalogs carry every
+  desktop code, which `errors::tests` checks against the embedded catalogs.
+  Helpers that stay `Result<_, String>` convert both ways (`From<String>`,
+  `From<CmdError> for String`).
+- No Czech text in `apps/desktop/src` outside comments.
 
 ## localStorage namespacing
 

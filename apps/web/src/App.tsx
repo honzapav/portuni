@@ -36,6 +36,7 @@ import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { deriveWorkspaceNodeRows } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
+import { invoke } from "./lib/tauri-invoke";
 import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
 import { pullNodeCount } from "./lib/remote-watch-view";
@@ -87,7 +88,6 @@ export function isHtmlPath(relPath: string): boolean {
 // (a plain single-window close outside any quit).
 async function declineExit(): Promise<void> {
   if (!isTauri()) return;
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("decline_exit").catch(() => undefined);
 }
 

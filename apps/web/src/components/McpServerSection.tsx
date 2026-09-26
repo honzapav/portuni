@@ -22,6 +22,7 @@ import { apiFetch, isTauri } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 import { listWorkspaces } from "../lib/workspaces";
 import { copyText } from "../lib/clipboard";
+import { invoke } from "../lib/tauri-invoke";
 
 type McpInfo = {
   url: string;
@@ -124,7 +125,6 @@ export default function McpServerSection() {
       return null;
     }
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const loaded = await invoke<string>("get_mcp_token");
       setToken(loaded);
       return loaded;
@@ -155,7 +155,6 @@ export default function McpServerSection() {
     setBusy(target);
     setEnvHint(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const cmd =
         target === "claude"
           ? "install_claude_global"
@@ -192,7 +191,6 @@ export default function McpServerSection() {
     setBusy("regenerate");
     setEnvHint(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const fresh = await invoke<string>("regenerate_mcp_token");
       setToken(fresh);
       setTokenVisible(true);

@@ -26,6 +26,7 @@ import type { Locale } from "../../../server/shared/i18n/config";
 import type { ErrorParams } from "../../../server/shared/error-codes";
 import type { SessionSummary, SessionRunRow } from "../types";
 import type { QuestionAnswer } from "./session-chat.js";
+import { invoke } from "./tauri-invoke.js";
 
 export type SessionState = "running" | "suspended" | "closed" | "archived";
 export type ConnectionStatus = "open" | "reconnecting" | "closed";
@@ -329,15 +330,13 @@ function createTauriTransport(): Transport {
 
   return {
     send(frame) {
-      void import("@tauri-apps/api/core").then(({ invoke }) =>
-        invoke("sessions_send", { frame: JSON.stringify(frame) }),
-      );
+      void invoke("sessions_send", { frame: JSON.stringify(frame) });
     },
     cancel(id) {
-      // Same import-then-invoke chain as send, so a cancel issued after a
-      // send reaches Rust after it (the module promise is already settled,
-      // both continuations run in order).
-      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("sessions_cancel", { id }));
+      // Same import-then-invoke chain as send (lib/tauri-invoke.ts awaits one
+      // shared module promise), so a cancel issued after a send reaches Rust
+      // after it: both continuations run in order.
+      void invoke("sessions_cancel", { id });
     },
     onFrame(cb) {
       frameListeners.add(cb);
@@ -349,7 +348,6 @@ function createTauriTransport(): Transport {
     },
     connect() {
       void (async () => {
-        const { invoke } = await import("@tauri-apps/api/core");
         const { listen } = await import("@tauri-apps/api/event");
         unlistenEvent = await listen<{ frame: ServerFrame }>("session-event", (ev) => {
           for (const cb of frameListeners) cb(ev.payload.frame);
@@ -365,7 +363,7 @@ function createTauriTransport(): Transport {
       unlistenStatus?.();
       unlistenEvent = null;
       unlistenStatus = null;
-      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("sessions_disconnect"));
+      void invoke("sessions_disconnect");
     },
   };
 }
