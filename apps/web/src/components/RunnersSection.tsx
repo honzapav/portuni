@@ -47,6 +47,8 @@ const fetchInstances = async () => ({ instances: await listRunnerInstances() });
 // Radix Select refuses an empty-string item value, so "no default instance"
 // travels as this sentinel and is mapped back to null at the call site.
 const NO_INSTANCE = "__none__";
+// An example runner id, not UI text: the same in every language.
+const RUNNER_ID_EXAMPLE = "claude";
 
 const FIELD_LABEL =
   "mb-1 text-[12.5px] uppercase tracking-wider text-[var(--color-text-dim)]";
@@ -566,7 +568,7 @@ function CreateInstanceForm({
             onChange={(e) => setRunner(e.target.value)}
             disabled={busy}
             spellCheck={false}
-            placeholder="claude"
+            placeholder={RUNNER_ID_EXAMPLE}
             className="font-mono"
           />
           <datalist id="runners-known-ids">

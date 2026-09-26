@@ -140,7 +140,7 @@ import { SessionsSection } from "./DetailPane.sessions";
 import { RequestAccessControl } from "./AccessRequests";
 import { copyText } from "../lib/clipboard";
 import { useDataMode } from "../lib/central";
-import { compareText } from "../lib/format";
+import { compareText, formatDate } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
@@ -322,6 +322,7 @@ function DetailPaneBody({
 }) {
   const { t } = useTranslation("node");
   const { t: tFiles } = useTranslation("files");
+  const locale = useLocale();
 
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -1106,7 +1107,7 @@ function DetailPaneBody({
               {groupEventsByDate(node.events).map((group) => (
                 <div key={group.date} className="space-y-2">
                   <div className="font-mono text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
-                    {group.date}
+                    {formatDate(locale, group.day)}
                   </div>
                   {group.events.map((evt) => (
                     <EventCard

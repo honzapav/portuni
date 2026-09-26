@@ -23,7 +23,7 @@ import { createSessionsWsServer, errorFrameFor, type SessionsWsDeps } from "../a
 import { respondSessionRefusal, sessionRefusal } from "../apps/server/api/session-refusals.js";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
-import { SessionHandoffError, type SessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
+import { NoRunnerAvailableError, SessionHandoffError, type SessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
 import { CentralHttpError, type CentralClient } from "../apps/server/domain/sync/central/client.js";
 import { isErrorCode } from "../apps/server/shared/error-codes.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
@@ -146,6 +146,21 @@ describe("session refusals carry code and params (#531)", () => {
     assert.deepEqual(body.params, { host: "MacBook Pro" });
   });
 
+  it("sync agent router: POST /sessions/:id/messages with no runner is 400 NO_RUNNER_AVAILABLE", async () => {
+    const noRunnerRuntime = {
+      async sendMessage(): Promise<never> {
+        throw new NoRunnerAvailableError("no runner is installed and logged in on this device");
+      },
+      subscribe: () => () => undefined,
+    } as unknown as SessionRuntime;
+    const route = createAgentRouter({} as CentralClient, { sessionRuntime: noRunnerRuntime });
+    const path = "/sessions/S1/messages";
+    const { req, res, captured } = mockReqRes("POST", path, { text: "hi" });
+    assert.equal(await route(req, res, new URL(`http://localhost${path}`), identity), true);
+    assert.equal(captured.statusCode, 400);
+    assert.equal((JSON.parse(captured.body) as { code: string }).code, "NO_RUNNER_AVAILABLE");
+  });
+
   it("errorFrameFor maps refusals, central coded errors and anything else", () => {
     assert.deepEqual(errorFrameFor(runElsewhere()), {
       code: "HANDOFF_RUN_ELSEWHERE",
@@ -159,6 +174,11 @@ describe("session refusals carry code and params (#531)", () => {
     assert.deepEqual(errorFrameFor(new CentralHttpError("boom", 502, "SOMETHING")), {
       code: "INTERNAL_ERROR",
       message: "internal error",
+    });
+    assert.deepEqual(errorFrameFor(new NoRunnerAvailableError("no runner")), {
+      code: "NO_RUNNER_AVAILABLE",
+      message: "no runner",
+      params: undefined,
     });
     assert.deepEqual(errorFrameFor(new Error("boom")), { code: "INTERNAL_ERROR", message: "internal error" });
   });

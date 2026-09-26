@@ -33,6 +33,9 @@ import {
 import { useFormAction, useListLoad, usePendingIds } from "../lib/use-list-load";
 import { ErrorActionAlert } from "./ErrorActionAlert";
 
+// An example URL, not UI text: the same in every language.
+const TURSO_URL_EXAMPLE = "libsql://your-db.turso.io";
+
 const fetchWorkspaces = async () => ({ workspaces: await listWorkspaces() });
 
 const DATA_MODE_TEXT: Record<
@@ -471,7 +474,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
               value={tursoUrl}
               onChange={(e) => setTursoUrl(e.target.value)}
               disabled={busy}
-              placeholder="libsql://your-db.turso.io"
+              placeholder={TURSO_URL_EXAMPLE}
               spellCheck={false}
               className="font-mono"
             />

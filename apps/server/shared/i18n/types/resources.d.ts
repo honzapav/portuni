@@ -127,6 +127,7 @@ export default interface Resources {
       "title": "Loading"
     },
     "message": {
+      "branch_page": "{{current}} of {{total}}",
       "next_branch": "Next branch",
       "previous_branch": "Previous branch"
     },

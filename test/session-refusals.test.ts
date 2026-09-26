@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sessionRefusal } from "../apps/server/api/session-refusals.js";
-import { NoLiveRunError, SessionHandoffError } from "../apps/server/domain/runner/session-runtime.js";
+import { NoLiveRunError, NoRunnerAvailableError, SessionHandoffError } from "../apps/server/domain/runner/session-runtime.js";
 
 test("a SessionHandoffError is a 409 carrying its code and its message", () => {
   const err = new SessionHandoffError("HANDOFF_RUN_ELSEWHERE", "The thread is running on other-mac; hand it over there.");
@@ -19,6 +19,11 @@ test("a SessionHandoffError is a 409 carrying its code and its message", () => {
 test("a NoLiveRunError is a 409 NO_LIVE_RUN", () => {
   const err = new NoLiveRunError("sendMessage", "s1");
   assert.deepEqual(sessionRefusal(err), { status: 409, code: "NO_LIVE_RUN", message: err.message });
+});
+
+test("a NoRunnerAvailableError is a 400 NO_RUNNER_AVAILABLE on every path", () => {
+  const err = new NoRunnerAvailableError("no runner is installed and logged in on this device");
+  assert.deepEqual(sessionRefusal(err), { status: 400, code: "NO_RUNNER_AVAILABLE", message: err.message });
 });
 
 test("rewording a refusal's message never changes its code", () => {
