@@ -173,7 +173,7 @@ jobs:
       # a migration that then went wrong is exactly the one worth having.
       - name: Keep the pre-migration backup
         if: always() && steps.decide.outputs.deploy == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: turso-backup-${{ github.event.workflow_run.head_sha || github.sha }}
           path: backup-artifact/*.sql
