@@ -25,7 +25,7 @@ docs/        Internal design notes and specs
 
 ## Quickstart
 
-Requires Node.js 22+ and [Varlock](https://github.com/dmno-dev/varlock).
+Requires Node.js 24+ and [Varlock](https://github.com/dmno-dev/varlock).
 
 ```bash
 git clone https://github.com/honzapav/portuni
