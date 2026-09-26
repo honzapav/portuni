@@ -1,4 +1,4 @@
-FROM node:22-bookworm
+FROM node:24-bookworm
 
 # Base tooling + Tauri 2 Linux build dependencies so the agent can run
 # `cargo check` / `cargo test` / `cargo clippy` in apps/desktop. libdbus-1-dev

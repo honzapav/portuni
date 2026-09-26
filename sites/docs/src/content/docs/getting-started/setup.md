@@ -26,7 +26,7 @@ Use this path if you want to contribute to Portuni, run it on Linux/Windows, or 
 
 ### Before you start
 
-- Node.js 22 or newer
+- Node.js 24 or newer
 - [Varlock](https://github.com/dmno-dev/varlock) for secrets management
 - A [Turso](https://turso.tech/) account if you're setting up the team or production mode. Turso is the shared cloud database that lets multiple people and multiple agents work against the same graph – it's where Portuni is designed to live long-term.
 - **No database account needed** for a solo or testing setup: Portuni quietly falls back to a local SQLite file. Good for trying things out, or for working on the server itself. Plan to move to Turso as soon as more than one person needs the graph.
