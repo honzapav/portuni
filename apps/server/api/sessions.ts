@@ -90,7 +90,6 @@ import { getResumeInfo } from "../domain/session-handoff.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { logAudit } from "../infra/audit.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
-import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
 import { respondSessionRefusal } from "./session-refusals.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv, instanceClaudeConfigDir } from "../domain/runner/instances.js";
@@ -649,10 +648,6 @@ export async function handleStartSession(
         respondJson(res, 201, { session: await toSummary(updated ?? session), run });
       } catch (err) {
         if (respondSessionRefusal(res, err)) return;
-        if (err instanceof NoRunnerAvailableError) {
-          respondApiError(res, 400, "NO_RUNNER_AVAILABLE", err.message);
-          return;
-        }
         throw err;
       }
       return;
@@ -764,10 +759,6 @@ export async function handleSendSessionMessage(
       // #497: a resume with nothing to continue from on this device; #530:
       // NO_LIVE_RUN from the error's type.
       if (respondSessionRefusal(res, err)) return;
-      if (err instanceof NoRunnerAvailableError) {
-        respondApiError(res, 400, "NO_RUNNER_AVAILABLE", err.message);
-        return;
-      }
       throw err;
     }
     await logAudit(identity.userId, "session_message", "session", sessionId, {});

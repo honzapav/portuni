@@ -730,7 +730,9 @@ human verification.
   other state refuses. Promotion uses the draft's own `runner`/`instance_id`
   and resolves them (`resolveTaskDefaults`: the first `detectAll()` runner
   with `installed && logged_in`, and the node organization's default
-  instance for it; `NoRunnerAvailableError` -> `400 NO_RUNNER_AVAILABLE`)
+  instance for it; `NoRunnerAvailableError` -> `400 NO_RUNNER_AVAILABLE`
+  through `api/session-refusals.ts`, so the sync agent's router and the
+  live channel's error frame answer the same code)
   only when the draft carries none. Central's `PatchSessionBody` accepts
   the promotion fields (`brief`, `runner`, `instance_id`, `name_is_custom`).
 - **Naming.** `threadNameFromFirstMessage` (`domain/sessions.ts`, mirrored

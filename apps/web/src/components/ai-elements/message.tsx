@@ -333,6 +333,7 @@ export const MessageBranchPage = ({
   ...props
 }: MessageBranchPageProps) => {
   const { currentBranch, totalBranches } = useMessageBranch();
+  const { t } = useTranslation("chat");
 
   return (
     <ButtonGroupText
@@ -342,7 +343,7 @@ export const MessageBranchPage = ({
       )}
       {...props}
     >
-      {currentBranch + 1} of {totalBranches}
+      {t(($) => $.message.branch_page, { current: currentBranch + 1, total: totalBranches })}
     </ButtonGroupText>
   );
 };

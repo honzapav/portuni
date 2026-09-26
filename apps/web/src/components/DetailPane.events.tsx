@@ -11,6 +11,7 @@ import type { DetailEvent } from "../types";
 import { EVENT_TYPES } from "../types";
 import { archiveEvent, createEvent, updateEvent } from "../api";
 import { DatePicker } from "./DatePicker";
+import { localDayOf, moveToLocalDay } from "../lib/events";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,7 +36,7 @@ export function EventCard({
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState(evt.content);
   const [type, setType] = useState(evt.type);
-  const [date, setDate] = useState(evt.created_at.slice(0, 10));
+  const [date, setDate] = useState(localDayOf(evt.created_at));
   const [saving, setSaving] = useState(false);
   // A failed mutation used to be swallowed (try/finally without catch):
   // the button snapped back to idle and the edit silently was not saved.
@@ -48,8 +49,8 @@ export function EventCard({
       const patch: Record<string, string> = {};
       if (content.trim() !== evt.content) patch.content = content.trim();
       if (type !== evt.type) patch.type = type;
-      if (date !== evt.created_at.slice(0, 10)) {
-        patch.created_at = date + evt.created_at.slice(10);
+      if (date !== localDayOf(evt.created_at)) {
+        patch.created_at = moveToLocalDay(evt.created_at, date);
       }
       if (Object.keys(patch).length > 0) {
         await updateEvent(evt.id, patch);
@@ -118,7 +119,7 @@ export function EventCard({
               setEditing(false);
               setContent(evt.content);
               setType(evt.type);
-              setDate(evt.created_at.slice(0, 10));
+              setDate(localDayOf(evt.created_at));
             }}
             className="text-muted-foreground"
           >

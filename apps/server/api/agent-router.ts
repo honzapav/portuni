@@ -66,7 +66,6 @@ import {
   SessionLocaleBody,
   sessionResumeInfoPayload,
 } from "./sessions.js";
-import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
 import { respondSessionRefusal } from "./session-refusals.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
@@ -513,10 +512,6 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           respondJson(res, 201, { session: updated ?? session, run });
         } catch (err) {
           if (respondSessionRefusal(res, err)) return true;
-          if (err instanceof NoRunnerAvailableError) {
-            respondApiError(res, 400, "NO_RUNNER_AVAILABLE", err.message);
-            return true;
-          }
           if (respondCentral404(res, err)) return true;
           respondError(res, "POST /sessions", err);
         }
