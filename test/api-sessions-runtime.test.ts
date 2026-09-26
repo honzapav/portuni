@@ -296,7 +296,7 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal(res.statusCode, 201);
     const body = JSON.parse(res.body) as { session: SessionSummary; run: SessionRunRow | null };
     assert.equal(body.session.state, "draft");
-    assert.equal(body.session.name, "Nový úkol");
+    assert.equal(body.session.name, "New task");
     assert.ok(!("brief" in body.session));
     assert.equal(body.session.runner, "fake");
     assert.equal(body.session.instance_id, null);
@@ -455,7 +455,7 @@ describe("task REST endpoints under /sessions", () => {
           request_id: "req-1",
           type: "approval",
           tool: "mcp__portuni__portuni_expand_scope",
-          title: "Rozšířit rozsah?",
+          title: "Expand the scope?",
           detail: "detail",
           options: null,
           decision: null,

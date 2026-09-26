@@ -23,7 +23,8 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import type { DragEvent as ReactDragEvent } from "react";
+import type { ReactNode, DragEvent as ReactDragEvent } from "react";
+import type { TFunction } from "i18next";
 import type {
   DetailFile,
   NodeDetail,
@@ -47,7 +48,11 @@ import {
   pruneEmptyFolders,
   EMPTY_PLAN,
   type FilePlan,
+  isSection as isSectionName,
+  planReasonText,
   type MoveTarget,
+  type Section,
+  type PlanReason,
   type PlanResult,
 } from "../lib/file-plan";
 import {
@@ -60,16 +65,20 @@ import {
   folderDragCheck,
   type FolderActions,
 } from "../lib/file-drag";
-import { pluralChanges } from "../lib/plural";
+import { Trans, useTranslation } from "react-i18next";
 import {
   aggregateFolderSync,
   buildFileTree,
+  folderSyncTitle,
+  type FolderSyncState,
   isSectionRoot,
   sortChildren,
   type TreeFile,
   type TreeNode,
 } from "../lib/file-tree";
 import { fetchNodeFileUrl } from "../api";
+import { displayError } from "../errors";
+import { errorCode } from "../lib/api-error";
 import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { listWorkspaces } from "../lib/workspaces";
@@ -87,6 +96,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+
+// An action's error shown on its form or row (#267). A coded error (the
+// server's or the client's) renders from the errors catalog; a plain Error
+// thrown by DetailPane's file handlers already carries the user's text (a
+// Czech prefix over displayError, a repair hint) and is shown as-is.
+function actionErrorText(e: unknown): string {
+  return errorCode(e) === null && e instanceof Error ? e.message : displayError(e);
+}
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -154,6 +171,7 @@ export function NewFileForm({
   onSubmit: (name: string) => Promise<void>;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation("files");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -167,36 +185,55 @@ export function NewFileForm({
     } catch (e) {
       // Stays with the form (#267), not a tab-level box: this is the
       // create action's own error, not a row's or the sync run's.
-      setError(e instanceof Error ? e.message : String(e));
+      setError(actionErrorText(e));
     } finally {
       setBusy(false);
     }
   };
   return (
+    <InlineCreateForm onCancel={onCancel} error={error}>
+      <Input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void submit();
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder={t(($) => $.new_file.placeholder)}
+        className="min-w-0 flex-1"
+      />
+      <Button
+        size="sm"
+        disabled={!name.trim() || busy}
+        onClick={() => void submit()}
+        className="shrink-0"
+      >
+        {busy && <Loader2 className="animate-spin" />}
+        {busy ? t(($) => $.new_file.creating) : t(($) => $.new_file.create)}
+      </Button>
+    </InlineCreateForm>
+  );
+}
+
+// The shell of NewFileForm and NewFolderForm: the input row (the caller's
+// input and create button, then Cancel) and the refusal under it.
+function InlineCreateForm({
+  onCancel,
+  error,
+  children,
+}: {
+  onCancel: () => void;
+  error: string | null;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation("files");
+  return (
     <div className="mb-3">
       <div className="flex items-center gap-2">
-        <Input
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void submit();
-            if (e.key === "Escape") onCancel();
-          }}
-          placeholder="Název nového souboru (např. poznamky.md)"
-          className="min-w-0 flex-1"
-        />
-        <Button
-          size="sm"
-          disabled={!name.trim() || busy}
-          onClick={() => void submit()}
-          className="shrink-0"
-        >
-          {busy && <Loader2 className="animate-spin" />}
-          {busy ? "Vytvářím…" : "Vytvořit"}
-        </Button>
+        {children}
         <Button variant="outline" size="sm" onClick={onCancel} className="shrink-0">
-          Zrušit
+          {t(($) => $.form.cancel)}
         </Button>
       </div>
       {error && (
@@ -222,45 +259,36 @@ export function NewFolderForm({
   // "wip/" from the toolbar, "<folder>/" from a folder row's "Nová
   // podsložka".
   initialPath: string;
-  onSubmit: (path: string) => string | null;
+  onSubmit: (path: string) => PlanReason | null;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation("files");
   const [path, setPath] = useState(initialPath);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<PlanReason | null>(null);
   const submit = () => {
     const refusal = onSubmit(path.trim());
     setError(refusal);
   };
   return (
-    <div className="mb-3">
-      <div className="flex items-center gap-2">
-        <Input
-          autoFocus
-          value={path}
-          onChange={(e) => {
-            setPath(e.target.value);
-            setError(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
-            if (e.key === "Escape") onCancel();
-          }}
-          placeholder="Cesta nové složky (např. wip/archiv)"
-          className="min-w-0 flex-1"
-        />
-        <Button size="sm" disabled={!path.trim()} onClick={submit} className="shrink-0">
-          Vytvořit
-        </Button>
-        <Button variant="outline" size="sm" onClick={onCancel} className="shrink-0">
-          Zrušit
-        </Button>
-      </div>
-      {error && (
-        <div className="mt-1 text-[11px]" style={{ color: "var(--color-danger)" }}>
-          {error}
-        </div>
-      )}
-    </div>
+    <InlineCreateForm onCancel={onCancel} error={error ? planReasonText(error, t) : null}>
+      <Input
+        autoFocus
+        value={path}
+        onChange={(e) => {
+          setPath(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder={t(($) => $.new_folder.placeholder)}
+        className="min-w-0 flex-1"
+      />
+      <Button size="sm" disabled={!path.trim()} onClick={submit} className="shrink-0">
+        {t(($) => $.new_folder.create)}
+      </Button>
+    </InlineCreateForm>
   );
 }
 
@@ -274,14 +302,15 @@ export function NewFolderButton({
   hasMirror: boolean;
   onClick: () => void;
 }) {
-  const reason = hasMirror ? undefined : NO_MIRROR_REASON;
+  const { t } = useTranslation("files");
+  const reason = hasMirror ? undefined : planReasonText(NO_MIRROR_REASON, t);
   return (
     // The title lives on the wrapper: a disabled button gets no pointer
     // events, so its own title never shows.
     <span title={reason} className="shrink-0">
       <Button variant="outline" size="sm" disabled={!hasMirror} onClick={onClick} title={reason}>
         <FolderPlus />
-        Nová složka
+        {t(($) => $.new_folder.button)}
       </Button>
     </span>
   );
@@ -314,6 +343,7 @@ export function NewFileSplitButton({
   onOpenNewFile: () => void;
   onNewPresentation: () => Promise<void>;
 }) {
+  const { t } = useTranslation("files");
   const [installed, setInstalled] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -337,7 +367,7 @@ export function NewFileSplitButton({
     return (
       <Button variant="outline" size="sm" onClick={onNewFile} className="ml-2 shrink-0">
         <Plus />
-        Nový soubor
+        {t(($) => $.new_file.button)}
       </Button>
     );
   }
@@ -355,7 +385,7 @@ export function NewFileSplitButton({
     <ButtonGroup className="ml-2 shrink-0">
       <Button variant="outline" size="sm" onClick={onNewFile} disabled={busy}>
         <Plus />
-        Nový soubor
+        {t(($) => $.new_file.button)}
       </Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -363,14 +393,14 @@ export function NewFileSplitButton({
             variant="outline"
             size="icon-sm"
             disabled={busy}
-            title="Další možnosti"
-            aria-label="Další možnosti"
+            title={t(($) => $.new_file.more_options)}
+            aria-label={t(($) => $.new_file.more_options)}
           >
             {busy ? <Loader2 className="animate-spin" /> : <ChevronDown />}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-auto min-w-[180px]">
-          <DropdownMenuItem onSelect={onOpenNewFile}>Nový soubor</DropdownMenuItem>
+          <DropdownMenuItem onSelect={onOpenNewFile}>{t(($) => $.new_file.menu_item)}</DropdownMenuItem>
           {/* data-disabled:pointer-events-auto keeps the reason readable as a
               tooltip on the disabled item; Radix's own disabled guard still
               blocks selection and hover highlight. */}
@@ -379,12 +409,12 @@ export function NewFileSplitButton({
             disabled={!menu.presentation.enabled}
             title={
               menu.presentation.enabled
-                ? "Založí novou prezentaci v Showtime ve složce wip/ tohoto uzlu"
-                : menu.presentation.reason
+                ? t(($) => $.new_file.presentation_title)
+                : planReasonText(menu.presentation.reason, t)
             }
             className="data-disabled:pointer-events-auto"
           >
-            Nová prezentace
+            {t(($) => $.new_file.presentation)}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -530,9 +560,7 @@ function PlanBar({
 }) {
   const applying = state.phase === "applying";
   const failed = state.phase === "failed";
-  const noun = pluralChanges(count);
-  const waits = count >= 2 && count <= 4 ? "čekají" : "čeká";
-  const stays = count >= 2 && count <= 4 ? "zůstávají" : "zůstává";
+  const { t } = useTranslation("files");
   return (
     <div
       className="mb-3 flex items-center gap-2.5 rounded-lg border px-3 py-2 text-[13px]"
@@ -550,40 +578,45 @@ function PlanBar({
     >
       <span className="min-w-0 flex-1 text-[var(--color-text)]">
         {applying ? (
-          <>
-            Přesouvám{" "}
-            <b className="font-medium">
-              {state.index + 1} / {state.total}
-            </b>
-          </>
+          <Trans
+            t={t}
+            i18nKey={($) => $.plan_bar.applying}
+            values={{ current: state.index + 1, total: state.total }}
+            components={{ b: <b className="font-medium" /> }}
+          />
         ) : failed ? (
-          <>
-            Použití se zastavilo u <b className="font-medium">{state.filename}</b>.{" "}
-            <b className="font-medium">
-              {count} {noun}
-            </b>{" "}
-            {stays} v plánu.
-          </>
+          <Trans
+            t={t}
+            i18nKey={($) => $.plan_bar.failed}
+            count={count}
+            values={{ count, filename: state.filename }}
+            components={{ b: <b className="font-medium" /> }}
+          />
         ) : (
-          <>
-            <b className="font-medium">
-              {count} {noun}
-            </b>{" "}
-            {waits} na použití
-          </>
+          <Trans
+            t={t}
+            i18nKey={($) => $.plan_bar.pending}
+            count={count}
+            values={{ count }}
+            components={{ b: <b className="font-medium" /> }}
+          />
         )}
       </span>
       <Button variant="ghost" size="sm" disabled={applying} onClick={onDiscard}>
-        Zahodit
+        {t(($) => $.plan_bar.discard)}
       </Button>
       <Button
         size="sm"
         disabled={applying || !canApply}
-        title={canApply ? undefined : "Nová složka vznikne s prvním souborem, který do ní přesuneš"}
+        title={canApply ? undefined : t(($) => $.plan_bar.apply_disabled_title)}
         onClick={onApply}
       >
         {applying && <Loader2 className="animate-spin" />}
-        {applying ? "Používám" : failed ? "Použít znovu" : "Použít"}
+        {applying
+          ? t(($) => $.plan_bar.applying_button)
+          : failed
+            ? t(($) => $.plan_bar.apply_again)
+            : t(($) => $.plan_bar.apply)}
       </Button>
     </div>
   );
@@ -657,8 +690,9 @@ export function FileTree({
   // The row under the cursor, the folder its drop would land in, and the
   // refusal when there is one.
   const [hover, setHover] = useState<
-    { rowPath: string; targetFolder: string; ok: boolean; reason: string | null } | null
+    { rowPath: string; targetFolder: string; ok: boolean; reason: PlanReason | null } | null
   >(null);
+  const { t } = useTranslation("files");
   useEffect(() => {
     setCollapsed(loadCollapsedFolders(nodeId));
     setApplyState(IDLE_APPLY);
@@ -731,7 +765,7 @@ export function FileTree({
     (src: DragSource, targetFolder: string): PlanResult => {
       if (src.kind === "file") {
         const file = originals.get(src.fileId);
-        if (!file) return { ok: false, reason: "Soubor už neexistuje" };
+        if (!file) return { ok: false, reason: { code: "file_gone" } };
         return planMove(plan, file, targetFolder, occupied);
       }
       return planFolderMove(plan, src.path, targetFolder, treeFiles, occupied);
@@ -763,7 +797,10 @@ export function FileTree({
         : source.kind === "folder" && source.path === node.path);
     const highlighted =
       !isFile && hover !== null && hover.ok && hover.targetFolder === node.path;
-    const refusal = hover !== null && !hover.ok && hover.rowPath === node.path ? hover.reason : null;
+    const refusal =
+      hover !== null && !hover.ok && hover.rowPath === node.path && hover.reason
+        ? planReasonText(hover.reason, t)
+        : null;
 
     const start = (kind: "file" | "folder", name: string, src: DragSource) => (e: ReactDragEvent) => {
       e.dataTransfer.effectAllowed = "move";
@@ -774,7 +811,7 @@ export function FileTree({
 
     return {
       draggable: check.draggable && !applying,
-      dragTitle: check.reason,
+      dragTitle: check.reason ? planReasonText(check.reason, t) : null,
       dragging,
       highlighted,
       refusal,
@@ -847,7 +884,7 @@ export function FileTree({
         phase: "failed",
         fileId: outcome.failure.fileId,
         filename: failed?.filename ?? outcome.failure.fileId,
-        message: outcome.failure.message,
+        message: actionErrorText(outcome.failure.error),
       });
     } else {
       setApplyState(IDLE_APPLY);
@@ -874,7 +911,7 @@ export function FileTree({
         onFolderRename: (path, newName) => {
           if (applying) return null;
           const result = planFolderRename(plan, path, newName, treeFiles, occupied);
-          if (!result.ok) return result.reason;
+          if (!result.ok) return planReasonText(result.reason, t);
           updateMoves(result.plan);
           return null;
         },
@@ -1056,12 +1093,13 @@ function FileTreeNode({
   );
 }
 
-type FolderDot = { color: string; title: string } | null;
+type FolderDot = { color: string; state: FolderSyncState } | null;
 
 function SyncDot({ dot }: { dot: NonNullable<FolderDot> }) {
+  const { t } = useTranslation("files");
   return (
     <span
-      title={dot.title}
+      title={folderSyncTitle(dot.state, t)}
       className="h-1.5 w-1.5 shrink-0 rounded-full"
       style={{
         background: dot.color,
@@ -1072,11 +1110,13 @@ function SyncDot({ dot }: { dot: NonNullable<FolderDot> }) {
 }
 
 // The one-word description each section heading carries after its count.
-const SECTION_DESC: Record<string, string> = {
-  wip: "rozpracované",
-  outputs: "výstupy",
-  resources: "podklady",
+const SECTION_DESC: Record<Section, (t: FilesT) => string> = {
+  wip: (t) => t(($) => $.tree.section_desc.wip),
+  outputs: (t) => t(($) => $.tree.section_desc.outputs),
+  resources: (t) => t(($) => $.tree.section_desc.resources),
 };
+
+type FilesT = TFunction<"files">;
 
 // A section root (wip / outputs / resources) is a group heading, not a
 // folder row (#446): body face, weight 500, count then the description, a
@@ -1099,6 +1139,8 @@ function SectionHeading({
   // never dragged itself.
   drag: RowDrag;
 }) {
+  const { t } = useTranslation("files");
+  const desc = isSectionName(name) ? SECTION_DESC[name](t) : null;
   return (
     <div
       title={drag.refusal ?? undefined}
@@ -1110,36 +1152,55 @@ function SectionHeading({
         (drag.highlighted ? DROP_TARGET_CLASS : "")
       }
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        title={isCollapsed ? "Rozbalit" : "Sbalit"}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-      >
-        {isCollapsed ? (
-          <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-        ) : (
-          <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-        )}
+      <FolderToggleButton isCollapsed={isCollapsed} onToggle={onToggle}>
         <span className="min-w-0 truncate font-medium text-[var(--color-text-muted)]">
           {name}
         </span>
         <span className="shrink-0 text-[11px] tabular-nums text-[var(--color-text-dim)]">
           {count}
         </span>
-        {SECTION_DESC[name] && (
+        {desc && (
           <span className="shrink-0 text-[11px] text-[var(--color-text-dim)]">
-            {SECTION_DESC[name]}
+            {desc}
           </span>
         )}
         <span className="flex-1" />
         {dot && <SyncDot dot={dot} />}
-      </button>
+      </FolderToggleButton>
       <span
         aria-hidden
         className="absolute inset-x-2 -bottom-px h-px bg-[var(--color-border)]"
       />
     </div>
+  );
+}
+
+// The expand/collapse button of a section or folder row: chevron first,
+// then the row's own face.
+function FolderToggleButton({
+  isCollapsed,
+  onToggle,
+  children,
+}: {
+  isCollapsed: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation("files");
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={isCollapsed ? t(($) => $.tree.expand) : t(($) => $.tree.collapse)}
+      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+    >
+      {isCollapsed ? (
+        <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+      ) : (
+        <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+      )}
+      {children}
+    </button>
   );
 }
 
@@ -1177,9 +1238,15 @@ function FolderRow({
   onRename: (newName: string) => string | null;
   onNewSubfolder: () => void;
 }) {
+  const { t } = useTranslation("files");
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(name);
   const [error, setError] = useState<string | null>(null);
+
+  const renameReason = actions.rename.reason ? planReasonText(actions.rename.reason, t) : undefined;
+  const subfolderReason = actions.subfolder.reason
+    ? planReasonText(actions.subfolder.reason, t)
+    : undefined;
 
   const startRename = () => {
     setDraft(name);
@@ -1222,17 +1289,7 @@ function FolderRow({
         }
         style={{ paddingLeft: indent + 8, opacity: drag.dragging ? 0.45 : undefined }}
       >
-        <button
-          type="button"
-          onClick={onToggle}
-          title={isCollapsed ? "Rozbalit" : "Sbalit"}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-        >
-          {isCollapsed ? (
-            <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-          ) : (
-            <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-          )}
+        <FolderToggleButton isCollapsed={isCollapsed} onToggle={onToggle}>
           {virtual ? (
             <Folder
               size={14}
@@ -1259,18 +1316,18 @@ function FolderRow({
               </span>
               {virtual && (
                 <span
-                  title="Složka zatím existuje jen v plánu. Vznikne, až v ní po použití bude soubor."
+                  title={t(($) => $.tree.virtual_folder_title)}
                   className="shrink-0 rounded px-1.5 text-[11px] text-[var(--color-accent)]"
                   style={{ background: "var(--color-accent-soft)" }}
                 >
-                  nová
+                  {t(($) => $.tree.virtual_folder_tag)}
                 </span>
               )}
               {dot && <SyncDot dot={dot} />}
             </>
           )}
           <span className="flex-1" />
-        </button>
+        </FolderToggleButton>
         {renaming && (
           <Input
             autoFocus
@@ -1290,26 +1347,26 @@ function FolderRow({
           <span className="hidden shrink-0 gap-1 group-hover:flex">
             {/* The title lives on the wrapper: a disabled button gets no
                 pointer events, so its own title never shows. */}
-            <span title={actions.rename.reason ?? undefined}>
+            <span title={renameReason}>
               <Button
                 variant="ghost"
                 size="xs"
                 disabled={!actions.rename.enabled}
-                title={actions.rename.reason ?? undefined}
+                title={renameReason}
                 onClick={startRename}
               >
-                Přejmenovat
+                {t(($) => $.tree.rename_folder)}
               </Button>
             </span>
-            <span title={actions.subfolder.reason ?? undefined}>
+            <span title={subfolderReason}>
               <Button
                 variant="ghost"
                 size="xs"
                 disabled={!actions.subfolder.enabled}
-                title={actions.subfolder.reason ?? undefined}
+                title={subfolderReason}
                 onClick={onNewSubfolder}
               >
-                Nová podsložka
+                {t(($) => $.tree.new_subfolder)}
               </Button>
             </span>
           </span>
@@ -1356,12 +1413,13 @@ function CopyPathButton({ value, title }: { value: string; title: string }) {
 // Fetches the file's Drive URL on demand (server resolves the opaque id)
 // and copies it. Only meaningful for registered, synced files.
 function CopyDriveLinkButton({ nodeId, fileId }: { nodeId: string; fileId: string }) {
+  const { t } = useTranslation("files");
   const [state, setState] = useState<"idle" | "copied" | "none">("idle");
   return (
     <Button
       variant="ghost"
       size="icon-xs"
-      title={state === "none" ? "Soubor zatím není na Disku" : "Kopírovat odkaz na Disk"}
+      title={state === "none" ? t(($) => $.row.drive_link_none) : t(($) => $.row.copy_drive_link)}
       onClick={async (e) => {
         e.stopPropagation();
         try {
@@ -1392,16 +1450,17 @@ function CopyDriveLinkButton({ nodeId, fileId }: { nodeId: string; fileId: strin
 // detail + sync-status refetch that follows it.
 type RowBusy = "rename" | "delete" | "move" | ResolveAction;
 
-const ROW_BUSY_LABEL: Record<RowBusy, string> = {
-  rename: "přejmenovávám",
-  delete: "mažu",
-  move: "přesouvám",
-  restore: "obnovuji",
-  keep_local: "nahrávám",
-  take_remote: "stahuji",
+const ROW_BUSY_LABEL: Record<RowBusy, (t: FilesT) => string> = {
+  rename: (t) => t(($) => $.row.busy.rename),
+  delete: (t) => t(($) => $.row.busy.delete),
+  move: (t) => t(($) => $.row.busy.move),
+  restore: (t) => t(($) => $.row.busy.restore),
+  keep_local: (t) => t(($) => $.row.busy.keep_local),
+  take_remote: (t) => t(($) => $.row.busy.take_remote),
 };
 
 function RowBusyBadge({ action }: { action: RowBusy }) {
+  const { t } = useTranslation("files");
   return (
     <Badge
       variant="outline"
@@ -1414,7 +1473,7 @@ function RowBusyBadge({ action }: { action: RowBusy }) {
       }}
     >
       <Loader2 className="animate-spin" />
-      {ROW_BUSY_LABEL[action]}
+      {ROW_BUSY_LABEL[action](t)}
     </Badge>
   );
 }
@@ -1423,11 +1482,12 @@ function RowBusyBadge({ action }: { action: RowBusy }) {
 // "Použít", "chyba" on the file a failed apply stopped at (mockup, frames 4
 // and 6).
 function PlanBadge({ kind }: { kind: "move" | "error" }) {
+  const { t } = useTranslation("files");
   const color = kind === "move" ? "var(--color-accent)" : "var(--color-danger)";
   return (
     <Badge
       variant="outline"
-      title={kind === "move" ? "Přesun čeká na použití" : "Přesun se nepovedl"}
+      title={kind === "move" ? t(($) => $.row.plan_badge.move_title) : t(($) => $.row.plan_badge.error_title)}
       className="shrink-0 font-mono text-[8.5px] uppercase tracking-wider"
       style={{
         color,
@@ -1435,7 +1495,7 @@ function PlanBadge({ kind }: { kind: "move" | "error" }) {
         border: `1px solid color-mix(in srgb, ${color} 25%, transparent)`,
       }}
     >
-      {kind === "move" ? "přesun" : "chyba"}
+      {kind === "move" ? t(($) => $.row.plan_badge.move) : t(($) => $.row.plan_badge.error)}
     </Badge>
   );
 }
@@ -1481,6 +1541,7 @@ function FileRow({
   moveState: "moving" | "error" | null;
   moveError: string | null;
 }) {
+  const { t } = useTranslation("files");
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(f.filename);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1500,7 +1561,7 @@ function FileRow({
     [],
   );
   const showRowError = (e: unknown) => {
-    setRowError(e instanceof Error ? e.message : String(e));
+    setRowError(actionErrorText(e));
     if (rowErrorTimer.current) clearTimeout(rowErrorTimer.current);
     rowErrorTimer.current = setTimeout(() => setRowError(null), 6000);
   };
@@ -1601,10 +1662,10 @@ function FileRow({
               onClick={() => editable && onOpenFile(f.relative_path)}
               title={
                 showtimeDeck
-                  ? "Otevřít náhled prezentace"
+                  ? t(($) => $.row.open_presentation)
                   : editable
-                    ? "Otevřít v editoru"
-                    : "Tento soubor nelze editovat"
+                    ? t(($) => $.row.open_in_editor)
+                    : t(($) => $.row.not_editable)
               }
               className="min-w-0 justify-start font-normal text-[var(--color-text)]"
               style={busy ? { opacity: 0.5 } : undefined}
@@ -1614,7 +1675,7 @@ function FileRow({
           )}
           {f.local_path && (
             <span className="opacity-0 group-hover:opacity-100">
-              <CopyPathButton value={f.local_path} title="Kopírovat cestu k souboru" />
+              <CopyPathButton value={f.local_path} title={t(($) => $.row.copy_path)} />
             </span>
           )}
           {f.local_path && isTauri() && (
@@ -1622,7 +1683,7 @@ function FileRow({
               <Button
                 variant="ghost"
                 size="icon-xs"
-                title="Otevřít na disku"
+                title={t(($) => $.row.open_on_disk)}
                 onClick={(e) => {
                   e.stopPropagation();
                   void openInFinder(f.local_path!, true).catch(() => undefined);
@@ -1657,7 +1718,7 @@ function FileRow({
           {!f.fileId && (
             <Badge
               variant="outline"
-              title="Soubor je na disku, ale ještě není zaregistrovaný. Zaregistruje se při synchronizaci."
+              title={t(($) => $.row.untracked_title)}
               className="font-mono text-[8.5px] uppercase tracking-wider"
               style={{
                 color: "var(--color-status-archived)",
@@ -1667,7 +1728,7 @@ function FileRow({
                   "1px solid color-mix(in srgb, var(--color-status-archived) 25%, transparent)",
               }}
             >
-              neregistrováno
+              {t(($) => $.row.untracked)}
             </Badge>
           )}
           {f.fileId && !renaming && !readOnly && (
@@ -1685,10 +1746,10 @@ function FileRow({
                   setDraft(f.filename);
                   setRenaming(true);
                 }}
-                title="Přejmenovat"
+                title={t(($) => $.row.rename)}
                 className="text-muted-foreground"
               >
-                Přejmenovat
+                {t(($) => $.row.rename)}
               </Button>
               <Button
                 variant="destructive"
@@ -1697,12 +1758,12 @@ function FileRow({
                 onClick={handleDeleteClick}
                 title={
                   confirmingDelete
-                    ? "Smaže soubor i z remote úložiště"
-                    : "Smazat"
+                    ? t(($) => $.row.delete_confirm_title)
+                    : t(($) => $.row.delete)
                 }
                 className={confirmingDelete ? "font-medium" : undefined}
               >
-                {confirmingDelete ? "Opravdu smazat?" : "Smazat"}
+                {confirmingDelete ? t(($) => $.row.delete_confirm) : t(($) => $.row.delete)}
               </Button>
               {sync?.sync_class === "conflict" && (
                 <>
@@ -1711,20 +1772,20 @@ function FileRow({
                     size="xs"
                     onClick={() => act("keep_local")}
                     disabled={busy}
-                    title="Nahrát lokální verzi na remote"
+                    title={t(($) => $.row.keep_local_title)}
                     className="text-muted-foreground"
                   >
-                    Ponechat lokální
+                    {t(($) => $.row.keep_local)}
                   </Button>
                   <Button
                     variant="ghost"
                     size="xs"
                     onClick={() => act("take_remote")}
                     disabled={busy}
-                    title="Přepsat lokální kopii verzí z remote"
+                    title={t(($) => $.row.take_remote_title)}
                     className="text-muted-foreground"
                   >
-                    Vzít z remote
+                    {t(($) => $.row.take_remote)}
                   </Button>
                 </>
               )}
@@ -1734,10 +1795,10 @@ function FileRow({
                   size="xs"
                   onClick={() => act("restore")}
                   disabled={busy}
-                  title="Stáhnout znovu z remote"
+                  title={t(($) => $.row.restore_title)}
                   className="text-muted-foreground"
                 >
-                  Obnovit
+                  {t(($) => $.row.restore)}
                 </Button>
               )}
             </span>
@@ -1757,21 +1818,13 @@ function FileRow({
   );
 }
 
-// Pluralization for the work-pending counter ("3 soubory ke synchronizaci"
-// vs. "1 soubor ke synchronizaci"). Czech grammar: 1 -> singular,
-// 2-4 -> few, 5+ -> many. Used to label the action button.
-function syncPendingLabel(count: number): string {
-  if (count === 1) return "1 soubor ke synchronizaci";
-  if (count >= 2 && count <= 4) return `${count} soubory ke synchronizaci`;
-  return `${count} souborů ke synchronizaci`;
-}
-
 // Personal-workspace hint for the Files tab. Rendered by DetailPane above the
 // sync bar so it shows even on a node with zero files (where SyncBar is not
 // mounted). A personal workspace never holds a remote (#310), so this shows
 // unconditionally for one; a team workspace syncs through the central server
 // and never shows it.
 export function LocalWorkspaceFilesBanner() {
+  const { t } = useTranslation("files");
   const [show, setShow] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -1788,8 +1841,7 @@ export function LocalWorkspaceFilesBanner() {
   if (!show) return null;
   return (
     <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">
-      Soubory se ukládají jen na tento počítač a nesdílejí se. Sdílení
-      souborů vyžaduje týmový workspace (připojení k týmu).
+      {t(($) => $.banner.personal_workspace)}
     </div>
   );
 }
@@ -1799,11 +1851,12 @@ export function LocalWorkspaceFilesBanner() {
 // zero tracked files -- that is exactly the state a registration failure
 // (e.g. the #201 "no remote configured" bug) used to look like from the UI.
 export function WatcherErrorBanner({ errors }: { errors: WatcherErrorEntry[] }) {
+  const { t } = useTranslation("files");
   if (errors.length === 0) return null;
   return (
     <div className="mb-3 rounded border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
       <div className="mb-1 font-medium">
-        Sledování souborů hlásí {errors.length === 1 ? "chybu" : "chyby"} u tohoto uzlu:
+        {t(($) => $.banner.watcher_errors, { count: errors.length })}
       </div>
       <ul className="flex flex-col gap-0.5">
         {errors.map((e) => (
@@ -1819,12 +1872,20 @@ export function WatcherErrorBanner({ errors }: { errors: WatcherErrorEntry[] }) 
 // Compact one-line outcome of a sync run for SyncBar's transient inline
 // Per-file errors of a sync run, keyed by file id, for the rows themselves
 // (FileTree.runErrors). Exported for the DetailPane wiring and tests.
-export function syncRunErrorsByFile(result: SyncRunResponse | null): Map<string, string> {
+export function syncRunErrorsByFile(
+  result: SyncRunResponse | null,
+  t: FilesT,
+): Map<string, string> {
   const out = new Map<string, string>();
   if (!result) return out;
   for (const e of result.errors) out.set(e.file_id, e.error);
   for (const p of result.pending_repairs) {
-    if (!out.has(p.file_id)) out.set(p.file_id, `Nedokončeno (${p.op}): ${p.last_error ?? "?"}`);
+    if (!out.has(p.file_id)) {
+      out.set(
+        p.file_id,
+        t(($) => $.sync_bar.pending_repair, { ns: "files", op: p.op, error: p.last_error ?? "?" }),
+      );
+    }
   }
   return out;
 }
@@ -1853,24 +1914,25 @@ export function SyncBar({
     statusLoaded,
   );
   const ready = statusLoaded;
+  const { t } = useTranslation("files");
 
   const label = running
-    ? "Synchronizuji..."
+    ? t(($) => $.sync_bar.running)
     : !ready
-    ? "Synchronizovat soubory"
+    ? t(($) => $.sync_bar.sync_files)
     : noWork
     // Nothing pending locally, but the button stays actionable (#313): a run's
     // remote sweep is the only way to discover a file that showed up on Drive
     // out of band, so a node with no records yet (or one that's fully clean)
     // must still be able to trigger one instead of reading as a dead end.
-    ? "Zkontrolovat remote"
+    ? t(($) => $.sync_bar.check_remote)
     : pending > 0
-    ? `Synchronizovat (${syncPendingLabel(pending)})`
+    ? t(($) => $.sync_bar.sync_pending, { count: pending })
     : remoteMissing > 0
     // Nothing to push or pull, but these records' remote state has never been
     // established -- a run's reconcile pass is the only thing that asks.
-    ? "Zkontrolovat na remote"
-    : "Synchronizovat soubory";
+    ? t(($) => $.sync_bar.check_on_remote)
+    : t(($) => $.sync_bar.sync_files);
 
   // Transient outcome line (#267): a run's result/error used to render as a
   // detached, permanent box under the toolbar. It now shows briefly inline,
@@ -1880,9 +1942,9 @@ export function SyncBar({
   const [showOutcome, setShowOutcome] = useState(false);
   const outcomeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const outcome = error
-    ? { text: `Chyba: ${error}`, hasError: true, detail: null }
+    ? { text: t(($) => $.sync_bar.error, { error }), hasError: true, detail: null }
     : result
-      ? summarizeSyncRun(result)
+      ? summarizeSyncRun(result, t)
       : null;
   useEffect(() => {
     if (!result && !error) return;
@@ -1923,9 +1985,9 @@ export function SyncBar({
               border:
                 "1px solid color-mix(in srgb, var(--color-danger) 25%, transparent)",
             }}
-            title="Konflikt: vyber verzi u souboru (Ponechat lokální / Vzít z remote)."
+            title={t(($) => $.sync_bar.conflicts_title)}
           >
-            {conflicts} konflikt{conflicts === 1 ? "" : "y"}
+            {t(($) => $.sync_bar.conflicts, { count: conflicts })}
           </Badge>
         )}
         {deletedLocal > 0 && (
@@ -1939,9 +2001,9 @@ export function SyncBar({
               border:
                 "1px solid color-mix(in srgb, var(--color-status-archived) 25%, transparent)",
             }}
-            title="Smazáno lokálně: Obnovit stáhne kopii znovu, Smazat odstraní soubor všude."
+            title={t(($) => $.sync_bar.deleted_local_title)}
           >
-            {deletedLocal} smazáno lokálně
+            {t(($) => $.sync_bar.deleted_local, { count: deletedLocal })}
           </Badge>
         )}
         {showOutcome && outcome && (
@@ -1960,8 +2022,8 @@ export function SyncBar({
                 variant="ghost"
                 size="icon-xs"
                 onClick={() => setShowOutcome(false)}
-                title="Skrýt"
-                aria-label="Skrýt výsledek synchronizace"
+                title={t(($) => $.sync_bar.hide)}
+                aria-label={t(($) => $.sync_bar.hide_label)}
                 className="shrink-0 opacity-60 hover:opacity-100"
               >
                 <X />
@@ -1988,19 +2050,19 @@ export function NoMirrorBanner({
   error: string | null;
   onCreate: () => void;
 }) {
+  const { t } = useTranslation("files");
   return (
     <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
       <div className="mb-1.5 text-[var(--color-text-dim)]">
-        Tento uzel nemá na tomto počítači pracovní složku – soubory jsou
-        zatím jen na vzdáleném úložišti.
+        {t(($) => $.banner.no_mirror)}
       </div>
       <Button variant="outline" size="sm" onClick={onCreate} disabled={pending}>
         {pending ? <Loader2 className="animate-spin" /> : <Folder />}
-        {pending ? "Vytvářím…" : "Vytvořit pracovní složku"}
+        {pending ? t(($) => $.banner.creating_mirror) : t(($) => $.banner.create_mirror)}
       </Button>
       {error && (
         <div className="mt-1.5" style={{ color: "var(--color-danger)" }}>
-          Chyba: {error}
+          {t(($) => $.banner.error, { error })}
         </div>
       )}
     </div>
@@ -2008,6 +2070,7 @@ export function NoMirrorBanner({
 }
 
 function SyncStatusBadge({ sync }: { sync: SyncStatusFile }) {
+  const { t } = useTranslation("files");
   const cssVar = syncCssVar(sync.sync_class);
   const tip = [
     `class: ${sync.sync_class}`,
@@ -2030,20 +2093,20 @@ function SyncStatusBadge({ sync }: { sync: SyncStatusFile }) {
         border: `1px solid color-mix(in srgb, ${cssVar} 25%, transparent)`,
       }}
     >
-      {SYNC_LABEL[sync.sync_class]}
+      {SYNC_LABEL[sync.sync_class](t)}
     </Badge>
   );
 }
 
-const SYNC_LABEL: Record<SyncClass, string> = {
-  clean: "synced",
-  push: "push",
-  pull: "pull",
-  conflict: "conflict",
-  remote_missing: "chybí na remote",
-  remote_error: "remote nedostupný",
-  native: "native",
-  deleted_local: "missing",
+const SYNC_LABEL: Record<SyncClass, (t: FilesT) => string> = {
+  clean: (t) => t(($) => $.sync_class.clean),
+  push: (t) => t(($) => $.sync_class.push),
+  pull: (t) => t(($) => $.sync_class.pull),
+  conflict: (t) => t(($) => $.sync_class.conflict),
+  remote_missing: (t) => t(($) => $.sync_class.remote_missing),
+  remote_error: (t) => t(($) => $.sync_class.remote_error),
+  native: (t) => t(($) => $.sync_class.native),
+  deleted_local: (t) => t(($) => $.sync_class.deleted_local),
 };
 
 function syncCssVar(c: SyncClass): string {
@@ -2078,6 +2141,7 @@ export function NewTaskButton({
   node: NodeDetail;
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
 }) {
+  const { t } = useTranslation("files");
   const [starting, setStarting] = useState(false);
 
   const handleClick = async () => {
@@ -2094,11 +2158,11 @@ export function NewTaskButton({
     <Button
       onClick={() => void handleClick()}
       disabled={starting}
-      title="Otevře prázdné vlákno, kam agentovi zadáš úkol."
+      title={t(($) => $.new_task.title)}
       className="w-full"
     >
       <Plus />
-      Nový úkol
+      {t(($) => $.new_task.button)}
     </Button>
   );
 }

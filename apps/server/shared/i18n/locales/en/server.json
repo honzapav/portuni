@@ -1,0 +1,43 @@
+{
+  "handoff": {
+    "footer": "The conversation was not saved; continue from this summary.",
+    "heading": {
+      "files": "## Changed files",
+      "messages": "## Recent messages",
+      "question": "## Open question",
+      "read_scope": "## Read scope",
+      "write_scope": "## Write scope"
+    },
+    "last_active_line": "Last activity: {{when}} UTC",
+    "message_agent": "- **Agent:** {{text}}",
+    "message_user": "- **User:** {{text}}",
+    "node_line": "Node: {{nodeName}}",
+    "node_line_none": "Node: (none)",
+    "none": {
+      "files": "(none)",
+      "messages": "(none)",
+      "question": "(none)",
+      "read_scope": "(none)",
+      "write_scope": "(none)"
+    }
+  },
+  "oauth": {
+    "consent": {
+      "allow": "Allow",
+      "deny": "Deny",
+      "loopback_warning": "This app is asking to sign in for a local (loopback) address <strong>{{host}}</strong>, which usually means an app running on this computer.",
+      "redirect_notice": "Once you allow it, the app will be redirected to:",
+      "requests_access": "<span class=\"client\">{{clientName}}</span> is asking for access to your Portuni account.",
+      "title": "Portuni – access request"
+    },
+    "error": {
+      "title": "Portuni – sign-in error"
+    }
+  },
+  "sample": {
+    "message": "Hello, {{userName}}."
+  },
+  "session": {
+    "default_draft_name": "New task"
+  }
+}

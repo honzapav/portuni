@@ -20,6 +20,8 @@ import { getSession, getSessionScope, suspendSession } from "./sessions.js";
 import type { SessionRow } from "../shared/types.js";
 import type { SessionContentStore } from "./runner/store-content.js";
 import type { RunEndReason } from "./runner/types.js";
+import { DEFAULT_LOCALE, type Locale } from "../shared/i18n/config.js";
+import { getFixedT } from "../shared/i18n/server.js";
 
 // Fixed synced-path convention for a session's handoff -- a pure function
 // of the session id so both the write path here and any future reader
@@ -267,14 +269,26 @@ export function buildRunSummaryContent(input: {
   writeSet: readonly string[];
   readSet: readonly string[];
   lastActiveAt: string;
+  // #539: the language of the request that caused the summary (Předat,
+  // Pokračovat v nové session, a message resuming the thread). Missing
+  // means English; nothing here reads it from process state.
+  locale?: Locale;
 }): string {
+  const locale = input.locale ?? DEFAULT_LOCALE;
+  const t = getFixedT(locale, "server");
+  // The file is Markdown, not HTML: the server instance's HTML escaping
+  // would mangle node names and message text.
+  const raw = { interpolation: { escapeValue: false } } as const;
+
   const messages = input.events
     .filter((e) => (e.kind === "user_message" || e.kind === "assistant_message") && isTextPayload(e.payload))
     .slice(-MAX_SUMMARY_MESSAGES)
     .map((e) => {
       const text = (e.payload as { text: string }).text;
       const firstLine = text.split("\n")[0].slice(0, MAX_MESSAGE_PREVIEW_LENGTH);
-      return `- **${e.kind === "user_message" ? "Uživatel" : "Agent"}:** ${firstLine}`;
+      return e.kind === "user_message"
+        ? t(($) => $.handoff.message_user, { text: firstLine, ...raw })
+        : t(($) => $.handoff.message_agent, { text: firstLine, ...raw });
     });
 
   const filesChanged = new Map<string, string>();
@@ -294,26 +308,50 @@ export function buildRunSummaryContent(input: {
     serverHandoffMarker(input.reason),
     `# ${input.sessionName}`,
     "",
-    `Uzel: ${input.nodeName ?? "(bez uzlu)"}`,
-    `Poslední aktivita: ${input.lastActiveAt}`,
+    input.nodeName !== null
+      ? t(($) => $.handoff.node_line, { nodeName: input.nodeName, ...raw })
+      : t(($) => $.handoff.node_line_none),
+    t(($) => $.handoff.last_active_line, { when: formatHandoffTimestamp(input.lastActiveAt, locale), ...raw }),
     "",
-    "## Poslední zprávy",
-    messages.length > 0 ? messages.join("\n") : "(žádné)",
+    t(($) => $.handoff.heading.messages),
+    messages.length > 0 ? messages.join("\n") : t(($) => $.handoff.none.messages),
     "",
-    "## Změněné soubory",
-    filesChanged.size > 0 ? [...filesChanged.entries()].map(([path, op]) => `- ${path} (${op})`).join("\n") : "(žádné)",
+    t(($) => $.handoff.heading.files),
+    filesChanged.size > 0
+      ? [...filesChanged.entries()].map(([path, op]) => `- ${path} (${op})`).join("\n")
+      : t(($) => $.handoff.none.files),
     "",
-    "## Otevřená otázka",
-    openQuestion ? openQuestion.title : "(žádná)",
+    t(($) => $.handoff.heading.question),
+    openQuestion ? openQuestion.title : t(($) => $.handoff.none.question),
     "",
-    "## Zápisový rozsah",
-    input.writeSet.length > 0 ? input.writeSet.map((id) => `- ${id}`).join("\n") : "(žádný)",
+    t(($) => $.handoff.heading.write_scope),
+    input.writeSet.length > 0 ? input.writeSet.map((id) => `- ${id}`).join("\n") : t(($) => $.handoff.none.write_scope),
     "",
-    "## Čtecí rozsah",
-    input.readSet.length > 0 ? input.readSet.map((id) => `- ${id}`).join("\n") : "(žádný)",
+    t(($) => $.handoff.heading.read_scope),
+    input.readSet.length > 0 ? input.readSet.map((id) => `- ${id}`).join("\n") : t(($) => $.handoff.none.read_scope),
     "",
-    "Konverzace nebyla uložena; pokračuj z tohoto shrnutí.",
+    t(($) => $.handoff.footer),
   ].join("\n");
+}
+
+// Per-locale formatter cache: a summary is written per Předat, not per
+// frame, but there is no reason to rebuild the Intl instance each time.
+const handoffDateFormats = new Map<Locale, Intl.DateTimeFormat>();
+
+// The last activity in the language of the summary. The value is a server
+// timestamp (`YYYY-MM-DD HH:MM:SS`, UTC, per database-and-dialects.md) or
+// an ISO string; it is shown in UTC because the file syncs to teammates in
+// other time zones. Anything unparseable is written as it came.
+export function formatHandoffTimestamp(value: string, locale: Locale): string {
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? `${value.replace(" ", "T")}Z` : value;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return value;
+  let format = handoffDateFormats.get(locale);
+  if (!format) {
+    format = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
+    handoffDateFormats.set(locale, format);
+  }
+  return format.format(date);
 }
 
 async function nodeNameForHandoff(db: DbClient, nodeId: string): Promise<string | null> {
@@ -401,6 +439,9 @@ export interface SuspendServerSideOptions {
   // the file now, into the mirror this device has, and record its path.
   // The caller has already checked that the mirror and the content are here.
   writeFileIfSuspended?: boolean;
+  // #539: the language of the summary a Předat writes; the request's own
+  // locale, English when it carried none.
+  locale?: Locale;
 }
 
 export type SuspendServerSide = (
@@ -418,7 +459,7 @@ export type SuspendServerSide = (
 export interface SessionHandoffs {
   suspend: SuspendServerSide;
   // The summary of the thread as this device's transcript has it now.
-  summarize(session: SessionRow, reason: ServerHandoffReason): Promise<string>;
+  summarize(session: SessionRow, reason: ServerHandoffReason, locale?: Locale): Promise<string>;
   // Writes `summary` as the thread's handoff file into this device's mirror
   // of its node and tracks it. Null when there is no mirror here. Touches
   // no record: the caller records the path with whatever else it writes.
@@ -434,7 +475,7 @@ export interface HandoffFileWritten {
 export function createSessionHandoffs(deps: SuspendServerSideDeps): SessionHandoffs {
   return {
     suspend: createSuspendServerSide(deps),
-    summarize: (session, reason) => buildSuspendSummary(deps, session, reason),
+    summarize: (session, reason, locale) => buildSuspendSummary(deps, session, reason, locale),
     writeFile: async (session, summary) => {
       const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
       if (!mirrorRoot || !session.node_id) return null;
@@ -458,7 +499,7 @@ export function createSuspendServerSide(deps: SuspendServerSideDeps): SuspendSer
   return async function suspendServerSide(sessionId, reason, opts = {}) {
     const session = await deps.record.getSession(sessionId);
     if (opts.writeFileIfSuspended && session?.state === "suspended" && !session.handoff_path) {
-      return writeFileForSuspended(deps, session, reason);
+      return writeFileForSuspended(deps, session, reason, opts.locale);
     }
     if (session?.state !== "running") return session;
 
@@ -473,7 +514,7 @@ export function createSuspendServerSide(deps: SuspendServerSideDeps): SuspendSer
     const endedRuns = await endDanglingRuns(deps, sessionId, reason);
     const suspended =
       reason === "handoff"
-        ? await suspendWithSummary(deps, session, reason)
+        ? await suspendWithSummary(deps, session, reason, opts.locale)
         : await deps.suspendRecord(session, { handoffPath: null, handoffHash: null, handoffTitle: null });
     // Only when THIS call ended a run: the runtime's own path (run_ended
     // already in the log, run row already ended) appends nothing here, so
@@ -577,6 +618,7 @@ async function buildSuspendSummary(
   deps: SuspendServerSideDeps,
   session: SessionRow,
   reason: ServerHandoffReason,
+  locale?: Locale,
 ): Promise<string> {
   const sessionId = session.id;
   // A scope read that fails must not cost the session its suspend: the
@@ -595,6 +637,7 @@ async function buildSuspendSummary(
     writeSet: scope.write_set,
     readSet: scope.read_set,
     lastActiveAt: session.last_active_at,
+    locale,
   });
 }
 
@@ -646,8 +689,9 @@ async function suspendWithSummary(
   deps: SuspendServerSideDeps,
   session: SessionRow,
   reason: ServerHandoffReason,
+  locale?: Locale,
 ): Promise<SessionRow | null> {
-  const summary = await buildSuspendSummary(deps, session, reason);
+  const summary = await buildSuspendSummary(deps, session, reason, locale);
   const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
   if (mirrorRoot && session.node_id) {
     return writeSummaryFileAndRecord(deps, { ...session, node_id: session.node_id }, mirrorRoot, summary);
@@ -674,12 +718,13 @@ async function writeFileForSuspended(
   deps: SuspendServerSideDeps,
   session: SessionRow,
   reason: ServerHandoffReason,
+  locale?: Locale,
 ): Promise<SessionRow | null> {
   const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
   if (!mirrorRoot || !session.node_id) return session;
   const hasTranscript = (await deps.content.listEvents(session.id, { limit: 1 })).length > 0;
   const inline = hasTranscript ? null : ((await deps.content.getContent(session.id))?.handoff_inline ?? null);
-  const summary = inline ?? (await buildSuspendSummary(deps, session, reason));
+  const summary = inline ?? (await buildSuspendSummary(deps, session, reason, locale));
   return writeSummaryFileAndRecord(deps, { ...session, node_id: session.node_id }, mirrorRoot, summary);
 }
 

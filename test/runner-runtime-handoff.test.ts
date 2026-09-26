@@ -138,7 +138,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
     const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
     const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
     assert.equal(parseServerHandoffReason(onDisk), "handoff");
-    assert.match(onDisk, /Poslední zprávy/);
+    assert.match(onDisk, /## Recent messages/);
 
     // Registered as a tracked file of the node, so the next sync carries it.
     const files = await db.execute({
@@ -165,7 +165,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
     assert.equal((await store.listRuns(session.id)).length, 1);
   });
 
-  it("a draft and a closed thread are refused with a code and a Czech message", async () => {
+  it("a draft and a closed thread are refused with a code, params and an English message", async () => {
     const { nodeId, runtime } = await withMirror([{ wait: "message" }]);
     const draft = await runtime.createDraft({ userId: "U1", nodeId });
     await assert.rejects(
@@ -173,7 +173,8 @@ describe("session runtime: handoff (#459 Předat)", () => {
       (err: unknown) =>
         err instanceof SessionHandoffError &&
         err.code === "HANDOFF_NOT_ALLOWED" &&
-        /Předat lze jen/.test(err.message),
+        err.params?.state === "draft" &&
+        /only a running or suspended thread/.test(err.message),
     );
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
@@ -204,7 +205,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
     await assert.rejects(
       () => runtime.handoff(session.id),
       (err: unknown) =>
-        err instanceof SessionHandoffError && err.code === "HANDOFF_NO_MIRROR" && /zrcadlo/.test(err.message),
+        err instanceof SessionHandoffError && err.code === "HANDOFF_NO_MIRROR" && /no mirror/.test(err.message),
     );
     // Refused before any side effect: not suspended, the run not ended, no
     // summary written anywhere, nothing appended to the transcript.
@@ -239,7 +240,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
     const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
     const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
     assert.equal(parseServerHandoffReason(onDisk), "handoff");
-    assert.match(onDisk, /\*\*Uživatel:\*\* x/);
+    assert.match(onDisk, /\*\*User:\*\* x/);
     assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
   });
 
@@ -259,7 +260,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
 
     const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
     assert.doesNotMatch(onDisk, /Staré shrnutí/);
-    assert.match(onDisk, /\*\*Uživatel:\*\* x/);
+    assert.match(onDisk, /\*\*User:\*\* x/);
   });
 
   it("an idle suspend with a mirror here writes no file, tracks nothing and appends no handoff event (#497)", async () => {
@@ -332,7 +333,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
     );
 
     const orientation = adapter.getLastRunStart()?.orientation ?? "";
-    assert.match(orientation, /Pokračování z předchozí session/);
+    assert.match(orientation, /Continuing from the previous session/);
     assert.ok(orientation.includes(`(\`${relPath}\`)`), "the new thread's orientation names the file");
     assert.ok(orientation.includes(onDisk), "and carries its content");
     await runtime.closeSession(newSession.id);
@@ -357,6 +358,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
       (err: unknown) =>
         err instanceof SessionHandoffError &&
         err.code === "HANDOFF_TRANSCRIPT_ELSEWHERE" &&
+        err.params?.host === "druhy-mac" &&
         /druhy-mac/.test(err.message),
     );
     const after = await store.getSession(created.id);
@@ -405,8 +407,9 @@ describe("session runtime: handoff (#459 Předat)", () => {
       () => runtime.sendMessage(created.id, "pokračuj"),
       (err: unknown) =>
         err instanceof SessionHandoffError &&
-        err.code === "HANDOFF_TRANSCRIPT_ELSEWHERE" &&
-        /druhy-mac/.test(err.message),
+        err.code === "SESSION_TRANSCRIPT_ELSEWHERE" &&
+        err.params?.host === "druhy-mac" &&
+        /continued there/.test(err.message),
     );
     assert.equal((await store.getSession(created.id))?.state, "suspended");
     assert.equal((await store.listRuns(created.id)).length, 0);
@@ -449,7 +452,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
     await assert.rejects(
       () => runtime.handoff(created.id),
       (err: unknown) =>
-        err instanceof SessionHandoffError && err.code === "HANDOFF_RUN_ELSEWHERE" && /druhy-mac/.test(err.message),
+        err instanceof SessionHandoffError && err.code === "HANDOFF_RUN_ELSEWHERE" && err.params?.host === "druhy-mac",
     );
     assert.equal((await store.getSession(created.id))?.state, "running");
     const runs = await store.listRuns(created.id);
@@ -531,7 +534,7 @@ describe("session runtime: startFromHandoff (#460 Navázat na handoff)", () => {
     assert.equal(started?.runId, run.id);
     assert.equal(started?.brief, null);
     assert.ok(started!.orientation.includes(fileContent), "the file's content is the new run's orientation");
-    assert.match(started!.orientation, /Navázání na handoff/);
+    assert.match(started!.orientation, /Continuing from a handoff/);
 
     // No events are imported: the transcript starts here.
     const newEvents = await content.listEvents(session.id);
@@ -560,7 +563,7 @@ describe("session runtime: startFromHandoff (#460 Navázat na handoff)", () => {
       (err: unknown) =>
         err instanceof SessionHandoffError &&
         err.code === "HANDOFF_FILE_NOT_HERE" &&
-        /ještě není na tomto zařízení/.test(err.message),
+        /not on this device yet/.test(err.message),
     );
 
     const after = await db.execute("SELECT COUNT(*) AS n FROM sessions");

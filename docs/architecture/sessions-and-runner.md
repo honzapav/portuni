@@ -183,15 +183,31 @@ node's mirror, registers the file, patches the record to `suspended` and
 appends the `handoff` event (the chat's "Shrnutí uloženo" row) -- one
 suspend implementation (`portuni:server-handoff reason=handoff`, the one
 reason a person chose).
+The file is in the language of the request that wrote it (#539): Předat,
+Pokračovat v nové session and a message resuming a thread carry an
+optional `locale` (#538), the runtime hands it to
+`handoffs.summarize`/`suspendFallback` (`SuspendServerSideOptions.locale`;
+for a running thread through `pendingEndLocale`, next to
+`pendingEndReason`), and `buildRunSummaryContent` renders the headings and
+labels with `getFixedT(locale, "server")` and the last activity with `Intl`
+in UTC. No `locale` means English; nothing on the device reads the
+language from process state, the account or the central server, and two
+requests in different languages never share state (a fixed `t` per call).
+The same goes for a draft's default name (`server:session.default_draft_name`):
+`createDraftSession` takes the request's `locale`, and a sync agent sends
+it with `POST /sessions/record` (`CentralClient.createDraftSessionRecord`)
+so the central server names the record in it.
 On an already `suspended` thread with its file, it is a no-op answering the
 same path. On a `suspended` thread without a file (every suspend but
 Předat leaves one), the same suspend code writes the file now
 (`createSuspendServerSide`'s `writeFileIfSuspended`): the summary built
 from the transcript here, or, only when there is no transcript here, the
 inline summary in `content.db` (nothing refreshes it at suspend, so it can
-be older than the transcript). Every refusal is a `SessionHandoffError` (REST 409, Czech
-message; `api/session-handoff-errors.ts` is the one mapping the local
-router, the agent router and the socket share) and comes before any side
+be older than the transcript). Every refusal is a `SessionHandoffError` (REST 409 with
+`code` and `params`, English message for logs, #531; `api/session-refusals.ts` is the one mapping the local
+router, the agent router and the socket share, for `NoLiveRunError`'s
+`NO_LIVE_RUN` too, and it reads the code off the error's type, never its
+message text, #530) and comes before any side
 effect -- nothing is interrupted, ended or suspended:
 `HANDOFF_NOT_ALLOWED` (a `draft` or `closed` thread), `HANDOFF_NO_MIRROR`
 (no mirror of the node on this device: nowhere to write the file),
@@ -202,8 +218,8 @@ here while the thread last ran on another device) and `HANDOFF_NO_CONTENT`
 (suspended without a file and no content here although it ran here: the
 first-boot download has not finished, and an empty summary would stand in
 for the real one). `HANDOFF_RUN_ELSEWHERE` and `HANDOFF_TRANSCRIPT_ELSEWHERE`
-name the device the way `transcript_host` does. The web shows the message as-is
-(`apps/web/src/lib/handoff-refusal.ts`) and does not offer Předat in the
+name the device the way `transcript_host` does, in `params.host`. The web renders
+the code from the `errors` catalog (`displayError`, `apps/web/src/lib/api-error.ts`) and does not offer Předat in the
 chat where the transcript is on another device. The other machine picks
 the work up from the file once it syncs.
 
@@ -215,15 +231,14 @@ path is node-relative and must be exactly what `handoffRelativePath` writes
 mirror **on this device** (`readNodeHandoffFile`, the mirror registry in
 `sync.db` plus the local bytes, so a sync agent answers it without reaching
 central) before it creates anything. No mirror or no file yet is
-`HANDOFF_FILE_NOT_HERE` (409, „Soubor handoffu ještě není na tomto
-zařízení.") and no record is created; a path of any other shape is
+`HANDOFF_FILE_NOT_HERE` (409, `params.path`) and no record is created; a path of any other shape is
 `HANDOFF_PATH_INVALID` (the routers' schema rejects it as a 400 first). With
 the file in hand it is `continueSession`'s shape minus the close: a new
 record on this device (`runner`/`instance_id` resolved as for a draft,
 `host_id` this device, `name` from the summary's own H1 via
 `extractHandoffTitle`, `name_is_custom` left 0 so this thread's own first
 summary may rename it), and a first run with no brief whose orientation
-carries the file's content under "## Navázání na handoff", the way a resume
+carries the file's content under "## Continuing from a handoff", the way a resume
 from a summary does -- generalised to a file that belongs to another
 session. No events are imported: the transcript starts on this device, and
 the source thread's record, file and transcript are never touched, which is
@@ -454,7 +469,7 @@ human verification.
   `updatedInput: {...originalInput, answers}`, `answers` keyed by question
   text -- the field the tool reads (`sdk-tools.d.ts`); `false` denies as
   the user's refusal and a bare `true`, which carries no answer, denies
-  with "Uživatel na otázku neodpověděl." -- never an allow with nothing
+  with "The user did not answer the question." -- never an allow with nothing
   answered. The decision is a string (it
   answers every dotaz) or a map `{ [question text]: answer }`
   (`askUserQuestionAnswers`); the `question` event carries every dotaz
@@ -623,8 +638,38 @@ human verification.
   method rejects into the existing `.catch`); a failure leaves it `null`
   and the next run retries. Until then `models()` answers
   `CLAUDE_ALIAS_MODELS` (`sonnet`, `opus`, `haiku`, each
-  `supportsEffort: false`). `GET /runners/:runner/models` just calls it.
+  `supportsEffort: false`, `description: ""` with a `description_code`
+  the web renders from `chat:model.description.*`; a list the provider
+  answered carries the provider's own `description` and no code).
+  `GET /runners/:runner/models` just calls it.
   `FakeRunnerAdapter.models()` returns its constructor's `models` option.
+
+- **The runner's own text in the chat is a code (#532).** Codes live in
+  `shared/chat-event-codes.ts`; the web renders them with
+  `apps/web/src/lib/chat-event-text.ts` from the `chat` namespace.
+  - A `question` event carries `code` + `params` next to an English
+    `title` (`scope_expand`, `agent_question`, `plan_approval`, and
+    `mcp_confirmation` with `{ server }` for an MCP dialog without a title
+    of its own; a dialog's own title is the server's text and has no
+    code). `scope_expand` also covers the card's detail; every other
+    detail is the agent's or the server's and is shown as stored.
+  - An `error` event the runner writes itself carries `code` + `params`
+    (`provider_failed` with `{ subtype }` for a failed result with no
+    text, `provider_not_logged_in`, `browser_sign_in_declined` with
+    `{ server }`); a provider's own text has no code.
+  - A denial (`permissions.ts` returns `code`/`params` with its English
+    `message`; the adapter's own `DENY_MESSAGES`) goes to the agent as an
+    English tool result. The adapter remembers it by `toolUseID`, and the
+    failed `tool_call` its `tool_result` produces carries `output_code` +
+    `output_params`; `output_excerpt` keeps what the agent read.
+  - A row without a code (written before #532, or a code this build does
+    not know) is shown as stored. Content -- the agent's questions,
+    options and answers, a provider's error, a tool's output -- is never
+    translated and carries `translate="no"` in the chat.
+  - The orientation's resume and handoff sections (`provision.ts`,
+    `provision-central.ts`, `session-runtime.ts`) are English, like the
+    rest of the prompt. All of this lives in the device's `content.db`;
+    the central server stores and relays none of it.
 
 ## Thread lifecycle
 
@@ -759,7 +804,8 @@ human verification.
   else, with no transcript here, a `handoff_inline` an older sidecar left.
   With none of them and no content of the thread on this device at all,
   the send is refused before any run is created, with Předat's errors:
-  `HANDOFF_TRANSCRIPT_ELSEWHERE` naming the device the thread last ran on,
+  `SESSION_TRANSCRIPT_ELSEWHERE` (its own code: the sentence says "continue
+  it there", not "hand it off there") naming the device the thread last ran on,
   or `HANDOFF_NO_CONTENT` while the first-boot download has not arrived
   (409 over REST, an error reply on the live channel). A thread whose
   content row is here but holds none of them starts on its orientation
@@ -839,10 +885,12 @@ human verification.
 - Env values never reach a client (`env_keys` only); an empty submitted
   value for a known key means "leave unchanged". Secret-shaped keys
   (`shared/runner-env.ts` `isSecretShapedEnvKey`) and `PORTUNI_*` keys are
-  refused with `INSTANCE_ENV_KEY_REFUSED`. A leading `~` expands to `$HOME`
+  refused with `INSTANCE_ENV_KEY_SECRET` / `INSTANCE_ENV_KEY_RESERVED`
+  (`params.key`). A leading `~` expands to `$HOME`
   only when `getInstanceEnv` reads the value for a run.
 - `defaults: { model?, effort? }`: an unknown key or invalid effort throws
-  `InstanceDefaultsKeyRefusedError`; `updateInstance` replaces `defaults`
+  `InstanceDefaultsKeyRefusedError` (`INSTANCE_DEFAULTS_KEY_UNKNOWN` or
+  `INSTANCE_DEFAULTS_EFFORT_INVALID`); `updateInstance` replaces `defaults`
   wholesale, unlike `env`'s per-key merge.
 - A run's instance lands in `sessions.instance_id`. An old desktop
   `config.json` with a `profiles` key loads; the key is ignored and dropped
@@ -867,8 +915,8 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   (`guardRestSessionWrite` in `routeSessions`).
 - Every frame goes through the same `sessionAccess` tier and the same
   `SessionRuntime` method as its REST twin. A refused action is an
-  `{id, type: "error", payload: {code, message}}` frame, never a closed
-  socket.
+  `{id, type: "error", payload: {code, message, params?}}` frame, never a
+  closed socket; `code` is from `shared/error-codes.ts`, `message` English.
 - **Mounted in both kinds of workspace** through `SessionsWsDeps` (`runtime`, `access`,
   `snapshot`, `canSee`): `createLocalSessionsWsDeps()` over the graph db;
   `agentMain` passes `createSessionsWsServer(createAgentSessionsWsDeps(

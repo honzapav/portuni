@@ -6,7 +6,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listUserMirrors } from "../domain/sync/mirror-registry.js";
 import { classifyWrite, resolvePortuniRoot } from "../domain/write-scope.js";
-import { respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import {
+  respondApiError,
+  respondError,
+  respondJson,
+  type RequestIdentity,
+} from "../http/middleware.js";
 
 export async function handleWriteScope(
   req: IncomingMessage,
@@ -17,7 +22,7 @@ export async function handleWriteScope(
   const cwd = url.searchParams.get("cwd");
   const target = url.searchParams.get("target");
   if (!cwd || !target) {
-    respondJson(res, 400, { error: "cwd and target parameters required" });
+    respondApiError(res, 400, "INVALID_REQUEST", "cwd and target parameters required");
     return;
   }
   try {

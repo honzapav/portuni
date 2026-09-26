@@ -7,7 +7,9 @@
 // in Práce. No auto-refresh; a manual "Obnovit" button matches
 // SyncOverview's pattern.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, Clock, MessagesSquare, RefreshCw, Sparkles } from "lucide-react";
 import { capRows, overviewCounters, splitThreadsAndCli } from "../lib/overview-view";
 import type {
@@ -27,16 +29,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { SessionStateMessage } from "../lib/sessions-client";
-import { fmtDateTime } from "./DetailPane.sessions";
 import { mergeLiveSessionStates, sessionRowChip, sortInboxSessions } from "../lib/session-views";
-
-const TYPE_LABELS: Record<string, string> = {
-  organization: "Organizace",
-  project: "Projekt",
-  process: "Proces",
-  area: "Oblast",
-  principle: "Princip",
-};
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
+import { nodeTypeLabel } from "../lib/node-type-labels";
 
 type Props = {
   onSelectNode: (nodeId: string) => void;
@@ -64,6 +60,7 @@ export default function OverviewView({
   onOpenGraph,
   onOpenSyncOverview,
 }: Props) {
+  const { t } = useTranslation("common");
   const [data, setData] = useState<OverviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,7 +70,7 @@ export default function OverviewView({
     try {
       setData(await fetchOverview());
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setLoading(false);
     }
@@ -94,7 +91,7 @@ export default function OverviewView({
   if (loading && !data) {
     return (
       <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
-        Načítám přehled...
+        {t(($) => $.overview.loading)}
       </div>
     );
   }
@@ -103,10 +100,10 @@ export default function OverviewView({
     <div className="absolute inset-0 overflow-y-auto scroll-thin">
       <div className="mx-auto max-w-[1400px] px-6 py-6">
         <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-[18px] font-semibold text-[var(--color-text)]">Přehled</h1>
+          <h1 className="text-[18px] font-semibold text-[var(--color-text)]">{t(($) => $.overview.title)}</h1>
           <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading} className="text-muted-foreground">
             <RefreshCw className={loading ? "animate-spin" : undefined} />
-            Obnovit
+            {t(($) => $.overview.refresh)}
           </Button>
         </div>
 
@@ -194,17 +191,31 @@ function CounterStrip({
   onOpenGraph: () => void;
   onOpenSyncOverview: () => void;
 }) {
-  const items: { label: string; value: number; onClick: () => void; tone?: string }[] = [
-    { label: "Čeká na mě", value: counters.waiting, onClick: onOpenWorkspace, tone: "var(--color-node-process)" },
-    { label: "Běží", value: counters.running, onClick: onOpenWorkspace, tone: "var(--color-status-active)" },
-    { label: "Vyžaduje pozornost", value: counters.attention, onClick: onOpenGraph },
-    { label: "Nesynchronizováno", value: counters.unsynced, onClick: onOpenSyncOverview },
+  const { t } = useTranslation("common");
+  // `id` is the React key: a label is translated text and never a key.
+  const items: { id: keyof typeof counters; label: string; value: number; onClick: () => void; tone?: string }[] = [
+    {
+      id: "waiting",
+      label: t(($) => $.overview.counter.waiting),
+      value: counters.waiting,
+      onClick: onOpenWorkspace,
+      tone: "var(--color-node-process)",
+    },
+    {
+      id: "running",
+      label: t(($) => $.overview.counter.running),
+      value: counters.running,
+      onClick: onOpenWorkspace,
+      tone: "var(--color-status-active)",
+    },
+    { id: "attention", label: t(($) => $.overview.counter.attention), value: counters.attention, onClick: onOpenGraph },
+    { id: "unsynced", label: t(($) => $.overview.counter.unsynced), value: counters.unsynced, onClick: onOpenSyncOverview },
   ];
   return (
     <div className="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
       {items.map((item) => (
         <button
-          key={item.label}
+          key={item.id}
           type="button"
           onClick={item.onClick}
           className="flex flex-col items-start gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 text-left transition-colors hover:bg-[var(--color-surface-2)]"
@@ -224,10 +235,11 @@ function CounterStrip({
 
 // "Zobrazit všech N" under a capped list; expands the card in place.
 function ShowAll({ hidden, total, onClick }: { hidden: number; total: number; onClick: () => void }) {
+  const { t } = useTranslation("common");
   if (hidden <= 0) return null;
   return (
     <Button variant="link" size="xs" className="h-auto p-0 text-[12px]" onClick={onClick}>
-      Zobrazit všech {total}
+      {t(($) => $.overview.show_all, { count: total })}
     </Button>
   );
 }
@@ -279,6 +291,8 @@ function SessionsCard({
   onOpenSession: (nodeId: string, sessionId: string) => void;
   onSelectNode: (nodeId: string) => void;
 }) {
+  const { t } = useTranslation("common");
+  const locale = useLocale();
   // The inbox: Čeká na mě first, then Běží, then Pozastaveno. Since #457
   // GET /overview carries the caller's own threads only, so there is nothing
   // to filter here. Threads only (v2 rule 7): a hand-opened CLI session is a
@@ -287,10 +301,10 @@ function SessionsCard({
   const { threads, cli } = splitThreadsAndCli(sortInboxSessions(running, suspended));
   const { shown, hidden } = capRows(threads, expanded);
   const cliLine =
-    cli.total > 0 ? `K tomu ${cli.total} ${cli.total === 1 ? "relace" : cli.total < 5 ? "relace" : "relací"} z CLI (${cli.running} běží)` : null;
+    cli.total > 0 ? t(($) => $.overview.threads.cli, { count: cli.total, running: cli.running }) : null;
   return (
     <Card
-      title="Relace"
+      title={t(($) => $.overview.threads.title)}
       icon={<MessagesSquare size={14} />}
       footer={
         hidden > 0 || cliLine ? (
@@ -302,11 +316,11 @@ function SessionsCard({
       }
     >
       {threads.length === 0 ? (
-        <Empty>Žádná běžící ani pozastavená vlákna.</Empty>
+        <Empty>{t(($) => $.overview.threads.empty)}</Empty>
       ) : (
         <div className="space-y-0.5">
           {shown.map((s) => {
-            const chip = sessionRowChip(s.state, s.waiting_since);
+            const chip = sessionRowChip(s.state, s.waiting_since, t);
             return (
               <Row key={s.id} onClick={s.node_id ? () => onOpenSession(s.node_id!, s.id) : undefined}>
                 <div className="flex items-center justify-between gap-2">
@@ -314,7 +328,7 @@ function SessionsCard({
                   <StateChip label={chip.label} color={chip.color} pulsing={chip.pulsing} />
                 </div>
                 <div className="text-[11.5px] text-[var(--color-text-dim)]">
-                  {s.node_name ?? "Chat"} · {fmtDateTime(s.last_active_at)}
+                  {s.node_name ?? t(($) => $.overview.threads.no_node)} · {formatDateTime(locale, s.last_active_at)}
                 </div>
               </Row>
             );
@@ -325,7 +339,7 @@ function SessionsCard({
       {disconnectedJumps.length > 0 && (
         <div className="mt-3 border-t border-[var(--color-border)] pt-3">
           <div className="mb-1.5 text-[11.5px] font-medium text-[var(--color-text-dim)]">
-            Fronta ke kontrole (nesouvislé přeskoky)
+            {t(($) => $.overview.threads.review_queue)}
           </div>
           <div className="space-y-0.5">
             {disconnectedJumps.map((j) => (
@@ -334,7 +348,7 @@ function SessionsCard({
                   {j.session_name} → {j.node_name}
                 </div>
                 <div className="pl-0 text-[11px] text-[var(--color-text-dim)]">
-                  {j.reason ?? "bez uvedeného důvodu"} · {fmtDateTime(j.added_at)}
+                  {j.reason ?? t(($) => $.overview.threads.no_reason)} · {formatDateTime(locale, j.added_at)}
                 </div>
               </Row>
             ))}
@@ -356,6 +370,7 @@ function AttentionCard({
   syncIssues: OverviewSyncIssue[];
   onSelectNode: (nodeId: string) => void;
 }) {
+  const { t } = useTranslation("common");
   const [expanded, setExpanded] = useState(false);
   type Item = { kind: "node"; data: OverviewAttentionNode } | { kind: "access"; data: AccessRequest } | { kind: "sync"; data: OverviewSyncIssue };
   const all: Item[] = [
@@ -369,12 +384,12 @@ function AttentionCard({
   const shownSync = shown.filter((i): i is Extract<Item, { kind: "sync" }> => i.kind === "sync").map((i) => i.data);
   return (
     <Card
-      title="Vyžaduje pozornost"
+      title={t(($) => $.overview.attention.title)}
       icon={<AlertTriangle size={14} />}
       footer={hidden > 0 ? <ShowAll hidden={hidden} total={all.length} onClick={() => setExpanded(true)} /> : undefined}
     >
       {all.length === 0 ? (
-        <Empty>Nic nevyžaduje pozornost.</Empty>
+        <Empty>{t(($) => $.overview.attention.empty)}</Empty>
       ) : (
         <div className="space-y-0.5">
           {shownNodes.map((n) => {
@@ -386,19 +401,23 @@ function AttentionCard({
                   <span className="truncate text-[var(--color-text)]">{n.name}</span>
                   <Badge className={`lifecycle-badge lifecycle-${color}`}>{state}</Badge>
                 </div>
-                <div className="text-[11px] text-[var(--color-text-dim)]">{TYPE_LABELS[n.type] ?? n.type}</div>
+                <div className="text-[11px] text-[var(--color-text-dim)]">{nodeTypeLabel(n.type, t)}</div>
               </Row>
             );
           })}
           {shownAccess.map((r) => (
             <Row key={r.id} onClick={() => onSelectNode(r.node_id)}>
-              <div className="text-[var(--color-text)]">Žádost o přístup: {r.user_name}</div>
+              <div className="text-[var(--color-text)]">
+                {t(($) => $.overview.attention.access_request, { userName: r.user_name })}
+              </div>
               <div className="text-[11px] text-[var(--color-text-dim)]">{r.node_name}</div>
             </Row>
           ))}
           {shownSync.map((s) => (
             <Row key={s.id} onClick={() => onSelectNode(s.node_id)}>
-              <div className="text-[var(--color-text)]">Problém se synchronizací: {s.node_name}</div>
+              <div className="text-[var(--color-text)]">
+                {t(($) => $.overview.attention.sync_issue, { nodeName: s.node_name })}
+              </div>
               <div className="truncate text-[11px] text-[var(--color-text-dim)]">{s.last_error}</div>
             </Row>
           ))}
@@ -417,6 +436,8 @@ function ActivityCard({
   sessionWrites: OverviewSessionWrite[];
   onSelectNode: (nodeId: string) => void;
 }) {
+  const { t } = useTranslation("common");
+  const locale = useLocale();
   // Merge and sort by timestamp so activity reads as one interleaved feed.
   type Item =
     | { kind: "event"; at: string; data: OverviewEvent }
@@ -430,12 +451,12 @@ function ActivityCard({
 
   return (
     <Card
-      title="Poslední aktivita"
+      title={t(($) => $.overview.activity.title)}
       icon={<Clock size={14} />}
       footer={hidden > 0 ? <ShowAll hidden={hidden} total={items.length} onClick={() => setExpanded(true)} /> : undefined}
     >
       {items.length === 0 ? (
-        <Empty>Zatím žádná aktivita.</Empty>
+        <Empty>{t(($) => $.overview.activity.empty)}</Empty>
       ) : (
         <div className="space-y-0.5">
           {shown.map((item) =>
@@ -443,15 +464,18 @@ function ActivityCard({
               <Row key={`e-${item.data.id}`} onClick={() => onSelectNode(item.data.node_id)}>
                 <div className="truncate text-[var(--color-text)]">{item.data.content}</div>
                 <div className="text-[11px] text-[var(--color-text-dim)]">
-                  {item.data.node_name} · {fmtDateTime(item.data.created_at)}
+                  {item.data.node_name} · {formatDateTime(locale, item.data.created_at)}
                 </div>
               </Row>
             ) : (
               <Row key={`w-${item.data.session_id}-${item.data.node_id}`} onClick={() => onSelectNode(item.data.node_id)}>
                 <div className="text-[var(--color-text)]">
-                  {item.data.session_name} zapsala do {item.data.node_name}
+                  {t(($) => $.overview.activity.session_write, {
+                    sessionName: item.data.session_name,
+                    nodeName: item.data.node_name,
+                  })}
                 </div>
-                <div className="text-[11px] text-[var(--color-text-dim)]">{fmtDateTime(item.data.added_at)}</div>
+                <div className="text-[11px] text-[var(--color-text-dim)]">{formatDateTime(locale, item.data.added_at)}</div>
               </Row>
             ),
           )}
@@ -468,23 +492,25 @@ function NewNodesCard({
   nodes: OverviewNewNode[];
   onSelectNode: (nodeId: string) => void;
 }) {
+  const { t } = useTranslation("common");
+  const locale = useLocale();
   const [expanded, setExpanded] = useState(false);
   const { shown, hidden } = capRows(nodes, expanded);
   return (
     <Card
-      title="Nové uzly"
+      title={t(($) => $.overview.new_nodes.title)}
       icon={<Sparkles size={14} />}
       footer={hidden > 0 ? <ShowAll hidden={hidden} total={nodes.length} onClick={() => setExpanded(true)} /> : undefined}
     >
       {nodes.length === 0 ? (
-        <Empty>Žádné nedávno vytvořené uzly.</Empty>
+        <Empty>{t(($) => $.overview.new_nodes.empty)}</Empty>
       ) : (
         <div className="space-y-0.5">
           {shown.map((n) => (
             <Row key={n.id} onClick={() => onSelectNode(n.id)}>
               <div className="truncate text-[var(--color-text)]">{n.name}</div>
               <div className="text-[11px] text-[var(--color-text-dim)]">
-                {TYPE_LABELS[n.type] ?? n.type} · {n.created_by_name} · {fmtDateTime(n.created_at)}
+                {nodeTypeLabel(n.type, t)} · {n.created_by_name} · {formatDateTime(locale, n.created_at)}
               </div>
             </Row>
           ))}

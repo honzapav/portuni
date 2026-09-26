@@ -1,6 +1,7 @@
 // Shared load/save/conflict state for the editor shells (pane + fullscreen).
 // Save stays on the device (PUT writes the mirror; the user pushes via
 // Synchronizovat).
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchFileContent, saveFileContent, FileConflictError } from "../api";
 
@@ -43,7 +44,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
       })
       .catch((e) => {
         if (cancelled) return;
-        setStatus({ kind: "error", message: String(e) });
+        setStatus({ kind: "error", message: displayError(e) });
       });
     return () => {
       cancelled = true;
@@ -74,7 +75,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
         if (e instanceof FileConflictError) {
           setConflict({ theirVersion: e.currentVersion });
         } else {
-          setStatus({ kind: "error", message: String(e) });
+          setStatus({ kind: "error", message: displayError(e) });
         }
       } finally {
         setSaving(false);

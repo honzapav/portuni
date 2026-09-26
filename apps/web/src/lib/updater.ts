@@ -6,9 +6,11 @@
 // The webview never talks to tauri-plugin-updater directly, only through
 // these Tauri commands (no updater permission in capabilities/default.json).
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "./backend-url";
 import { createUpdateScheduler, shouldCheckOnFocus, windowTimerDeps } from "./update-schedule";
+import { invoke } from "./tauri-invoke";
 
 export type UpdateInfo = {
   version: string;
@@ -17,22 +19,18 @@ export type UpdateInfo = {
 };
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<UpdateInfo | null>("check_update");
 }
 
 export async function installUpdate(): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("install_update");
 }
 
 export async function restartApp(): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("restart_app");
 }
 
 export async function getAppVersion(): Promise<string> {
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("get_app_version");
 }
 
@@ -69,7 +67,7 @@ const CHECK_DELAY_MS = 10_000;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 function errorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  return displayError(e);
 }
 
 export function useAppUpdate(): AppUpdate {

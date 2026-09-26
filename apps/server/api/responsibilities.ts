@@ -10,9 +10,29 @@ import {
   unassignResponsibility,
   updateResponsibility,
 } from "../domain/responsibilities.js";
-import { nodeVisibleTo } from "../auth/node-access.js";
-import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
-import { guardRestNodeWrite } from "./write-gate.js";
+import {
+  respondApiError,
+  parseBody,
+  respondError,
+  respondJson,
+  type RequestIdentity,
+} from "../http/middleware.js";
+import {
+  guardNodeChildWrite,
+  readNodeCreateBody,
+  readNonEmptyBody,
+  type NodeChildLookup,
+} from "./route-helpers.js";
+
+function responsibilityLookup(respId: string): NodeChildLookup {
+  return {
+    table: "responsibilities",
+    id: respId,
+    notFoundCode: "RESPONSIBILITY_NOT_FOUND",
+    notFoundMessage: `responsibility ${respId} not found`,
+    notFoundParams: { responsibilityId: respId },
+  };
+}
 
 export async function handleListResponsibilities(
   req: IncomingMessage,
@@ -38,26 +58,12 @@ export async function handleCreateResponsibility(
   identity: RequestIdentity,
 ): Promise<void> {
   try {
-    const body = (await parseBody(req)) as Record<string, unknown> | undefined;
-    if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "body required" });
-      return;
-    }
-    const nodeId = body.node_id as string | undefined;
-    if (!nodeId) {
-      respondJson(res, 400, { error: "node_id required" });
-      return;
-    }
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `node ${nodeId} not found` });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
+    const parsed = await readNodeCreateBody(req, res, identity);
+    if (!parsed) return;
     const row = await createResponsibility(
-      db,
+      parsed.db,
       identity.userId,
-      body as Parameters<typeof createResponsibility>[2],
+      parsed.body as Parameters<typeof createResponsibility>[2],
     );
     respondJson(res, 201, row);
   } catch (err) {
@@ -72,26 +78,10 @@ export async function handleUpdateResponsibility(
   respId: string,
 ): Promise<void> {
   try {
-    const body = (await parseBody(req)) as Record<string, unknown> | undefined;
-    if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "no fields to update" });
-      return;
-    }
+    const body = await readNonEmptyBody(req, res, "no fields to update");
+    if (!body) return;
     const db = getDb();
-    const respRow = await db.execute({
-      sql: "SELECT node_id FROM responsibilities WHERE id = ?",
-      args: [respId],
-    });
-    if (respRow.rows.length === 0) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
-      return;
-    }
-    const nodeId = String(respRow.rows[0].node_id);
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
+    if (!(await guardNodeChildWrite(req, res, identity, db, responsibilityLookup(respId)))) return;
     const row = await updateResponsibility(db, identity.userId, {
       responsibility_id: respId,
       ...(body as object),
@@ -110,20 +100,7 @@ export async function handleDeleteResponsibility(
 ): Promise<void> {
   try {
     const db = getDb();
-    const respRow = await db.execute({
-      sql: "SELECT node_id FROM responsibilities WHERE id = ?",
-      args: [respId],
-    });
-    if (respRow.rows.length === 0) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
-      return;
-    }
-    const nodeId = String(respRow.rows[0].node_id);
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
+    if (!(await guardNodeChildWrite(req, res, identity, db, responsibilityLookup(respId)))) return;
     await deleteResponsibility(db, identity.userId, respId);
     respondJson(res, 200, { deleted: respId });
   } catch (err) {
@@ -140,24 +117,11 @@ export async function handleAssignResponsibility(
   try {
     const body = (await parseBody(req)) as { actor_id?: string } | undefined;
     if (!body?.actor_id) {
-      respondJson(res, 400, { error: "actor_id required" });
+      respondApiError(res, 400, "INVALID_REQUEST", "actor_id required");
       return;
     }
     const db = getDb();
-    const respRow = await db.execute({
-      sql: "SELECT node_id FROM responsibilities WHERE id = ?",
-      args: [respId],
-    });
-    if (respRow.rows.length === 0) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
-      return;
-    }
-    const nodeId = String(respRow.rows[0].node_id);
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
+    if (!(await guardNodeChildWrite(req, res, identity, db, responsibilityLookup(respId)))) return;
     await assignResponsibility(db, identity.userId, {
       responsibility_id: respId,
       actor_id: body.actor_id,
@@ -181,20 +145,7 @@ export async function handleUnassignResponsibility(
 ): Promise<void> {
   try {
     const db = getDb();
-    const respRow = await db.execute({
-      sql: "SELECT node_id FROM responsibilities WHERE id = ?",
-      args: [respId],
-    });
-    if (respRow.rows.length === 0) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
-      return;
-    }
-    const nodeId = String(respRow.rows[0].node_id);
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: `responsibility ${respId} not found` });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
+    if (!(await guardNodeChildWrite(req, res, identity, db, responsibilityLookup(respId)))) return;
     await unassignResponsibility(db, identity.userId, {
       responsibility_id: respId,
       actor_id: actorId,

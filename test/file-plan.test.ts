@@ -8,6 +8,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  planReasonText,
   applyPlan,
   planMove,
   planFolder,
@@ -17,6 +18,17 @@ import {
   type FilePlan,
   type PlanFile,
 } from "../apps/web/src/lib/file-plan.js";
+import { createI18n } from "../apps/server/shared/i18n/create.js";
+import { RESOURCES } from "../apps/server/shared/i18n/resources.js";
+
+const { i18n } = createI18n({
+  lng: "en",
+  resources: { en: RESOURCES.en, cs: RESOURCES.cs },
+  escapeValue: false,
+  initAsync: false,
+});
+const tEn = i18n.getFixedT("en", "files");
+const tCs = i18n.getFixedT("cs", "files");
 
 const EMPTY: FilePlan = { moves: {}, folders: [] };
 
@@ -72,14 +84,14 @@ describe("planMove", () => {
     const files = [file("wip/a.md"), file("outputs/a.md")];
     const r = planMove(EMPTY, files[0], "outputs", occupiedOf(files));
     assert.equal(r.ok, false);
-    assert.match(r.ok === false ? r.reason : "", /a\.md/);
+    assert.deepEqual(r.ok === false ? r.reason : null, { code: "file_exists", name: "a.md" });
   });
 
   it("refuses an untracked file", () => {
     const f = file("wip/a.md", null);
     const r = planMove(EMPTY, f, "outputs", occupiedOf([f]));
     assert.equal(r.ok, false);
-    assert.match(r.ok === false ? r.reason : "", /zaregistrovaný/);
+    assert.deepEqual(r.ok === false ? r.reason : null, { code: "untracked" });
   });
 
   it("removes the entry when the file goes home", () => {
@@ -170,7 +182,7 @@ describe("planFolderRename", () => {
     const files = [file("wip/navrhy/a.md"), file("wip/navrhy/b.md", null)];
     const r = planFolderRename(EMPTY, "wip/navrhy", "navrhy-2026", files, occupiedOf(files));
     assert.equal(r.ok, false);
-    assert.match(r.ok === false ? r.reason : "", /neregistrovaný/);
+    assert.equal(r.ok === false ? r.reason.code : null, "folder_has_untracked");
   });
 
   it("refuses a name that already exists and a section root", () => {
@@ -178,7 +190,7 @@ describe("planFolderRename", () => {
     const occ = occupiedOf(files);
     const taken = planFolderRename(EMPTY, "wip/navrhy", "hotovo", files, occ);
     assert.equal(taken.ok, false);
-    assert.match(taken.ok === false ? taken.reason : "", /už existuje/);
+    assert.deepEqual(taken.ok === false ? taken.reason : null, { code: "folder_exists", name: "hotovo" });
     const section = planFolderRename(EMPTY, "wip", "rozpracovane", files, occ);
     assert.equal(section.ok, false);
     const unsafe = planFolderRename(EMPTY, "wip/navrhy", "..", files, occ);
@@ -222,5 +234,14 @@ describe("orderMoves", () => {
       orderMoves(p).map((m) => `${m.fileId}:${m.path}`),
       ["a:outputs", "d:wip", "b:wip/navrhy", "c:wip/navrhy/v2"],
     );
+  });
+});
+
+describe("planReasonText", () => {
+  it("renders a refusal in the UI language, the file name as a value", () => {
+    const reason = { code: "file_exists", name: "a.md" } as const;
+    assert.equal(planReasonText(reason, tEn), "The folder already has a file a.md");
+    assert.equal(planReasonText(reason, tCs), "Ve složce už soubor a.md je");
+    assert.equal(planReasonText({ code: "no_mirror" }, tEn), "Create the node's mirror first");
   });
 });

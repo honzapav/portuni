@@ -1,0 +1,21 @@
+{
+  "empty": {
+    "body": "Portuni mapuje, na čem pracuješ — týmy, projekty, procesy. Začni tím, že přidáš svou organizaci.",
+    "create_disabled": "Vytváření uzlů vyžaduje vyšší roli",
+    "create_organization": "Vytvořit organizaci",
+    "title": "Začni vytvořením první organizace."
+  },
+  "layout": {
+    "full_relayout": {
+      "aria_label": "Přegenerovat layout",
+      "title": "Kompletně přegenerovat layout včetně rozmístění organizací"
+    },
+    "retile": {
+      "aria_label": "Uspořádat uzly",
+      "title": "Uspořádat uzly uvnitř organizací (organizace zůstanou na místě)"
+    }
+  },
+  "sample": {
+    "message": "Graf workspace {{workspaceName}}."
+  }
+}

@@ -11,6 +11,9 @@
 // `/api` prefix so Vite's dev proxy forwards it to localhost:4011 and
 // no Authorization header is needed (the proxy injects one).
 
+import { ClientError } from "./api-error";
+import { DesktopError, invoke, toDesktopError } from "./tauri-invoke";
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
@@ -41,7 +44,6 @@ export function isTauri(): boolean {
 export async function openExternal(url: string): Promise<void> {
   if (isTauri()) {
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("open_external", { url });
       return;
     } catch (e) {
@@ -57,7 +59,6 @@ export async function openExternal(url: string): Promise<void> {
 // Scope-guarded in Rust to the workspace root. No-op in browser mode.
 export async function openPathExternal(path: string): Promise<void> {
   if (!isTauri()) return;
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("open_path_external", { path });
 }
 
@@ -66,7 +67,6 @@ export async function openPathExternal(path: string): Promise<void> {
 // No-op in browser mode (not running in Tauri).
 export async function openInFinder(path: string, reveal: boolean): Promise<void> {
   if (!isTauri()) return;
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("open_in_finder", { path, reveal });
 }
 
@@ -75,7 +75,6 @@ export async function openInFinder(path: string, reveal: boolean): Promise<void>
 // the command is not running in Tauri / on macOS.
 export async function clipboardFilePath(): Promise<string | null> {
   if (!isTauri()) return null;
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string | null>("clipboard_file_path");
 }
 
@@ -84,7 +83,6 @@ export async function clipboardFilePath(): Promise<string | null> {
 // resolves to void — callers don't construct URLs anymore, the Rust
 // side does.
 async function pollBackendReady(): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
   const { listen } = await import("@tauri-apps/api/event");
 
   let unlistenReady: (() => void) | null = null;
@@ -103,9 +101,12 @@ async function pollBackendReady(): Promise<void> {
   // when it terminates before announcing a port. Surfacing the real
   // reason here is what turns "did not start within 30s" into something
   // the user can act on.
+  // The payload is `{ code, params, message }` (DESKTOP_BACKEND_FAILED,
+  // DESKTOP_BACKEND_EXITED...), rendered from its code; an older shell's
+  // plain string still shows, as UNKNOWN_DETAIL.
   const errorPromise = new Promise<never>((_, reject) => {
-    void listen<string>("backend-error", (event) => {
-      reject(new Error(`backend failed to start: ${event.payload}`));
+    void listen<unknown>("backend-error", (event) => {
+      reject(backendErrorFromPayload(event.payload));
     }).then((fn) => {
       unlistenError = fn;
     });
@@ -118,7 +119,7 @@ async function pollBackendReady(): Promise<void> {
       if (port !== null) return;
       await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
-    throw new Error("backend sidecar did not start within 30s");
+    throw new DesktopError("DESKTOP_BACKEND_NOT_READY", "backend sidecar did not start within 30s");
   })();
 
   try {
@@ -127,6 +128,14 @@ async function pollBackendReady(): Promise<void> {
     if (unlistenReady) (unlistenReady as () => void)();
     if (unlistenError) (unlistenError as () => void)();
   }
+}
+
+// The error a `backend-error` event's payload stands for.
+function backendErrorFromPayload(payload: unknown): unknown {
+  if (typeof payload === "string") {
+    return new ClientError("UNKNOWN_DETAIL", `backend failed to start: ${payload}`, { detail: payload });
+  }
+  return toDesktopError(payload);
 }
 
 function ensureBackendReady(): Promise<void> {
@@ -152,7 +161,6 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     return fetch(`${BROWSER_BASE}${path}`, init);
   }
 
-  const { invoke } = await import("@tauri-apps/api/core");
   const method = (init?.method ?? "GET").toUpperCase();
 
   // api.ts's jsonRequest pre-stringifies bodies; that's the only shape

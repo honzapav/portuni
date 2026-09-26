@@ -20,6 +20,7 @@
 // domain/runner/types.ts's `ToolCallEvent` never streams a tool's input
 // the way that richer union models, and the adapter already serializes
 // input/output to strings server-side.
+// The status labels and headings come from the `chat` catalog (#536).
 
 "use client";
 
@@ -40,6 +41,7 @@ import {
 } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 
+import { useTranslation } from "react-i18next";
 import { CodeBlock } from "./code-block";
 
 export type ToolProps = ComponentProps<typeof Collapsible>;
@@ -63,11 +65,6 @@ export type ToolHeaderProps = {
   className?: string;
 };
 
-const statusLabels: Record<ToolCallStatus, string> = {
-  started: "Running",
-  completed: "Completed",
-  failed: "Error",
-};
 
 const statusIcons: Record<ToolCallStatus, ReactNode> = {
   started: <ClockIcon className="size-4 animate-pulse" />,
@@ -75,12 +72,20 @@ const statusIcons: Record<ToolCallStatus, ReactNode> = {
   failed: <XCircleIcon className="size-4 text-red-600" />,
 };
 
-export const getStatusBadge = (status: ToolCallStatus) => (
-  <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
-    {statusIcons[status]}
-    {statusLabels[status]}
-  </Badge>
-);
+const StatusBadge = ({ status }: { status: ToolCallStatus }) => {
+  const { t } = useTranslation("chat");
+  const labels: Record<ToolCallStatus, string> = {
+    started: t(($) => $.tool.status.started),
+    completed: t(($) => $.tool.status.completed),
+    failed: t(($) => $.tool.status.failed),
+  };
+  return (
+    <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+      {statusIcons[status]}
+      {labels[status]}
+    </Badge>
+  );
+};
 
 export const ToolHeader = ({ className, title, tool, state, ...props }: ToolHeaderProps) => (
   <CollapsibleTrigger
@@ -93,7 +98,7 @@ export const ToolHeader = ({ className, title, tool, state, ...props }: ToolHead
     <div className="flex items-center gap-2">
       <WrenchIcon className="size-4 text-muted-foreground" />
       <span className="font-medium text-sm">{title ?? tool}</span>
-      {getStatusBadge(state)}
+      <StatusBadge status={state} />
     </div>
     <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
   </CollapsibleTrigger>
@@ -119,16 +124,19 @@ export type ToolInputProps = ComponentProps<"div"> & {
   input: string;
 };
 
-export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
-  <div className={cn("space-y-2 overflow-hidden", className)} {...props}>
-    <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-      Parameters
-    </h4>
-    <div className="rounded-md bg-muted/50">
-      <CodeBlock code={input} language="json" />
+export const ToolInput = ({ className, input, ...props }: ToolInputProps) => {
+  const { t } = useTranslation("chat");
+  return (
+    <div className={cn("space-y-2 overflow-hidden", className)} {...props}>
+      <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+        {t(($) => $.tool.parameters)}
+      </h4>
+      <div className="rounded-md bg-muted/50" translate="no">
+        <CodeBlock code={input} language="json" />
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 export type ToolOutputProps = ComponentProps<"div"> & {
   output: string | null;
@@ -136,6 +144,7 @@ export type ToolOutputProps = ComponentProps<"div"> & {
 };
 
 export const ToolOutput = ({ className, output, errorText, ...props }: ToolOutputProps) => {
+  const { t } = useTranslation("chat");
   if (!(output || errorText)) {
     return null;
   }
@@ -143,7 +152,7 @@ export const ToolOutput = ({ className, output, errorText, ...props }: ToolOutpu
   return (
     <div className={cn("space-y-2", className)} {...props}>
       <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-        {errorText ? "Error" : "Result"}
+        {errorText ? t(($) => $.tool.error) : t(($) => $.tool.result)}
       </h4>
       <div
         className={cn(

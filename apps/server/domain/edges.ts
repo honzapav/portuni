@@ -10,6 +10,39 @@ import { buildNodeRoot } from "./sync/remote-path.js";
 import { resolveRemote } from "./sync/routing.js";
 import { getAdapter } from "./sync/adapter-cache.js";
 import { isLocalWorkspace } from "../infra/server-config.js";
+import type { ErrorParams } from "../shared/error-codes.js";
+
+// A refusal of an edge mutation the caller can act on. `code` is a member
+// of shared/error-codes.ts, so a route answers it as-is (status by code).
+export type EdgeErrorCode =
+  | "EDGE_NOT_FOUND"
+  | "ORG_LAST_EDGE"
+  | "NODE_NOT_FOUND"
+  | "ORGANIZATION_NOT_FOUND"
+  | "MOVE_SOURCE_IS_ORGANIZATION"
+  | "MOVE_TARGET_NOT_ORGANIZATION"
+  | "MOVE_REMOTE_MISMATCH";
+
+export class EdgeError extends Error {
+  constructor(
+    readonly code: EdgeErrorCode,
+    message: string,
+    readonly params?: ErrorParams,
+  ) {
+    super(message);
+    this.name = "EdgeError";
+  }
+}
+
+export const EDGE_ERROR_STATUS: Record<EdgeErrorCode, number> = {
+  EDGE_NOT_FOUND: 404,
+  ORG_LAST_EDGE: 409,
+  NODE_NOT_FOUND: 404,
+  ORGANIZATION_NOT_FOUND: 404,
+  MOVE_SOURCE_IS_ORGANIZATION: 400,
+  MOVE_TARGET_NOT_ORGANIZATION: 400,
+  MOVE_REMOTE_MISMATCH: 409,
+};
 
 export type MoveNodeResult = {
   moved: boolean;
@@ -44,9 +77,7 @@ export async function disconnectEdgeById(
     args: [edgeId],
   });
   if (existing.rows.length === 0) {
-    const err = new Error(`edge ${edgeId} not found`);
-    (err as Error & { code?: string }).code = "EDGE_NOT_FOUND";
-    throw err;
+    throw new EdgeError("EDGE_NOT_FOUND", `edge ${edgeId} not found`, { edgeId });
   }
   const row = existing.rows[0];
   const sourceId = row.source_id as string;
@@ -65,11 +96,11 @@ export async function disconnectEdgeById(
     });
     const n = Number(orgCount.rows[0].n);
     if (n <= 1) {
-      const err = new Error(
+      throw new EdgeError(
+        "ORG_LAST_EDGE",
         `cannot remove the only belongs_to -> organization edge of node ${sourceId}; use moveNodeToOrganization to relocate it instead`,
+        { nodeId: sourceId },
       );
-      (err as Error & { code?: string }).code = "ORG_INVARIANT";
-      throw err;
     }
   }
 
@@ -103,11 +134,13 @@ export async function moveNodeToOrganization(
     args: [nodeId],
   });
   if (nodeRes.rows.length === 0) {
-    throw new Error(`node ${nodeId} not found`);
+    throw new EdgeError("NODE_NOT_FOUND", `node ${nodeId} not found`, { nodeId });
   }
   if (nodeRes.rows[0].type === "organization") {
-    throw new Error(
+    throw new EdgeError(
+      "MOVE_SOURCE_IS_ORGANIZATION",
       `node ${nodeId} is an organization; organizations cannot belong to another organization`,
+      { nodeId },
     );
   }
 
@@ -116,11 +149,15 @@ export async function moveNodeToOrganization(
     args: [newOrgId],
   });
   if (orgRes.rows.length === 0) {
-    throw new Error(`organization ${newOrgId} not found`);
+    throw new EdgeError("ORGANIZATION_NOT_FOUND", `organization ${newOrgId} not found`, {
+      organizationId: newOrgId,
+    });
   }
   if (orgRes.rows[0].type !== "organization") {
-    throw new Error(
+    throw new EdgeError(
+      "MOVE_TARGET_NOT_ORGANIZATION",
       `target ${newOrgId} is not an organization (type: ${orgRes.rows[0].type})`,
+      { targetId: newOrgId, type: String(orgRes.rows[0].type) },
     );
   }
 
@@ -183,8 +220,10 @@ export async function moveNodeToOrganization(
     for (const r of tracked.rows) {
       const remoteName = r.remote_name as string;
       if (targetRemote !== null && targetRemote !== remoteName) {
-        throw new Error(
+        throw new EdgeError(
+          "MOVE_REMOTE_MISMATCH",
           `cannot move node ${nodeId} to organization ${newOrgId}: its files live on remote "${remoteName}" but the new organization routes to remote "${targetRemote}". Move the files individually (portuni_move_file) or adjust the routing first.`,
+          { remoteName, targetRemote },
         );
       }
       const oldRemote = r.remote_path as string;

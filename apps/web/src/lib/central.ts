@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { isTauri } from "./backend-url";
+import { ClientError, parseApiError } from "./api-error";
 
 export { isTauri };
 
@@ -17,6 +18,7 @@ export { isTauri };
 // this module is where the rest of the app already looks for it.
 export { getDataMode, isCentralMode, type DataMode } from "./data-mode";
 import { getDataModeCached, type DataMode } from "./data-mode";
+import { invoke } from "./tauri-invoke";
 
 // Hook: resolves data mode once on mount and caches the result.
 // Returns null while loading (team-workspace features should be optimistically
@@ -91,21 +93,18 @@ export async function authStatus(): Promise<AuthStatus> {
   if (!isTauri()) {
     return { configured: false, logged_in: false, user: null };
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<AuthStatus>("auth_status");
 }
 
 export async function googleLogin(): Promise<UserInfo> {
   if (!isTauri()) {
-    throw new Error("Přihlášení přes Google je dostupné jen v desktop aplikaci.");
+    throw new ClientError("LOGIN_NEEDS_DESKTOP", "google login needs the desktop app");
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<UserInfo>("google_login");
 }
 
 export async function authLogout(): Promise<void> {
   if (!isTauri()) return;
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("auth_logout");
 }
 
@@ -113,7 +112,8 @@ export async function authLogout(): Promise<void> {
 
 type CentralResponse = { status: number; body: string };
 
-// Calls central_request Tauri command, parses JSON body, throws on >= 400.
+// Calls central_request Tauri command, parses JSON body, throws an ApiError
+// (the server's code and params) on >= 400.
 // `body` is passed as a JSON string (same shape as api_request).
 export async function centralFetch<T>(
   method: string,
@@ -121,29 +121,21 @@ export async function centralFetch<T>(
   body?: unknown,
 ): Promise<T> {
   if (!isTauri()) {
-    throw new Error("Centrální server je dostupný jen v desktop aplikaci.");
+    throw new ClientError("CENTRAL_NEEDS_DESKTOP", "the central server needs the desktop app");
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   const res = await invoke<CentralResponse>("central_request", {
     method: method.toUpperCase(),
     path,
     body: body ?? null,
   });
+  if (res.status >= 400) {
+    throw parseApiError(res.status, res.body, `central ${method.toUpperCase()} ${path}`);
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(res.body);
   } catch {
     parsed = res.body;
-  }
-  if (res.status >= 400) {
-    const msg =
-      parsed != null &&
-      typeof parsed === "object" &&
-      "error" in parsed &&
-      typeof (parsed as Record<string, unknown>).error === "string"
-        ? (parsed as { error: string }).error
-        : `HTTP ${res.status}`;
-    throw new Error(msg);
   }
   return parsed as T;
 }

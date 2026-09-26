@@ -8,6 +8,8 @@
 // node (loadFilePlan/saveFilePlan in settings.ts) and lays it over a freshly
 // polled tree on every refresh (rule 3).
 
+import type { TFunction } from "i18next";
+
 export type Section = "wip" | "outputs" | "resources";
 
 export const SECTIONS: readonly Section[] = ["wip", "outputs", "resources"];
@@ -35,7 +37,57 @@ export type PlanFile = {
 
 export type PlanResult =
   | { ok: true; plan: FilePlan }
-  | { ok: false; reason: string };
+  | { ok: false; reason: PlanReason };
+
+// Why a plan step, a drag or a folder action is refused (spec, Errors). A
+// code with the names it needs, never text: planReasonText renders it from
+// the `files` catalog, one message per code (i18n spec, rule 7).
+export type PlanReason =
+  | { code: "no_mirror" }
+  | { code: "untracked" }
+  | { code: "file_gone" }
+  | { code: "drag_outside_sections" }
+  | { code: "not_a_folder" }
+  | { code: "target_outside_sections" }
+  | { code: "file_exists"; name: string }
+  | { code: "folder_has_untracked"; name: string }
+  | { code: "section_move" }
+  | { code: "into_itself" }
+  | { code: "section_rename" }
+  | { code: "invalid_folder_name" }
+  | { code: "folder_exists"; name: string }
+  | { code: "path_empty" }
+  | { code: "path_outside_sections" }
+  | { code: "path_needs_name" };
+
+type FilesT = TFunction<"files">;
+
+const PLAN_REASON_TEXT: {
+  [C in PlanReason["code"]]: (t: FilesT, r: Extract<PlanReason, { code: C }>) => string;
+} = {
+  no_mirror: (t) => t(($) => $.plan_reason.no_mirror, { ns: "files" }),
+  untracked: (t) => t(($) => $.plan_reason.untracked, { ns: "files" }),
+  file_gone: (t) => t(($) => $.plan_reason.file_gone, { ns: "files" }),
+  drag_outside_sections: (t) => t(($) => $.plan_reason.drag_outside_sections, { ns: "files" }),
+  not_a_folder: (t) => t(($) => $.plan_reason.not_a_folder, { ns: "files" }),
+  target_outside_sections: (t) => t(($) => $.plan_reason.target_outside_sections, { ns: "files" }),
+  file_exists: (t, r) => t(($) => $.plan_reason.file_exists, { ns: "files", name: r.name }),
+  folder_has_untracked: (t, r) =>
+    t(($) => $.plan_reason.folder_has_untracked, { ns: "files", name: r.name }),
+  section_move: (t) => t(($) => $.plan_reason.section_move, { ns: "files" }),
+  into_itself: (t) => t(($) => $.plan_reason.into_itself, { ns: "files" }),
+  section_rename: (t) => t(($) => $.plan_reason.section_rename, { ns: "files" }),
+  invalid_folder_name: (t) => t(($) => $.plan_reason.invalid_folder_name, { ns: "files" }),
+  folder_exists: (t, r) => t(($) => $.plan_reason.folder_exists, { ns: "files", name: r.name }),
+  path_empty: (t) => t(($) => $.plan_reason.path_empty, { ns: "files" }),
+  path_outside_sections: (t) => t(($) => $.plan_reason.path_outside_sections, { ns: "files" }),
+  path_needs_name: (t) => t(($) => $.plan_reason.path_needs_name, { ns: "files" }),
+};
+
+export function planReasonText(reason: PlanReason, t: FilesT): string {
+  const render = PLAN_REASON_TEXT[reason.code] as (t: FilesT, r: PlanReason) => string;
+  return render(t, reason);
+}
 
 // A tree row after the plan is laid over it: `planned_from` is the folder the
 // file still sits in today, so the row can strike it through (null = the file
@@ -71,7 +123,7 @@ export function folderPathToTarget(folderPath: string): MoveTarget | null {
   return { section, subpath: rest.length === 0 ? null : rest.join("/") };
 }
 
-function isSection(value: string): value is Section {
+export function isSection(value: string): value is Section {
   return value === "wip" || value === "outputs" || value === "resources";
 }
 
@@ -185,10 +237,10 @@ export function planMove(
   targetFolder: string,
   occupied: ReadonlySet<string>,
 ): PlanResult {
-  if (!file.fileId) return { ok: false, reason: "Soubor ještě není zaregistrovaný" };
+  if (!file.fileId) return { ok: false, reason: { code: "untracked" } };
   const target = folderPathToTarget(targetFolder);
   if (!target) {
-    return { ok: false, reason: "Cíl musí být ve složce wip, outputs nebo resources" };
+    return { ok: false, reason: { code: "target_outside_sections" } };
   }
   const name = basenameOf(file.relative_path);
   const home = folderPathOf(file.relative_path);
@@ -199,7 +251,7 @@ export function planMove(
   }
   const newPath = joinPath(targetFolder, name);
   if (newPath !== effectivePathOf(file, plan) && occupied.has(newPath)) {
-    return { ok: false, reason: `Ve složce už soubor ${name} je` };
+    return { ok: false, reason: { code: "file_exists", name } };
   }
   moves[file.fileId] = target;
   return { ok: true, plan: { moves, folders: [...plan.folders] } };
@@ -225,7 +277,7 @@ function replanFolder(
   if (untracked) {
     return {
       ok: false,
-      reason: `Ve složce je neregistrovaný soubor ${basenameOf(untracked.relative_path)}`,
+      reason: { code: "folder_has_untracked", name: basenameOf(untracked.relative_path) },
     };
   }
   const leaving = new Set(inside.map((f) => effectivePathOf(f, plan)));
@@ -234,12 +286,12 @@ function replanFolder(
   for (const f of inside) {
     const newPath = newFolderPath + effectivePathOf(f, plan).slice(folderPath.length);
     if ((occupied.has(newPath) && !leaving.has(newPath)) || taken.has(newPath)) {
-      return { ok: false, reason: `Ve složce už soubor ${basenameOf(newPath)} je` };
+      return { ok: false, reason: { code: "file_exists", name: basenameOf(newPath) } };
     }
     taken.add(newPath);
     const targetFolder = folderPathOf(newPath);
     if (!folderPathToTarget(targetFolder)) {
-      return { ok: false, reason: "Cíl musí být ve složce wip, outputs nebo resources" };
+      return { ok: false, reason: { code: "target_outside_sections" } };
     }
     setMove(moves, f, targetFolder);
   }
@@ -263,13 +315,13 @@ export function planFolderMove(
   occupied: ReadonlySet<string>,
 ): PlanResult {
   if (folderPath.split("/").length < 2) {
-    return { ok: false, reason: "Sekci přesunout nelze" };
+    return { ok: false, reason: { code: "section_move" } };
   }
   if (!folderPathToTarget(targetFolder)) {
-    return { ok: false, reason: "Cíl musí být ve složce wip, outputs nebo resources" };
+    return { ok: false, reason: { code: "target_outside_sections" } };
   }
   if (targetFolder === folderPath || targetFolder.startsWith(`${folderPath}/`)) {
-    return { ok: false, reason: "Složku nelze přesunout do sebe sama" };
+    return { ok: false, reason: { code: "into_itself" } };
   }
   const newFolderPath = joinPath(targetFolder, basenameOf(folderPath));
   if (newFolderPath === folderPath) return { ok: true, plan: clonePlan(plan) };
@@ -288,10 +340,10 @@ export function planFolderRename(
 ): PlanResult {
   const parts = folderPath.split("/");
   if (parts.length < 2 || !isSection(parts[0])) {
-    return { ok: false, reason: "Sekci přejmenovat nelze" };
+    return { ok: false, reason: { code: "section_rename" } };
   }
   if (!isSafeSegment(newName)) {
-    return { ok: false, reason: "Neplatný název složky" };
+    return { ok: false, reason: { code: "invalid_folder_name" } };
   }
   const newFolderPath = [...parts.slice(0, -1), newName].join("/");
   if (newFolderPath === folderPath) return { ok: true, plan: clonePlan(plan) };
@@ -301,7 +353,7 @@ export function planFolderRename(
     for (let i = 1; i < segs.length; i++) existing.add(segs.slice(0, i).join("/"));
   }
   if (existing.has(newFolderPath)) {
-    return { ok: false, reason: `Složka ${newName} už existuje` };
+    return { ok: false, reason: { code: "folder_exists", name: newName } };
   }
   return replanFolder(plan, folderPath, newFolderPath, files, occupied);
 }
@@ -318,19 +370,19 @@ export function planFolder(
   // The form prefills "wip/", so one trailing slash is the user typing a
   // folder name and stopping, not an empty segment.
   const trimmed = path.endsWith("/") ? path.slice(0, -1) : path;
-  if (trimmed === "") return { ok: false, reason: "Zadej cestu složky" };
+  if (trimmed === "") return { ok: false, reason: { code: "path_empty" } };
   const parts = trimmed.split("/");
   if (!isSection(parts[0])) {
-    return { ok: false, reason: "Cesta musí začínat sekcí wip/, outputs/ nebo resources/" };
+    return { ok: false, reason: { code: "path_outside_sections" } };
   }
   if (parts.length < 2) {
-    return { ok: false, reason: "Zadej název složky uvnitř sekce" };
+    return { ok: false, reason: { code: "path_needs_name" } };
   }
   for (const seg of parts.slice(1)) {
-    if (!isSafeSegment(seg)) return { ok: false, reason: "Neplatný název složky" };
+    if (!isSafeSegment(seg)) return { ok: false, reason: { code: "invalid_folder_name" } };
   }
   if (existingFolders.has(trimmed) || plan.folders.includes(trimmed)) {
-    return { ok: false, reason: `Složka ${trimmed} už existuje` };
+    return { ok: false, reason: { code: "folder_exists", name: trimmed } };
   }
   return { ok: true, plan: { moves: { ...plan.moves }, folders: [...plan.folders, trimmed] } };
 }

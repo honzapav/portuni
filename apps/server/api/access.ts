@@ -12,12 +12,14 @@ import { logAudit } from "../infra/audit.js";
 import {
   getIdentityContext,
   parseJsonBody,
+  respondApiError,
   respondError,
   respondJson,
   type RequestIdentity,
 } from "../http/middleware.js";
-import { nodeVisibleTo, resolveAccessChain } from "../auth/node-access.js";
+import { resolveAccessChain } from "../auth/node-access.js";
 import { guardRestNodeWrite } from "./write-gate.js";
+import { findVisibleNodeRow, respondNodeNotFound } from "./node-route-helpers.js";
 
 const AccessEntryBody = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("group"), principal: z.string().min(1), display_email: z.string().email() }),
@@ -128,9 +130,8 @@ export async function handleGetNodeAccess(
     // "unrestricted", not "hidden") -- so nodeVisibleTo alone would answer
     // true for an id that doesn't exist at all. Both checks are required to
     // 404 correctly.
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [nodeId] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+    if (!(await findVisibleNodeRow(db, identity, nodeId))) {
+      respondNodeNotFound(res, nodeId);
       return;
     }
     const view = await buildAccessView(db, nodeId);
@@ -150,12 +151,9 @@ export async function handlePutNodeAccess(
     const db = getDb();
     // See handleGetNodeAccess above: the existence SELECT is load-bearing,
     // not redundant with nodeVisibleTo (which answers true for a missing id).
-    const nodeRow = await db.execute({
-      sql: "SELECT id, visibility FROM nodes WHERE id = ?",
-      args: [nodeId],
-    });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+    const nodeRow = await findVisibleNodeRow(db, identity, nodeId, "id, visibility");
+    if (!nodeRow) {
+      respondNodeNotFound(res, nodeId);
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
@@ -168,15 +166,18 @@ export async function handlePutNodeAccess(
     // atomic unit (the unified sharing control); team/private force the
     // entries empty, group requires at least one. When absent, fall back to
     // the legacy derive-from-entries behaviour.
-    const wasGroup = String(nodeRow.rows[0].visibility) === "group";
+    const wasGroup = String(nodeRow.visibility) === "group";
     let effectiveEntries = body.entries;
     let newVisibility: string;
     let newAccessMode: "private" | "request";
     if (body.visibility === "group") {
       if (body.entries.length === 0) {
-        respondJson(res, 400, {
-          error: "group visibility requires at least one access entry",
-        });
+        respondApiError(
+          res,
+          400,
+          "ACCESS_GROUP_NEEDS_ENTRIES",
+          "group visibility requires at least one access entry",
+        );
         return;
       }
       newVisibility = "group";
@@ -193,7 +194,7 @@ export async function handlePutNodeAccess(
           ? "group"
           : wasGroup
             ? "team"
-            : String(nodeRow.rows[0].visibility);
+            : String(nodeRow.visibility);
       newAccessMode = body.entries.length > 0 ? (body.mode ?? "private") : "private";
     }
 
@@ -208,9 +209,13 @@ export async function handlePutNodeAccess(
       seenEntries.add(key);
     }
     if (duplicateEntries.size > 0) {
-      respondJson(res, 400, {
-        error: `duplicate access entries: ${[...duplicateEntries].join(", ")}`,
-      });
+      respondApiError(
+        res,
+        400,
+        "ACCESS_DUPLICATE_ENTRIES",
+        `duplicate access entries: ${[...duplicateEntries].join(", ")}`,
+        { entries: [...duplicateEntries].join(", ") },
+      );
       return;
     }
 
@@ -226,7 +231,10 @@ export async function handlePutNodeAccess(
       const foundIds = new Set(existing.rows.map((r) => String(r.id)));
       const missing = userIds.filter((id) => !foundIds.has(id));
       if (missing.length > 0) {
-        respondJson(res, 400, { error: `unknown user id(s): ${missing.join(", ")}` });
+        respondApiError(res, 400, "ACCESS_UNKNOWN_USERS", `unknown user id(s): ${missing.join(", ")}`, {
+          userIds: missing.join(", "),
+          count: missing.length,
+        });
         return;
       }
     }
@@ -282,7 +290,7 @@ export async function handleListGroups(
   try {
     const ctx = getIdentityContext();
     if (!ctx.adapter.listDomainGroups) {
-      respondJson(res, 501, { error: "google_mode_only" });
+      respondApiError(res, 501, "GOOGLE_MODE_ONLY", "google_mode_only");
       return;
     }
     const query = url.searchParams.get("query") ?? "";

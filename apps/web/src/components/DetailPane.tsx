@@ -1,3 +1,4 @@
+import { displayError } from "../errors";
 import {
   memo,
   useCallback,
@@ -7,6 +8,8 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   ArrowRight,
   ArrowLeft,
@@ -137,6 +140,8 @@ import { SessionsSection } from "./DetailPane.sessions";
 import { RequestAccessControl } from "./AccessRequests";
 import { copyText } from "../lib/clipboard";
 import { useDataMode } from "../lib/central";
+import { compareText } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -227,6 +232,7 @@ function DetailPane({
 }: Props) {
   // Drives whether the sharing section is editable.
   const { canManage } = useMe();
+  const { t } = useTranslation("node");
 
   if (loading && !node) {
     return (
@@ -238,7 +244,7 @@ function DetailPane({
         onCollapse={onCollapse}
       >
         <div className="flex h-full items-center justify-center text-[13.5px] text-[var(--color-text-dim)]">
-          Načítám...
+          {t(($) => $.detail.loading)}
         </div>
       </PaneShell>
     );
@@ -314,6 +320,8 @@ function DetailPaneBody({
   // Live session_state map for the Relace tab (see SessionsSection).
   liveSessionStates?: Readonly<Record<string, SessionStateMessage>>;
 }) {
+  const { t } = useTranslation("node");
+  const { t: tFiles } = useTranslation("files");
 
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -332,9 +340,9 @@ function DetailPaneBody({
   // Wrap setTab so the choice is remembered across an editor open/close
   // (which unmounts this pane). Keyed by node id.
   const setTab = useCallback(
-    (t: DetailTab) => {
-      TAB_CACHE.set(node.id, t);
-      setTabState(t);
+    (next: DetailTab) => {
+      TAB_CACHE.set(node.id, next);
+      setTabState(next);
     },
     [node.id],
   );
@@ -461,7 +469,7 @@ function DetailPaneBody({
       void onMutate();
     } catch (e) {
       if (lastIdRef.current !== requestNodeId) return;
-      setSyncError(String(e));
+      setSyncError(displayError(e));
     } finally {
       if (lastIdRef.current === requestNodeId) {
         setSyncRunning(false);
@@ -499,7 +507,7 @@ function DetailPaneBody({
       }
     } catch (e) {
       if (lastIdRef.current !== requestNodeId) return;
-      setMirrorError(e instanceof SyncAgentDownError ? e.message : String(e));
+      setMirrorError(displayError(e));
     } finally {
       if (lastIdRef.current === requestNodeId) {
         setCreatingMirror(false);
@@ -539,7 +547,7 @@ function DetailPaneBody({
         setSyncLoaded(true);
         return;
       }
-      setSyncError(String(e));
+      setSyncError(displayError(e));
       setSyncLoaded(true);
     }
   }, [node.id]);
@@ -580,7 +588,7 @@ function DetailPaneBody({
       await onMutate();
       setEditing(false);
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -598,7 +606,7 @@ function DetailPaneBody({
       await onMutate();
       onSelect(null);
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
       setBusy(false);
     }
   };
@@ -610,7 +618,7 @@ function DetailPaneBody({
       await deleteEdge(edgeId);
       await onMutate();
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -631,7 +639,7 @@ function DetailPaneBody({
       });
       await onMutate();
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -661,7 +669,7 @@ function DetailPaneBody({
       await deleteEdge(edge.id);
       await onMutate();
     } catch (e) {
-      setErrorMsg(String(e));
+      setErrorMsg(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -678,7 +686,7 @@ function DetailPaneBody({
       setCreatingFile(false);
       if (onOpenFile && f.relative_path) onOpenFile(node.id, f.relative_path);
     } catch (e) {
-      throw new Error(`Soubor se nepodařilo vytvořit: ${String(e)}`);
+      throw new Error(t(($) => $.detail.error.create_file_failed, { error: displayError(e) }));
     }
   };
 
@@ -688,7 +696,7 @@ function DetailPaneBody({
     try {
       await newInShowtime(node.id);
     } catch (e) {
-      setPresentationError(`Prezentaci se nepodařilo založit: ${e instanceof Error ? e.message : String(e)}`);
+      setPresentationError(t(($) => $.detail.error.presentation_failed, { error: displayError(e) }));
     }
   };
 
@@ -697,7 +705,7 @@ function DetailPaneBody({
       await renameFile(node.id, fileId, name);
       await Promise.all([onMutate(), loadSyncStatus()]);
     } catch (e) {
-      throw new Error(`Přejmenování selhalo: ${String(e)}`);
+      throw new Error(t(($) => $.detail.error.rename_failed, { error: displayError(e) }));
     }
   };
 
@@ -710,7 +718,7 @@ function DetailPaneBody({
     try {
       res = await deleteFile(node.id, fileId);
     } catch (e) {
-      throw new Error(`Smazání selhalo: ${String(e)}`);
+      throw new Error(t(($) => $.detail.error.delete_failed, { error: displayError(e) }));
     }
     await Promise.all([onMutate(), loadSyncStatus()]);
     if (
@@ -722,7 +730,7 @@ function DetailPaneBody({
       throw new Error(
         typeof hint === "string" && hint
           ? hint
-          : "Soubor se nepodařilo smazat z remote úložiště. Lokální kopie i záznam zůstaly zachovány.",
+          : t(($) => $.detail.error.remote_delete_repair),
       );
     }
   };
@@ -778,21 +786,21 @@ function DetailPaneBody({
       else if (f.sync_class === "clean") hasClean = true;
     }
     if (hasConflict)
-      return { color: "var(--color-danger)", title: "Konflikt v souborech" };
+      return { color: "var(--color-danger)", title: t(($) => $.detail.sync_dot.conflict) };
     if (hasPending)
       return {
         color: "var(--color-node-process)",
-        title: "Soubory čekají na synchronizaci",
+        title: t(($) => $.detail.sync_dot.pending),
       };
     if (hasRemoteMissing)
       return {
         color: "var(--color-status-archived)",
-        title: "Některé soubory chybí na remote",
+        title: t(($) => $.detail.sync_dot.remote_missing),
       };
     if (hasClean)
       return {
         color: "var(--color-status-active)",
-        title: "Vše synchronizováno",
+        title: t(($) => $.detail.sync_dot.clean),
       };
     return null;
   })();
@@ -868,8 +876,8 @@ function DetailPaneBody({
                       <Button
                         variant="ghost"
                         size="icon-xs"
-                        title="Otevřít složku ve Finderu"
-                        aria-label="Otevřít složku ve Finderu"
+                        title={t(($) => $.detail.header.open_in_finder)}
+                        aria-label={t(($) => $.detail.header.open_in_finder)}
                         className="text-muted-foreground"
                         onClick={() => void openInFinder(node.local_mirror!.local_path, false).catch(() => undefined)}
                       >
@@ -909,14 +917,14 @@ function DetailPaneBody({
       >
         <TabsList variant="line" className="gap-0 p-0 group-data-horizontal/tabs:h-auto">
           <TabsTrigger value="overview" className={TAB_TRIGGER_CLASS}>
-            Přehled
+            {t(($) => $.detail.tab.overview)}
           </TabsTrigger>
           <TabsTrigger value="events" className={TAB_TRIGGER_CLASS}>
-            Události
+            {t(($) => $.detail.tab.events)}
             <TabCount count={node.events.length} active={tab === "events"} />
           </TabsTrigger>
           <TabsTrigger value="files" className={TAB_TRIGGER_CLASS}>
-            Soubory
+            {t(($) => $.detail.tab.files)}
             <TabCount count={node.files.length} active={tab === "files"} />
             {syncDot && (
               <span
@@ -930,16 +938,16 @@ function DetailPaneBody({
             )}
           </TabsTrigger>
           <TabsTrigger value="connections" className={TAB_TRIGGER_CLASS}>
-            Propojení
+            {t(($) => $.detail.tab.connections)}
             <TabCount count={node.edges.length} active={tab === "connections"} />
           </TabsTrigger>
           {node.type !== "organization" && (
             <TabsTrigger value="sessions" className={TAB_TRIGGER_CLASS}>
-              Relace
+              {t(($) => $.detail.tab.sessions)}
             </TabsTrigger>
           )}
           <TabsTrigger value="sharing" className={TAB_TRIGGER_CLASS}>
-            Sdílení
+            {t(($) => $.detail.tab.sharing)}
           </TabsTrigger>
         </TabsList>
       </Tabs>
@@ -961,8 +969,9 @@ function DetailPaneBody({
       <div className="scroll-thin flex-1 overflow-y-auto">
         {tab === "overview" && (
           <>
-        <Section title="Popis">
-          <EditableDescription
+        <Section title={t(($) => $.detail.section.description)}>
+          <EditableTextField
+            field="description"
             nodeId={node.id}
             value={node.description}
             onMutate={onMutate}
@@ -974,7 +983,7 @@ function DetailPaneBody({
             to exactly one organization. Picker rebinds the membership
             atomically via POST /nodes/:id/move. */}
         {node.type !== "organization" && (
-          <Section title="Organizace">
+          <Section title={t(($) => $.detail.section.organization)}>
             <OrganizationPicker
               node={node}
               graph={graph}
@@ -988,8 +997,9 @@ function DetailPaneBody({
         {(node.type === "project" ||
           node.type === "process" ||
           node.type === "area") && (
-          <Section title="Účel">
-            <EditableGoal
+          <Section title={t(($) => $.detail.section.goal)}>
+            <EditableTextField
+              field="goal"
               nodeId={node.id}
               value={node.goal}
               onMutate={onMutate}
@@ -1002,7 +1012,7 @@ function DetailPaneBody({
         {(node.type === "project" ||
           node.type === "process" ||
           node.type === "area") && (
-          <Section title="Vlastník">
+          <Section title={t(($) => $.detail.section.owner)}>
             <OwnerPicker
               node={node}
               onMutate={onMutate}
@@ -1015,7 +1025,7 @@ function DetailPaneBody({
         {(node.type === "project" ||
           node.type === "process" ||
           node.type === "area") && (
-          <Section title="Úlohy">
+          <Section title={t(($) => $.detail.section.responsibilities)}>
             <ResponsibilitiesEditor
               node={node}
               onMutate={onMutate}
@@ -1030,9 +1040,9 @@ function DetailPaneBody({
           node.type === "process" ||
           node.type === "area" ||
           node.data_sources.length > 0) && (
-          <Section title="Datové zdroje">
+          <Section title={t(($) => $.detail.section.data_sources)}>
             <EntityAttributeSection
-              title="datový zdroj"
+              kind="data_source"
               items={node.data_sources}
               nodeId={node.id}
               canEdit={
@@ -1055,9 +1065,9 @@ function DetailPaneBody({
           node.type === "process" ||
           node.type === "area" ||
           node.tools.length > 0) && (
-          <Section title="Nástroje">
+          <Section title={t(($) => $.detail.section.tools)}>
             <EntityAttributeSection
-              title="nástroj"
+              kind="tool"
               items={node.tools}
               nodeId={node.id}
               canEdit={
@@ -1075,14 +1085,13 @@ function DetailPaneBody({
         )}
 
         {editing && (
-          <Section title="Nebezpečná oblast">
+          <Section title={t(($) => $.detail.section.danger_zone)}>
             <Button variant="destructive" size="sm" onClick={handleArchive} disabled={busy}>
               <Archive />
-              Archivovat tento uzel
+              {t(($) => $.detail.archive.button)}
             </Button>
             <p className="mt-2 text-[10px] text-[var(--color-text-dim)]">
-              Uzel bude skryt z grafu, ale jeho vazby a události zůstanou
-              v databázi pro audit.
+              {t(($) => $.detail.archive.hint)}
             </p>
           </Section>
         )}
@@ -1111,7 +1120,7 @@ function DetailPaneBody({
               ))}
               {node.events.length === 0 && (
                 <div className="text-[14px] text-[var(--color-text-dim)]">
-                  Zatím žádné události.
+                  {t(($) => $.detail.events.empty)}
                 </div>
               )}
             </div>
@@ -1228,12 +1237,12 @@ function DetailPaneBody({
                     onNewSubfolder={(folderPath) =>
                       setFolderForm({ prefill: newFolderPrefill(folderPath) })
                     }
-                    runErrors={syncRunErrorsByFile(syncRunResult)}
+                    runErrors={syncRunErrorsByFile(syncRunResult, tFiles)}
                     isCentralMode={isCentralMode}
                   />
                 ) : (
                   <div className="text-[14px] text-[var(--color-text-dim)]">
-                    Zatím žádné soubory.
+                    {t(($) => $.detail.files.empty)}
                   </div>
                 )}
           </div>
@@ -1267,7 +1276,7 @@ function DetailPaneBody({
               </div>
             ) : (
               <div className="mb-3 text-[14px] text-[var(--color-text-dim)]">
-                Zatím žádná propojení.
+                {t(($) => $.detail.connections.empty)}
               </div>
             )}
             {graph && (
@@ -1316,10 +1325,10 @@ function DetailPaneBody({
               className="flex-1"
             >
               <Save />
-              {saving ? "Ukládám..." : "Uložit změny"}
+              {saving ? t(($) => $.detail.form.saving) : t(($) => $.detail.form.save_changes)}
             </Button>
             <Button variant="outline" onClick={cancelEdit} disabled={saving}>
-              Zrušit
+              {t(($) => $.detail.form.cancel)}
             </Button>
           </div>
         ) : (
@@ -1358,6 +1367,7 @@ function PaneShell({
   // button on the left of the header so it doesn't overlap Upravit.
   onCollapse?: () => void;
 }) {
+  const { t } = useTranslation("node");
   return (
     <aside
       className={
@@ -1373,8 +1383,8 @@ function PaneShell({
               variant="ghost"
               size="icon-sm"
               onClick={onCollapse}
-              title="Skrýt detail"
-              aria-label="Skrýt detail"
+              title={t(($) => $.detail.pane.collapse)}
+              aria-label={t(($) => $.detail.pane.collapse)}
               className="text-muted-foreground"
             >
               <ChevronRight />
@@ -1393,14 +1403,14 @@ function PaneShell({
             className="text-muted-foreground"
           >
             <ArrowLeft />
-            Zpět
+            {t(($) => $.detail.pane.back)}
           </Button>
         )}
         <div className="flex items-center gap-1.5">
           {onEdit && !editing && (
-            <Button variant="ghost" size="sm" onClick={onEdit} title="Upravit uzel">
+            <Button variant="ghost" size="sm" onClick={onEdit} title={t(($) => $.detail.pane.edit_title)}>
               <Pencil />
-              Upravit
+              {t(($) => $.detail.pane.edit)}
             </Button>
           )}
           {/*
@@ -1412,7 +1422,7 @@ function PaneShell({
             clicked (left column would lose selection).
           */}
           {!embedded && (
-            <Button variant="ghost" size="icon-sm" onClick={onClose} title="Zavřít detail" aria-label="Zavřít detail" className="text-muted-foreground">
+            <Button variant="ghost" size="icon-sm" onClick={onClose} title={t(($) => $.detail.pane.close)} aria-label={t(($) => $.detail.pane.close)} className="text-muted-foreground">
               <X />
             </Button>
           )}
@@ -1455,6 +1465,7 @@ function ConnectionLink({
   onChangeRelation: (newRelation: string) => Promise<void>;
   disabled: boolean;
 }) {
+  const { t } = useTranslation("node");
   const [editing, setEditing] = useState(false);
   const [draftRelation, setDraftRelation] = useState<string>(edge.relation);
 
@@ -1499,7 +1510,7 @@ function ConnectionLink({
             setEditing(false);
           }}
           disabled={disabled || draftRelation === edge.relation}
-          title="Uložit relaci"
+          title={t(($) => $.detail.connections.save_relation)}
           className="ml-0.5 text-[var(--color-accent)]"
         >
           <Check />
@@ -1512,7 +1523,7 @@ function ConnectionLink({
             setEditing(false);
           }}
           disabled={disabled}
-          title="Zrušit"
+          title={t(($) => $.detail.connections.cancel_edit)}
           className="text-muted-foreground"
         >
           <X />
@@ -1526,7 +1537,7 @@ function ConnectionLink({
       {edge.peer_restricted ? (
         <>
           <span
-            title="Přístup na vyžádání"
+            title={t(($) => $.detail.connections.restricted)}
             className="flex min-w-0 flex-1 cursor-not-allowed items-center gap-2 text-left opacity-60"
           >
             <Lock size={11} className="shrink-0 text-[var(--color-text-dim)]" />
@@ -1572,7 +1583,7 @@ function ConnectionLink({
             setEditing(true);
           }}
           disabled={disabled}
-          title="Změnit typ vazby"
+          title={t(($) => $.detail.connections.change_relation)}
           className="ml-0.5 text-muted-foreground opacity-0 transition-all group-hover:opacity-100"
         >
           <Pencil />
@@ -1587,7 +1598,7 @@ function ConnectionLink({
             onRemove();
           }}
           disabled={disabled}
-          title="Odebrat vazbu"
+          title={t(($) => $.detail.connections.remove)}
           className="ml-0.5 opacity-0 transition-all group-hover:opacity-100"
         >
           <Trash2 />
@@ -1612,6 +1623,7 @@ function AddEdgeForm({
   ) => Promise<void>;
   disabled: boolean;
 }) {
+  const { t } = useTranslation("node");
   const [open, setOpen] = useState(false);
   const [relation, setRelation] = useState<string>(RELATION_TYPES[0]);
   const [direction, setDirection] = useState<"outgoing" | "incoming">(
@@ -1624,7 +1636,7 @@ function AddEdgeForm({
     return (
       <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="mt-3">
         <Plus />
-        Přidat propojení
+        {t(($) => $.detail.connections.add)}
       </Button>
     );
   }
@@ -1652,7 +1664,7 @@ function AddEdgeForm({
     <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
       <div className="mb-2 flex items-center justify-between">
         <div className="font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
-          Nové propojení
+          {t(($) => $.detail.connections.new_title)}
         </div>
         <Button
           variant="ghost"
@@ -1689,7 +1701,7 @@ function AddEdgeForm({
             onClick={() =>
               setDirection((d) => (d === "outgoing" ? "incoming" : "outgoing"))
             }
-            title="Otočit směr"
+            title={t(($) => $.detail.connections.flip_direction)}
             className="shrink-0 text-muted-foreground"
           >
             {direction === "outgoing" ? "→" : "←"}
@@ -1698,7 +1710,7 @@ function AddEdgeForm({
       </div>
       <div className="mt-2 flex justify-end">
         <Button size="sm" onClick={submit} disabled={!targetId || submitting || disabled}>
-          {submitting ? "Přidávám..." : "Přidat propojení"}
+          {submitting ? t(($) => $.detail.connections.submitting) : t(($) => $.detail.connections.submit)}
         </Button>
       </div>
     </div>
@@ -1718,6 +1730,7 @@ function NodePicker({
   value: string;
   onChange: (id: string) => void;
 }) {
+  const { t } = useTranslation("node");
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1783,7 +1796,7 @@ function NodePicker({
               </span>
             </>
           ) : (
-            <span className="text-muted-foreground">Vyberte uzel...</span>
+            <span className="text-muted-foreground">{t(($) => $.detail.node_picker.placeholder)}</span>
           )}
         </Button>
       </PopoverTrigger>
@@ -1798,14 +1811,14 @@ function NodePicker({
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Hledat..."
+            placeholder={t(($) => $.detail.node_picker.search_placeholder)}
             className="h-7 border-none bg-transparent px-0 focus-visible:ring-0 dark:bg-transparent"
           />
         </div>
         <div className="scroll-thin max-h-[240px] overflow-y-auto py-1">
           {filtered.length === 0 ? (
             <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-              Žádné výsledky
+              {t(($) => $.detail.node_picker.empty)}
             </div>
           ) : (
             filtered.map((n) => (
@@ -1880,6 +1893,7 @@ function LifecycleDropdown({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
   const [saving, setSaving] = useState(false);
 
   const states =
@@ -1894,7 +1908,7 @@ function LifecycleDropdown({
       await updateNode(nodeId, { lifecycle_state: next });
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -1910,10 +1924,10 @@ function LifecycleDropdown({
         <Button
           variant="ghost"
           size="xs"
-          title="Změnit stav životního cyklu"
+          title={t(($) => $.detail.lifecycle.change_title)}
           className={`${badgeClass} h-auto rounded-full hover:opacity-80`}
         >
-          {value ?? "nevyplněno"}
+          {value ?? t(($) => $.detail.lifecycle.unset_badge)}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[160px]">
@@ -1921,7 +1935,7 @@ function LifecycleDropdown({
           onSelect={() => void pick(null)}
           className={value === null ? "bg-[var(--color-surface-2)]" : ""}
         >
-          <span className="text-muted-foreground">— nevyplněno —</span>
+          <span className="text-muted-foreground">{t(($) => $.detail.lifecycle.unset_option)}</span>
         </DropdownMenuItem>
         {states.map((s) => (
           <DropdownMenuItem
@@ -1953,6 +1967,7 @@ function HealthDropdown({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
   const [saving, setSaving] = useState(false);
 
   const pick = async (next: string) => {
@@ -1963,7 +1978,7 @@ function HealthDropdown({
       await updateNode(nodeId, { health: next });
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -1975,7 +1990,7 @@ function HealthDropdown({
         <Button
           variant="ghost"
           size="xs"
-          title="Změnit zdraví projektu"
+          title={t(($) => $.detail.health.change_title)}
           className={`lifecycle-badge lifecycle-${HEALTH_COLORS[value] ?? "gray"} h-auto rounded-full hover:opacity-80`}
         >
           {value}
@@ -1998,114 +2013,25 @@ function HealthDropdown({
   );
 }
 
-// Inline editor for the `goal` field. Read-mode shows the current value
-// (or a muted placeholder). Clicking Edit reveals a textarea with
-// Save/Cancel buttons. Empty goal saves as null.
-// Inline editor for node.description. Same interaction pattern as
-// EditableGoal: click to edit, Save/Cancel on commit. Freed from the
-// node-level "Upravit" dialog so it works the same as other inline fields.
-function EditableDescription({
+// Inline editor for node.description and the `goal` field. Read-mode shows
+// the current value (or a muted placeholder). Clicking Edit reveals a
+// textarea with Save/Cancel buttons. An empty value saves as null. Freed
+// from the node-level "Upravit" dialog so it works the same as other inline
+// fields.
+function EditableTextField({
+  field,
   nodeId,
   value,
   onMutate,
   onError,
 }: {
+  field: "description" | "goal";
   nodeId: string;
   value: string | null;
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value ?? "");
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setDraft(value ?? "");
-    setEditing(false);
-  }, [nodeId, value]);
-
-  const save = async () => {
-    setSaving(true);
-    onError(null);
-    try {
-      const trimmed = draft.trim();
-      await updateNode(nodeId, { description: trimmed ? trimmed : null });
-      await onMutate();
-      setEditing(false);
-    } catch (e) {
-      onError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const cancel = () => {
-    setDraft(value ?? "");
-    setEditing(false);
-    onError(null);
-  };
-
-  if (!editing) {
-    return (
-      <div className="group flex items-start gap-2">
-        <div className="flex-1">
-          {value ? (
-            <p className="text-[14px] leading-relaxed text-[var(--color-text-muted)]">
-              {value}
-            </p>
-          ) : (
-            <p className="text-[14px] italic leading-relaxed text-[var(--color-text-dim)]">
-              Nevyplněno
-            </p>
-          )}
-        </div>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          onClick={() => setEditing(true)}
-          title="Upravit popis"
-          className="text-muted-foreground opacity-0 transition-all group-hover:opacity-100"
-        >
-          <Pencil />
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-2">
-      <Textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        rows={5}
-        autoFocus
-        placeholder="Popište, co tento uzel reprezentuje..."
-        className="field-sizing-fixed resize-y leading-relaxed"
-      />
-      <div className="flex gap-2">
-        <Button size="sm" onClick={save} disabled={saving}>
-          <Save />
-          {saving ? "Ukládám..." : "Uložit"}
-        </Button>
-        <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
-          Zrušit
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function EditableGoal({
-  nodeId,
-  value,
-  onMutate,
-  onError,
-}: {
-  nodeId: string;
-  value: string | null;
-  onMutate: () => Promise<void>;
-  onError: (msg: string | null) => void;
-}) {
+  const { t } = useTranslation("node");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? "");
   const [saving, setSaving] = useState(false);
@@ -2121,11 +2047,11 @@ function EditableGoal({
     onError(null);
     try {
       const trimmed = draft.trim();
-      await updateNode(nodeId, { goal: trimmed ? trimmed : null });
+      await updateNode(nodeId, { [field]: trimmed ? trimmed : null });
       await onMutate();
       setEditing(false);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2147,7 +2073,7 @@ function EditableGoal({
             </p>
           ) : (
             <p className="text-[14px] italic leading-relaxed text-[var(--color-text-dim)]">
-              Nevyplněno
+              {t(($) => $.detail[field].empty)}
             </p>
           )}
         </div>
@@ -2155,7 +2081,7 @@ function EditableGoal({
           variant="ghost"
           size="icon-xs"
           onClick={() => setEditing(true)}
-          title="Upravit účel"
+          title={t(($) => $.detail[field].edit_title)}
           className="text-muted-foreground opacity-0 transition-all group-hover:opacity-100"
         >
           <Pencil />
@@ -2169,20 +2095,38 @@ function EditableGoal({
       <Textarea
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
-        rows={4}
+        rows={field === "description" ? 5 : 4}
         autoFocus
-        placeholder="Proč tento uzel existuje, čeho má dosáhnout..."
+        placeholder={t(($) => $.detail[field].placeholder)}
         className="field-sizing-fixed resize-y leading-relaxed"
       />
-      <div className="flex gap-2">
-        <Button size="sm" onClick={save} disabled={saving}>
-          <Save />
-          {saving ? "Ukládám..." : "Uložit"}
-        </Button>
-        <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
-          Zrušit
-        </Button>
-      </div>
+      <SaveCancelButtons saving={saving} onSave={save} onCancel={cancel} />
+    </div>
+  );
+}
+
+// The Save/Cancel pair under an inline editor.
+function SaveCancelButtons({
+  saving,
+  saveDisabled = false,
+  onSave,
+  onCancel,
+}: {
+  saving: boolean;
+  saveDisabled?: boolean;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation("node");
+  return (
+    <div className="flex gap-2">
+      <Button size="sm" onClick={onSave} disabled={saving || saveDisabled}>
+        <Save />
+        {saving ? t(($) => $.detail.form.saving) : t(($) => $.detail.form.save)}
+      </Button>
+      <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
+        {t(($) => $.detail.form.cancel)}
+      </Button>
     </div>
   );
 }
@@ -2204,6 +2148,8 @@ function OrganizationPicker({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
+  const locale = useLocale();
   const [saving, setSaving] = useState(false);
 
   const currentOrgEdge = node.edges.find(
@@ -2214,7 +2160,7 @@ function OrganizationPicker({
   );
   const orgs = (graph?.nodes ?? [])
     .filter((n) => n.type === "organization")
-    .sort((a, b) => a.name.localeCompare(b.name, "cs"));
+    .sort((a, b) => compareText(locale, a.name, b.name));
 
   const pick = async (orgId: string) => {
     if (orgId === currentOrgEdge?.peer_id) return;
@@ -2224,7 +2170,7 @@ function OrganizationPicker({
       await moveNode(node.id, orgId);
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2246,7 +2192,7 @@ function OrganizationPicker({
             </span>
           ) : (
             <span className="flex-1 text-muted-foreground">
-              — Bez organizace —
+              {t(($) => $.detail.organization.none)}
             </span>
           )}
           <Pencil className="shrink-0 text-muted-foreground" />
@@ -2255,7 +2201,7 @@ function OrganizationPicker({
       <DropdownMenuContent align="start" className="max-h-72">
         {orgs.length === 0 ? (
           <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-            Žádné organizace nejsou k dispozici.
+            {t(($) => $.detail.organization.empty)}
           </div>
         ) : (
           orgs.map((o) => (
@@ -2301,6 +2247,7 @@ function OwnerPicker({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [actors, setActors] = useState<Actor[] | null>(null);
@@ -2337,7 +2284,7 @@ function OwnerPicker({
         }),
       );
     } catch (e) {
-      setFetchError(String(e));
+      setFetchError(displayError(e));
     } finally {
       setLoading(false);
     }
@@ -2352,7 +2299,7 @@ function OwnerPicker({
       await updateNode(node.id, { owner_id: actorId });
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2434,7 +2381,7 @@ function OwnerPicker({
             </span>
           ) : (
             <span className="flex-1 text-muted-foreground">
-              — Žádný —
+              {t(($) => $.detail.owner.none)}
             </span>
           )}
           <Pencil className="shrink-0 text-muted-foreground" />
@@ -2455,14 +2402,14 @@ function OwnerPicker({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Hledat aktéra..."
+            placeholder={t(($) => $.detail.owner.search_placeholder)}
             className="h-7 flex-1 border-none bg-transparent px-0 focus-visible:ring-0 dark:bg-transparent"
           />
         </div>
         <div ref={listRef} className="max-h-64 overflow-y-auto py-1">
           {loading ? (
             <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-              Načítám aktéry...
+              {t(($) => $.detail.owner.loading)}
             </div>
           ) : fetchError ? (
             <div
@@ -2495,7 +2442,7 @@ function OwnerPicker({
                       }`}
                     >
                       <span className="text-muted-foreground">
-                        — Žádný —
+                        {t(($) => $.detail.owner.none_option)}
                       </span>
                     </Button>
                   );
@@ -2542,12 +2489,12 @@ function OwnerPicker({
               })}
               {actors && filtered.length === 0 && query.trim() !== "" && (
                 <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-                  Nic neodpovídá „{query}".
+                  {t(($) => $.detail.owner.no_match, { query })}
                 </div>
               )}
               {actors && actors.length === 0 && (
                 <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-                  Žádní aktéři nejsou k dispozici.
+                  {t(($) => $.detail.owner.empty)}
                 </div>
               )}
             </>
@@ -2571,6 +2518,7 @@ function ActorBadge({
   type: "person" | "automation" | string;
   placeholder?: boolean;
 }) {
+  const { t } = useTranslation("node");
   if (type !== "automation") return null;
   const color = placeholder
     ? "var(--color-text-dim)"
@@ -2583,7 +2531,7 @@ function ActorBadge({
         background: `color-mix(in srgb, ${color} 14%, transparent)`,
         border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
       }}
-      title={"Automatizace" + (placeholder ? " (placeholder)" : "")}
+      title={placeholder ? t(($) => $.detail.actor.automation_placeholder) : t(($) => $.detail.actor.automation)}
     >
       A
     </span>
@@ -2599,6 +2547,7 @@ function ResponsibilitiesEditor({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
   const [adding, setAdding] = useState(false);
 
   const items = node.responsibilities;
@@ -2627,7 +2576,7 @@ function ResponsibilitiesEditor({
       );
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     }
   };
 
@@ -2650,7 +2599,7 @@ function ResponsibilitiesEditor({
         </ul>
       ) : (
         <p className="mb-2 text-[13.5px] italic text-[var(--color-text-dim)]">
-          Žádné úlohy zatím nejsou.
+          {t(($) => $.detail.responsibilities.empty)}
         </p>
       )}
 
@@ -2667,7 +2616,7 @@ function ResponsibilitiesEditor({
       ) : (
         <Button variant="outline" size="sm" onClick={() => setAdding(true)} className="mt-3">
           <Plus />
-          Přidat úlohu
+          {t(($) => $.detail.responsibilities.add)}
         </Button>
       )}
     </div>
@@ -2691,6 +2640,7 @@ function ResponsibilityItem({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(responsibility.title);
   const [draftDescription, setDraftDescription] = useState(
@@ -2721,7 +2671,7 @@ function ResponsibilityItem({
       await onMutate();
       setEditing(false);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2742,7 +2692,7 @@ function ResponsibilityItem({
       await deleteResponsibility(responsibility.id);
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
       setBusy(false);
     }
   };
@@ -2754,7 +2704,7 @@ function ResponsibilityItem({
       await unassignResponsibility(responsibility.id, actorId);
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -2768,7 +2718,7 @@ function ResponsibilityItem({
       await onMutate();
       setPickerOpen(false);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -2782,25 +2732,22 @@ function ResponsibilityItem({
             value={draftTitle}
             onChange={(e) => setDraftTitle(e.target.value)}
             autoFocus
-            placeholder="Název úlohy"
+            placeholder={t(($) => $.detail.responsibilities.title_placeholder)}
             className="font-semibold"
           />
           <Textarea
             value={draftDescription}
             onChange={(e) => setDraftDescription(e.target.value)}
             rows={3}
-            placeholder="Popis (volitelné)"
+            placeholder={t(($) => $.detail.responsibilities.description_placeholder)}
             className="field-sizing-fixed resize-y leading-relaxed"
           />
-          <div className="flex gap-2">
-            <Button size="sm" onClick={save} disabled={saving || !draftTitle.trim()}>
-              <Save />
-              {saving ? "Ukládám..." : "Uložit"}
-            </Button>
-            <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
-              Zrušit
-            </Button>
-          </div>
+          <SaveCancelButtons
+            saving={saving}
+            saveDisabled={!draftTitle.trim()}
+            onSave={save}
+            onCancel={cancel}
+          />
         </div>
       </li>
     );
@@ -2816,7 +2763,7 @@ function ResponsibilityItem({
           )}
           <div className="resp-assignees">
             {responsibility.assignees.length === 0 && !pickerOpen && (
-              <span className="assignee-empty">— Nikdo zatím</span>
+              <span className="assignee-empty">{t(($) => $.detail.responsibilities.no_assignees)}</span>
             )}
             {responsibility.assignees.map((a) => (
               <Badge
@@ -2833,7 +2780,7 @@ function ResponsibilityItem({
                   size="icon-xs"
                   onClick={() => unassign(a.id)}
                   disabled={busy}
-                  title="Odebrat"
+                  title={t(($) => $.detail.responsibilities.unassign)}
                   className="ml-0.5 size-4 rounded-full text-muted-foreground hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
                 >
                   <X />
@@ -2856,7 +2803,7 @@ function ResponsibilityItem({
                 className="rounded-full text-muted-foreground hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
               >
                 <Plus />
-                přiřadit
+                {t(($) => $.detail.responsibilities.assign)}
               </Button>
             )}
           </div>
@@ -2867,7 +2814,7 @@ function ResponsibilityItem({
             size="icon-xs"
             onClick={onMoveUp}
             disabled={busy || !canMoveUp}
-            title="Posunout nahoru"
+            title={t(($) => $.detail.responsibilities.move_up)}
             className="text-muted-foreground"
           >
             <ChevronUp />
@@ -2877,7 +2824,7 @@ function ResponsibilityItem({
             size="icon-xs"
             onClick={onMoveDown}
             disabled={busy || !canMoveDown}
-            title="Posunout dolů"
+            title={t(($) => $.detail.responsibilities.move_down)}
             className="text-muted-foreground"
           >
             <ChevronDown />
@@ -2887,7 +2834,7 @@ function ResponsibilityItem({
             size="icon-xs"
             onClick={() => setEditing(true)}
             disabled={busy}
-            title="Upravit úlohu"
+            title={t(($) => $.detail.responsibilities.edit)}
             className="text-muted-foreground"
           >
             <Pencil />
@@ -2897,7 +2844,7 @@ function ResponsibilityItem({
             size="icon-xs"
             onClick={remove}
             disabled={busy}
-            title="Smazat úlohu"
+            title={t(($) => $.detail.responsibilities.delete)}
           >
             <Trash2 />
           </Button>
@@ -2918,32 +2865,12 @@ function AddResponsibilityForm({
   onDone: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const [actors, setActors] = useState<Actor[] | null>(null);
-  const [loadingActors, setLoadingActors] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const { actors, loading: loadingActors, fetchError } = useActorRegistry();
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingActors(true);
-    setFetchError(null);
-    fetchActors()
-      .then((list) => {
-        if (!cancelled) setActors(list);
-      })
-      .catch((e) => {
-        if (!cancelled) setFetchError(String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingActors(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const toggle = (id: string) => {
     setSelected((s) =>
@@ -2968,7 +2895,7 @@ function AddResponsibilityForm({
       setDescription("");
       setSelected([]);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -2978,7 +2905,7 @@ function AddResponsibilityForm({
     <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
       <div className="mb-2 flex items-center justify-between">
         <div className="font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
-          Nová úloha
+          {t(($) => $.detail.responsibilities.new_title)}
         </div>
         <Button variant="ghost" size="icon-xs" onClick={onCancel} className="text-muted-foreground">
           <X />
@@ -2989,22 +2916,22 @@ function AddResponsibilityForm({
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           autoFocus
-          placeholder="Název úlohy"
+          placeholder={t(($) => $.detail.responsibilities.title_placeholder)}
         />
         <Textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={3}
-          placeholder="Popis (volitelné)"
+          placeholder={t(($) => $.detail.responsibilities.description_placeholder)}
           className="field-sizing-fixed resize-y leading-relaxed"
         />
         <div>
           <div className="mb-1 font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
-            Přiřazení
+            {t(($) => $.detail.responsibilities.assignees_label)}
           </div>
           {loadingActors ? (
             <div className="text-[14px] text-[var(--color-text-dim)]">
-              Načítám...
+              {t(($) => $.detail.responsibilities.loading_actors)}
             </div>
           ) : fetchError ? (
             <div
@@ -3015,12 +2942,11 @@ function AddResponsibilityForm({
             </div>
           ) : actors && actors.length === 0 ? (
             <div className="text-[14px] text-[var(--color-text-dim)]">
-              Registr aktérů je prázdný.
+              {t(($) => $.detail.responsibilities.registry_empty)}
             </div>
           ) : (
             <div className="scroll-thin max-h-[180px] space-y-1 overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5">
               {actors?.map((a) => {
-                const isPlaceholder = a.is_placeholder === 1;
                 const checked = selected.includes(a.id);
                 return (
                   <Label
@@ -3028,17 +2954,7 @@ function AddResponsibilityForm({
                     className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11.5px] font-normal hover:bg-[var(--color-surface)]"
                   >
                     <Checkbox checked={checked} onCheckedChange={() => toggle(a.id)} />
-                    <span
-                      className={`flex-1 truncate ${
-                        isPlaceholder
-                          ? "italic text-[var(--color-text-dim)]"
-                          : "text-[var(--color-text)]"
-                      }`}
-                    >
-                      {a.name}
-                      {isPlaceholder ? " (placeholder)" : ""}
-                    </span>
-                    <ActorBadge type={a.type} placeholder={isPlaceholder} />
+                    <ActorOptionLabel actor={a} />
                   </Label>
                 );
               })}
@@ -3046,14 +2962,12 @@ function AddResponsibilityForm({
           )}
         </div>
       </div>
-      <div className="mt-2 flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
-          Zrušit
-        </Button>
-        <Button size="sm" onClick={submit} disabled={!title.trim() || saving}>
-          {saving ? "Vytvářím..." : "Vytvořit"}
-        </Button>
-      </div>
+      <CreateCancelFooter
+        saving={saving}
+        createDisabled={!title.trim()}
+        onCreate={submit}
+        onCancel={onCancel}
+      />
     </div>
   );
 }
@@ -3065,8 +2979,36 @@ function AddResponsibilityForm({
 // and form header) and by add/remove API wrappers.
 type EntityAttributeItem = DetailDataSource | DetailTool;
 
+// Which collection an EntityAttributeSection edits; its labels come from a
+// complete Record, one message per kind (a translated noun is never
+// interpolated into a sentence).
+type EntityAttributeKind = "data_source" | "tool";
+type NodeT = TFunction<"node">;
+const ENTITY_ATTRIBUTE_LABELS: Record<
+  EntityAttributeKind,
+  {
+    add: (t: NodeT) => string;
+    newTitle: (t: NodeT) => string;
+    edit: (t: NodeT) => string;
+    remove: (t: NodeT) => string;
+  }
+> = {
+  data_source: {
+    add: (t) => t(($) => $.detail.attribute.data_source.add),
+    newTitle: (t) => t(($) => $.detail.attribute.data_source.new_title),
+    edit: (t) => t(($) => $.detail.attribute.data_source.edit),
+    remove: (t) => t(($) => $.detail.attribute.data_source.delete),
+  },
+  tool: {
+    add: (t) => t(($) => $.detail.attribute.tool.add),
+    newTitle: (t) => t(($) => $.detail.attribute.tool.new_title),
+    edit: (t) => t(($) => $.detail.attribute.tool.edit),
+    remove: (t) => t(($) => $.detail.attribute.tool.delete),
+  },
+};
+
 function EntityAttributeSection<TItem extends EntityAttributeItem>({
-  title,
+  kind,
   items,
   nodeId,
   canEdit,
@@ -3076,7 +3018,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
   onMutate,
   onError,
 }: {
-  title: string; // e.g. "datový zdroj" | "nástroj"
+  kind: EntityAttributeKind;
   items: TItem[];
   nodeId: string;
   canEdit: boolean;
@@ -3098,6 +3040,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
   const [adding, setAdding] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -3109,7 +3052,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
       await removeCreator(item.id);
       await onMutate();
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setBusyId(null);
     }
@@ -3123,7 +3066,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
             <EntityAttributeItem
               key={item.id}
               item={item}
-              title={title}
+              kind={kind}
               canEdit={canEdit}
               busy={busyId === item.id}
               updateCreator={updateCreator}
@@ -3136,7 +3079,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
       ) : (
         canEdit && (
           <p className="mb-2 text-[13.5px] italic text-[var(--color-text-dim)]">
-            Žádné záznamy.
+            {t(($) => $.detail.attribute.empty)}
           </p>
         )
       )}
@@ -3144,7 +3087,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
       {canEdit &&
         (adding ? (
           <AddEntityAttributeForm
-            title={title}
+            kind={kind}
             nodeId={nodeId}
             addCreator={addCreator}
             onCancel={() => setAdding(false)}
@@ -3157,7 +3100,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
         ) : (
           <Button variant="outline" size="sm" onClick={() => setAdding(true)} className="mt-3">
             <Plus />
-            Přidat {title}
+            {ENTITY_ATTRIBUTE_LABELS[kind].add(t)}
           </Button>
         ))}
     </div>
@@ -3168,7 +3111,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
 // for both data sources and tools via the generic updateCreator.
 function EntityAttributeItem<TItem extends EntityAttributeItem>({
   item,
-  title,
+  kind,
   canEdit,
   busy,
   updateCreator,
@@ -3177,7 +3120,7 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
   onError,
 }: {
   item: TItem;
-  title: string;
+  kind: EntityAttributeKind;
   canEdit: boolean;
   busy: boolean;
   updateCreator: (
@@ -3192,6 +3135,7 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
   onRemove: () => void;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(item.name);
   const [description, setDescription] = useState(item.description ?? "");
@@ -3219,7 +3163,7 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
       await onSavedMutate();
       setEditing(false);
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -3236,29 +3180,26 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
   if (editing) {
     return (
       <li className="space-y-1.5 py-2">
-        <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="Název" />
+        <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder={t(($) => $.detail.attribute.name_placeholder)} />
         <Input
           value={link}
           onChange={(e) => setLink(e.target.value)}
-          placeholder="Odkaz (volitelné)"
+          placeholder={t(($) => $.detail.attribute.link_placeholder)}
           className="font-mono text-[12px]"
         />
         <Textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
-          placeholder="Popis (volitelné)"
+          placeholder={t(($) => $.detail.attribute.description_placeholder)}
           className="resize-y"
         />
-        <div className="flex gap-2">
-          <Button size="sm" onClick={save} disabled={saving || !name.trim()}>
-            <Save />
-            {saving ? "Ukládám..." : "Uložit"}
-          </Button>
-          <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
-            Zrušit
-          </Button>
-        </div>
+        <SaveCancelButtons
+          saving={saving}
+          saveDisabled={!name.trim()}
+          onSave={save}
+          onCancel={cancel}
+        />
       </li>
     );
   }
@@ -3288,7 +3229,7 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
             size="icon-xs"
             onClick={() => setEditing(true)}
             disabled={busy}
-            aria-label={`Upravit ${title}`}
+            aria-label={ENTITY_ATTRIBUTE_LABELS[kind].edit(t)}
             className="text-muted-foreground"
           >
             <Pencil />
@@ -3298,7 +3239,7 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
             size="icon-xs"
             onClick={onRemove}
             disabled={busy}
-            aria-label={`Smazat ${title}`}
+            aria-label={ENTITY_ATTRIBUTE_LABELS[kind].remove(t)}
             className="text-muted-foreground hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
           >
             <X />
@@ -3310,14 +3251,14 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
 }
 
 function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
-  title,
+  kind,
   nodeId,
   addCreator,
   onCancel,
   onDone,
   onError,
 }: {
-  title: string;
+  kind: EntityAttributeKind;
   nodeId: string;
   addCreator: (input: {
     node_id: string;
@@ -3329,6 +3270,7 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
   onDone: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
+  const { t } = useTranslation("node");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [externalLink, setExternalLink] = useState("");
@@ -3351,7 +3293,7 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
       setDescription("");
       setExternalLink("");
     } catch (e) {
-      onError(String(e));
+      onError(displayError(e));
     } finally {
       setSaving(false);
     }
@@ -3361,38 +3303,129 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
     <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
       <div className="mb-2 flex items-center justify-between">
         <div className="font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
-          Nový {title}
+          {ENTITY_ATTRIBUTE_LABELS[kind].newTitle(t)}
         </div>
-        <Button variant="ghost" size="icon-xs" onClick={onCancel} aria-label="Zavřít" className="text-muted-foreground">
+        <Button variant="ghost" size="icon-xs" onClick={onCancel} aria-label={t(($) => $.detail.form.close)} className="text-muted-foreground">
           <X />
         </Button>
       </div>
       <div className="space-y-2">
-        <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="Název" />
+        <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder={t(($) => $.detail.attribute.name_placeholder)} />
         <Textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
-          placeholder="Popis (volitelné)"
+          placeholder={t(($) => $.detail.attribute.description_placeholder)}
           className="resize-y"
         />
         <Input
           value={externalLink}
           onChange={(e) => setExternalLink(e.target.value)}
           type="url"
-          placeholder="Odkaz (volitelné, např. https://…)"
+          placeholder={t(($) => $.detail.attribute.link_placeholder_example)}
         />
       </div>
-      <div className="mt-2 flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
-          Zrušit
-        </Button>
-        <Button size="sm" onClick={submit} disabled={!name.trim() || saving}>
-          {saving ? "Vytvářím..." : "Vytvořit"}
-        </Button>
-      </div>
+      <CreateCancelFooter
+        saving={saving}
+        createDisabled={!name.trim()}
+        onCreate={submit}
+        onCancel={onCancel}
+      />
     </div>
   );
+}
+
+// The global actor registry, loaded once on mount (AddResponsibilityForm,
+// AssigneePicker).
+function useActorRegistry() {
+  const [actors, setActors] = useState<Actor[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setFetchError(null);
+    fetchActors()
+      .then((list) => {
+        if (!cancelled) setActors(list);
+      })
+      .catch((e) => {
+        if (!cancelled) setFetchError(displayError(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { actors, loading, fetchError };
+}
+
+// An actor's name (placeholder actors dimmed and marked) and type badge, as
+// one row of an actor list.
+function ActorOptionLabel({ actor }: { actor: Actor }) {
+  const { t } = useTranslation("node");
+  const isPlaceholder = actor.is_placeholder === 1;
+  return (
+    <>
+      <span
+        className={`flex-1 truncate ${
+          isPlaceholder
+            ? "italic text-[var(--color-text-dim)]"
+            : "text-[var(--color-text)]"
+        }`}
+      >
+        {isPlaceholder
+          ? t(($) => $.detail.actor.placeholder_name, { name: actor.name })
+          : actor.name}
+      </span>
+      <ActorBadge type={actor.type} placeholder={isPlaceholder} />
+    </>
+  );
+}
+
+// The Cancel/Create pair at the foot of an "add" form.
+function CreateCancelFooter({
+  saving,
+  createDisabled,
+  onCreate,
+  onCancel,
+}: {
+  saving: boolean;
+  createDisabled: boolean;
+  onCreate: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation("node");
+  return (
+    <div className="mt-2 flex justify-end gap-2">
+      <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
+        {t(($) => $.detail.form.cancel)}
+      </Button>
+      <Button size="sm" onClick={onCreate} disabled={createDisabled || saving}>
+        {saving ? t(($) => $.detail.form.creating) : t(($) => $.detail.form.create)}
+      </Button>
+    </div>
+  );
+}
+
+// Copies a text to the clipboard and raises `copied` for 1.2 s; a rejected
+// clipboard write leaves it down.
+function useCopiedFlag(): [boolean, (text: string) => Promise<void>] {
+  const [copied, setCopied] = useState(false);
+  const copy = async (text: string) => {
+    try {
+      await copyText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard write rejected; skip copied state */
+    }
+  };
+  return [copied, copy];
 }
 
 // Inline picker shown when user clicks "+ přiřadit" on an existing
@@ -3409,9 +3442,8 @@ function AssigneePicker({
   onClose: () => void;
   disabled: boolean;
 }) {
-  const [actors, setActors] = useState<Actor[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const { t } = useTranslation("node");
+  const { actors, loading, fetchError } = useActorRegistry();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -3427,37 +3459,18 @@ function AssigneePicker({
     return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setFetchError(null);
-    fetchActors()
-      .then((list) => {
-        if (!cancelled) setActors(list);
-      })
-      .catch((e) => {
-        if (!cancelled) setFetchError(String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const candidates = (actors ?? []).filter((a) => !existing.includes(a.id));
 
   return (
     <div ref={containerRef} className="relative inline-block">
       <span className="assignee inline-flex items-center gap-1 border-dashed text-[var(--color-accent)]">
         <Plus size={10} />
-        přiřadit
+        {t(($) => $.detail.responsibilities.assign)}
       </span>
       <div className="absolute left-0 top-full z-50 mt-1 w-[220px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
         {loading ? (
           <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-            Načítám...
+            {t(($) => $.detail.assignee_picker.loading)}
           </div>
         ) : fetchError ? (
           <div
@@ -3468,35 +3481,22 @@ function AssigneePicker({
           </div>
         ) : candidates.length === 0 ? (
           <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-            Žádní další aktéři k přiřazení.
+            {t(($) => $.detail.assignee_picker.empty)}
           </div>
         ) : (
           <div className="scroll-thin max-h-[220px] overflow-y-auto">
-            {candidates.map((a) => {
-              const isPlaceholder = a.is_placeholder === 1;
-              return (
-                <Button
-                  key={a.id}
-                  variant="ghost"
-                  size="sm"
-                  disabled={disabled}
-                  onClick={() => onPick(a.id)}
-                  className="w-full justify-start gap-2 rounded-none px-3 font-normal text-[11.5px]"
-                >
-                  <span
-                    className={`flex-1 truncate ${
-                      isPlaceholder
-                        ? "italic text-[var(--color-text-dim)]"
-                        : "text-[var(--color-text)]"
-                    }`}
-                  >
-                    {a.name}
-                    {isPlaceholder ? " (placeholder)" : ""}
-                  </span>
-                  <ActorBadge type={a.type} placeholder={isPlaceholder} />
-                </Button>
-              );
-            })}
+            {candidates.map((a) => (
+              <Button
+                key={a.id}
+                variant="ghost"
+                size="sm"
+                disabled={disabled}
+                onClick={() => onPick(a.id)}
+                className="w-full justify-start gap-2 rounded-none px-3 font-normal text-[11.5px]"
+              >
+                <ActorOptionLabel actor={a} />
+              </Button>
+            ))}
           </div>
         )}
       </div>
@@ -3505,23 +3505,18 @@ function AssigneePicker({
 }
 
 function IdCopy({ id }: { id: string }) {
-  const [copied, setCopied] = useState(false);
-  const handle = async (e: React.MouseEvent) => {
+  const { t } = useTranslation("node");
+  const [copied, copy] = useCopiedFlag();
+  const handle = (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await copyText(id);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* clipboard write rejected; skip copied state */
-    }
+    void copy(id);
   };
   return (
     <Button
       variant="ghost"
       size="xs"
       onClick={handle}
-      title="Kliknutím zkopírujete ID"
+      title={t(($) => $.detail.header.copy_id_title)}
       className="group h-auto shrink-0 gap-1.5 px-1 py-0.5 font-mono text-[11.5px] font-normal text-[var(--color-text-muted)] hover:bg-transparent hover:text-[var(--color-text)]"
     >
       <span>{id}</span>
@@ -3539,6 +3534,7 @@ function IdCopy({ id }: { id: string }) {
 // evoluce_entity_id, ...), not user-facing labels. Hidden entirely when
 // meta is empty/null so it adds no visual noise to nodes without meta.
 function MetaSection({ meta }: { meta: unknown }) {
+  const { t } = useTranslation("node");
   const [open, setOpen] = useState(false);
   if (!meta || typeof meta !== "object" || Object.keys(meta as object).length === 0) {
     return null;
@@ -3552,7 +3548,7 @@ function MetaSection({ meta }: { meta: unknown }) {
         className="h-auto gap-1.5 px-1 py-0.5 font-mono text-[11px] font-normal uppercase tracking-[0.18em] text-[var(--color-text-dim)] hover:bg-transparent hover:text-[var(--color-text)]"
       >
         <Info />
-        Meta
+        {t(($) => $.detail.meta.toggle)}
         {open ? <ChevronUp /> : <ChevronDown />}
       </Button>
       {open && (
@@ -3571,6 +3567,7 @@ function MetaSection({ meta }: { meta: unknown }) {
 // as the old FolderLink icon this replaces. A Google Drive URL gets the
 // Drive mark; anything else a generic link icon labelled by remote name.
 function RemoteFolderActions({ nodeId }: { nodeId: string }) {
+  const { t } = useTranslation("node");
   const [info, setInfo] = useState<{ url: string; remote_name?: string } | null>(null);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -3586,7 +3583,17 @@ function RemoteFolderActions({ nodeId }: { nodeId: string }) {
   }, [nodeId]);
   if (!info) return null;
   const isDrive = /(^|\.)drive\.google\.com$/.test(safeHost(info.url));
-  const label = isDrive ? "Google Drive" : (info.remote_name ?? "remote");
+  const remoteName = info.remote_name;
+  const copyLabel = isDrive
+    ? t(($) => $.detail.header.remote.copy_link_drive)
+    : remoteName
+      ? t(($) => $.detail.header.remote.copy_link_named, { remoteName })
+      : t(($) => $.detail.header.remote.copy_link_generic);
+  const openLabel = isDrive
+    ? t(($) => $.detail.header.remote.open_drive)
+    : remoteName
+      ? t(($) => $.detail.header.remote.open_named, { remoteName })
+      : t(($) => $.detail.header.remote.open_generic);
   const copy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
@@ -3603,8 +3610,8 @@ function RemoteFolderActions({ nodeId }: { nodeId: string }) {
         variant="ghost"
         size="icon-xs"
         onClick={copy}
-        title={`Kopírovat odkaz na ${label}`}
-        aria-label={`Kopírovat odkaz na ${label}`}
+        title={copyLabel}
+        aria-label={copyLabel}
         className="text-muted-foreground"
       >
         {copied ? <Check className="text-[var(--color-accent)]" /> : isDrive ? <GoogleDriveIcon size={13} /> : <Link2 />}
@@ -3613,8 +3620,8 @@ function RemoteFolderActions({ nodeId }: { nodeId: string }) {
         asChild
         variant="ghost"
         size="icon-xs"
-        title={`Otevřít na ${label}`}
-        aria-label={`Otevřít na ${label}`}
+        title={openLabel}
+        aria-label={openLabel}
         className="text-muted-foreground"
       >
         <a {...externalLinkProps(info.url, { onClick: (e) => e.stopPropagation() })}>
@@ -3645,6 +3652,7 @@ function CreateMirrorButton({
   error: string | null;
   onCreate: () => void;
 }) {
+  const { t } = useTranslation("node");
   return (
     <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[11.5px] text-[var(--color-text-dim)]">
       <Button
@@ -3656,7 +3664,7 @@ function CreateMirrorButton({
       >
         <Folder />
         <span className="truncate">
-          {pending ? "Vytvářím…" : "Vytvořit pracovní složku"}
+          {pending ? t(($) => $.detail.header.creating_mirror) : t(($) => $.detail.header.create_mirror)}
         </span>
       </Button>
       {error && (
@@ -3675,16 +3683,11 @@ function CreateMirrorButton({
 // Click-to-copy local mirror path. Sits right under IdCopy in the header so
 // the two share the same "inline identifier" feel.
 function PathCopy({ path }: { path: string }) {
-  const [copied, setCopied] = useState(false);
-  const handle = async (e: React.MouseEvent) => {
+  const { t } = useTranslation("node");
+  const [copied, copy] = useCopiedFlag();
+  const handle = (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await copyText(path);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* clipboard write rejected; skip copied state */
-    }
+    void copy(path);
   };
   // `shrink min-w-0` overrides Button's base `shrink-0`: without it the
   // button keeps its full intrinsic width, the truncating span never engages
@@ -3694,7 +3697,7 @@ function PathCopy({ path }: { path: string }) {
       variant="ghost"
       size="xs"
       onClick={handle}
-      title={`${path}\nKliknutím zkopírujete cestu`}
+      title={t(($) => $.detail.header.copy_path_title, { path })}
       className="group h-auto shrink min-w-0 gap-1.5 px-1 py-0.5 font-mono text-[11.5px] font-normal text-[var(--color-text-muted)] hover:bg-transparent hover:text-[var(--color-text)]"
     >
       <Folder />

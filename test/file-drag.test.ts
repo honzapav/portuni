@@ -70,7 +70,7 @@ describe("folderDragCheck", () => {
     const files = [file("wip/navrhy/a.md"), file("wip/navrhy/nove.png", null)];
     const check = folderDragCheck("wip/navrhy", files, true);
     assert.equal(check.draggable, false);
-    assert.match(check.reason ?? "", /nove\.png/);
+    assert.deepEqual(check.reason, { code: "folder_has_untracked", name: "nove.png" });
   });
 
   it("refuses a section root and allows a folder of registered files", () => {
@@ -110,12 +110,12 @@ describe("applyMoves", () => {
     const calls: string[] = [];
     const outcome = await applyMoves(plan, async (fileId) => {
       calls.push(fileId);
-      if (fileId === failing) throw new Error("Přesun se nepovedl: remote nedostupný");
+      if (fileId === failing) throw new Error("Move failed: remote unavailable");
     });
     assert.deepEqual(calls, [order[0], order[1]]);
     assert.equal(outcome.done, 1);
     assert.equal(outcome.failure?.fileId, failing);
-    assert.match(outcome.failure?.message ?? "", /remote nedostupný/);
+    assert.match(outcome.failure?.message ?? "", /remote unavailable/);
     assert.deepEqual(Object.keys(outcome.plan.moves).sort(), [order[1], order[2]].sort());
   });
 

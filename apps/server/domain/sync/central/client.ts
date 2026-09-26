@@ -13,6 +13,8 @@ import type { SessionScopeRecord } from "../../../shared/api-types.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
+import type { ErrorParams } from "../../../shared/error-codes.js";
+import { readErrorParams } from "../../../shared/error-params.js";
 import type {
   CreateDraftSessionInput,
   CreateRunInput,
@@ -28,10 +30,19 @@ export class CentralHttpError extends Error {
     readonly status: number,
     readonly code?: string,
     readonly currentVersion?: string,
+    // The central server's `params` for `code` (shared/error-codes.ts), so a
+    // relay hands the web everything it renders the message from.
+    readonly params?: ErrorParams,
   ) {
     super(message);
     this.name = "CentralHttpError";
   }
+}
+
+// Keeps only the string/number values of an error body's `params`.
+function readParams(value: unknown): ErrorParams | undefined {
+  const out = readErrorParams(value);
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export interface PutFileOpts {
@@ -229,6 +240,7 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       status,
       typeof obj.code === "string" ? obj.code : undefined,
       typeof obj.currentVersion === "string" ? obj.currentVersion : undefined,
+      readParams(obj.params),
     );
   }
 
@@ -450,6 +462,8 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
         effort: input.effort ?? null,
         runner: input.runner ?? null,
         instance_id: input.instance_id ?? null,
+        // #539: the central server names the draft in the request's language.
+        ...(input.locale ? { locale: input.locale } : {}),
       });
       if (r.status !== 201) throwFor(r.status, p, r.json);
       return r.json as SessionRow;

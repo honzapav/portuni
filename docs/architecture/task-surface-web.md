@@ -102,10 +102,10 @@ session `continueSession` answers with). A runner/instance or model/effort
 change is the optimistic form of principle 2: `const before =
 session; store.put({...before, patch})`, the API call folds the server's
 answer in, and a refusal puts `before` back whole and writes the reason
-into the composer's error line ("Runner a instanci se nepodařilo uložit:
-…"). Scenario 2 in `test/session-store-scenarios.test.ts` holds that.
+into the composer's error line ("Could not save the runner and instance:
+…", `chat` `error.save_runner`). Scenario 2 in `test/session-store-scenarios.test.ts` holds that.
 
-**The send clock.** `sentAt` is what the working row shows as "Spouštím…"
+**The send clock.** `sentAt` is what the working row shows as "Starting…"
 between the send and its `run_started`. Its rule is the pure `nextSentAt`
 (`lib/session-chat.ts`): the composer sets it **before** the send is
 awaited -- `run_started`, and a `run_ended` right behind it, can arrive
@@ -127,13 +127,14 @@ composer share one centred column, `THREAD_COLUMN = "mx-auto
 w-[min(80%,768px)]"`: 10 % gutters each side, 768 px at most. The scroll
 container stays full-width so the scrollbar keeps the pane's edge.
 
-**The context ring.** `contextRingState(used, max)` (`lib/context-ring.ts`)
+**The context ring.** `contextRingState(used, max, locale, t)` (`lib/context-ring.ts`)
 takes the transcript's latest `context_usage` event when the log is here,
 else the summary's `context_used_tokens` / `context_max_tokens` (a reload
 before the replay). Null means no ring (a draft, a session that never
 reported). Under 80 % the trigger is `text-dim`, from 80 % it is
-`--color-node-process` and "Pokračovat v nové session" becomes the filled
-button. With `max` null the label is a bare count ("12,3 k tokenů"). The
+`--color-node-process` and "Continue in a new thread" becomes the filled
+button. The label is `chat` `context.percent` ("79%", "79 %" in Czech);
+with `max` null it is a bare count, a plural key ("12.3 k tokens"). The
 ring is AI Elements' `context` with the `ai`/`tokenlens` cost estimate
 stripped (`ContextTrigger` shows the `label` prop; `maxTokens` may be null).
 
@@ -151,7 +152,7 @@ suspended record into the store, so the header, the sidebar and Relace
 follow without a refetch. A refusal (409) rejects with
 `HandoffRefusedError` (`lib/handoff-refusal.ts`, its own module so the main
 chunk does not pull in the chat's helpers); the chat and the sidebar show
-its Czech message through `handoffErrorText`, never the status line, and
+its code from the `errors` catalog through `displayError`, never the status line, and
 after a refusal that does not depend on the thread's state (no mirror, the
 run or the transcript on another device) the chat stops offering Předat
 for that view. **Navázat na handoff** is the Relace tab's, not
@@ -163,9 +164,9 @@ same person has the record and no conversation. On mount the chat asks
 `fetchTranscriptHost(sessionId)` -- `GET /sessions/:id/events?limit=1`, the
 device-local route, read for its `transcript_host` header alone (the
 replay itself comes over the live channel). `transcriptElsewhere(host,
-events.length)` (`lib/session-chat.ts`, tested in
+events.length, t)` (`lib/session-chat.ts`, tested in
 `test/session-chat-helpers.test.ts`) turns that into the state: the
-`ConversationEmptyState` reads "Transkript je na zařízení X" with the way
+`ConversationEmptyState` reads "The transcript is on the device X" with the way
 across as its description, the composer is disabled with a matching
 placeholder, and Předat is hidden -- the summary is written from the
 transcript, which this device does not have. A non-empty log wins over the
@@ -451,15 +452,18 @@ which also deduplicates a replay against a frame that raced it.
   `prompt` and `answer` render at full weight (`Message`); every
   `reasoning`, `tool_call` and `file_change` between two answers of one run
   folds into one `activity` row; `question`, `compaction` (`Checkpoint`),
-  `handoff` ("Shrnutí uloženo") and `error` keep a small marker; a
+  `handoff` ("Summary saved") and `error` keep a small marker; a
   `run_ended` is nothing for `completed` and `suspended` (the ordinary
-  ends), a neutral "Přerušeno" note for `interrupted`, and an error row in
-  the danger colour for `error`, `limit` and `host_lost`; `run_started`,
+  ends), a neutral `interrupted` row for `interrupted`, and a `run_ended`
+  row (`runEndedText(reason, t)`, one message per reason) in the danger
+  colour for `error`, `limit` and `host_lost`. Rows carry codes, never
+  text; `run_started`,
   `state_changed` and `context_usage` render nothing. `collapseToolCalls` runs inside, so a
   `started` and its `completed`/`failed` are one item.
 - **The activity group** (`ActivityGroupRow`) is a `ChainOfThought` whose
-  header is `activitySummary(items)`: a sentence from verb counts
-  ("Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval 12 s"; the
+  header is `activitySummary(items, t)`: a list of counts, each a plural
+  key of `chat` `activity.*` ("Read 3 files · edited 1 · 2 commands ·
+  thought for 12 s"; the
   seconds are `reasoningSeconds(items)`, the reasoning blocks' `duration_ms`
   added up and rounded, at least 1 s when there is any), a single call's own
   title, the danger colour with the failed count when a call failed. The
@@ -477,8 +481,9 @@ which also deduplicates a replay against a frame that raced it.
   alone opens no turn, so a thread started by Navázat or a resume waits
   idle for its first message) or a send is in flight (`sentAt`), and
   neither streaming text nor a running tool is on screen, a `Loader` with
-  "Spouštím…" (until `run_started`), "Přemýšlím…" (until the first delta
-  or tool) or "Pokračuji…" (after a tool finished) and a seconds counter.
+  `workingLabel(phase, t)`: "Starting…" (until `run_started`), "Thinking…"
+  (until the first delta or tool) or "Continuing…" (after a tool finished)
+  and a seconds counter.
   Rule 2 of the v2 spec: a turn in flight with an empty transcript end is
   a bug. Between turns nothing shows: the run is alive only to take the
   next message, and the composer's stop button and Escape apply to a turn
@@ -527,8 +532,15 @@ which also deduplicates a replay against a frame that raced it.
   swapping the plugin.
 - Reasoning uses the kit's `Reasoning` with `isStreaming`; a historical
   block passes its `duration_ms` as the kit's `duration` (seconds). The
-  trigger text is Czech (`reasoningTriggerMessage`: "Přemýšlím…" /
-  "Uvažoval N s" / "Uvažoval několik sekund" without a duration).
+  kit's default trigger text comes from `chat` `reasoning.*` ("Thinking…" /
+  "Thought for N s" / "Thought for a few seconds" without a duration).
+- **Kit texts are the catalog's.** Every default text of the copied AI
+  Elements (empty state, tool status badge and headings, submit/stop,
+  branch buttons, loader title, context usage rows) reads `chat`, and
+  every Streamdown gets `translations` from `useStreamdownTranslations`
+  (`lib/streamdown-translations.ts`, `chat` `streamdown.*`). The agent's
+  output (answers, reasoning, tool input and output, its question
+  options) carries `translate="no"`.
 - `react-markdown` / `remark-gfm` stay for `MarkdownPreview` (file
   preview), unrelated to the chat.
 - Bundle rule: the whole kit (radix, shiki, motion, streamdown) must stay
@@ -567,7 +579,10 @@ which also deduplicates a replay against a frame that raced it.
   whenever a new run starts).
 - **Question**: the latest `question` event renders as
   `QuestionConfirmation` above the composer while `isWaiting`; answers go
-  through `sessionsClient.answer`.
+  through `sessionsClient.answer`. `approvalChoices(options, t)`: the
+  default pair's labels are `chat` `approval.yes`/`no`, its values stay
+  `true`/`false`; the agent's own options are shown and sent unchanged,
+  and no React `key` carries translated text.
 - **Close**: every surface that closes a thread -- the sidebar's `×` in
   Uzly (`TaskRow`) and in Stav (`TaskList`), Uzavřít in the chat header
   (`SessionChat`) and on the Relace row (`DetailPane.sessions.tsx`) -- asks
@@ -634,6 +649,123 @@ Two chip wordings exist on purpose: `sessionRowChip` (compact rows:
 Hotovo / Archiv) and `sessionStatusChip` (chat header: Uzavřeno /
 Archivováno). "Čeká na mě" overrides "Běží" in both whenever
 `waiting_since` is set.
+
+## Language: boot and namespaces
+
+The UI's text comes from one catalog shared with the server,
+`apps/server/shared/i18n/` (spec:
+`docs/superpowers/specs/2026-09-25-localization-design.md`). The terms a
+message may use are fixed in its `glossary.md`; translator notes are in
+`locales/_notes.json`.
+
+- **One instance, one config.** `createI18n()` (`shared/i18n/create.ts`)
+  builds every instance. The web's (`apps/web/src/i18n.ts`) bundles
+  English `common` into the main chunk and loads every other language and
+  namespace through `i18next-resources-to-backend` over an
+  `import.meta.glob` of `locales/*/*.json` (one small chunk per file;
+  `server` and `desktop` are excluded). `react.useSuspense` is off and
+  `bindI18nStore: "added"` re-renders when a bundle arrives. The server's
+  instance (`shared/i18n/server.ts`) bundles everything, inits
+  synchronously, escapes values and is only ever read through
+  `getFixedT(locale, ns)`; it never changes language, so concurrent
+  requests in different languages cannot leak into each other.
+- **Boot.** `main.tsx` awaits `bootI18n()` before `createRoot`: the
+  language is this window's cache `portuni:<ws_id>:locale`, else the first
+  supported primary subtag of `navigator.languages`, else `en`
+  (`lib/locale.ts`, `resolveBootLocale`); `common` and `errors` of that
+  language (and of English, the fallback) are loaded and
+  `<html lang>` is set before anything renders. A failed catalog load
+  still renders, falling back to the bundled English `common`.
+- **The account's language (#538).** `users.locale` (`"en" | "cs" |
+  NULL`) is the source of truth. After `/me` answers, `syncAccountLocale`
+  (`i18n.ts`, decision in `lib/locale.ts` `accountLocaleSwitch`) writes the
+  window cache and calls `changeLanguage` when the account's value differs;
+  `NULL` keeps the resolved language and is never written back. Settings ›
+  Účet has the picker: `PATCH /me` with `{ locale }`, then `applyUiLocale`
+  (cache, `changeLanguage`, `<html lang>`); the dev-only pseudo-locale
+  applies to the window alone and is never sent. Session requests that
+  cause text for a person (`POST /sessions`, the `message` and `continue`
+  frames, Předat) carry `locale: requestLocale()` -- the UI language, or
+  `en` under pseudo.
+- **Namespaces follow the lazy chunks.** A lazy component that needs its
+  own namespace is created with `lazyWithNamespaces(() => import("./X"),
+  ["x"])`, which loads the chunk and the namespace together
+  (`GraphView` → `graph`, `SessionChat` → `chat` -- the AI Elements kit
+  lives only in that chunk, so its texts load with it -- `DetailPane` → `node`
+  and `files`, in both `App.tsx` and `WorkspaceView.tsx`; `SyncOverview`
+  in `App.tsx` and Settings › Sync (`SyncSection`) → `files`;
+  `SettingsPage` → `settings`, and `DetailPane` loads `settings` too, since
+  its access request control and list come from `AccessRequests.tsx`,
+  which reads `settings`). A `Record` of
+  selectors at module level passes `{ ns: "<namespace>" }` on each call:
+  the extractor cannot infer the namespace from a `t` parameter.
+- **Refusals are codes.** The Files tab's plan, drag and folder-action
+  helpers (`lib/file-plan.ts`, `lib/file-drag.ts`, `lib/new-file-menu.ts`)
+  return a `PlanReason` (`{ code, name? }`), never text;
+  `planReasonText(reason, t)` renders it from `files` `plan_reason.*`.
+  A folder's sync dot carries a `FolderSyncState` (`folderSyncTitle`), the
+  sync-run line and the remote watcher line take `t` (`summarizeSyncRun`,
+  `remoteWatchLine`), and a watcher's `last_error` is a placeholder value.
+- **Shared labels and enums.** A label shown on several surfaces lives
+  in the catalog once: the POPP node types in `common` `node_type.*`
+  through `lib/node-type-labels.ts` (`nodeTypeLabel(type, t)`), the
+  thread states in `common` `thread.state.*` through
+  `lib/session-views.ts`. An enum reaches its keys through a complete
+  `Record<Enum, (t) => string>` of literal selectors, never a key built
+  from the value. A pure helper in `lib/` that returns text takes `t` as a
+  parameter, so the server's `node:test` runner tests it with the English
+  catalog. Counts are plural keys; no hand-written Czech plural remains.
+- **Typed keys.** Call sites use the selector form
+  `t(($) => $.composer.send)`. `shared/i18n/types/resources.d.ts` is
+  generated from the English catalog by `npm run i18n:types`;
+  `types/i18next.d.ts` sets `enableSelector: "optimize"` and is included
+  by both the root and the web `tsconfig.json`.
+- **Pseudo-locale.** A dev build accepts `pseudo` in the window cache: the
+  English catalog through a postProcessor that wraps each message in
+  `⟦…⟧`, adds diacritics and pads it by 35 %, leaving `{{placeholders}}`
+  and `<Trans>` tags intact.
+- **Catalog HMR.** Vite answers an edited JSON module with a full page
+  reload. The `portuni-i18n-hmr` plugin (`vite.config.ts`) sends the new
+  file on a `portuni:i18n-update` event instead, and `i18n.ts` swaps the
+  bundle in place.
+- **Gate.** `npm run i18n:check` (`scripts/i18n-check.sh`, in
+  `scripts/agent-gate.sh` and `ci.yml`) fails on stale key types, a
+  missing or empty Czech value (plural forms included), an unused key,
+  source keys that differ from the English catalog (`extract --ci
+  --dry-run`), a hardcoded string in JSX text or a `title`/`placeholder`/
+  `aria-label`/`alt`/`label` attribute or a concatenated translation
+  (`lint`), and Czech diacritics in `apps/web/src`, `apps/desktop/src` or
+  `apps/server` outside comments, `locales/`, the glossary, the generated
+  key types and the pseudo-locale's accent map
+  (`scripts/check-ui-text.mjs`). `test/i18n-catalog.test.ts` checks that placeholders and
+  tags match between `en` and `cs` and that every Czech plural renders its
+  own form for 1, 2, 5 and 1.5.
+- **Formatting.** A date, time, number, token count or sort order that
+  stands alone (a table cell, a chip, the date picker) goes through
+  `lib/format.ts` (`formatDate`, `formatDateTime`, `formatRelative`,
+  `formatNumber`, `formatTokens`, `compareText`, `weekInfo`, plus the
+  date picker's `formatMonthYear` and `weekdayNames`) with the UI
+  language from `useLocale()` (`lib/use-locale.ts`); each caches its
+  `Intl` instance per locale and options. A server timestamp
+  (`YYYY-MM-DD HH:MM:SS`, UTC) is parsed by `parseServerTimestamp` and
+  nowhere else. No component formats with a hardcoded `"cs-CZ"` or sorts
+  with `localeCompare(..., "cs")`. The date picker's first weekday comes
+  from `Intl.Locale#getWeekInfo`, falling back to Monday for `cs` and
+  Sunday for `en`.
+- **Errors.** A caught error is shown through `displayError(e)`
+  (`src/errors.ts`), never `String(e)` or `e.message`: the server's
+  `{ error, code, params? }` becomes an `ApiError` (`parseApiError`, used by
+  `throwForStatus`, `lib/central.ts` and the live channel's error frames),
+  and `errorText` (`lib/api-error.ts`, pure, takes `t`) renders
+  `errors:<code>` through a complete `Record` over the server's
+  `ERROR_CODES` plus the web's own (`SYNC_AGENT_DOWN`, `REQUEST_TIMEOUT`,
+  `DISCONNECTED`). A code this build does not know shows `errors:UNKNOWN`
+  with the request id; an error with no code (a network failure, a Tauri
+  command's string) `errors:UNKNOWN_DETAIL` with its raw text.
+- **One copy of i18next.** It is installed in the root `node_modules`
+  only; `apps/web/.npmrc` (`legacy-peer-deps`) keeps npm from adding a
+  second one for `react-i18next`'s peer, so the root is installed before
+  `apps/web`.
 
 ## Helpers and tests
 

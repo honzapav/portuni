@@ -3,7 +3,9 @@
 // node id and a refresh callback as props and don't share state with
 // the rest of DetailPane.
 
+import { displayError } from "../errors";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
 import type { DetailEvent } from "../types";
 import { EVENT_TYPES } from "../types";
@@ -29,6 +31,7 @@ export function EventCard({
   onMutate: () => Promise<void>;
   busy: boolean;
 }) {
+  const { t } = useTranslation("node");
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState(evt.content);
   const [type, setType] = useState(evt.type);
@@ -54,7 +57,7 @@ export function EventCard({
       }
       setEditing(false);
     } catch (e) {
-      setError(`Uložení selhalo: ${String(e)}`);
+      setError(t(($) => $.events.card.save_failed, { error: displayError(e) }));
     } finally {
       setSaving(false);
     }
@@ -67,7 +70,7 @@ export function EventCard({
       await archiveEvent(evt.id);
       await onMutate();
     } catch (e) {
-      setError(`Archivace selhala: ${String(e)}`);
+      setError(t(($) => $.events.card.archive_failed, { error: displayError(e) }));
     } finally {
       setSaving(false);
     }
@@ -80,7 +83,7 @@ export function EventCard({
       await updateEvent(evt.id, { status: "resolved" });
       await onMutate();
     } catch (e) {
-      setError(`Označení selhalo: ${String(e)}`);
+      setError(t(($) => $.events.card.resolve_failed, { error: displayError(e) }));
     } finally {
       setSaving(false);
     }
@@ -101,8 +104,8 @@ export function EventCard({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {EVENT_TYPES.map((t) => (
-                <SelectItem key={t} value={t}>{t}</SelectItem>
+              {EVENT_TYPES.map((eventType) => (
+                <SelectItem key={eventType} value={eventType}>{eventType}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -119,7 +122,7 @@ export function EventCard({
             }}
             className="text-muted-foreground"
           >
-            Zrušit
+            {t(($) => $.events.card.cancel)}
           </Button>
         </div>
         <Textarea
@@ -130,7 +133,7 @@ export function EventCard({
         />
         <div className="mt-1.5 flex justify-end">
           <Button size="sm" onClick={save} disabled={saving || !content.trim()}>
-            {saving ? "Ukládám..." : "Uložit"}
+            {saving ? t(($) => $.events.card.saving) : t(($) => $.events.card.save)}
           </Button>
         </div>
         {errorLine}
@@ -159,7 +162,7 @@ export function EventCard({
         {resolved && (
           <Badge variant="secondary" className="bg-[var(--color-surface-2)] text-[var(--color-text-dim)]">
             <Check />
-            vyřešeno
+            {t(($) => $.events.card.resolved_badge)}
           </Badge>
         )}
         {evt.status !== "active" && !resolved && (
@@ -175,7 +178,7 @@ export function EventCard({
               size="icon-xs"
               onClick={resolve}
               disabled={busy || saving}
-              title="Označit jako vyřešené"
+              title={t(($) => $.events.card.mark_resolved)}
               className="text-muted-foreground hover:text-[var(--color-accent)]"
             >
               <Check />
@@ -186,7 +189,7 @@ export function EventCard({
             size="icon-xs"
             onClick={() => setEditing(true)}
             disabled={busy || saving}
-            title="Upravit"
+            title={t(($) => $.events.card.edit)}
             className="text-muted-foreground"
           >
             <Pencil />
@@ -196,7 +199,7 @@ export function EventCard({
             size="icon-xs"
             onClick={archive}
             disabled={busy || saving}
-            title="Archivovat"
+            title={t(($) => $.events.card.archive)}
           >
             <Trash2 />
           </Button>
@@ -223,6 +226,7 @@ export function AddEventForm({
   onMutate: () => Promise<void>;
   disabled: boolean;
 }) {
+  const { t } = useTranslation("node");
   const [open, setOpen] = useState(false);
   const [type, setType] = useState<string>("note");
   const [content, setContent] = useState("");
@@ -233,7 +237,7 @@ export function AddEventForm({
     return (
       <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="mt-3">
         <Plus />
-        Přidat událost
+        {t(($) => $.events.add.open)}
       </Button>
     );
   }
@@ -249,7 +253,7 @@ export function AddEventForm({
       setContent("");
       setType("note");
     } catch (e) {
-      setError(`Událost se nepodařilo přidat: ${String(e)}`);
+      setError(t(($) => $.events.add.failed, { error: displayError(e) }));
     } finally {
       setSubmitting(false);
     }
@@ -259,7 +263,7 @@ export function AddEventForm({
     <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
       <div className="mb-2 flex items-center justify-between">
         <div className="font-mono text-[12px] uppercase tracking-widest text-[var(--color-text-dim)]">
-          Nová událost
+          {t(($) => $.events.add.heading)}
         </div>
         <Button
           variant="ghost"
@@ -278,21 +282,21 @@ export function AddEventForm({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {EVENT_TYPES.map((t) => (
-            <SelectItem key={t} value={t}>{t}</SelectItem>
+          {EVENT_TYPES.map((eventType) => (
+            <SelectItem key={eventType} value={eventType}>{eventType}</SelectItem>
           ))}
         </SelectContent>
       </Select>
       <Textarea
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        placeholder="Co se stalo?"
+        placeholder={t(($) => $.events.add.content_placeholder)}
         rows={3}
         className="leading-relaxed"
       />
       <div className="mt-2 flex justify-end">
         <Button size="sm" onClick={submit} disabled={!content.trim() || submitting || disabled}>
-          {submitting ? "Přidávám..." : "Přidat událost"}
+          {submitting ? t(($) => $.events.add.submitting) : t(($) => $.events.add.submit)}
         </Button>
       </div>
       {error && (

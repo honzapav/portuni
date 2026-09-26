@@ -18,6 +18,8 @@ import { writeAudit } from "../infra/audit.js";
 import { handoffEnrichedName, suspendSessionServerSide, type ServerHandoffReason } from "./session-handoff.js";
 import { sessionContentStoreForProcess } from "./runner/store-content.js";
 import { isCentralServer } from "../infra/server-config.js";
+import { DEFAULT_LOCALE, type Locale } from "../shared/i18n/config.js";
+import { getFixedT } from "../shared/i18n/server.js";
 
 const SESSION_TYPES = ["interactive_task", "interactive_chat", "headless", "env"] as const;
 
@@ -178,10 +180,19 @@ export async function createDraftSession(
   db: DbClient,
   userId: string,
   nodeId: string,
-  overrides: { model?: string | null; effort?: string | null; runner?: string | null; instance_id?: string | null } = {},
+  overrides: {
+    model?: string | null;
+    effort?: string | null;
+    runner?: string | null;
+    instance_id?: string | null;
+    // #539: the default name's language, from the request; English when
+    // missing. Never read from the account or process state here.
+    locale?: Locale;
+  } = {},
 ): Promise<SessionRow> {
   const id = ulid();
   const now = new Date().toISOString();
+  const t = getFixedT(overrides.locale ?? DEFAULT_LOCALE, "server");
   await db.execute({
     sql: `INSERT INTO sessions (id, node_id, user_id, session_type, state, name, model, effort, runner, instance_id, created_at, last_active_at)
           VALUES (?, ?, ?, 'interactive_task', 'draft', ?, ?, ?, ?, ?, ?, ?)`,
@@ -189,7 +200,7 @@ export async function createDraftSession(
       id,
       nodeId,
       userId,
-      "Nový úkol",
+      t(($) => $.session.default_draft_name),
       overrides.model ?? null,
       overrides.effort ?? null,
       overrides.runner ?? null,

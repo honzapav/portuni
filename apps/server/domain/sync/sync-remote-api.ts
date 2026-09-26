@@ -19,7 +19,7 @@
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 import { auditRemotePathExpr } from "../../infra/sql.js";
-import { resolveNodeInfo } from "./node-info.js";
+import { NodeNotFoundError, resolveNodeInfo } from "./node-info.js";
 import { resolveRemote, listRules, resolveRemoteFromRules } from "./routing.js";
 import { mimeFor } from "./engine.js";
 import { parseRelPath, buildRemotePathOrThrow } from "./file-content-remote.js";
@@ -221,7 +221,7 @@ export async function getNodeSyncInfo(db: DbClient, nodeId: string): Promise<Nod
           FROM nodes n WHERE n.id = ?`,
     args: [nodeId],
   });
-  if (nodeRes.rows.length === 0) throw new Error(`Node ${nodeId} not found`);
+  if (nodeRes.rows.length === 0) throw new NodeNotFoundError(nodeId);
   const row = nodeRes.rows[0];
   const nodeType = row.type as string;
   const nodeSyncKey = row.sync_key as string;

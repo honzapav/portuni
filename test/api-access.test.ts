@@ -690,7 +690,7 @@ describe("GET /auth/groups", () => {
     await routeApiRequest(req, res, new URL("http://localhost/auth/groups"), manager);
 
     assert.equal(captured.statusCode, 501, `expected 501, got ${captured.statusCode}; body: ${captured.body}`);
-    assert.deepEqual(JSON.parse(captured.body), { error: "google_mode_only" });
+    assert.deepEqual(JSON.parse(captured.body), { error: "google_mode_only", code: "GOOGLE_MODE_ONLY" });
   });
 
   test("3. read-scope identity -> 403 (min-scope gate, never reaches handler)", async () => {

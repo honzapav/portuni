@@ -11,7 +11,7 @@
 // stays a direct runNodeSync call -- one node is already fast enough that
 // a job adds nothing but latency.
 import { useEffect, useRef, useState } from "react";
-import { pluralFiles, pluralNodes } from "../lib/plural";
+import { Trans, useTranslation } from "react-i18next";
 import {
   RefreshCw,
   Loader2,
@@ -53,6 +53,7 @@ export default function SyncOverview({
   onMutated: () => void;
   onSelectNode: (id: string) => void;
 }) {
+  const { t } = useTranslation("files");
   // A local workspace has no remote (#310/#312) -- a sync run there would
   // only ever fail with LOCAL_MODE_NO_REMOTE, so "Synchronizovat"/
   // "Synchronizovat vše" stay hidden. Optimistically hidden while loading.
@@ -171,7 +172,7 @@ export default function SyncOverview({
             own close button. */}
         <DialogHeader className="gap-1.5 pr-8">
           <div className="flex items-center gap-3">
-            <DialogTitle>Nesynchronizováno</DialogTitle>
+            <DialogTitle>{t(($) => $.sync_overview.title)}</DialogTitle>
             <span className="flex-1" />
             {allBusy && job && (
               <span className="whitespace-nowrap text-[11.5px] tabular-nums text-[var(--color-text-dim)]">
@@ -187,29 +188,45 @@ export default function SyncOverview({
                 className="shrink-0"
               >
                 {allBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                Synchronizovat vše
+                {t(($) => $.sync_overview.sync_all)}
               </Button>
             )}
           </div>
           <DialogDescription className="flex items-baseline gap-4 whitespace-nowrap text-[12px]">
             <span>
-              <span className="tabular-nums text-[var(--color-text)]">{pending.total}</span>{" "}
-              {pluralFiles(pending.total)} k synchronizaci
+              <Trans
+                t={t}
+                i18nKey={($) => $.sync_overview.to_sync}
+                count={pending.total}
+                values={{ count: pending.total }}
+                components={{ count: <span className="tabular-nums text-[var(--color-text)]" /> }}
+              />
             </span>
             {pullNodes > 0 && (
               <span
-                title="Uzly, kde remote watcher zaregistroval novější verzi než má tento počítač. Stáhne je sync run."
+                title={t(($) => $.sync_overview.pull_nodes_title)}
               >
-                <span className="tabular-nums text-[var(--color-text)]">{pullNodes}</span>{" "}
-                {pluralNodes(pullNodes)} s novinkami z remote
+                <Trans
+                  t={t}
+                  i18nKey={($) => $.sync_overview.pull_nodes}
+                  count={pullNodes}
+                  values={{ count: pullNodes }}
+                  components={{ count: <span className="tabular-nums text-[var(--color-text)]" /> }}
+                />
               </span>
             )}
             {pending.decisions > 0 && (
               <span
                 className="text-[var(--color-danger)]"
-                title="Konflikty a lokálně smazané soubory. Sync run se jich z principu nedotkne — otevři uzel a rozhodni."
+                title={t(($) => $.sync_overview.decisions_title)}
               >
-                <span className="tabular-nums">{pending.decisions}</span> k rozhodnutí
+                <Trans
+                  t={t}
+                  i18nKey={($) => $.sync_overview.decisions}
+                  count={pending.decisions}
+                  values={{ count: pending.decisions }}
+                  components={{ count: <span className="tabular-nums" /> }}
+                />
               </span>
             )}
           </DialogDescription>
@@ -217,7 +234,7 @@ export default function SyncOverview({
         <div className="min-h-0 flex-1 overflow-auto">
           {pending.nodes.length === 0 ? (
             <div className="px-3 py-6 text-center text-[13px] text-[var(--color-text-dim)]">
-              Všechno je synchronizované.
+              {t(($) => $.sync_overview.all_synced)}
             </div>
           ) : (
             pending.nodes.map((n) => {
@@ -239,7 +256,7 @@ export default function SyncOverview({
                     size="sm"
                     onClick={() => onSelectNode(n.node_id)}
                     className="min-w-0 flex-1 justify-start font-normal text-[var(--color-text)]"
-                    title="Přejít na uzel"
+                    title={t(($) => $.sync_overview.go_to_node)}
                   >
                     <span className="truncate">{n.node_name}</span>
                   </Button>
@@ -247,24 +264,33 @@ export default function SyncOverview({
                       counts with characters no bundled font covers, so
                       deleted_local rendered as a "DEL" tofu box. */}
                   <span className="flex shrink-0 items-center gap-2.5">
-                    <Count icon={ArrowUp} n={n.push} label="K odeslání" />
-                    <Count icon={ArrowDown} n={n.pull} label="Nové na remote — ke stažení" />
-                    <Count icon={CirclePlus} n={n.untracked} label="Neregistrováno" />
-                    <Count icon={CircleSlash} n={n.remote_missing} label="Chybí na remote" />
-                    <Count icon={AlertTriangle} n={n.conflict} label="Konflikt — vyžaduje rozhodnutí" danger />
-                    <Count icon={Trash2} n={n.deleted_local} label="Smazáno lokálně — vyžaduje rozhodnutí" danger />
+                    <Count icon={ArrowUp} n={n.push} label={t(($) => $.sync_overview.count.push)} />
+                    <Count icon={ArrowDown} n={n.pull} label={t(($) => $.sync_overview.count.pull)} />
+                    <Count icon={CirclePlus} n={n.untracked} label={t(($) => $.sync_overview.count.untracked)} />
+                    <Count
+                      icon={CircleSlash}
+                      n={n.remote_missing}
+                      label={t(($) => $.sync_overview.count.remote_missing)}
+                    />
+                    <Count icon={AlertTriangle} n={n.conflict} label={t(($) => $.sync_overview.count.conflict)} danger />
+                    <Count
+                      icon={Trash2}
+                      n={n.deleted_local}
+                      label={t(($) => $.sync_overview.count.deleted_local)}
+                      danger
+                    />
                   </span>
                   {nodeJobStatus === "done" ? (
                     <span
                       className="flex w-[124px] shrink-0 items-center justify-end gap-1 px-2 py-1 text-[12px] text-[var(--color-accent)]"
-                      title="Synchronizováno"
+                      title={t(($) => $.sync_overview.node_done)}
                     >
                       <Check size={12} />
                     </span>
                   ) : nodeJobStatus === "error" ? (
                     <span
                       className="flex w-[124px] shrink-0 items-center justify-end gap-1 px-2 py-1 text-[12px] text-[var(--color-danger)]"
-                      title="Selhalo"
+                      title={t(($) => $.sync_overview.node_failed)}
                     >
                       <AlertTriangle size={12} />
                     </span>
@@ -278,10 +304,10 @@ export default function SyncOverview({
                           variant="ghost"
                           size="sm"
                           onClick={() => onSelectNode(n.node_id)}
-                          title="Sync run konflikty neřeší — otevři uzel a rozhodni"
+                          title={t(($) => $.sync_overview.decide_title)}
                           className="text-[var(--color-danger)]"
                         >
-                          Rozhodnout
+                          {t(($) => $.sync_overview.decide)}
                         </Button>
                       ) : (
                         isCentralMode && (
@@ -294,7 +320,7 @@ export default function SyncOverview({
                             className="text-muted-foreground"
                           >
                             {isBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                            Synchronizovat
+                            {t(($) => $.sync_overview.sync_node)}
                           </Button>
                         )
                       )}

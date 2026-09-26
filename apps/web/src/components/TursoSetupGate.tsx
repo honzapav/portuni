@@ -16,8 +16,11 @@
 // In a plain browser (Vite dev / static preview) this short-circuits to
 // "ready" — the dev proxy handles auth and there is no Keychain.
 
+import { displayError } from "../errors";
 import { useEffect, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { isTauri } from "../lib/backend-url";
+import { invoke } from "../lib/tauri-invoke";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,6 +39,7 @@ type Props = {
 };
 
 export default function TursoSetupGate({ children }: Props) {
+  const { t } = useTranslation("common");
   const [status, setStatus] = useState<GateStatus>("checking");
   const [tursoUrl, setTursoUrl] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState("");
@@ -51,7 +55,6 @@ export default function TursoSetupGate({ children }: Props) {
     }
     void (async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const result = await invoke<TursoStatus>("get_turso_status");
         if (cancelled) return;
         if (!result.config_exists) {
@@ -80,20 +83,19 @@ export default function TursoSetupGate({ children }: Props) {
   async function handleSaveToken() {
     const trimmed = token.trim();
     if (!trimmed) {
-      setError("Token nesmí být prázdný.");
+      setError(t(($) => $.gate.turso.error_empty_token));
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("set_turso_token", { token: trimmed });
       await invoke("restart_sidecar");
       // Reload so backend-url.ts's ready gate, fetchGraph caches, etc.
       // start from a clean slate against the freshly-spawned sidecar.
       window.location.reload();
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
       setSaving(false);
     }
   }
@@ -101,20 +103,19 @@ export default function TursoSetupGate({ children }: Props) {
   async function handleJoinTeam() {
     const trimmed = urlInput.trim();
     if (!trimmed) {
-      setError("Adresa serveru nesmí být prázdná.");
+      setError(t(($) => $.gate.setup.join_team.error_empty_url));
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("setup_central", { serverUrl: trimmed });
       // No reload: the Rust host opens the new ws:<id> window itself and
       // closes this bootstrap one (#222). CentralLoginGate sees
       // data_mode=central + configured in the new window and takes over
       // with the Google login screen there.
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
       setSaving(false);
     }
   }
@@ -123,14 +124,13 @@ export default function TursoSetupGate({ children }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("save_config", { tursoUrl: null });
       // No restart, no reload: the sidecar is already running in local
       // fallback mode (that's what happens when config.json is missing),
       // and the Rust host opens the new ws:<id> window itself and closes
       // this bootstrap one (#222).
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
       setSaving(false);
     }
   }
@@ -144,28 +144,27 @@ export default function TursoSetupGate({ children }: Props) {
         <div className="flex w-full max-w-[560px] flex-col overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl">
           <div className="border-b border-[var(--color-border)] px-5 py-3">
             <div className="text-[15px] font-semibold tracking-tight text-[var(--color-text)]">
-              Vítej v Portuni
+              {t(($) => $.gate.setup.title)}
             </div>
             <div className="mt-1 text-[12px] text-[var(--color-text-dim)]">
-              Jak chceš začít?
+              {t(($) => $.gate.setup.subtitle)}
             </div>
           </div>
 
           <div className="flex flex-col gap-4 px-5 py-4">
             <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
               <div className="text-[13px] font-medium text-[var(--color-text)]">
-                Připojit se k týmu
+                {t(($) => $.gate.setup.join_team.title)}
               </div>
               <div className="mt-1 text-[12px] text-[var(--color-text-dim)]">
-                Tvoje organizace už provozuje Portuni server. Zadej jeho adresu
-                – přihlásíš se pak svým Google účtem.
+                {t(($) => $.gate.setup.join_team.description)}
               </div>
               <div className="mt-3 flex flex-col gap-2">
                 <Input
                   type="text"
                   value={urlInput}
                   onChange={(e) => setUrlInput(e.target.value)}
-                  placeholder="api.tvoje-firma.com"
+                  placeholder={t(($) => $.gate.setup.join_team.url_placeholder)}
                   spellCheck={false}
                   autoFocus
                   className="font-mono"
@@ -175,17 +174,19 @@ export default function TursoSetupGate({ children }: Props) {
                   onClick={() => void handleJoinTeam()}
                   className="self-end"
                 >
-                  {saving ? "Připojuji…" : "Připojit"}
+                  {saving
+                    ? t(($) => $.gate.setup.join_team.submitting)
+                    : t(($) => $.gate.setup.join_team.submit)}
                 </Button>
               </div>
             </div>
 
             <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
               <div className="text-[13px] font-medium text-[var(--color-text)]">
-                Osobní workspace
+                {t(($) => $.gate.setup.personal.title)}
               </div>
               <div className="mt-1 text-[12px] text-[var(--color-text-dim)]">
-                Jen na tomto Macu, žádný účet. Vhodné pro vyzkoušení.
+                {t(($) => $.gate.setup.personal.description)}
               </div>
               <div className="mt-3 flex justify-end">
                 <Button
@@ -193,7 +194,7 @@ export default function TursoSetupGate({ children }: Props) {
                   disabled={saving}
                   onClick={() => void handleStartLocal()}
                 >
-                  Vytvořit osobní workspace
+                  {t(($) => $.gate.setup.personal.submit)}
                 </Button>
               </div>
             </div>
@@ -212,13 +213,12 @@ export default function TursoSetupGate({ children }: Props) {
       <div className="flex w-full max-w-[520px] flex-col overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl">
         <div className="border-b border-[var(--color-border)] px-5 py-3">
           <div className="text-[15px] font-semibold tracking-tight text-[var(--color-text)]">
-            Připojení k Turso
+            {t(($) => $.gate.turso.title)}
           </div>
         </div>
         <div className="flex flex-col gap-3 px-5 py-4">
           <div className="text-[13px] text-[var(--color-text-dim)]">
-            Portuni se připojuje ke vzdálené Turso databázi. Vlož auth token,
-            uložíme ho do macOS Keychain a restartujeme backend.
+            {t(($) => $.gate.turso.description)}
           </div>
           {tursoUrl && (
             <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 font-mono text-[12px] text-[var(--color-text-dim)]">
@@ -228,7 +228,7 @@ export default function TursoSetupGate({ children }: Props) {
           <Textarea
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="eyJhbGciOiJFZERTQSIs..."
+            placeholder={t(($) => $.gate.turso.token_placeholder)}
             spellCheck={false}
             autoFocus
             rows={4}
@@ -243,7 +243,7 @@ export default function TursoSetupGate({ children }: Props) {
             disabled={saving || token.trim().length === 0}
             onClick={() => void handleSaveToken()}
           >
-            {saving ? "Ukládám…" : "Uložit a restartovat"}
+            {saving ? t(($) => $.gate.turso.submitting) : t(($) => $.gate.turso.submit)}
           </Button>
         </div>
       </div>

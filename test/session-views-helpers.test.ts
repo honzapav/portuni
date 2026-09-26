@@ -21,6 +21,17 @@ import {
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
+import { createI18n } from "../apps/server/shared/i18n/create.js";
+import { RESOURCES } from "../apps/server/shared/i18n/resources.js";
+
+const { i18n } = createI18n({
+  lng: "en",
+  resources: { en: RESOURCES.en, cs: RESOURCES.cs },
+  escapeValue: false,
+  initAsync: false,
+});
+const tEn = i18n.getFixedT("en", "common");
+const tCs = i18n.getFixedT("cs", "common");
 
 function overviewRow(overrides: Partial<OverviewSessionRow> & { id: string; user_id: string }): OverviewSessionRow {
   return {
@@ -46,33 +57,38 @@ function overviewRow(overrides: Partial<OverviewSessionRow> & { id: string; user
 }
 
 describe("sessionRowChip", () => {
-  it("running with no open question is 'Běží', pulsing", () => {
-    const chip = sessionRowChip("running", null);
-    assert.equal(chip.label, "Běží");
+  it("running with no open question is 'Running', pulsing", () => {
+    const chip = sessionRowChip("running", null, tEn);
+    assert.equal(chip.label, "Running");
     assert.equal(chip.pulsing, true);
   });
 
-  it("running with waiting_since is 'Čeká na mě'", () => {
-    assert.equal(sessionRowChip("running", "2026-09-13 10:00:00").label, "Čeká na mě");
+  it("running with waiting_since is 'Waiting on me'", () => {
+    assert.equal(sessionRowChip("running", "2026-09-13 10:00:00", tEn).label, "Waiting on me");
+    assert.equal(sessionRowChip("running", "2026-09-13 10:00:00", tCs).label, "Čeká na mě");
   });
 
-  it("closed is 'Hotovo' and archived is 'Archiv', neither pulsing", () => {
-    assert.equal(sessionRowChip("closed", null).label, "Hotovo");
-    assert.equal(sessionRowChip("closed", null).pulsing, false);
-    assert.equal(sessionRowChip("archived", null).label, "Archiv");
-    assert.equal(sessionRowChip("archived", null).pulsing, false);
+  it("closed is 'Done' in a row and 'Closed' in the header, archived is 'Archived', neither pulsing", () => {
+    assert.equal(sessionRowChip("closed", null, tEn).label, "Done");
+    assert.equal(sessionRowChip("closed", null, tEn, "header").label, "Closed");
+    assert.equal(sessionRowChip("closed", null, tCs).label, "Hotovo");
+    assert.equal(sessionRowChip("closed", null, tCs, "header").label, "Uzavřeno");
+    assert.equal(sessionRowChip("closed", null, tEn).pulsing, false);
+    assert.equal(sessionRowChip("archived", null, tEn).label, "Archived");
+    assert.equal(sessionRowChip("archived", null, tCs).label, "Archiv");
+    assert.equal(sessionRowChip("archived", null, tEn).pulsing, false);
   });
 
-  it("suspended is 'Pozastaveno', not pulsing", () => {
-    const chip = sessionRowChip("suspended", null);
-    assert.equal(chip.label, "Pozastaveno");
+  it("suspended is 'Suspended', not pulsing", () => {
+    const chip = sessionRowChip("suspended", null, tEn);
+    assert.equal(chip.label, "Suspended");
     assert.equal(chip.pulsing, false);
   });
 
-  it("a draft's chip reads 'Nový' in both variants, so the header never repeats the draft's name", () => {
-    assert.equal(sessionRowChip("draft", null, "row").label, "Nový");
-    assert.equal(sessionRowChip("draft", null, "header").label, "Nový");
-    assert.equal(sessionRowChip("draft", null).pulsing, false);
+  it("a draft's chip reads 'New' in both variants, so the header never repeats the draft's name", () => {
+    assert.equal(sessionRowChip("draft", null, tEn, "row").label, "New");
+    assert.equal(sessionRowChip("draft", null, tEn, "header").label, "New");
+    assert.equal(sessionRowChip("draft", null, tEn).pulsing, false);
   });
 });
 
@@ -269,10 +285,11 @@ describe("the composer and the Relace row for a closed thread (#498)", () => {
   it("the composer takes a message in every state but archived", () => {
     for (const state of ["draft", "running", "suspended", "closed"] as const) {
       assert.equal(threadAcceptsMessages(state), true, state);
-      assert.equal(composerStatePlaceholder(state), "Napiš zprávu…", state);
+      assert.equal(composerStatePlaceholder(state, tEn), "Write a message…", state);
     }
     assert.equal(threadAcceptsMessages("archived"), false);
-    assert.equal(composerStatePlaceholder("archived"), "Relace je uzavřená.");
+    assert.equal(composerStatePlaceholder("archived", tEn), "This thread is archived.");
+    assert.equal(composerStatePlaceholder("archived", tCs), "Relace je uzavřená.");
   });
 
   it("a closed row opens its chat like a suspended one; archived and draft do not", () => {

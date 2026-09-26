@@ -20,8 +20,9 @@
 // for. `inert` keeps a hidden pane out of the tab order and out of reach
 // of the pointer.
 
-import { lazy, Suspense, useState } from "react";
+import { Suspense, useState } from "react";
 import { ChevronLeft } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
@@ -30,14 +31,15 @@ import { shownChatSessionId } from "../lib/session-views";
 import type { FileEditor } from "../lib/use-file-editor";
 import { scopedKey } from "../lib/workspace-storage";
 import WorkspaceEmpty from "./WorkspaceEmpty";
-import DetailPane from "./DetailPane";
 import EditorPane, { type EditorMode } from "./EditorPane";
+import { lazyWithNamespaces } from "../i18n";
 
 // SessionChat pulls in the AI Elements/shadcn/Streamdown stack (radix-ui,
 // shiki, motion, streamdown...), dead weight until a thread is actually
 // open -- lazy-loaded so it lands in its own chunk instead of every
 // window's startup bundle.
-const SessionChat = lazy(() => import("./SessionChat"));
+const SessionChat = lazyWithNamespaces(() => import("./SessionChat"), ["chat"]);
+const DetailPane = lazyWithNamespaces(() => import("./DetailPane"), ["node", "files", "settings"]);
 
 type Props = {
   graph: GraphPayload | null;
@@ -118,6 +120,7 @@ export default function WorkspaceView({
   onOpenChat,
   liveSessionStates,
 }: Props) {
+  const { t } = useTranslation("common");
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
   });
@@ -158,24 +161,26 @@ export default function WorkspaceView({
         onExpand={onExpandEditor}
       />
     ) : (
-      <DetailPane
-        node={nodeDetail}
-        graph={graph}
-        loading={nodeDetailLoading}
-        error={nodeDetailError}
-        onSelect={(id) => onSelectNode(id)}
-        canGoBack={false}
-        onBack={() => {
-          // No-op: workspace doesn't keep a back-stack like graph does.
-        }}
-        onMutate={onMutate}
-        onOpenFile={onOpenFile}
-        embedded
-        onCollapse={collapsible ? toggleDetail : undefined}
-        onSessionStarted={onSessionStarted}
-        onOpenChat={onOpenChat}
-        liveSessionStates={liveSessionStates}
-      />
+      <Suspense fallback={null}>
+        <DetailPane
+          node={nodeDetail}
+          graph={graph}
+          loading={nodeDetailLoading}
+          error={nodeDetailError}
+          onSelect={(id) => onSelectNode(id)}
+          canGoBack={false}
+          onBack={() => {
+            // No-op: workspace doesn't keep a back-stack like graph does.
+          }}
+          onMutate={onMutate}
+          onOpenFile={onOpenFile}
+          embedded
+          onCollapse={collapsible ? toggleDetail : undefined}
+          onSessionStarted={onSessionStarted}
+          onOpenChat={onOpenChat}
+          liveSessionStates={liveSessionStates}
+        />
+      </Suspense>
     );
 
   // Which pane is on screen. Null (nothing selected, or the selected node
@@ -235,7 +240,7 @@ export default function WorkspaceView({
             <WorkspaceEmpty graph={graph} onPick={(n) => onOpenNodeFromPicker(n)} />
           ) : (
             <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-text-dim)]">
-              Vyber uzel vlevo.
+              {t(($) => $.workspace.pick_node_hint)}
             </div>
           ))}
       </main>
@@ -252,8 +257,8 @@ export default function WorkspaceView({
           <Button
             variant="ghost"
             onClick={toggleDetail}
-            title="Zobrazit detail uzlu"
-            aria-label="Zobrazit detail uzlu"
+            title={t(($) => $.workspace.show_node_detail)}
+            aria-label={t(($) => $.workspace.show_node_detail)}
             className="h-full w-6 shrink-0 rounded-none border-l border-[var(--color-border)] bg-[var(--color-surface)] px-0 text-muted-foreground hover:bg-[var(--color-surface-2)]"
           >
             <ChevronLeft />

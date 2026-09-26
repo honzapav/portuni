@@ -1,0 +1,414 @@
+{
+  "access_requests": {
+    "list": {
+      "approve": "Schválit",
+      "approving": "…",
+      "deny": "Zamítnout",
+      "resolve_failed": "Vyřízení se nepovedlo. Zkus to znovu."
+    },
+    "panel": {
+      "description": "Čekající žádosti o přístup k uzlům v režimu „Na vyžádání“. Schválením se žadatel přidá mezi příjemce sdílení uzlu (u zděděného omezení nadřazeného uzlu).",
+      "empty": "Žádné čekající žádosti.",
+      "loading": "Načítám žádosti…",
+      "retry": "Zkusit znovu",
+      "title": "Žádosti o přístup"
+    },
+    "request": {
+      "already_visible": "Přístup už máš – obnov detail",
+      "button": "Požádat o přístup",
+      "cancel_title": "Zrušit",
+      "message_placeholder": "Zpráva (volitelné)",
+      "send_failed": "Odeslání se nepovedlo.",
+      "send_title": "Odeslat žádost",
+      "sent": "Žádost odeslána"
+    }
+  },
+  "account": {
+    "connected_apps": {
+      "columns": {
+        "app": "Aplikace",
+        "connected": "Připojeno",
+        "last_used": "Naposledy použito"
+      },
+      "disconnect": {
+        "button": "Odpojit",
+        "confirm": "Odpojit aplikaci „{{appName}}“? Bude se muset znovu přihlásit.",
+        "title": "Odpojit aplikaci"
+      },
+      "empty": "Zatím žádné připojené aplikace. Přidej Portuni jako konektor v claude.ai nebo v Claude Code a přihlas se přes Google.",
+      "loading": "Načítám připojené aplikace…",
+      "retry": "Zkusit znovu",
+      "title": "Připojené aplikace"
+    },
+    "error_box": {
+      "dismiss": "Zavřít"
+    },
+    "intro": "Přihlášení k centrálnímu Portuni serveru přes Google OAuth.",
+    "language": {
+      "description": "Jazyk rozhraní Portuni. Ukládá se k tvému účtu, takže platí na všech tvých zařízeních.",
+      "label": "Jazyk",
+      "options": {
+        "cs": "Čeština",
+        "en": "English",
+        "pseudo": "Pseudo"
+      },
+      "select_aria_label": "Jazyk rozhraní"
+    },
+    "loading": "Zjišťuji stav přihlášení…",
+    "not_configured": {
+      "body": "Doplň <code>server_url</code> a <code>google_client_id</code> do konfiguračního souboru:",
+      "title": "Centrální server není nakonfigurován."
+    },
+    "not_desktop": "Dostupné jen v desktop aplikaci.",
+    "sign_in": {
+      "busy": "Přihlašuji…",
+      "button": "Přihlásit přes Google"
+    },
+    "title": "Účet",
+    "tokens": {
+      "cancel": "Zrušit",
+      "columns": {
+        "created": "Vytvořen",
+        "expires": "Expirace",
+        "last_used": "Naposledy použit",
+        "name": "Název",
+        "status": "Stav"
+      },
+      "create": "Vytvořit",
+      "created": {
+        "close": "Zavřít",
+        "copied": "Zkopírováno",
+        "copy": "Zkopírovat",
+        "title": "Token vytvořen",
+        "warning": "Token se zobrazuje jen jednou. Zkopíruj ho a ulož na bezpečné místo."
+      },
+      "creating": "Vytvářím…",
+      "empty": "Zatím žádné device tokeny.",
+      "label_placeholder": "Název tokenu (např. dev-laptop)",
+      "loading": "Načítám tokeny…",
+      "new_token": "Nový token",
+      "retry": "Zkusit znovu",
+      "revoke": {
+        "button": "Revokovat",
+        "confirm": "Revokovat token „{{tokenLabel}}“? Tuto akci nelze vrátit.",
+        "title": "Revokovat token"
+      },
+      "status": {
+        "active": "aktivní",
+        "revoked": "revokován"
+      },
+      "title": "Device tokeny"
+    },
+    "user": {
+      "role": "Role:",
+      "sign_out": "Odhlásit"
+    },
+    "workspace_kind": {
+      "label": "Druh workspace:",
+      "personal": "osobní",
+      "team": "týmový"
+    }
+  },
+  "actors": {
+    "modal": {
+      "cancel": "Zrušit",
+      "create": "Vytvořit",
+      "name_label": "Jméno",
+      "name_placeholder_automation": "Denní report z CRM",
+      "name_placeholder_person": "Jan Novák",
+      "name_required": "Jméno je povinné.",
+      "notes_label": "Poznámky",
+      "notes_placeholder": "Interní poznámky…",
+      "placeholder_automation": "Automatizace nemůže být placeholder.",
+      "placeholder_checkbox": "Zástupná osoba (bude nahrazena reálnou)",
+      "placeholder_label": "Placeholder",
+      "save_changes": "Uložit změny",
+      "saving": "Ukládám…",
+      "title_create": "Nový aktér",
+      "title_edit": "Upravit aktéra",
+      "type_automation": "Automatizace",
+      "type_label": "Typ",
+      "type_locked": "Typ nelze po vytvoření změnit.",
+      "type_person": "Osoba",
+      "user_label": "Uživatelský účet",
+      "user_none": "— Nepropojeno —",
+      "user_unknown": "{{userId}} (neznámý)",
+      "users_empty": "Žádní registrovaní uživatelé k dispozici.",
+      "users_load_failed": "Nepodařilo se načíst uživatele: {{error}}",
+      "users_loading": "Načítám uživatele…"
+    },
+    "page": {
+      "add": "Přidat aktéra",
+      "delete": "Smazat",
+      "edit": "Upravit",
+      "empty_filtered": "Žádní aktéři neodpovídají filtrům.",
+      "empty_none": "Zatím žádní aktéři. Přidejte prvního.",
+      "loading": "Načítám aktéry…",
+      "search_label": "Hledat aktéry",
+      "search_placeholder": "Hledat aktéry…",
+      "title": "Aktéři"
+    },
+    "placeholder_filter": {
+      "all": "Vše",
+      "placeholder": "Placeholders",
+      "real": "Reálné"
+    },
+    "status": {
+      "automation": "Automatizace",
+      "placeholder": "Placeholder",
+      "real_person": "Reálná osoba",
+      "registered_user": "Registrovaný uživatel"
+    },
+    "table": {
+      "actions": "Akce",
+      "name": "Jméno",
+      "notes": "Poznámky",
+      "status": "Stav",
+      "type": "Typ"
+    },
+    "type_badge": {
+      "automation": "Automatizace",
+      "person": "Osoba"
+    },
+    "type_filter": {
+      "all": "Vše",
+      "automation": "Automatizace",
+      "person": "Lidé"
+    }
+  },
+  "mcp": {
+    "actions": {
+      "install_claude": "Přidat do Claude Code (~/.claude.json)",
+      "install_codex": "Přidat do Codexu (~/.codex/config.toml)",
+      "install_vibe": "Přidat do Vibu (~/.vibe/config.toml)",
+      "regenerate": "Vygenerovat nový token"
+    },
+    "browser_only_note": "Akce výše fungují pouze v desktop appce; v dev režimu prohlížeče jsou vypnuté.",
+    "central_note": {
+      "with_url": "Front door na tomto zařízení: nástroje grafu se proxují na <mono>{{serverUrl}}</mono>, nástroje pro soubory a složky běží na tomto zařízení. Token patří front dooru na tomto zařízení; device token pro centrální server se spravuje v sekci Účet.",
+      "without_url": "Front door na tomto zařízení: nástroje grafu se proxují na centrální server, nástroje pro soubory a složky běží na tomto zařízení. Token patří front dooru na tomto zařízení; device token pro centrální server se spravuje v sekci Účet."
+    },
+    "env_hint": {
+      "body": "{{agent}} načítá bearer token z proměnné prostředí — token v config.toml nepoužije. Přidej tenhle řádek na konec <code>~/.zshrc</code> (nebo svého shell rc) a otevři nový terminál:",
+      "copy_export": "Kopírovat export",
+      "dismiss": "Skrýt",
+      "export_copied": "Řádek s exportem zkopírován do schránky",
+      "loading_token": "Načítám token…",
+      "written": "Zapsáno do {{path}}"
+    },
+    "fields": {
+      "copy_token": "Kopírovat token",
+      "copy_url": "Kopírovat URL",
+      "hide_token": "Skrýt token",
+      "no_auth": "(server bez auth)",
+      "show_token": "Zobrazit token",
+      "token": "Token",
+      "url": "URL"
+    },
+    "flash": {
+      "copy_failed": "Kopírování selhalo: {{error}}",
+      "install_desktop_only": "Instalaci konfigurace lze spustit jen z desktop appky.",
+      "install_failed": "Chyba: {{error}}",
+      "install_written": "Zapsáno do {{path}}",
+      "regenerate_desktop_only": "Rotace tokenu je dostupná jen z desktop appky.",
+      "regenerate_failed": "Chyba: {{error}}",
+      "regenerated": "Nový token vygenerován. Nezapomeň znovu spustit instalaci pro Claude Code, Codex i Vibe.",
+      "token_copied": "Token zkopírován do schránky",
+      "token_desktop_only": "Token je dostupný jen v desktop appce.",
+      "token_load_failed": "Nepodařilo se načíst token: {{error}}",
+      "url_copied": "URL zkopírováno do schránky"
+    },
+    "intro": "Endpoint, ke kterému se připojuje Claude Code, Codex a Mistral Vibe. Token žije v macOS Keychain a přežívá restarty appky.",
+    "status": {
+      "loading": "Zjišťuji stav serveru…",
+      "no_port": "aktivní workspace nemá přiřazený MCP port",
+      "unavailable": "MCP server není dostupný: <mono>{{reason}}</mono>"
+    },
+    "title": "MCP server"
+  },
+  "page": {
+    "actors_loading": "Načítám aktéry…",
+    "autosave": "Změny se ukládají automaticky.",
+    "integrations": {
+      "showtime": {
+        "description": "Soubor <code>.showtime</code> se otevře jako náhled prezentace (náhled, který Showtime uloží do souboru při každém uložení). Když je Showtime nainstalovaný, náhled nabídne „Otevřít v Showtime“: deck se otevře v Showtime a agent, kterého Showtime spustí, dostane připojení k Portuni s tímto uzlem jako domovským a zrcadlo uzlu jako druhý pracovní adresář.",
+        "desktop_only": "Otevření v Showtime je dostupné jen v desktopové aplikaci.",
+        "found": "Showtime.app nalezena.",
+        "label": "Showtime",
+        "not_found": "Showtime.app nenalezena (hledá se v /Applications a ~/Applications).",
+        "searching": "Hledám Showtime.app…"
+      },
+      "title": "Integrace"
+    },
+    "loading": "Načítám…",
+    "tabs": {
+      "access_requests": "Žádosti o přístup",
+      "account": "Účet",
+      "actors": "Aktéři",
+      "general": "Obecné",
+      "runners": "Runnery",
+      "sync": "Synchronizace",
+      "users": "Uživatelé",
+      "workspaces": "Workspaces"
+    },
+    "title": "Nastavení"
+  },
+  "runners": {
+    "create": {
+      "env_label": "Proměnné prostředí (jedna na řádek, KLÍČ=hodnota)",
+      "env_placeholder": "CLAUDE_CONFIG_DIR=/Users/vy/.claude-work",
+      "name_label": "Název",
+      "name_placeholder": "Např. Práce",
+      "name_required": "Zadej název instance.",
+      "runner_label": "Runner",
+      "runner_required": "Zadej runner (např. claude).",
+      "submit": "Vytvořit instanci",
+      "submitting": "Vytvářím…",
+      "title": "Přidat instanci"
+    },
+    "detected": {
+      "badge_ready": "připraveno",
+      "badge_unavailable": "nedostupné",
+      "empty": "Zatím žádný runner není na tomto zařízení zaregistrovaný.",
+      "intro": "Runner je nástroj (např. Claude Code), který server spustí a řídí přes kanonický protokol událostí. Přihlášení zůstává na CLI samotném — Portuni nikdy nenabízí vlastní přihlášení.",
+      "loading": "Zjišťuji dostupné runnery…",
+      "not_installed": "Nenainstalováno na tomto zařízení.",
+      "not_signed_in": "Nainstalováno, ale nepřihlášeno — přihlas se přímo v {{runner}} CLI.",
+      "title": "Runnery"
+    },
+    "env_keys": {
+      "portuni_key": "„{{key}}“: proměnné PORTUNI_* nelze nastavit z registru instancí.",
+      "secret_shaped": "„{{key}}“ vypadá jako secret (*_TOKEN/*_KEY/*_SECRET/*PASSWORD*) — ulož ho do OS klíčenky, ne sem."
+    },
+    "instances": {
+      "dismiss_error": "Zavřít",
+      "empty": "Zatím žádné instance.",
+      "intro": "Instance popisuje, co se má vložit do prostředí spuštěného úkolu — typicky <code>CLAUDE_CONFIG_DIR=…</code> pro přepnutí účtu. Hodnoty se z bezpečnostních důvodů nikdy nenačítají zpět z registru.",
+      "loading": "Načítám instance…",
+      "retry": "Zkusit znovu",
+      "title": "Instance"
+    },
+    "org_defaults": {
+      "intro": "Při založení úkolu z uzlu se jako výchozí nabídne instance nastavená pro jeho organizaci.",
+      "none": "(žádná)",
+      "select_aria_label": "Výchozí instance pro {{orgName}}",
+      "title": "Výchozí instance podle organizace"
+    },
+    "row": {
+      "cancel_delete": "Zrušit",
+      "cancel_edit": "Zrušit",
+      "confirm_delete": "Opravdu smazat",
+      "delete": "Smazat",
+      "delete_confirm_message": "Instance se smaže z registru a přestane se nabízet při zakládání úkolu. Výchozí volby organizací, které na ni mířily, se zruší.",
+      "edit": "Upravit",
+      "env_key_set": "{{key}} (nastaveno)",
+      "env_label": "Proměnné prostředí (jedna na řádek, KLÍČ=hodnota)",
+      "env_placeholder": "CLAUDE_CONFIG_DIR=/Users/vy/.claude-work",
+      "env_summary": "proměnné: {{keys}}",
+      "env_values_hint": "Hodnoty se z bezpečnostních důvodů nikdy nenačítají zpět — u existujícího klíče zůstane prázdná hodnota beze změny, zadej ji znovu jen pokud ji chceš přepsat.",
+      "name_label": "Název",
+      "name_required": "Název instance je povinný.",
+      "no_env": "(bez env)",
+      "runner_label": "Runner",
+      "save": "Uložit",
+      "saving": "Ukládám…"
+    }
+  },
+  "sample": {
+    "message": "Nastavení workspace {{workspaceName}}."
+  },
+  "update": {
+    "check_now": "Zkontrolovat nyní",
+    "desktop_only": "Aktualizace jsou dostupné jen v desktopové aplikaci.",
+    "install": "Stáhnout a nainstalovat",
+    "last_checked": "Naposledy zkontrolováno: {{when}}",
+    "restart": "Restartovat",
+    "status": {
+      "available": "K dispozici {{version}}.",
+      "checking": "Kontroluji aktualizace…",
+      "downloading": "Stahuji a instaluji…",
+      "downloading_pct": "Stahuji a instaluji ({{pct}} %)",
+      "not_checked": "Zatím nezkontrolováno.",
+      "ready": "Aktualizace nainstalována – restartuj pro dokončení.",
+      "up_to_date": "Aktuální verze je nejnovější."
+    },
+    "title": "Aktualizace",
+    "version": "Verze {{version}}",
+    "whats_new": "Co je nového"
+  },
+  "users": {
+    "columns": {
+      "email": "E-mail",
+      "last_sign_in": "Poslední přihlášení",
+      "name": "Jméno",
+      "role": "Role"
+    },
+    "description": "Účty s přístupem k tomuto Portuni serveru. Pozvaní uživatelé se ještě nikdy nepřihlásili – placeholder účet jde sdílet a přiřazovat rovnou.",
+    "empty": "Zatím žádní uživatelé.",
+    "invite": {
+      "invalid_email": "Zadej platný e-mail.",
+      "placeholder": "email@example.com",
+      "submit": "Pozvat",
+      "submitting": "Zvu…",
+      "user_exists": "Uživatel už existuje"
+    },
+    "invited_badge": "Pozvaný",
+    "loading": "Načítám uživatele…",
+    "none": "—",
+    "retry": "Zkusit znovu",
+    "title": "Uživatelé"
+  },
+  "workspaces": {
+    "create": {
+      "created_hint": "Workspace vytvořen. Turso token vlož po přepnutí do workspace v Settings.",
+      "google_client_id_label": "Google Client ID",
+      "google_client_secret_label": "Google Client Secret",
+      "id_hint": "ID: <mono>{{id}}</mono> – po vytvoření už nejde změnit.",
+      "id_hint_invalid": "ID: <mono>(neplatné)</mono> – po vytvoření už nejde změnit.",
+      "invalid_name": "Zadej platné jméno workspace.",
+      "kind_aria_label": "Druh workspace",
+      "kind_label": "Druh workspace",
+      "kind_personal": "Osobní workspace",
+      "kind_team": "Týmový workspace",
+      "name_label": "Jméno",
+      "name_placeholder": "Např. Osobní",
+      "server_url_label": "Server URL",
+      "submit": "Vytvořit workspace",
+      "submit_busy": "Vytvářím…",
+      "title": "Přidat workspace",
+      "turso_url_hint": "Necháš-li prázdné, workspace startuje s lokální SQLite – token se vkládá až po přepnutí do workspace v Settings.",
+      "turso_url_label": "Turso URL (volitelné)",
+      "workspace_root_label": "Workspace root"
+    },
+    "list": {
+      "badge_active": "aktivní",
+      "badge_window_open": "okno otevřené",
+      "cancel_delete": "Zrušit",
+      "col_id": "ID",
+      "col_kind": "Druh",
+      "col_name": "Název",
+      "col_port": "Port",
+      "col_status": "Stav",
+      "confirm_delete": "Opravdu smazat",
+      "delete": "Smazat",
+      "delete_warning": "Workspace se odebere z appky, sidecar se zastaví a tokeny se smažou z Keychain. Data na disku (mirror složky a databáze) zůstávají — smaž je ručně, pokud je nechceš.",
+      "disable": "Vypnout",
+      "dismiss_error": "Zavřít",
+      "empty": "Zatím žádné workspaces.",
+      "enable": "Zapnout",
+      "intro": "Každý workspace má vlastní sidecar, port a data (osobní workspace vlastní Turso databázi, týmový workspace centrální server). Zdraví workspace bez otevřeného okna se dá zjistit jen tady – stavové eventy backendu chodí jen do okna daného workspace.",
+      "kind_personal": "osobní",
+      "kind_team": "týmový",
+      "loading": "Načítám workspaces…",
+      "open": "Otevřít",
+      "restart": "Restartovat",
+      "retry": "Zkusit znovu",
+      "status_awaiting_sign_in": "čeká na přihlášení",
+      "status_disabled": "vypnutý",
+      "status_running": "běží",
+      "status_stopped": "neběží",
+      "switch_to_window": "Přepnout na okno",
+      "title": "Workspaces"
+    }
+  }
+}

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -11,12 +12,15 @@ import SettingsAccessRequestsPanel from "./AccessRequests";
 import AccountSection from "./AccountSection";
 import WorkspacesSection from "./WorkspacesSection";
 import RunnersSection from "./RunnersSection";
-import SyncSection from "./SyncSection";
 import UpdateSection from "./UpdateSection";
 import { fetchAccessRequestCount, fetchMe } from "../api";
 import { isTauri } from "../lib/backend-url";
 import { showtimeInstalled } from "../lib/showtime";
 import type { AppUpdate } from "../lib/updater";
+import { lazyWithNamespaces } from "../i18n";
+
+// Settings › Sync reads the `files` namespace; it loads with the chunk.
+const SyncSection = lazyWithNamespaces(() => import("./SyncSection"), ["files"]);
 
 type Props = {
   appUpdate: AppUpdate;
@@ -33,16 +37,17 @@ type SubTab =
   | "access-requests";
 
 export default function SettingsPage({ appUpdate }: Props) {
+  const { t } = useTranslation("settings");
   const [tab, setTab] = useState<SubTab>(() => {
     const p = new URLSearchParams(window.location.search);
-    const t = p.get("settingsTab");
-    if (t === "actors") return "actors";
-    if (t === "account") return "account";
-    if (t === "workspaces") return "workspaces";
-    if (t === "runners") return "runners";
-    if (t === "sync") return "sync";
-    if (t === "users") return "users";
-    if (t === "access-requests") return "access-requests";
+    const q = p.get("settingsTab");
+    if (q === "actors") return "actors";
+    if (q === "account") return "account";
+    if (q === "workspaces") return "workspaces";
+    if (q === "runners") return "runners";
+    if (q === "sync") return "sync";
+    if (q === "users") return "users";
+    if (q === "access-requests") return "access-requests";
     return "general";
   });
   useEffect(() => {
@@ -121,24 +126,24 @@ export default function SettingsPage({ appUpdate }: Props) {
       <div className="mx-auto flex max-w-[840px] flex-col gap-8 px-8 py-8">
         <header>
           <h1 className="text-[20px] font-semibold tracking-tight text-[var(--color-text)]">
-            Nastavení
+            {t(($) => $.page.title)}
           </h1>
           {isGeneralTab && (
             <p className="mt-1 text-[13px] text-[var(--color-text-dim)]">
-              Změny se ukládají automaticky.
+              {t(($) => $.page.autosave)}
             </p>
           )}
           <Tabs value={tab} onValueChange={(v) => setTab(v as SubTab)} className="mt-3">
             <TabsList>
-              <TabsTrigger value="general">Obecné</TabsTrigger>
-              <TabsTrigger value="actors">Aktéři</TabsTrigger>
-              <TabsTrigger value="account">Účet</TabsTrigger>
-              <TabsTrigger value="workspaces">Workspaces</TabsTrigger>
-              <TabsTrigger value="runners">Runnery</TabsTrigger>
-              <TabsTrigger value="sync">Synchronizace</TabsTrigger>
+              <TabsTrigger value="general">{t(($) => $.page.tabs.general)}</TabsTrigger>
+              <TabsTrigger value="actors">{t(($) => $.page.tabs.actors)}</TabsTrigger>
+              <TabsTrigger value="account">{t(($) => $.page.tabs.account)}</TabsTrigger>
+              <TabsTrigger value="workspaces">{t(($) => $.page.tabs.workspaces)}</TabsTrigger>
+              <TabsTrigger value="runners">{t(($) => $.page.tabs.runners)}</TabsTrigger>
+              <TabsTrigger value="sync">{t(($) => $.page.tabs.sync)}</TabsTrigger>
               {canManage && (
                 <TabsTrigger value="access-requests">
-                  Žádosti o přístup
+                  {t(($) => $.page.tabs.access_requests)}
                   {pendingCount > 0 && (
                     <Badge className="bg-[var(--color-accent)] font-mono text-[var(--color-bg)]">
                       {pendingCount}
@@ -146,7 +151,7 @@ export default function SettingsPage({ appUpdate }: Props) {
                   )}
                 </TabsTrigger>
               )}
-              {isAdmin && <TabsTrigger value="users">Uživatelé</TabsTrigger>}
+              {isAdmin && <TabsTrigger value="users">{t(($) => $.page.tabs.users)}</TabsTrigger>}
             </TabsList>
           </Tabs>
         </header>
@@ -159,7 +164,11 @@ export default function SettingsPage({ appUpdate }: Props) {
 
         {tab === "runners" && <RunnersSection />}
 
-        {tab === "sync" && <SyncSection />}
+        {tab === "sync" && (
+          <Suspense fallback={null}>
+            <SyncSection />
+          </Suspense>
+        )}
 
         {tab === "users" && isAdmin && <SettingsUsersPanel />}
 
@@ -169,7 +178,7 @@ export default function SettingsPage({ appUpdate }: Props) {
 
         {(tab === "users" || tab === "access-requests") && !scopeKnown && (
           <div className="text-[13px] text-[var(--color-text-dim)]">
-            Načítám…
+            {t(($) => $.page.loading)}
           </div>
         )}
 
@@ -181,7 +190,7 @@ export default function SettingsPage({ appUpdate }: Props) {
 
             <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
               <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-                Integrace
+                {t(($) => $.page.integrations.title)}
               </div>
               <div className="flex items-start gap-3">
                 <Switch
@@ -195,24 +204,24 @@ export default function SettingsPage({ appUpdate }: Props) {
                     htmlFor="showtime-enabled"
                     className="cursor-pointer text-[13.5px] text-[var(--color-text)]"
                   >
-                    Showtime
+                    {t(($) => $.page.integrations.showtime.label)}
                   </Label>
                   <span className="block text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-                    Soubor <code className="font-mono">.showtime</code> se otevře jako náhled
-                    prezentace (náhled, který Showtime uloží do souboru při každém uložení).
-                    Když je Showtime nainstalovaný, náhled nabídne „Otevřít v Showtime“: deck
-                    se otevře v Showtime a agent, kterého Showtime spustí, dostane připojení
-                    k Portuni s tímto uzlem jako domovským a zrcadlo uzlu jako druhý pracovní
-                    adresář.
+                    <Trans
+                      t={t}
+                      ns="settings"
+                      i18nKey={($) => $.page.integrations.showtime.description}
+                      components={{ code: <code className="font-mono" /> }}
+                    />
                   </span>
                   <span className="mt-1 block text-[12.5px] text-[var(--color-text-dim)]">
                     {showtimeFound === null
-                      ? "Hledám Showtime.app…"
+                      ? t(($) => $.page.integrations.showtime.searching)
                       : showtimeFound
-                        ? "Showtime.app nalezena."
+                        ? t(($) => $.page.integrations.showtime.found)
                         : isTauri()
-                          ? "Showtime.app nenalezena (hledá se v /Applications a ~/Applications)."
-                          : "Otevření v Showtime je dostupné jen v desktopové aplikaci."}
+                          ? t(($) => $.page.integrations.showtime.not_found)
+                          : t(($) => $.page.integrations.showtime.desktop_only)}
                   </span>
                 </span>
               </div>

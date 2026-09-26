@@ -65,15 +65,16 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DbClient } from "../infra/db.js";
-import { z } from "zod";
+import { z, type ZodType } from "zod";
 import { getDb } from "../infra/db.js";
 import {
   parseJsonBody,
+  respondApiError,
   respondError,
   respondJson,
   type RequestIdentity,
 } from "../http/middleware.js";
-import { nodeVisibleTo } from "../auth/node-access.js";
+import { findVisibleNodeRow } from "./node-route-helpers.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import {
   deleteDraftSession,
@@ -90,7 +91,7 @@ import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { logAudit } from "../infra/audit.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
 import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
-import { respondHandoffRefusal } from "./session-handoff-errors.js";
+import { respondSessionRefusal } from "./session-refusals.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv, instanceClaudeConfigDir } from "../domain/runner/instances.js";
 import { resolveHostLabel, transcriptHostLabel } from "../domain/runner/hosts.js";
@@ -98,6 +99,7 @@ import { DbSessionStore } from "../domain/runner/store.js";
 import { sessionContentStoreForProcess } from "../domain/runner/store-content.js";
 import { EFFORT_LEVELS, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
+import { LOCALES } from "../shared/i18n/config.js";
 import type {
   SessionResumeInfo,
   SessionScopeRecord,
@@ -166,7 +168,7 @@ export async function handleListSessions(
       limit: url.searchParams.get("limit") ?? undefined,
     });
     if (!parsed.success) {
-      respondJson(res, 400, { error: "invalid query", code: "INVALID_QUERY", issues: parsed.error.issues });
+      respondApiError(res, 400, "INVALID_REQUEST", "invalid query", undefined, { issues: parsed.error.issues });
       return;
     }
     const db = getDb();
@@ -190,11 +192,7 @@ export async function handleListNodeSessions(
 ): Promise<void> {
   try {
     const db = getDb();
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [nodeId] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
+    if (!(await requireSessionNode(res, db, identity, nodeId))) return;
 
     const includeArchived = url.searchParams.get("include_archived") === "1";
     // The node's own read gate above decides whether the tab exists at all;
@@ -227,11 +225,42 @@ async function guardSessionAccess(
     return await sessionAccess(db, identity, sessionId, action);
   } catch (err) {
     if (err instanceof SessionAccessError) {
-      respondJson(res, 404, { error: err.message, code: err.code });
+      respondApiError(res, 404, err.code, err.message);
       return null;
     }
     throw err;
   }
+}
+
+// guardSessionAccess followed by the body parse of the mutating
+// single-session routes; null once either has answered.
+async function guardSessionBody<T>(
+  req: IncomingMessage,
+  res: ServerResponse,
+  db: DbClient,
+  identity: RequestIdentity,
+  sessionId: string,
+  action: SessionAccessAction,
+  schema: ZodType<T>,
+): Promise<{ existing: SessionRow; body: T } | null> {
+  const existing = await guardSessionAccess(res, db, identity, sessionId, action);
+  if (!existing) return null;
+  const body = await parseJsonBody(req, res, schema);
+  if (!body) return null;
+  return { existing, body };
+}
+
+// A thread's node must exist and be visible to the caller; answers 404
+// NODE_NOT_FOUND and returns false otherwise.
+async function requireSessionNode(
+  res: ServerResponse,
+  db: DbClient,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<boolean> {
+  if (await findVisibleNodeRow(db, identity, nodeId)) return true;
+  respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
+  return false;
 }
 
 // Raw SessionRow, not the curated SessionSummary other routes return: this
@@ -296,10 +325,9 @@ export async function handlePatchSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, PatchSessionBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", PatchSessionBody);
+    if (!guarded) return;
+    const { existing, body } = guarded;
 
     const isPlainRename = body.name !== undefined && Object.keys(body).length === 1;
     if (isPlainRename) {
@@ -313,7 +341,7 @@ export async function handlePatchSession(
     // "running" and passes; a bare change on any other state is refused.
     const touchesRunner = body.runner !== undefined || body.instance_id !== undefined;
     if (touchesRunner && existing.state !== "draft" && body.state === undefined) {
-      respondJson(res, 409, { error: "runner and instance can only change on a draft", code: "SESSION_NOT_DRAFT" });
+      respondApiError(res, 409, "SESSION_NOT_DRAFT", "runner and instance can only change on a draft");
       return;
     }
     // #426: the live half of a model change (session-runtime.ts's in-memory
@@ -367,10 +395,9 @@ export async function handleSetSessionModel(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, SetSessionModelBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", SetSessionModelBody);
+    if (!guarded) return;
+    const { body } = guarded;
     const updated = await getSessionRuntime().setModelAndEffort(sessionId, body);
     respondJson(res, 200, updated);
   } catch (err) {
@@ -394,10 +421,9 @@ export async function handleRenameSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, RenameSessionBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", RenameSessionBody);
+    if (!guarded) return;
+    const { existing, body } = guarded;
     const updated = await getSessionRuntime().renameSession(sessionId, body.name);
     await logAudit(identity.userId, "session_rename", "session", sessionId, { from: existing.name, to: updated.name });
     respondJson(res, 200, await toSummary(updated));
@@ -418,16 +444,22 @@ export async function handleTransitionSessionState(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, StateBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "stop", StateBody);
+    if (!guarded) return;
+    const { existing, body } = guarded;
     const target: SessionState = body.state;
     try {
       const updated = await transitionSessionState(db, identity.userId, sessionId, target);
       respondJson(res, 200, await toSummary(updated));
     } catch (transitionErr) {
-      respondJson(res, 409, { error: "invalid_transition", detail: String(transitionErr) });
+      respondApiError(
+        res,
+        409,
+        "INVALID_SESSION_TRANSITION",
+        `invalid session state transition from ${existing.state} to ${target}`,
+        { from: existing.state, to: target },
+        { detail: String(transitionErr) },
+      );
     }
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/state`, err);
@@ -544,6 +576,14 @@ async function sessionNodeName(db: DbClient, nodeId: string): Promise<string | n
 
 // --- Tasks (runner batch): starting a session's task and driving its run --
 
+// #538: the optional `locale` every session request that causes text for a
+// person carries -- POST /sessions, a message, Předat, Pokračovat v nové
+// session. Shared with api/agent-router.ts and api/sessions-ws.ts.
+export const RequestLocale = z.enum(LOCALES).optional();
+// The body of Předat and Pokračovat v nové session: nothing but the locale,
+// and an empty body is fine.
+export const SessionLocaleBody = z.object({ locale: RequestLocale });
+
 // Shared with api/agent-router.ts's POST /sessions: one schema, both routers.
 // brief/runner optional (#374): a thread opens empty (spec rule 5, "no
 // modal, no required field") -- omitting brief creates a draft instead of
@@ -567,6 +607,9 @@ export const StartSessionBody = z
       .string()
       .regex(/^wip\/sessions\/[A-Za-z0-9_-]+-handoff\.md$/, "handoff_path must be wip/sessions/<id>-handoff.md")
       .optional(),
+    // #538: the language of text the device writes for this thread (see
+    // SessionRequestOptions in domain/runner/session-runtime.ts).
+    locale: RequestLocale,
   })
   .refine((b) => !(b.handoff_path && b.brief), {
     message: "handoff_path cannot be combined with brief",
@@ -583,11 +626,7 @@ export async function handleStartSession(
     const body = await parseJsonBody(req, res, StartSessionBody);
     if (!body) return;
 
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
+    if (!(await requireSessionNode(res, db, identity, body.node_id))) return;
 
     // #460 "Navázat na handoff": a new thread from a handoff file of this
     // node -- the runtime reads the file off this device's mirror, resolves
@@ -600,6 +639,7 @@ export async function handleStartSession(
           nodeId: body.node_id,
           handoffPath: body.handoff_path,
           policy: body.policy,
+          locale: body.locale,
         });
         await logAudit(identity.userId, "session_start", "session", session.id, {
           node_id: body.node_id,
@@ -608,9 +648,9 @@ export async function handleStartSession(
         const updated = await getSession(db, session.id);
         respondJson(res, 201, { session: await toSummary(updated ?? session), run });
       } catch (err) {
-        if (respondHandoffRefusal(res, err)) return;
+        if (respondSessionRefusal(res, err)) return;
         if (err instanceof NoRunnerAvailableError) {
-          respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
+          respondApiError(res, 400, "NO_RUNNER_AVAILABLE", err.message);
           return;
         }
         throw err;
@@ -630,6 +670,7 @@ export async function handleStartSession(
         nodeId: body.node_id,
         model: body.model,
         effort: body.effort,
+        locale: body.locale,
       });
       await logAudit(identity.userId, "session_start", "session", session.id, {
         node_id: body.node_id,
@@ -639,15 +680,17 @@ export async function handleStartSession(
       return;
     }
     if (!body.runner) {
-      respondJson(res, 400, { error: "runner is required when brief is given", code: "RUNNER_REQUIRED" });
+      respondApiError(res, 400, "RUNNER_REQUIRED", "runner is required when brief is given");
       return;
     }
     if (!getAdapter(body.runner)) {
-      respondJson(res, 400, { error: `unknown runner '${body.runner}'`, code: "UNKNOWN_RUNNER" });
+      respondApiError(res, 400, "UNKNOWN_RUNNER", `unknown runner '${body.runner}'`, { runner: body.runner });
       return;
     }
     if (body.instance_id != null && (await getInstanceEnv(body.instance_id)) === null) {
-      respondJson(res, 400, { error: `unknown instance '${body.instance_id}'`, code: "UNKNOWN_INSTANCE" });
+      respondApiError(res, 400, "UNKNOWN_INSTANCE", `unknown instance '${body.instance_id}'`, {
+        instanceId: body.instance_id,
+      });
       return;
     }
 
@@ -660,6 +703,7 @@ export async function handleStartSession(
       policy: body.policy,
       model: body.model,
       effort: body.effort,
+      locale: body.locale,
     });
     await logAudit(identity.userId, "session_start", "session", session.id, {
       node_id: body.node_id,
@@ -687,7 +731,7 @@ export async function handleDeleteSession(
     const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
     if (!existing) return;
     if (existing.state !== "draft") {
-      respondJson(res, 409, { error: "only a draft session can be deleted", code: "NOT_A_DRAFT" });
+      respondApiError(res, 409, "NOT_A_DRAFT", "only a draft session can be deleted");
       return;
     }
     await deleteDraftSession(db, identity.userId, sessionId);
@@ -697,8 +741,9 @@ export async function handleDeleteSession(
   }
 }
 
-const MessageBody = z.object({
+export const MessageBody = z.object({
   text: z.string().trim().min(1),
+  locale: RequestLocale,
 });
 
 export async function handleSendSessionMessage(
@@ -709,22 +754,18 @@ export async function handleSendSessionMessage(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, MessageBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", MessageBody);
+    if (!guarded) return;
+    const { body } = guarded;
 
     try {
-      await getSessionRuntime().sendMessage(sessionId, body.text);
+      await getSessionRuntime().sendMessage(sessionId, body.text, { locale: body.locale });
     } catch (err) {
-      // #497: a resume with nothing to continue from on this device.
-      if (respondHandoffRefusal(res, err)) return;
+      // #497: a resume with nothing to continue from on this device; #530:
+      // NO_LIVE_RUN from the error's type.
+      if (respondSessionRefusal(res, err)) return;
       if (err instanceof NoRunnerAvailableError) {
-        respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
-        return;
-      }
-      if (err instanceof Error && err.message.includes("has no live run")) {
-        respondJson(res, 409, { error: err.message, code: "NO_LIVE_RUN" });
+        respondApiError(res, 400, "NO_RUNNER_AVAILABLE", err.message);
         return;
       }
       throw err;
@@ -749,15 +790,14 @@ export async function handleAnswerSessionQuestion(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, AnswerBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", AnswerBody);
+    if (!guarded) return;
+    const { body } = guarded;
 
     const runtime = getSessionRuntime();
     const pending = runtime.pendingQuestion(sessionId);
     if (!pending || pending.request_id !== requestId) {
-      respondJson(res, 409, { error: "no pending question with this request_id", code: "NO_PENDING_QUESTION" });
+      respondApiError(res, 409, "NO_PENDING_QUESTION", "no pending question with this request_id");
       return;
     }
     const decision: QuestionDecision = { by: identity.userId, value: body.decision.value, at: new Date().toISOString() };
@@ -802,12 +842,15 @@ export async function handleContinueSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "resume");
-    if (!existing) return;
-    const { session, run } = await getSessionRuntime().continueSession(sessionId);
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "resume", SessionLocaleBody);
+    if (!guarded) return;
+    const { body } = guarded;
+    const { session, run } = await getSessionRuntime().continueSession(sessionId, { locale: body.locale });
     await logAudit(identity.userId, "session_continue", "session", sessionId, { new_session_id: session.id });
     respondJson(res, 200, { session: await toSummary(session), run });
   } catch (err) {
+    // Same refusal mapping the agent router's continue route applies.
+    if (respondSessionRefusal(res, err)) return;
     respondError(res, `${req.method} /sessions/${sessionId}/continue`, err);
   }
 }
@@ -826,14 +869,15 @@ export async function handleHandoffSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
-    if (!existing) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "stop", SessionLocaleBody);
+    if (!guarded) return;
+    const { body } = guarded;
     try {
-      const { session, handoff_path } = await getSessionRuntime().handoff(sessionId);
+      const { session, handoff_path } = await getSessionRuntime().handoff(sessionId, { locale: body.locale });
       await logAudit(identity.userId, "session_handoff", "session", sessionId, { handoff_path });
       respondJson(res, 200, { session: await toSummary(session), handoff_path });
     } catch (err) {
-      if (respondHandoffRefusal(res, err)) return;
+      if (respondSessionRefusal(res, err)) return;
       throw err;
     }
   } catch (err) {
@@ -915,6 +959,9 @@ const RecordSessionBody = z.union([
     // v2 rule 5: resolved on the device, recorded here.
     runner: z.string().nullable().optional(),
     instance_id: z.string().nullable().optional(),
+    // #539: the language of the device's POST /sessions; the default name
+    // is written in it (English when an older sidecar sends none).
+    locale: RequestLocale,
   }),
   z.object({
     draft: z.literal(false).optional(),
@@ -941,11 +988,7 @@ export async function handleCreateSessionRecord(
     const body = await parseJsonBody(req, res, RecordSessionBody);
     if (!body) return;
 
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
+    if (!(await requireSessionNode(res, db, identity, body.node_id))) return;
 
     const store = new DbSessionStore(db);
     const session =
@@ -957,6 +1000,7 @@ export async function handleCreateSessionRecord(
             effort: body.effort,
             runner: body.runner ?? null,
             instance_id: body.instance_id ?? null,
+            locale: body.locale,
           })
         : await store.createSession({
             node_id: body.node_id,
@@ -992,10 +1036,9 @@ export async function handleCreateSessionRun(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, CreateRunBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", CreateRunBody);
+    if (!guarded) return;
+    const { body } = guarded;
 
     const run = await new DbSessionStore(db).createRun({
       session_id: sessionId,
@@ -1033,7 +1076,7 @@ export async function handlePatchSessionRun(
     const store = new DbSessionStore(db);
     const runs = await store.listRuns(sessionId);
     if (!runs.some((r) => r.id === runId)) {
-      respondJson(res, 404, { error: "run not found" });
+      respondApiError(res, 404, "RUN_NOT_FOUND", "run not found");
       return;
     }
     const body = await parseJsonBody(req, res, PatchRunBody);

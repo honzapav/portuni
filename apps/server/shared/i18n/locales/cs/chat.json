@@ -1,0 +1,257 @@
+{
+  "activity": {
+    "command_one": "{{count}} příkaz",
+    "command_few": "{{count}} příkazy",
+    "command_many": "{{count}} příkazu",
+    "command_other": "{{count}} příkazů",
+    "created_one": "vytvořeno {{count}}",
+    "created_few": "vytvořeno {{count}}",
+    "created_many": "vytvořeno {{count}}",
+    "created_other": "vytvořeno {{count}}",
+    "edited_one": "upraveno {{count}}",
+    "edited_few": "upraveno {{count}}",
+    "edited_many": "upraveno {{count}}",
+    "edited_other": "upraveno {{count}}",
+    "failed_one": "{{count}} selhal",
+    "failed_few": "{{count}} selhaly",
+    "failed_many": "{{count}} selhalo",
+    "failed_other": "{{count}} selhalo",
+    "fallback": "Aktivita",
+    "other_tool_one": "{{count}} × {{tool}}",
+    "other_tool_few": "{{count}} × {{tool}}",
+    "other_tool_many": "{{count}} × {{tool}}",
+    "other_tool_other": "{{count}} × {{tool}}",
+    "read_one": "Přečteno {{count}} soubor",
+    "read_few": "Přečteno {{count}} soubory",
+    "read_many": "Přečteno {{count}} souboru",
+    "read_other": "Přečteno {{count}} souborů",
+    "single_failed": "{{title}} · selhal",
+    "start": {
+      "created_one": "Vytvořeno {{count}}",
+      "created_few": "Vytvořeno {{count}}",
+      "created_many": "Vytvořeno {{count}}",
+      "created_other": "Vytvořeno {{count}}",
+      "edited_one": "Upraveno {{count}}",
+      "edited_few": "Upraveno {{count}}",
+      "edited_many": "Upraveno {{count}}",
+      "edited_other": "Upraveno {{count}}",
+      "thought_seconds_one": "Uvažoval {{count}} s",
+      "thought_seconds_few": "Uvažoval {{count}} s",
+      "thought_seconds_many": "Uvažoval {{count}} s",
+      "thought_seconds_other": "Uvažoval {{count}} s"
+    },
+    "thought": "Uvažoval",
+    "thought_seconds_one": "uvažoval {{count}} s",
+    "thought_seconds_few": "uvažoval {{count}} s",
+    "thought_seconds_many": "uvažoval {{count}} s",
+    "thought_seconds_other": "uvažoval {{count}} s",
+    "working": "Pracuji…"
+  },
+  "approval": {
+    "no": "Ne",
+    "yes": "Ano"
+  },
+  "chain_of_thought": {
+    "title": "Myšlenkový postup"
+  },
+  "composer": {
+    "effort": {
+      "placeholder": "Úsilí (výchozí)",
+      "title": "Úsilí uvažování — projeví se od příštího běhu"
+    },
+    "model": {
+      "placeholder": "Model (výchozí)",
+      "title": "Model"
+    },
+    "placeholder": {
+      "default": "Napiš zprávu…",
+      "elsewhere": "Transkript je na zařízení {{host}}; pokračuj tam, nebo si vlákno nech předat.",
+      "waiting": "Relace čeká na odpověď na otázku výše."
+    },
+    "runner": {
+      "default_instance": "výchozí instance",
+      "default_option": "{{label}} (výchozí)",
+      "none_signed_in": "Žádný runner není přihlášený",
+      "title": "Runner a instance — platí pro celé vlákno, mění se jen u nového"
+    },
+    "stop": "Zastavit",
+    "submit": "Odeslat"
+  },
+  "context": {
+    "cache": "Cache",
+    "input": "Vstup",
+    "output": "Výstup",
+    "percent": "{{percent}} %",
+    "ring_label": "Využití kontextového okna",
+    "tokens_one": "{{tokens}} token",
+    "tokens_few": "{{tokens}} tokeny",
+    "tokens_many": "{{tokens}} tokenu",
+    "tokens_other": "{{tokens}} tokenů",
+    "under_one_percent": "<1 %"
+  },
+  "conversation": {
+    "empty": {
+      "description": "Napiš první zprávu níže.",
+      "title": "Zatím žádné zprávy"
+    },
+    "loading": "Načítám konverzaci…"
+  },
+  "elsewhere": {
+    "hint": "Vlákno běželo na zařízení {{host}} a jeho obsah zůstává tam — Portuni konverzace nikam nekopíruje. Chceš-li v něm pokračovat tady, použij tam akci Předat a na vzniklý soubor handoffu navaž v záložce Relace.",
+    "title": "Transkript je na zařízení {{host}}"
+  },
+  "error": {
+    "save_effort": "Úsilí se nepodařilo uložit: {{error}}",
+    "save_model": "Model se nepodařilo uložit: {{error}}",
+    "save_runner": "Runner a instanci se nepodařilo uložit: {{error}}"
+  },
+  "event": {
+    "denied": {
+      "connector_disabled": "Tento konektor je pro běh vypnutý. Agent má použít server Portuni.",
+      "denied_by_user": "Zamítli jste.",
+      "not_answered": "Na otázku nikdo neodpověděl.",
+      "run_ended": "Běh skončil dřív, než přišla odpověď.",
+      "turn_stopped": "Tah byl zastaven dřív, než přišla odpověď.",
+      "write_no_path": "Volání {{tool}} nemá {{field}}, zápis se nedal ověřit.",
+      "write_outside_mirror": "Zápis do {{path}} byl zablokován: je mimo mirror tohoto uzlu.",
+      "write_outside_root": "Zápis do {{path}} byl zablokován: je mimo složku Portuni."
+    },
+    "error": {
+      "browser_sign_in_declined": "{{server}} žádá přihlášení v prohlížeči. Chat ho otevřít neumí, žádost byla odmítnuta.",
+      "provider_failed": "Běh skončil chybou poskytovatele ({{subtype}}).",
+      "provider_not_logged_in": "Claude Code není na tomto zařízení přihlášený."
+    },
+    "question": {
+      "agent_question": {
+        "title": "Otázka od agenta"
+      },
+      "mcp_confirmation": {
+        "title": "Potvrzení pro {{server}}"
+      },
+      "plan_approval": {
+        "title": "Schválit plán?"
+      },
+      "scope_expand": {
+        "detail": "Agent chce přečíst uzel mimo aktuální rozsah tohoto vlákna.",
+        "title": "Rozšířit rozsah vlákna?"
+      }
+    }
+  },
+  "file_change": {
+    "create": "vytvořen",
+    "delete": "smazán",
+    "edit": "upraven",
+    "rename": "přejmenován"
+  },
+  "header": {
+    "cancel_rename": "Zrušit",
+    "close": "Uzavřít",
+    "closing": "Zavírám…",
+    "continue": "Pokračovat v nové session",
+    "continuing": "Pokračuji…",
+    "hand_off": "Předat na jiné zařízení",
+    "handing_off": "Předávám…",
+    "rename": "Přejmenovat",
+    "save_name": "Uložit název"
+  },
+  "loader": {
+    "title": "Načítání"
+  },
+  "message": {
+    "next_branch": "Další větev",
+    "previous_branch": "Předchozí větev"
+  },
+  "model": {
+    "description": {
+      "balanced": "Vyvážený model pro každodenní práci.",
+      "fastest": "Nejrychlejší a nejlevnější model.",
+      "most_capable": "Nejschopnější model, pomalejší a dražší."
+    }
+  },
+  "notice": {
+    "dismiss": "Skrýt",
+    "handed_off": "Vlákno je předané. Shrnutí je v souboru <code>{{path}}</code>; po synchronizaci na něj na druhém zařízení navážeš v záložce Relace.",
+    "suspended": "Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě jednou."
+  },
+  "question": {
+    "answer_placeholder": "Odpověď…",
+    "send": "Odeslat"
+  },
+  "reasoning": {
+    "step_label": "Uvažování",
+    "thinking": "Přemýšlím…",
+    "thought_few_seconds": "Uvažoval několik sekund",
+    "thought_for_one": "Uvažoval {{count}} s",
+    "thought_for_few": "Uvažoval {{count}} s",
+    "thought_for_many": "Uvažoval {{count}} s",
+    "thought_for_other": "Uvažoval {{count}} s"
+  },
+  "sample": {
+    "message": "Vlákno s {{runnerName}}."
+  },
+  "streamdown": {
+    "close": "Zavřít",
+    "copied": "Zkopírováno",
+    "copy_code": "Kopírovat kód",
+    "copy_link": "Kopírovat odkaz",
+    "copy_table": "Kopírovat tabulku",
+    "copy_table_as_csv": "Kopírovat tabulku jako CSV",
+    "copy_table_as_markdown": "Kopírovat tabulku jako Markdown",
+    "copy_table_as_tsv": "Kopírovat tabulku jako TSV",
+    "download_diagram": "Stáhnout diagram",
+    "download_diagram_as_mmd": "Stáhnout diagram jako MMD",
+    "download_diagram_as_png": "Stáhnout diagram jako PNG",
+    "download_diagram_as_svg": "Stáhnout diagram jako SVG",
+    "download_file": "Stáhnout soubor",
+    "download_image": "Stáhnout obrázek",
+    "download_table": "Stáhnout tabulku",
+    "download_table_as_csv": "Stáhnout tabulku jako CSV",
+    "download_table_as_markdown": "Stáhnout tabulku jako Markdown",
+    "exit_fullscreen": "Ukončit režim celé obrazovky",
+    "external_link_warning": "Chystáš se otevřít externí web.",
+    "image_not_available": "Obrázek není k dispozici",
+    "mermaid_format_mmd": "MMD",
+    "mermaid_format_png": "PNG",
+    "mermaid_format_svg": "SVG",
+    "open_external_link": "Otevřít externí odkaz?",
+    "open_link": "Otevřít odkaz",
+    "reset_view": "Obnovit přiblížení a posun",
+    "table_format_csv": "CSV",
+    "table_format_markdown": "Markdown",
+    "table_format_tsv": "TSV",
+    "view_fullscreen": "Zobrazit na celou obrazovku",
+    "zoom_in": "Přiblížit",
+    "zoom_out": "Oddálit"
+  },
+  "tool": {
+    "error": "Chyba",
+    "parameters": "Parametry",
+    "result": "Výsledek",
+    "status": {
+      "completed": "Dokončeno",
+      "failed": "Chyba",
+      "started": "Běží"
+    }
+  },
+  "transcript": {
+    "compaction": "Komprese kontextu",
+    "interrupted": "Přerušeno",
+    "question": "Otázka: <title>{{title}}</title>",
+    "run_ended": {
+      "error": "Běh skončil: chyba",
+      "host_lost": "Běh skončil: proces osiřel",
+      "limit": "Běh skončil: limit",
+      "other": "Běh skončil: {{reason}}"
+    },
+    "summary_saved": "Shrnutí uloženo"
+  },
+  "working": {
+    "continuing": "Pokračuji…",
+    "elapsed_one": "{{count}} s",
+    "elapsed_few": "{{count}} s",
+    "elapsed_many": "{{count}} s",
+    "elapsed_other": "{{count}} s",
+    "starting": "Spouštím…",
+    "thinking": "Přemýšlím…"
+  }
+}

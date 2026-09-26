@@ -1,0 +1,231 @@
+{
+  "activity": {
+    "command_one": "{{count}} command",
+    "command_other": "{{count}} commands",
+    "created_one": "created {{count}}",
+    "created_other": "created {{count}}",
+    "edited_one": "edited {{count}}",
+    "edited_other": "edited {{count}}",
+    "failed_one": "{{count}} failed",
+    "failed_other": "{{count}} failed",
+    "fallback": "Activity",
+    "other_tool_one": "{{count}} × {{tool}}",
+    "other_tool_other": "{{count}} × {{tool}}",
+    "read_one": "Read {{count}} file",
+    "read_other": "Read {{count}} files",
+    "single_failed": "{{title}} · failed",
+    "start": {
+      "created_one": "Created {{count}}",
+      "created_other": "Created {{count}}",
+      "edited_one": "Edited {{count}}",
+      "edited_other": "Edited {{count}}",
+      "thought_seconds_one": "Thought for {{count}} s",
+      "thought_seconds_other": "Thought for {{count}} s"
+    },
+    "thought": "Thought",
+    "thought_seconds_one": "thought for {{count}} s",
+    "thought_seconds_other": "thought for {{count}} s",
+    "working": "Working…"
+  },
+  "approval": {
+    "no": "No",
+    "yes": "Yes"
+  },
+  "chain_of_thought": {
+    "title": "Chain of thought"
+  },
+  "composer": {
+    "effort": {
+      "placeholder": "Effort (default)",
+      "title": "Reasoning effort, takes effect from the next run"
+    },
+    "model": {
+      "placeholder": "Model (default)",
+      "title": "Model"
+    },
+    "placeholder": {
+      "default": "Write a message…",
+      "elsewhere": "The transcript is on the device {{host}}. Continue there, or have the thread handed off.",
+      "waiting": "The thread is waiting for an answer to the question above."
+    },
+    "runner": {
+      "default_instance": "default instance",
+      "default_option": "{{label}} (default)",
+      "none_signed_in": "No runner is signed in",
+      "title": "Runner and instance, set for the whole thread; only a new thread can change it"
+    },
+    "stop": "Stop",
+    "submit": "Send"
+  },
+  "context": {
+    "cache": "Cache",
+    "input": "Input",
+    "output": "Output",
+    "percent": "{{percent}}%",
+    "ring_label": "Context window usage",
+    "tokens_one": "{{tokens}} token",
+    "tokens_other": "{{tokens}} tokens",
+    "under_one_percent": "<1%"
+  },
+  "conversation": {
+    "empty": {
+      "description": "Write the first message below.",
+      "title": "No messages yet"
+    },
+    "loading": "Loading the conversation…"
+  },
+  "elsewhere": {
+    "hint": "The thread ran on the device {{host}} and its content stays there; Portuni does not copy conversations anywhere. To continue it here, use Hand off there and continue from the handoff file in the Threads tab.",
+    "title": "The transcript is on the device {{host}}"
+  },
+  "error": {
+    "save_effort": "Could not save the effort: {{error}}",
+    "save_model": "Could not save the model: {{error}}",
+    "save_runner": "Could not save the runner and instance: {{error}}"
+  },
+  "event": {
+    "denied": {
+      "connector_disabled": "This connector is turned off for the run. The agent should use the Portuni server.",
+      "denied_by_user": "You declined.",
+      "not_answered": "The question was not answered.",
+      "run_ended": "The run ended before an answer arrived.",
+      "turn_stopped": "The turn was stopped before an answer arrived.",
+      "write_no_path": "The {{tool}} call has no {{field}}, so the write could not be checked.",
+      "write_outside_mirror": "Writing to {{path}} was blocked: it is outside this node's mirror.",
+      "write_outside_root": "Writing to {{path}} was blocked: it is outside the Portuni folder."
+    },
+    "error": {
+      "browser_sign_in_declined": "{{server}} asked for a sign-in in a browser. The chat cannot open one, so the request was declined.",
+      "provider_failed": "The run ended with a provider error ({{subtype}}).",
+      "provider_not_logged_in": "Claude Code is not signed in on this device."
+    },
+    "question": {
+      "agent_question": {
+        "title": "Question from the agent"
+      },
+      "mcp_confirmation": {
+        "title": "Confirm for {{server}}"
+      },
+      "plan_approval": {
+        "title": "Approve the plan?"
+      },
+      "scope_expand": {
+        "detail": "The agent wants to read a node outside this thread's current scope.",
+        "title": "Expand the thread's scope?"
+      }
+    }
+  },
+  "file_change": {
+    "create": "created",
+    "delete": "deleted",
+    "edit": "edited",
+    "rename": "renamed"
+  },
+  "header": {
+    "cancel_rename": "Cancel",
+    "close": "Close thread",
+    "closing": "Closing…",
+    "continue": "Continue in a new thread",
+    "continuing": "Continuing…",
+    "hand_off": "Hand off to another device",
+    "handing_off": "Handing off…",
+    "rename": "Rename",
+    "save_name": "Save name"
+  },
+  "loader": {
+    "title": "Loading"
+  },
+  "message": {
+    "next_branch": "Next branch",
+    "previous_branch": "Previous branch"
+  },
+  "model": {
+    "description": {
+      "balanced": "Balanced model for everyday work.",
+      "fastest": "The fastest and cheapest model.",
+      "most_capable": "The most capable model, slower and more expensive."
+    }
+  },
+  "notice": {
+    "dismiss": "Hide",
+    "handed_off": "The thread is handed off. The summary is in <code>{{path}}</code>; once it syncs, continue from it on the other device in the Threads tab.",
+    "suspended": "The process has ended. The next message starts the conversation again, and the context so far goes to the model once more."
+  },
+  "question": {
+    "answer_placeholder": "Answer…",
+    "send": "Send"
+  },
+  "reasoning": {
+    "step_label": "Reasoning",
+    "thinking": "Thinking…",
+    "thought_few_seconds": "Thought for a few seconds",
+    "thought_for_one": "Thought for {{count}} s",
+    "thought_for_other": "Thought for {{count}} s"
+  },
+  "sample": {
+    "message": "Thread with {{runnerName}}."
+  },
+  "streamdown": {
+    "close": "Close",
+    "copied": "Copied",
+    "copy_code": "Copy code",
+    "copy_link": "Copy link",
+    "copy_table": "Copy table",
+    "copy_table_as_csv": "Copy table as CSV",
+    "copy_table_as_markdown": "Copy table as Markdown",
+    "copy_table_as_tsv": "Copy table as TSV",
+    "download_diagram": "Download diagram",
+    "download_diagram_as_mmd": "Download diagram as MMD",
+    "download_diagram_as_png": "Download diagram as PNG",
+    "download_diagram_as_svg": "Download diagram as SVG",
+    "download_file": "Download file",
+    "download_image": "Download image",
+    "download_table": "Download table",
+    "download_table_as_csv": "Download table as CSV",
+    "download_table_as_markdown": "Download table as Markdown",
+    "exit_fullscreen": "Exit full screen",
+    "external_link_warning": "You are about to open an external website.",
+    "image_not_available": "Image not available",
+    "mermaid_format_mmd": "MMD",
+    "mermaid_format_png": "PNG",
+    "mermaid_format_svg": "SVG",
+    "open_external_link": "Open the external link?",
+    "open_link": "Open link",
+    "reset_view": "Reset zoom and pan",
+    "table_format_csv": "CSV",
+    "table_format_markdown": "Markdown",
+    "table_format_tsv": "TSV",
+    "view_fullscreen": "View full screen",
+    "zoom_in": "Zoom in",
+    "zoom_out": "Zoom out"
+  },
+  "tool": {
+    "error": "Error",
+    "parameters": "Parameters",
+    "result": "Result",
+    "status": {
+      "completed": "Completed",
+      "failed": "Error",
+      "started": "Running"
+    }
+  },
+  "transcript": {
+    "compaction": "Context compacted",
+    "interrupted": "Interrupted",
+    "question": "Question: <title>{{title}}</title>",
+    "run_ended": {
+      "error": "The run ended with an error.",
+      "host_lost": "The run ended: its process was orphaned.",
+      "limit": "The run ended: the provider's limit was reached.",
+      "other": "The run ended: {{reason}}"
+    },
+    "summary_saved": "Summary saved"
+  },
+  "working": {
+    "continuing": "Continuing…",
+    "elapsed_one": "{{count}} s",
+    "elapsed_other": "{{count}} s",
+    "starting": "Starting…",
+    "thinking": "Thinking…"
+  }
+}

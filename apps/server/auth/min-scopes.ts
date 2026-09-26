@@ -99,6 +99,8 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/auth/users/admin" && m === "GET") return "admin";
   if (pathname === "/auth/users/invite" && m === "POST") return "admin";
   if (pathname === "/me" && m === "GET") return "read";
+  // #538: a user changes only their own row (the UI language).
+  if (pathname === "/me" && m === "PATCH") return "read";
   if (pathname === "/graph" && m === "GET") return "read";
   // Přehled tab (#196): the aggregate is readable at "read", same as
   // /graph -- the one manage-gated field inside it (pending access

@@ -18,6 +18,8 @@
 // `UIMessage["role"]`, and `MessageResponse` loads Streamdown's
 // cjk/code/math/mermaid plugins lazily (lib/streamdown-plugins.ts) instead
 // of bundling all four statically.
+// The branch buttons' labels and Streamdown's own labels come from the
+// `chat` catalog (#536).
 
 "use client";
 
@@ -46,6 +48,8 @@ import {
   useState,
 } from "react";
 import { Streamdown } from "streamdown";
+import { useTranslation } from "react-i18next";
+import { useStreamdownTranslations } from "@/lib/streamdown-translations";
 
 // Own union, not `UIMessage["role"]` (this repo does not depend on the `ai`
 // package -- see the token/dependency rules in
@@ -281,10 +285,11 @@ export const MessageBranchPrevious = ({
   ...props
 }: MessageBranchPreviousProps) => {
   const { goToPrevious, totalBranches } = useMessageBranch();
+  const { t } = useTranslation("chat");
 
   return (
     <Button
-      aria-label="Previous branch"
+      aria-label={t(($) => $.message.previous_branch)}
       disabled={totalBranches <= 1}
       onClick={goToPrevious}
       size="icon-sm"
@@ -304,10 +309,11 @@ export const MessageBranchNext = ({
   ...props
 }: MessageBranchNextProps) => {
   const { goToNext, totalBranches } = useMessageBranch();
+  const { t } = useTranslation("chat");
 
   return (
     <Button
-      aria-label="Next branch"
+      aria-label={t(($) => $.message.next_branch)}
       disabled={totalBranches <= 1}
       onClick={goToNext}
       size="icon-sm"
@@ -346,6 +352,7 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => {
     const plugins = useStreamdownPlugins();
+    const translations = useStreamdownTranslations();
     return (
       <Streamdown
         className={cn(
@@ -353,6 +360,7 @@ export const MessageResponse = memo(
           className
         )}
         plugins={plugins}
+        translations={translations}
         {...props}
       />
     );

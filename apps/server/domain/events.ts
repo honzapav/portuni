@@ -12,6 +12,15 @@ export interface SupersedeEventResult {
   node_id: string;
 }
 
+// #530: an event id that matches no row; callers test the type, never the
+// message text.
+export class EventNotFoundError extends Error {
+  constructor(readonly eventId: string) {
+    super(`event ${eventId} not found`);
+    this.name = "EventNotFoundError";
+  }
+}
+
 export async function supersedeEventInternal(
   db: DbClient,
   userId: string,
@@ -26,7 +35,7 @@ export async function supersedeEventInternal(
     args: [args.eventId],
   });
   if (existing.rows.length === 0) {
-    throw new Error(`event ${args.eventId} not found`);
+    throw new EventNotFoundError(args.eventId);
   }
   const oldRow = existing.rows[0];
   const nodeId = oldRow.node_id as string;

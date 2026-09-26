@@ -18,7 +18,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
-import { parseJsonBody, respondError, respondJson } from "../http/middleware.js";
+import { parseJsonBody, respondApiError, respondError, respondJson } from "../http/middleware.js";
 import { detectAll, getAdapter } from "../domain/runner/registry.js";
 import { EFFORT_LEVELS } from "../domain/runner/types.js";
 import {
@@ -34,7 +34,7 @@ import type { RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
 
 function respondInstanceError(res: ServerResponse, ctx: string, err: unknown): void {
   if (err instanceof InstanceEnvKeyRefusedError || err instanceof InstanceDefaultsKeyRefusedError) {
-    respondJson(res, 400, { error: err.message, code: err.code });
+    respondApiError(res, 400, err.code, err.message, err.params);
     return;
   }
   respondError(res, ctx, err);
@@ -61,7 +61,7 @@ export async function handleListRunnerModels(
   try {
     const adapter = getAdapter(runnerId);
     if (!adapter) {
-      respondJson(res, 404, { error: `unknown runner '${runnerId}'`, code: "UNKNOWN_RUNNER" });
+      respondApiError(res, 404, "UNKNOWN_RUNNER", `unknown runner '${runnerId}'`, { runner: runnerId });
       return;
     }
     const models = await adapter.models();
@@ -114,6 +114,13 @@ async function findInstance(id: string): Promise<RunnerInstanceSummary | null> {
   return instances.find((i) => i.id === id) ?? null;
 }
 
+// False, with the 404 already sent, when no instance has this id.
+async function requireInstance(res: ServerResponse, instanceId: string): Promise<boolean> {
+  if (await findInstance(instanceId)) return true;
+  respondApiError(res, 404, "INSTANCE_NOT_FOUND", "instance not found", { instanceId });
+  return false;
+}
+
 const UpdateInstanceBody = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   runner: z.string().trim().min(1).optional(),
@@ -127,10 +134,7 @@ export async function handleUpdateRunnerInstance(
   instanceId: string,
 ): Promise<void> {
   try {
-    if (!(await findInstance(instanceId))) {
-      respondJson(res, 404, { error: "instance not found" });
-      return;
-    }
+    if (!(await requireInstance(res, instanceId))) return;
     const body = await parseJsonBody(req, res, UpdateInstanceBody);
     if (!body) return;
     const updated = await updateInstance(instanceId, body);
@@ -146,10 +150,7 @@ export async function handleDeleteRunnerInstance(
   instanceId: string,
 ): Promise<void> {
   try {
-    if (!(await findInstance(instanceId))) {
-      respondJson(res, 404, { error: "instance not found" });
-      return;
-    }
+    if (!(await requireInstance(res, instanceId))) return;
     await deleteInstance(instanceId);
     respondJson(res, 200, { deleted: true });
   } catch (err) {
@@ -167,10 +168,7 @@ export async function handleSetRunnerInstanceOrgDefault(
   instanceId: string,
 ): Promise<void> {
   try {
-    if (!(await findInstance(instanceId))) {
-      respondJson(res, 404, { error: "instance not found" });
-      return;
-    }
+    if (!(await requireInstance(res, instanceId))) return;
     const body = await parseJsonBody(req, res, OrgDefaultBody);
     if (!body) return;
     await setOrgDefault(body.org_id, instanceId);

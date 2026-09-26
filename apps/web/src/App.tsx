@@ -1,7 +1,7 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { displayError } from "./errors";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Sidebar, { type AppView } from "./components/Sidebar";
-import DetailPane from "./components/DetailPane";
-import SettingsPage from "./components/SettingsPage";
 import WorkspaceView from "./components/WorkspaceView";
 import OverviewView from "./components/OverviewView";
 import EditorFullscreen from "./components/EditorFullscreen";
@@ -36,11 +36,10 @@ import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { deriveWorkspaceNodeRows } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
+import { invoke } from "./lib/tauri-invoke";
 import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
 import { pullNodeCount } from "./lib/remote-watch-view";
-import { pluralFiles } from "./lib/plural";
-import SyncOverview from "./components/SyncOverview";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -54,13 +53,20 @@ import {
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
 // bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
 // initial bundle by ~70 % and keeps the marketing/docs sites snappy.
-const GraphView = lazy(() => import("./components/GraphView"));
+const GraphView = lazyWithNamespaces(() => import("./components/GraphView"), ["graph"]);
+// The detail pane loads with its namespaces (node, files), so its first
+// frame never shows a bare key.
+const DetailPane = lazyWithNamespaces(() => import("./components/DetailPane"), ["node", "files", "settings"]);
+const SyncOverview = lazyWithNamespaces(() => import("./components/SyncOverview"), ["files"]);
+// Settings load with the `settings` namespace. The detail pane loads it too:
+// its access request control and list (AccessRequests.tsx) read `settings`.
+const SettingsPage = lazyWithNamespaces(() => import("./components/SettingsPage"), ["settings"]);
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import { loadOpenNodes, saveOpenNodes } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
-import { handoffErrorText } from "./lib/handoff-refusal";
+import { lazyWithNamespaces, syncAccountLocale } from "./i18n";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
 // Náhled by default; everything else starts in the source editor.
@@ -82,7 +88,6 @@ export function isHtmlPath(relPath: string): boolean {
 // (a plain single-window close outside any quit).
 async function declineExit(): Promise<void> {
   if (!isTauri()) return;
-  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("decline_exit").catch(() => undefined);
 }
 
@@ -97,6 +102,7 @@ async function destroyCurrentWindow(): Promise<void> {
 }
 
 export default function App() {
+  const { t } = useTranslation("common");
   const [graph, setGraph] = useState<GraphPayload | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
@@ -184,7 +190,10 @@ export default function App() {
     let cancelled = false;
     void fetchMe()
       .then((me) => {
-        if (cancelled || !isGlobalScope(me.global_scope)) return;
+        if (cancelled) return;
+        // The account's language wins over the boot guess (cache / OS).
+        void syncAccountLocale(me.locale);
+        if (!isGlobalScope(me.global_scope)) return;
         setCanCreateNode(scopeAtLeast(me.global_scope, CREATE_NODE_SCOPE));
       })
       .catch(() => {
@@ -218,7 +227,7 @@ export default function App() {
         setGraph(g);
         setGraphError(null);
       })
-      .catch((err) => setGraphError(String(err)));
+      .catch((err) => setGraphError(displayError(err)));
   }, []);
 
   // Sync URL with selected node
@@ -281,7 +290,7 @@ export default function App() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setDetailError(String(err));
+        setDetailError(displayError(err));
         setDetailLoading(false);
       });
     return () => {
@@ -492,7 +501,7 @@ export default function App() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setWorkspaceDetailError(String(err));
+        setWorkspaceDetailError(displayError(err));
         setWorkspaceDetailLoading(false);
       });
     return () => {
@@ -507,7 +516,7 @@ export default function App() {
       setWorkspaceNodeDetail(n);
       setWorkspaceDetailError(null);
     } catch (err) {
-      setWorkspaceDetailError(String(err));
+      setWorkspaceDetailError(displayError(err));
     }
   }, [selectedWorkspaceNodeId]);
 
@@ -610,13 +619,13 @@ export default function App() {
         // surface, so it reads as a failure instead of a click that did
         // nothing; another open node's refetch stays silent, as before.
         if (selectedWorkspaceNodeIdRef.current !== nodeId) return;
-        setWorkspaceDetailError(`Vlákna uzlu se nepodařilo načíst: ${String(e)}`);
+        setWorkspaceDetailError(t(($) => $.app.thread_error.load_failed, { error: displayError(e) }));
       })
       .finally(() => {
         nodeThreadRefetches.current.delete(nodeId);
         if (entry.trailing && openNodeIdsRef.current.includes(nodeId)) refresh(nodeId);
       });
-  }, []);
+  }, [t]);
   useEffect(() => {
     for (const id of openNodeIds) refreshNodeSessions(id);
   }, [openNodeIds, refreshNodeSessions]);
@@ -820,7 +829,7 @@ export default function App() {
       const now = Date.now();
       if (now - lastRun < 500) return;
       lastRun = now;
-      refetchAll().catch((err) => setGraphError(String(err)));
+      refetchAll().catch((err) => setGraphError(displayError(err)));
       refetchWorkspaceDetail().catch(() => undefined);
     };
     window.addEventListener("focus", handler);
@@ -920,10 +929,10 @@ export default function App() {
       sessionStore.put({ ...before, name, name_is_custom: true });
       void renamePersistentSession(session.id, name).catch((e) => {
         sessionStore.put(before);
-        setWorkspaceDetailError(`Vlákno se nepodařilo přejmenovat: ${String(e)}`);
+        setWorkspaceDetailError(t(($) => $.app.thread_error.rename_failed, { error: displayError(e) }));
       });
     },
-    [sessionStore],
+    [sessionStore, t],
   );
 
   // The × on a thread's own sub-row (#374): a draft with no first message
@@ -952,10 +961,10 @@ export default function App() {
   const workspaceHandoffTask = useCallback(
     (session: SessionSummary) => {
       void handoffSession(session.id).catch((e) => {
-        setWorkspaceDetailError(`Vlákno se nepodařilo předat: ${handoffErrorText(e)}`);
+        setWorkspaceDetailError(t(($) => $.app.thread_error.handoff_failed, { error: displayError(e) }));
       });
     },
-    [],
+    [t],
   );
 
   // Close a node: drop it from the open set. Its sessions keep running on
@@ -1026,25 +1035,25 @@ export default function App() {
         {graphError && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="rounded-md border border-red-900 bg-red-950/30 px-6 py-4 text-[13.5px] text-red-300">
-              <div className="mb-2 font-semibold">Nepodařilo se načíst graf</div>
+              <div className="mb-2 font-semibold">{t(($) => $.app.graph_error.title)}</div>
               <div className="font-mono text-[13.5px] opacity-80">
                 {graphError}
               </div>
               <div className="mt-3 text-[13.5px] text-red-200/70">
-                Běží Portuni server na portu 4011?
+                {t(($) => $.app.graph_error.hint)}
               </div>
             </div>
           </div>
         )}
         {/*
-          Jen pohledy, které graph skutečně konzumují. Overview i Nastavení
-          se renderují bez něj (a Overview nese vlastní loading stav), takže
-          jinak by se tenhle absolutně pozicovaný overlay při startu
-          překrýval s jejich obsahem ve stejném místě.
+          Only the views that actually consume the graph. Overview and
+          Settings render without it (and Overview carries its own loading
+          state), so otherwise this absolutely positioned overlay would
+          overlap their content in the same place at startup.
         */}
         {!graph && !graphError && (view === "graph" || view === "workspace") && (
           <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
-            Načítám graf...
+            {t(($) => $.app.graph_loading)}
           </div>
         )}
         {view === "overview" && (
@@ -1062,7 +1071,7 @@ export default function App() {
           <Suspense
             fallback={
               <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
-                Načítám graf...
+                {t(($) => $.app.graph_loading)}
               </div>
             }
           >
@@ -1116,7 +1125,9 @@ export default function App() {
           </div>
         )}
         {view === "settings" && (
-          <SettingsPage appUpdate={appUpdate} />
+          <Suspense fallback={null}>
+            <SettingsPage appUpdate={appUpdate} />
+          </Suspense>
         )}
       </main>
 
@@ -1138,27 +1149,29 @@ export default function App() {
             />
           </aside>
         ) : (
-          <DetailPane
-            node={nodeDetail}
-            graph={graph}
-            loading={detailLoading}
-            error={detailError}
-            onSelect={setSelectedId}
-            canGoBack={historyRef.current.length > 0}
-            onBack={goBack}
-            onMutate={refetchAll}
-            onOpenFile={openFileInEditor}
-            onOpenChat={openSessionChat}
-            onSessionStarted={(result) => {
-              // Graf has no chat surface of its own, so a task started here
-              // lands in Práce: the node opens and the fresh session is the
-              // thread it shows. Without this the run is live with nowhere
-              // in the UI showing it.
-              registerSessionStarted(result);
-              if (result.session.node_id) openSessionChat(result.session.node_id, result.session.id);
-            }}
-            liveSessionStates={liveSessionStates}
-          />
+          <Suspense fallback={null}>
+            <DetailPane
+              node={nodeDetail}
+              graph={graph}
+              loading={detailLoading}
+              error={detailError}
+              onSelect={setSelectedId}
+              canGoBack={historyRef.current.length > 0}
+              onBack={goBack}
+              onMutate={refetchAll}
+              onOpenFile={openFileInEditor}
+              onOpenChat={openSessionChat}
+              onSessionStarted={(result) => {
+                // Graf has no chat surface of its own, so a task started here
+                // lands in Práce: the node opens and the fresh session is the
+                // thread it shows. Without this the run is live with nowhere
+                // in the UI showing it.
+                registerSessionStarted(result);
+                if (result.session.node_id) openSessionChat(result.session.node_id, result.session.id);
+              }}
+              liveSessionStates={liveSessionStates}
+            />
+          </Suspense>
         ))}
 
       </div>
@@ -1196,7 +1209,7 @@ export default function App() {
           onCreated={(node) => {
             setCreateModalOpen(false);
             setSelectedId(node.id);
-            refetchAll().catch((err) => setGraphError(String(err)));
+            refetchAll().catch((err) => setGraphError(displayError(err)));
             // Opened from the workspace "vytvoř nový uzel" action: open the
             // freshly created node in the workspace (works for orgs too).
             if (createFromWorkspaceRef.current) {
@@ -1230,11 +1243,11 @@ export default function App() {
         >
           <DialogContent showCloseButton={false} className="sm:max-w-[560px]">
             <DialogHeader>
-              <DialogTitle>Neuložené změny</DialogTitle>
+              <DialogTitle>{t(($) => $.app.editor_guard.title)}</DialogTitle>
               <DialogDescription>
                 {editorGuard.kind === "quit"
-                  ? "Soubor v editoru má neuložené změny. Chceš je před zavřením aplikace uložit?"
-                  : "Soubor v editoru má neuložené změny. Chceš je uložit?"}
+                  ? t(($) => $.app.editor_guard.description_quit)
+                  : t(($) => $.app.editor_guard.description)}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
@@ -1247,23 +1260,24 @@ export default function App() {
                   if (wasQuit) void declineExit();
                 }}
               >
-                Zpět do editoru
+                {t(($) => $.app.editor_guard.back_to_editor)}
               </Button>
               <Button variant="destructive" size="sm" onClick={() => void resolveEditorGuard("discard")}>
-                Zahodit změny
+                {t(($) => $.app.editor_guard.discard)}
               </Button>
               <Button
                 size="sm"
                 disabled={fileEditor.saving}
                 onClick={() => void resolveEditorGuard("save")}
               >
-                {fileEditor.saving ? "Ukládám…" : "Uložit"}
+                {fileEditor.saving ? t(($) => $.app.editor_guard.saving) : t(($) => $.app.editor_guard.save)}
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
       )}
       {syncOverviewOpen && (
+        <Suspense fallback={null}>
         <SyncOverview
           pending={syncPending}
           onClose={() => setSyncOverviewOpen(false)}
@@ -1277,6 +1291,7 @@ export default function App() {
             overviewSelectNode(id);
           }}
         />
+        </Suspense>
       )}
       {syncQuitGuard && (
         <Dialog
@@ -1289,9 +1304,9 @@ export default function App() {
         >
           <DialogContent showCloseButton={false} className="sm:max-w-[560px]">
             <DialogHeader>
-              <DialogTitle>Nesynchronizovaná práce</DialogTitle>
+              <DialogTitle>{t(($) => $.quit_guard.title)}</DialogTitle>
               <DialogDescription>
-                Máš {syncQuitGuard.count} {pluralFiles(syncQuitGuard.count)}, které nejsou na remote (nesynchronizováno). Pokud aplikaci zavřeš, zůstanou jen lokálně.
+                {t(($) => $.quit_guard.description, { count: syncQuitGuard.count })}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
@@ -1303,7 +1318,7 @@ export default function App() {
                   void declineExit();
                 }}
               >
-                Zrušit
+                {t(($) => $.quit_guard.cancel)}
               </Button>
               <Button
                 size="sm"
@@ -1313,7 +1328,7 @@ export default function App() {
                   void declineExit();
                 }}
               >
-                Zobrazit a synchronizovat
+                {t(($) => $.quit_guard.show_and_sync)}
               </Button>
               <Button
                 variant="destructive"
@@ -1323,7 +1338,7 @@ export default function App() {
                   await destroyCurrentWindow();
                 }}
               >
-                Zavřít bez synchronizace
+                {t(($) => $.quit_guard.close_without_sync)}
               </Button>
             </DialogFooter>
           </DialogContent>
