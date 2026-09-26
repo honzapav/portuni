@@ -86,7 +86,7 @@ percent-encoding = "2"
 # connection target is a loopback sidecar (ws://127.0.0.1:<port>), never
 # wss://, so no TLS implementation is needed. Runs on the same tokio runtime
 # tauri already pulls in transitively (Cargo.lock pins 1.52.x).
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 # Already present transitively via tauri's own async runtime (Cargo.lock
 # pins 1.52.x); promoted to a direct dep for sessions_ws.rs's own use of
