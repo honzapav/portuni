@@ -10,7 +10,6 @@
       "jrd": "skill.sandcastle-jrd.claude-oauth-token"
     }
   },
-  "model": "opus",
   "branchPrefix": "ralph/backlog",
   "maxIterations": 10,
   "maxRuns": 24,
@@ -52,11 +51,6 @@
   "promptProject": ".sandcastle/prompt.project.md",
   "mainBranch": "main",
   "requireMain": true,
-  "review": {
-    "model": "claude-fable-5-1",
-    "fallbackModel": "opus",
-    "when": "run"
-  },
   "telemetry": {
     "endpoint": "https://otlp-gateway-prod-eu-west-2.grafana.net/otlp",
     "headerKeychainService": "skill.grafana-cloud.otlp-auth-header",
