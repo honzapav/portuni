@@ -11,10 +11,18 @@
     "fallback": "Activity",
     "other_tool_one": "{{count}} × {{tool}}",
     "other_tool_other": "{{count}} × {{tool}}",
-    "read_one": "read {{count}} file",
-    "read_other": "read {{count}} files",
+    "read_one": "Read {{count}} file",
+    "read_other": "Read {{count}} files",
     "single_failed": "{{title}} · failed",
-    "thought": "thought",
+    "start": {
+      "created_one": "Created {{count}}",
+      "created_other": "Created {{count}}",
+      "edited_one": "Edited {{count}}",
+      "edited_other": "Edited {{count}}",
+      "thought_seconds_one": "Thought for {{count}} s",
+      "thought_seconds_other": "Thought for {{count}} s"
+    },
+    "thought": "Thought",
     "thought_seconds_one": "thought for {{count}} s",
     "thought_seconds_other": "thought for {{count}} s",
     "working": "Working…"
@@ -41,7 +49,9 @@
       "waiting": "The thread is waiting for an answer to the question above."
     },
     "runner": {
+      "default_instance": "default instance",
       "default_option": "{{label}} (default)",
+      "none_signed_in": "No runner is signed in",
       "title": "Runner and instance, set for the whole thread; only a new thread can change it"
     },
     "stop": "Stop",

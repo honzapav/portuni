@@ -390,6 +390,12 @@ describe("activitySummary", () => {
     assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x", durationMs: 2_000 }], tChat).text, "Thought for 2 s");
   });
 
+  it("a fragment opening the sentence reads its sentence-initial message, the same fragment later the running one", () => {
+    assert.equal(activitySummary(items([["Edit", "completed"], ["Write", "completed"]]), tChat).text, "Edited 1 · created 1");
+    assert.equal(activitySummary(items([["Read", "completed"], ["Edit", "completed"]]), tChat).text, "Read 1 file · edited 1");
+    assert.equal(activitySummary(items([["Write", "completed"], ["Write", "completed"]]), tChat).text, "Created 2");
+  });
+
   it("Czech takes every plural form of each count", () => {
     const read = (n: number) => items(Array.from({ length: n }, () => ["Read", "completed"] as ["Read", "completed"]));
     assert.equal(activitySummary(read(2), tChatCs).text, "Přečteno 2 soubory");

@@ -358,8 +358,11 @@ One line each; the linked doc carries the mechanism and the reasoning.
   package; local types mirror `CanonicalEvent`.
 - Pure helpers live in `apps/web/src/lib/*.ts` and are tested from the
   server's `node:test` runner. Client-side access echoes are UX only; the
-  server is the gate. UI strings are Czech with diacritics until their
-  namespace moves into the catalog (localization batch, #543).
+  server is the gate.
+- No UI text in code: every string a user reads is a catalog key
+  (English default, Czech per account); the gate fails on a JSX literal
+  and on Czech diacritics outside comments and `locales/`. Rules for
+  messages: `docs/superpowers/specs/2026-09-25-localization-design.md`.
 - UI text comes from the shared catalog `apps/server/shared/i18n/`
   (`createI18n()`, one `i18next` copy in the root `node_modules`); the web
   boots its language before `createRoot`, the server reads only

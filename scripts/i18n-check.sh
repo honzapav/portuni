@@ -16,18 +16,11 @@ cli status cs
 echo "-- i18n: no unused key"
 cli status --unused
 
-# Report-only until the web texts are in the catalog (#541 turns these into
-# failures): source keys vs. the English catalog, and hardcoded UI strings /
-# concatenated translations.
-echo "-- i18n (report only): extract --ci --dry-run"
-if ! cli extract --ci --dry-run --quiet; then
-  echo "i18n: extract reports differences (not failing yet, see #541)"
-fi
+echo "-- i18n: source keys match the English catalog"
+cli extract --ci --dry-run --quiet
 
-echo "-- i18n (report only): lint"
-lint_log="$(mktemp)"
-if ! npx --no-install i18next-cli lint > "$lint_log" 2>&1; then
-  echo "i18n: lint reports $(grep -c 'Error:' "$lint_log" || true) findings (not failing yet, see #541); first ones:"
-  grep 'Error:' "$lint_log" | head -5 || true
-fi
-rm -f "$lint_log"
+echo "-- i18n: no hardcoded UI string, no concatenated translation"
+cli lint
+
+echo "-- i18n: no Czech text outside the catalog"
+node scripts/check-ui-text.mjs

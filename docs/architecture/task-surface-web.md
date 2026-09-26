@@ -730,9 +730,14 @@ message may use are fixed in its `glossary.md`; translator notes are in
   bundle in place.
 - **Gate.** `npm run i18n:check` (`scripts/i18n-check.sh`, in
   `scripts/agent-gate.sh` and `ci.yml`) fails on stale key types, a
-  missing or empty Czech value (plural forms included) and an unused key;
-  `extract --ci --dry-run` and `lint` only report until every namespace
-  is converted. `test/i18n-catalog.test.ts` checks that placeholders and
+  missing or empty Czech value (plural forms included), an unused key,
+  source keys that differ from the English catalog (`extract --ci
+  --dry-run`), a hardcoded string in JSX text or a `title`/`placeholder`/
+  `aria-label`/`alt`/`label` attribute or a concatenated translation
+  (`lint`), and Czech diacritics in `apps/web/src`, `apps/desktop/src` or
+  `apps/server` outside comments, `locales/`, the glossary, the generated
+  key types and the pseudo-locale's accent map
+  (`scripts/check-ui-text.mjs`). `test/i18n-catalog.test.ts` checks that placeholders and
   tags match between `en` and `cs` and that every Czech plural renders its
   own form for 1, 2, 5 and 1.5.
 - **Formatting.** A date, time, number, token count or sort order that

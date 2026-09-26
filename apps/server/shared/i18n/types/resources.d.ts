@@ -8,9 +8,14 @@ export default interface Resources {
       "failed": "{{count}} failed" | "{{count}} failed",
       "fallback": "Activity",
       "other_tool": "{{count}} × {{tool}}" | "{{count}} × {{tool}}",
-      "read": "read {{count}} file" | "read {{count}} files",
+      "read": "Read {{count}} file" | "Read {{count}} files",
       "single_failed": "{{title}} · failed",
-      "thought": "thought",
+      "start": {
+        "created": "Created {{count}}" | "Created {{count}}",
+        "edited": "Edited {{count}}" | "Edited {{count}}",
+        "thought_seconds": "Thought for {{count}} s" | "Thought for {{count}} s"
+      },
+      "thought": "Thought",
       "thought_seconds": "thought for {{count}} s" | "thought for {{count}} s",
       "working": "Working…"
     },
@@ -36,7 +41,9 @@ export default interface Resources {
         "waiting": "The thread is waiting for an answer to the question above."
       },
       "runner": {
+        "default_instance": "default instance",
         "default_option": "{{label}} (default)",
+        "none_signed_in": "No runner is signed in",
         "title": "Runner and instance, set for the whole thread; only a new thread can change it"
       },
       "stop": "Stop",
@@ -644,6 +651,7 @@ export default interface Resources {
     "BEARER_MISMATCH": "Your sign-in is no longer valid. Sign in again.",
     "BEARER_MISSING": "You are not signed in.",
     "BODY_TOO_LARGE": "The request is too large.",
+    "CENTRAL_NEEDS_DESKTOP": "The central server is only reachable from the desktop app.",
     "CENTRAL_UNREACHABLE": "The central server is unreachable.",
     "CONFIRMATION_REQUIRED": "The action needs a confirmation.",
     "CONFLICT": "The file changed since you opened it.",
@@ -692,6 +700,7 @@ export default interface Resources {
     "EVENT_ALREADY_ARCHIVED": "The event is already archived.",
     "EVENT_NOT_FOUND": "The event was not found.",
     "EXISTS": "A file named “{{filename}}” already exists.",
+    "FILE_MOVE_FAILED": "The move did not finish (status: {{status}}).",
     "FILE_NOT_FOUND": "The file was not found.",
     "FILE_NOT_ON_DEVICE": "The file is not on this device.",
     "FILE_NO_LOCAL_COPY": "This device has no local copy of the file.",
@@ -727,6 +736,7 @@ export default interface Resources {
     "LIFECYCLE_STATE_INVALID": "This lifecycle state is not valid for the node's type.",
     "LOCAL_MODE_NO_REMOTE": "A personal workspace has no remote; files are shared through a team workspace.",
     "LOGIN_FAILED": "Sign-in failed.",
+    "LOGIN_NEEDS_DESKTOP": "Signing in with Google is only available in the desktop app.",
     "LOGIN_UNAVAILABLE": "Sign-in is not available on this server.",
     "MALFORMED_REQUEST_TARGET": "The request address is not valid.",
     "MCP_CAPACITY_REACHED": "The server has too many open MCP connections. Try again later.",

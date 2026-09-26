@@ -8,9 +8,9 @@
       "clear_override": "Vlastní sdílení tohoto uzlu bude zrušeno a node začne znovu přebírat sdílení z nadřazeného uzlu (nebo bude nezúžené, pokud žádný nadřazený uzel sdílení neomezuje).",
       "confirm": "Potvrdit",
       "last_entry": "Odebráním posledního příjemce se sdílení zruší a node bude Soukromý.",
+      "switch_one": "Přepnutím odebereš {{count}} sdílení.",
       "switch_few": "Přepnutím odebereš {{count}} sdílení.",
       "switch_many": "Přepnutím odebereš {{count}} sdílení.",
-      "switch_one": "Přepnutím odebereš {{count}} sdílení.",
       "switch_other": "Přepnutím odebereš {{count}} sdílení."
     },
     "inherited": {
@@ -57,9 +57,9 @@
       "search_placeholder": "Hledat…"
     },
     "requests": {
+      "heading_one": "Žádosti o přístup ({{count}})",
       "heading_few": "Žádosti o přístup ({{count}})",
       "heading_many": "Žádosti o přístup ({{count}})",
-      "heading_one": "Žádosti o přístup ({{count}})",
       "heading_other": "Žádosti o přístup ({{count}})"
     },
     "save_error": "Uložení se nepovedlo. Zkus to znovu.",

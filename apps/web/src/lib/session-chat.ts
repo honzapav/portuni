@@ -618,23 +618,41 @@ export function activitySummary(items: readonly ActivityItem[], t: ChatT): { tex
     const title = only.call.title || only.call.tool;
     return { text: failed ? t(($) => $.activity.single_failed, { ns: "chat", title }) : title, failed };
   }
+  // A fragment that can open the sentence has its own sentence-initial
+  // message (activity.start.*); the case is never changed at runtime. "read"
+  // always comes first and "thought" stands alone, so theirs are
+  // sentence-initial already.
   const parts: string[] = [];
   const counts = toolVerbCounts(items);
   const read = counts.get("read");
   if (read) parts.push(t(($) => $.activity.read, { ns: "chat", count: read }));
   const edited = counts.get("edited");
-  if (edited) parts.push(t(($) => $.activity.edited, { ns: "chat", count: edited }));
+  if (edited)
+    parts.push(
+      parts.length === 0
+        ? t(($) => $.activity.start.edited, { ns: "chat", count: edited })
+        : t(($) => $.activity.edited, { ns: "chat", count: edited }),
+    );
   const created = counts.get("created");
-  if (created) parts.push(t(($) => $.activity.created, { ns: "chat", count: created }));
+  if (created)
+    parts.push(
+      parts.length === 0
+        ? t(($) => $.activity.start.created, { ns: "chat", count: created })
+        : t(($) => $.activity.created, { ns: "chat", count: created }),
+    );
   const cmd = counts.get("command");
   if (cmd) parts.push(t(($) => $.activity.command, { ns: "chat", count: cmd }));
   for (const [key, n] of counts)
     if (key.startsWith("tool:")) parts.push(t(($) => $.activity.other_tool, { ns: "chat", count: n, tool: key.slice(5) }));
-  if (seconds) parts.push(t(($) => $.activity.thought_seconds, { ns: "chat", count: seconds }));
+  if (seconds)
+    parts.push(
+      parts.length === 0
+        ? t(($) => $.activity.start.thought_seconds, { ns: "chat", count: seconds })
+        : t(($) => $.activity.thought_seconds, { ns: "chat", count: seconds }),
+    );
   if (failed) parts.push(t(($) => $.activity.failed, { ns: "chat", count: failed }));
   if (parts.length === 0 && items.some((i) => i.kind === "reasoning")) parts.push(t(($) => $.activity.thought, { ns: "chat" }));
-  const text = parts.join(" · ");
-  return { text: text.charAt(0).toUpperCase() + text.slice(1), failed };
+  return { text: parts.join(" · "), failed };
 }
 
 // Whether the thread has a live run for the UI's purposes (working row,

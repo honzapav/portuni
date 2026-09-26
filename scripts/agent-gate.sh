@@ -11,7 +11,7 @@ npm run qa
 # container's concurrency cap) is CI's job on every PR; a schema or query
 # change still runs it here by hand before the PR claims both drivers.
 
-echo "== i18n: catalog types, status, unused keys (extract and lint report only)"
+echo "== i18n: catalog types, status, unused keys, extract, lint, no text outside the catalog"
 npm run i18n:check
 
 echo "== web: typecheck, build"

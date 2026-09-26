@@ -1,7 +1,11 @@
 // Composer row 2 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md,
 // "The composer"): the runner/instance choice a draft makes before its
 // first message. Pure so test/runner-picker.test.ts covers the grouping
-// and the labels without React.
+// and the labels without React; the labels take the chat namespace's `t`.
+
+import type { TFunction } from "i18next";
+
+type ChatT = TFunction<"chat">;
 
 const SEP = "\u0000";
 
@@ -35,6 +39,7 @@ export function runnerPickerGroups(
   runners: readonly { id: string; label?: string }[],
   instances: readonly { id: string; name: string; runner: string }[],
   defaultChoice: { runner: string | null; instanceId: string | null },
+  t: ChatT,
 ): RunnerPickerGroup[] {
   return runners.map((r) => {
     const isDefault = (instanceId: string | null) =>
@@ -43,7 +48,7 @@ export function runnerPickerGroups(
       value: encodeRunnerChoice(r.id, null),
       runner: r.id,
       instanceId: null,
-      label: "výchozí instance",
+      label: t(($) => $.composer.runner.default_instance, { ns: "chat" }),
       isDefault: isDefault(null),
     };
     const rest = instances
@@ -63,8 +68,9 @@ export function runnerPickerGroups(
 export function runnerChoiceLabel(
   session: { runner: string | null; instance_id: string | null },
   instances: readonly { id: string; name: string }[],
+  t: ChatT,
 ): string {
-  if (!session.runner) return "Žádný runner není přihlášený";
+  if (!session.runner) return t(($) => $.composer.runner.none_signed_in, { ns: "chat" });
   const name = session.instance_id
     ? (instances.find((i) => i.id === session.instance_id)?.name ?? session.instance_id)
     : null;

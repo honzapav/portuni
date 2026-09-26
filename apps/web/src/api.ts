@@ -918,9 +918,11 @@ export async function moveFile(
     { new_section: target.section, new_subpath: target.subpath, confirmed: true },
   );
   if (r.status !== "ok") {
-    throw new Error(
-      r.repair_hint ?? r.error ?? r.detail?.error ?? `Přesun se nepovedl (${r.status ?? "bez stavu"})`,
-    );
+    const detail = r.repair_hint ?? r.error ?? r.detail?.error;
+    if (detail) throw new Error(detail);
+    throw new ClientError("FILE_MOVE_FAILED", `move failed: ${r.status ?? "no status"}`, {
+      status: r.status ?? "-",
+    });
   }
   return r;
 }

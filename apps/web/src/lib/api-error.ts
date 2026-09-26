@@ -24,6 +24,9 @@ export const WEB_ERROR_CODES = [
   "SYNC_AGENT_DOWN",
   "REQUEST_TIMEOUT",
   "DISCONNECTED",
+  "FILE_MOVE_FAILED",
+  "LOGIN_NEEDS_DESKTOP",
+  "CENTRAL_NEEDS_DESKTOP",
 ] as const;
 export type WebErrorCode = (typeof WEB_ERROR_CODES)[number];
 
@@ -170,6 +173,7 @@ const MESSAGES: Record<DisplayErrorCode, Render> = {
   BEARER_MISMATCH: (t) => t(($) => $.BEARER_MISMATCH, { ns: "errors" }),
   BEARER_MISSING: (t) => t(($) => $.BEARER_MISSING, { ns: "errors" }),
   BODY_TOO_LARGE: (t) => t(($) => $.BODY_TOO_LARGE, { ns: "errors" }),
+  CENTRAL_NEEDS_DESKTOP: (t) => t(($) => $.CENTRAL_NEEDS_DESKTOP, { ns: "errors" }),
   CONFIRMATION_REQUIRED: (t) => t(($) => $.CONFIRMATION_REQUIRED, { ns: "errors" }),
   CONFLICT: (t) => t(($) => $.CONFLICT, { ns: "errors" }),
   CONSTRAINT_VIOLATION: (t) => t(($) => $.CONSTRAINT_VIOLATION, { ns: "errors" }),
@@ -183,6 +187,7 @@ const MESSAGES: Record<DisplayErrorCode, Render> = {
   EVENT_ALREADY_ARCHIVED: (t) => t(($) => $.EVENT_ALREADY_ARCHIVED, { ns: "errors" }),
   EVENT_NOT_FOUND: (t) => t(($) => $.EVENT_NOT_FOUND, { ns: "errors" }),
   EXISTS: (t, p) => t(($) => $.EXISTS, { ns: "errors", filename: s(p.filename) }),
+  FILE_MOVE_FAILED: (t, p) => t(($) => $.FILE_MOVE_FAILED, { ns: "errors", status: s(p.status) }),
   FILE_NOT_FOUND: (t) => t(($) => $.FILE_NOT_FOUND, { ns: "errors" }),
   FILE_NOT_ON_DEVICE: (t) => t(($) => $.FILE_NOT_ON_DEVICE, { ns: "errors" }),
   FILE_NO_LOCAL_COPY: (t) => t(($) => $.FILE_NO_LOCAL_COPY, { ns: "errors" }),
@@ -217,6 +222,7 @@ const MESSAGES: Record<DisplayErrorCode, Render> = {
   INVALID_VISIBILITY: (t, p) => t(($) => $.INVALID_VISIBILITY, { ns: "errors", visibility: s(p.visibility) }),
   LIFECYCLE_STATE_INVALID: (t) => t(($) => $.LIFECYCLE_STATE_INVALID, { ns: "errors" }),
   LOCAL_MODE_NO_REMOTE: (t) => t(($) => $.LOCAL_MODE_NO_REMOTE, { ns: "errors" }),
+  LOGIN_NEEDS_DESKTOP: (t) => t(($) => $.LOGIN_NEEDS_DESKTOP, { ns: "errors" }),
   LOGIN_FAILED: (t) => t(($) => $.LOGIN_FAILED, { ns: "errors" }),
   LOGIN_UNAVAILABLE: (t) => t(($) => $.LOGIN_UNAVAILABLE, { ns: "errors" }),
   MALFORMED_REQUEST_TARGET: (t) => t(($) => $.MALFORMED_REQUEST_TARGET, { ns: "errors" }),

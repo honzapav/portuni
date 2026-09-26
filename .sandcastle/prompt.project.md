@@ -24,6 +24,6 @@ A team workspace (central server + sync agent) is the primary runtime; a persona
 
 - Never edit release-please files (`release-please-config.json`, `.release-please-manifest.json`, `CHANGELOG.md`) or the version in `package.json`, `apps/web/package.json`, `apps/desktop/tauri.conf.json`, `apps/desktop/Cargo.toml`.
 - No secret in webview code, ever; the webview reaches the Rust host only through Tauri commands.
-- UI strings in Czech with diacritics.
+- UI strings come from the catalog (`apps/server/shared/i18n/locales/`, English default, Czech in `cs`); no UI text in code.
 - macOS-only verification (signed `.app` builds, updater, Keychain, desktop end-to-end) is not yours: implement what the container can verify, describe the fix and the verification steps in a comment on the issue and leave it open.
 - Batch PR title: Conventional Commit covering the batch, e.g. `feat(web): create the local mirror from the node detail`; `pr-title.yml` rejects anything else.

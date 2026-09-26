@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { isTauri } from "./backend-url";
-import { parseApiError } from "./api-error";
+import { ClientError, parseApiError } from "./api-error";
 
 export { isTauri };
 
@@ -98,7 +98,7 @@ export async function authStatus(): Promise<AuthStatus> {
 
 export async function googleLogin(): Promise<UserInfo> {
   if (!isTauri()) {
-    throw new Error("Přihlášení přes Google je dostupné jen v desktop aplikaci.");
+    throw new ClientError("LOGIN_NEEDS_DESKTOP", "google login needs the desktop app");
   }
   return invoke<UserInfo>("google_login");
 }
@@ -121,7 +121,7 @@ export async function centralFetch<T>(
   body?: unknown,
 ): Promise<T> {
   if (!isTauri()) {
-    throw new Error("Centrální server je dostupný jen v desktop aplikaci.");
+    throw new ClientError("CENTRAL_NEEDS_DESKTOP", "the central server needs the desktop app");
   }
   const res = await invoke<CentralResponse>("central_request", {
     method: method.toUpperCase(),

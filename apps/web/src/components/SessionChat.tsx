@@ -881,10 +881,10 @@ export default function SessionChat({
                     {/* The trigger names the pair ("claude · Work"); the
                         list's own items name the instance under its
                         runner's heading. */}
-                    <PromptInputSelectValue>{runnerChoiceLabel(session, instances)}</PromptInputSelectValue>
+                    <PromptInputSelectValue>{runnerChoiceLabel(session, instances, t)}</PromptInputSelectValue>
                   </PromptInputSelectTrigger>
                   <PromptInputSelectContent>
-                    {runnerPickerGroups(runners, instances, initialChoiceRef.current).map((g) => (
+                    {runnerPickerGroups(runners, instances, initialChoiceRef.current, t).map((g) => (
                       <SelectGroup key={g.runner}>
                         <SelectLabel>{g.label}</SelectLabel>
                         {g.options.map((o) => (
@@ -897,7 +897,7 @@ export default function SessionChat({
                   </PromptInputSelectContent>
                 </PromptInputSelect>
               ) : (
-                <span className="px-1.5">{runnerChoiceLabel(session, instances)}</span>
+                <span className="px-1.5">{runnerChoiceLabel(session, instances, t)}</span>
               )}
               {/* #428: the host whose sidecar runs the thread -- a label,
                   never a choice, hidden when unknown. */}
