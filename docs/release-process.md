@@ -276,8 +276,9 @@ GitHub repo Settings UI:
 - `.github/pull_request_template.md` — Summary + Test plan checklist.
   Forces the author to write something useful in the PR body, which
   release-please uses as the changelog entry detail.
-- `CODEOWNERS` — `* @honzapav` for now. Symbolic, but ready for the
-  first external contributor.
+- `.github/CODEOWNERS` — the sensitive areas (CI, deploy, release,
+  versions, auth, Tauri capabilities, schema and migrations), owned by
+  @honzapav. Agent auto-merge never covers these paths.
 
 ### CHANGELOG.md seed
 

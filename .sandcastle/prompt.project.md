@@ -22,6 +22,7 @@ A team workspace (central server + sync agent) is the primary runtime; a persona
 
 ## Repo rules
 
+- Paths listed in `.github/CODEOWNERS` are sensitive (CI, deploy, release, versions, auth, Tauri capabilities, schema and migrations). A change there is allowed only when the issue asks for it, and the PR body names each sensitive file under what it needs from the reviewer.
 - Never edit release-please files (`release-please-config.json`, `.release-please-manifest.json`, `CHANGELOG.md`) or the version in `package.json`, `apps/web/package.json`, `apps/desktop/tauri.conf.json`, `apps/desktop/Cargo.toml`.
 - No secret in webview code, ever; the webview reaches the Rust host only through Tauri commands.
 - UI strings in Czech with diacritics.

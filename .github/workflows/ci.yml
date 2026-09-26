@@ -25,6 +25,23 @@ jobs:
       - run: npm run test:pglite
       - run: npm run build
 
+  fallow:
+    # Dead code, duplicates, cycles and complexity, judged only on what the
+    # PR changes against its base: inherited findings never block.
+    name: Fallow (changed code)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - env:
+          BASE_REF: ${{ github.base_ref }}
+        run: npx -y fallow@3.28.0 audit --base "origin/$BASE_REF"
+
   app:
     name: App (typecheck, build)
     runs-on: ubuntu-latest

@@ -1,0 +1,30 @@
+# Sensitive areas: a change here always needs Honza's review, whoever wrote
+# it. Agent auto-merge never covers these paths.
+
+# CI, deploy, release and the files that decide what CI enforces
+/.github/                       @honzapav
+/.sandcastle/                   @honzapav
+/scripts/agent-gate.sh          @honzapav
+/scripts/deploy-vps.sh          @honzapav
+/scripts/build-signed.sh        @honzapav
+/scripts/release-rollout.sh     @honzapav
+/scripts/backup-turso.sh        @honzapav
+/scripts/backup-turso.ts        @honzapav
+/.fallowrc.jsonc                @honzapav
+
+# Versions and release configuration (owned by release-please)
+/.release-please-manifest.json  @honzapav
+/release-please-config.json     @honzapav
+/package.json                   @honzapav
+/apps/web/package.json          @honzapav
+/apps/desktop/Cargo.toml        @honzapav
+/apps/desktop/tauri.conf.json   @honzapav
+
+# Auth, scopes and the desktop trust boundary
+/apps/server/auth/              @honzapav
+/apps/desktop/capabilities/     @honzapav
+
+# Database schema and migrations
+/apps/server/infra/schema*.ts   @honzapav
+/apps/server/infra/migrations/  @honzapav
+/apps/server/infra/device-content-db.ts @honzapav
