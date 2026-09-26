@@ -434,7 +434,7 @@ export async function writeFileBytesRemote(
         // stat, its hash -- is proven right here; persist it before throwing
         // so this record does not stay stuck as remote_missing forever (#273).
         await backfillRemoteHash(db, record, stat.hash?.toLowerCase() ?? null, stat.remote_file_id);
-        throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS", undefined, { path: a.relPath });
+        throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS", undefined, { filename });
       }
       if (a.baseCanonicalHash && stat) {
         let current = stat.hash?.toLowerCase() ?? null;

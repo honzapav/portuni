@@ -158,6 +158,7 @@
     "title": "Načítání"
   },
   "message": {
+    "branch_page": "{{current}} z {{total}}",
     "next_branch": "Další větev",
     "previous_branch": "Předchozí větev"
   },

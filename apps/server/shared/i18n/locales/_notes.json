@@ -16,6 +16,7 @@
   "chat:event.error.browser_sign_in_declined": "An MCP server wanted the user to sign in in a browser window. {{server}}: the server's name, never translated.",
   "chat:event.error.provider_failed": "The runner's provider (Claude Code) ended the run with an error and gave no text. {{subtype}}: the provider's technical error name, never translated.",
   "chat:event.question.mcp_confirmation.title": "Title of a confirmation card an MCP server asked for without a title of its own. {{server}}: the server's name, never translated.",
+  "chat:message.branch_page": "Counter between the previous/next branch buttons. {{current}}, {{total}}: plain numbers.",
   "chat:notice.handed_off": "<code> wraps {{path}}, the handoff file's path, never translated. \"Threads\" is the node tab.",
   "chat:sample.message": "Sample message from the i18n foundation (#528), replaced when the namespace gets real texts. {{runnerName}}: a name from the data, never translated.",
   "chat:transcript.question": "Marker of a past question in the transcript. <title> wraps {{title}}, the question's title (the agent's own text or an already translated title).",

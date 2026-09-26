@@ -37,6 +37,9 @@ export default defineConfig({
   },
   lint: {
     checkConcatenation: "error",
+    // Every element, the PascalCase components and <input>/<select>
+    // included: the default list sees only a fixed set of HTML tags.
+    acceptedTags: "all",
   },
   types: {
     input: ["apps/server/shared/i18n/locales/en/*.json"],

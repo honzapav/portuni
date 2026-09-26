@@ -733,8 +733,8 @@ message may use are fixed in its `glossary.md`; translator notes are in
   missing or empty Czech value (plural forms included), an unused key,
   source keys that differ from the English catalog (`extract --ci
   --dry-run`), a hardcoded string in JSX text or a `title`/`placeholder`/
-  `aria-label`/`alt`/`label` attribute or a concatenated translation
-  (`lint`), and Czech diacritics in `apps/web/src`, `apps/desktop/src` or
+  `aria-label`/`alt`/`label` attribute on any element or component
+  (`lint`, `acceptedTags: "all"`) or a concatenated translation, and Czech diacritics in `apps/web/src`, `apps/desktop/src` or
   `apps/server` outside comments, `locales/`, the glossary, the generated
   key types and the pseudo-locale's accent map
   (`scripts/check-ui-text.mjs`). `test/i18n-catalog.test.ts` checks that placeholders and
