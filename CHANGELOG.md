@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.25.0](https://github.com/honzapav/portuni/compare/v0.24.0...v0.25.0) (2026-09-26)
+
+
+### Features
+
+* **server:** central migration – sessions without brief/handoff_inline, session_events dropped ([#520](https://github.com/honzapav/portuni/issues/520)) ([0d4390b](https://github.com/honzapav/portuni/commit/0d4390ba57fbd969189e1322d04a7ba05b50f212)), closes [#462](https://github.com/honzapav/portuni/issues/462)
+* **web,server,runner,desktop:** localization – English default, Czech per account ([#545](https://github.com/honzapav/portuni/issues/545)) ([b754fc2](https://github.com/honzapav/portuni/commit/b754fc2df8a02b004afc23e1817f7871f88524c5))
+
+
+### Bug Fixes
+
+* **runner,server,web:** the chat never loses work – run lifecycle, questions, thread state, handoff on demand, closed threads reopen ([#523](https://github.com/honzapav/portuni/issues/523)) ([2cdc4c9](https://github.com/honzapav/portuni/commit/2cdc4c99452272715fc70d614f6048a0f0411656))
+* **server,web:** localization review – runner refusal on every path, local event days, full lint ([#556](https://github.com/honzapav/portuni/issues/556)) ([9814f90](https://github.com/honzapav/portuni/commit/9814f9050d7c2dcadd5e31f8237ee4fa5ae1fad1))
+
 ## [0.24.0](https://github.com/honzapav/portuni/compare/v0.23.1...v0.24.0) (2026-09-24)
 
 
