@@ -465,6 +465,8 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
         effort: input.effort ?? null,
         runner: input.runner ?? null,
         instance_id: input.instance_id ?? null,
+        // #539: the central server names the draft in the request's language.
+        ...(input.locale ? { locale: input.locale } : {}),
       });
       if (r.status !== 201) throwFor(r.status, p, r.json);
       return r.json as SessionRow;

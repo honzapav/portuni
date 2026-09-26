@@ -22,10 +22,15 @@ import { signFlowState, verifyFlowState, type AuthorizeRequest } from "../auth/o
 import { mintAuthorizationCode, redeemAuthorizationCode, attachGrantToCode } from "../auth/oauth/codes.js";
 import { mintGrant, rotateRefreshToken } from "../auth/oauth/grants.js";
 import { canonicalIssuer, isOAuthEnabled } from "../auth/oauth/enabled.js";
-import { upsertUserFromIdentity } from "../auth/users.js";
+import { getUserLocale, upsertUserFromIdentity } from "../auth/users.js";
 import { logAudit } from "../infra/audit.js";
-import { renderConsentPage, renderOAuthErrorPage } from "../auth/oauth/consent-page.js";
-import type { ErrorCode, ErrorParams } from "../shared/error-codes.js";
+import {
+  renderConsentPage,
+  renderOAuthErrorPage,
+  resolvePageLocale,
+  type OAuthPageErrorCode,
+} from "../auth/oauth/consent-page.js";
+import type { ErrorParams } from "../shared/error-codes.js";
 
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60; // matches grants.ts ACCESS_TTL_MS
 
@@ -41,16 +46,20 @@ function respondHtml(res: ServerResponse, status: number, html: string): void {
 
 // A sign-in flow error is an HTML page (the user is in a browser, mid
 // redirect), not JSON. It carries its code (shared/error-codes.ts) and
-// params like every other error; the English message is what it renders
-// until the pages are localized by the user's language.
+// params like every other error; #539: the page renders the code's message
+// in the browser's language (no page with an error knows the user yet), the
+// English message goes to the log.
 function respondErrorPage(
+  req: IncomingMessage,
   res: ServerResponse,
   status: number,
-  code: ErrorCode,
+  code: OAuthPageErrorCode,
   message: string,
   params?: ErrorParams,
 ): void {
-  respondHtml(res, status, renderOAuthErrorPage({ code, message, params }));
+  console.warn(`[portuni:oauth] ${code}: ${message}`);
+  const locale = resolvePageLocale({ acceptLanguage: req.headers["accept-language"] });
+  respondHtml(res, status, renderOAuthErrorPage({ code, params }, locale));
 }
 
 function respondJsonNoStore(res: ServerResponse, status: number, body: unknown): void {
@@ -122,7 +131,12 @@ async function handleDiscoveryAuthorizationServer(res: ServerResponse, ctx: Iden
   respondJsonNoStore(res, 200, buildAuthorizationServerMetadata(canonicalIssuer()));
 }
 
-async function handleAuthorize(url: URL, res: ServerResponse, ctx: IdentityContext): Promise<void> {
+async function handleAuthorize(
+  url: URL,
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: IdentityContext,
+): Promise<void> {
   if (!isOAuthEnabled(ctx)) return respondNotFound(res);
 
   const q = url.searchParams;
@@ -135,23 +149,24 @@ async function handleAuthorize(url: URL, res: ServerResponse, ctx: IdentityConte
   const scope = q.get("scope") ?? "";
 
   if (!clientId || !redirectUri || !codeChallenge || !state || !resource) {
-    respondErrorPage(res, 400, "OAUTH_MISSING_PARAMETER", "A required authorization request parameter is missing.");
+    respondErrorPage(req, res, 400, "OAUTH_MISSING_PARAMETER", "A required authorization request parameter is missing.");
     return;
   }
   if (codeChallengeMethod !== "S256") {
-    respondErrorPage(res, 400, "OAUTH_PKCE_S256_ONLY", "Only the PKCE S256 method is supported.");
+    respondErrorPage(req, res, 400, "OAUTH_PKCE_S256_ONLY", "Only the PKCE S256 method is supported.");
     return;
   }
 
   const cimd = await fetchClientMetadata(clientId);
   if (!cimd.ok) {
-    respondErrorPage(res, 400, "OAUTH_CLIENT_UNVERIFIED", `The client could not be verified: ${cimd.reason}`, {
+    respondErrorPage(req, res, 400, "OAUTH_CLIENT_UNVERIFIED", `The client could not be verified: ${cimd.reason}`, {
       reason: cimd.reason,
     });
     return;
   }
   if (!redirectUriAllowed(cimd.doc.redirect_uris, redirectUri)) {
     respondErrorPage(
+      req,
       res,
       400,
       "OAUTH_REDIRECT_URI_UNREGISTERED",
@@ -160,7 +175,7 @@ async function handleAuthorize(url: URL, res: ServerResponse, ctx: IdentityConte
     return;
   }
   if (resource !== `${canonicalIssuer()}/mcp`) {
-    respondErrorPage(res, 400, "OAUTH_INVALID_RESOURCE", "Invalid target resource (resource).");
+    respondErrorPage(req, res, 400, "OAUTH_INVALID_RESOURCE", "Invalid target resource (resource).");
     return;
   }
 
@@ -177,13 +192,19 @@ async function handleAuthorize(url: URL, res: ServerResponse, ctx: IdentityConte
   redirectTo(res, ctx.adapter.interactiveLogin!.redirectUrl(flowToken));
 }
 
-async function handleGoogleCallback(url: URL, res: ServerResponse, ctx: IdentityContext): Promise<void> {
+async function handleGoogleCallback(
+  url: URL,
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: IdentityContext,
+): Promise<void> {
   if (!isOAuthEnabled(ctx)) return respondNotFound(res);
 
   const stateToken = url.searchParams.get("state") ?? "";
   const flow = await verifyFlowState(stateToken, ctx.jwtSecret);
   if (!flow) {
     respondErrorPage(
+      req,
       res,
       400,
       "OAUTH_SESSION_EXPIRED",
@@ -197,19 +218,24 @@ async function handleGoogleCallback(url: URL, res: ServerResponse, ctx: Identity
     handled = await ctx.adapter.interactiveLogin!.handleCallback(url.searchParams);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    respondErrorPage(res, 400, "OAUTH_GOOGLE_LOGIN_FAILED", `Google sign-in failed: ${reason}`, { reason });
+    respondErrorPage(req, res, 400, "OAUTH_GOOGLE_LOGIN_FAILED", `Google sign-in failed: ${reason}`, { reason });
     return;
   }
 
   const cimd = await fetchClientMetadata(flow.request.clientId);
   if (!cimd.ok) {
-    respondErrorPage(res, 400, "OAUTH_CLIENT_UNVERIFIED", `The client could not be verified: ${cimd.reason}`, {
+    respondErrorPage(req, res, 400, "OAUTH_CLIENT_UNVERIFIED", `The client could not be verified: ${cimd.reason}`, {
       reason: cimd.reason,
     });
     return;
   }
 
   const userId = await upsertUserFromIdentity(getDb(), handled.identity, handled.avatarUrl);
+  // #539: the user is known from here on -- the account's language wins.
+  const locale = resolvePageLocale({
+    accountLocale: await getUserLocale(getDb(), userId),
+    acceptLanguage: req.headers["accept-language"],
+  });
   const continuationToken = await signFlowState(
     {
       request: flow.request,
@@ -235,7 +261,7 @@ async function handleGoogleCallback(url: URL, res: ServerResponse, ctx: Identity
       redirectUri: flow.request.redirectUri,
       isLoopback: isLoopbackRedirect(flow.request.redirectUri),
       continuationToken,
-    }),
+    }, locale),
   );
 }
 
@@ -249,6 +275,7 @@ async function handleConsent(req: IncomingMessage, res: ServerResponse, ctx: Ide
   const flow = await verifyFlowState(token, ctx.jwtSecret);
   if (!flow?.identity) {
     respondErrorPage(
+      req,
       res,
       400,
       "OAUTH_SESSION_EXPIRED",
@@ -401,11 +428,11 @@ export async function routeOAuthRequest(
     return true;
   }
   if (method === "GET" && url.pathname === "/oauth/authorize") {
-    await handleAuthorize(url, res, ctx);
+    await handleAuthorize(url, req, res, ctx);
     return true;
   }
   if (method === "GET" && url.pathname === "/oauth/google/callback") {
-    await handleGoogleCallback(url, res, ctx);
+    await handleGoogleCallback(url, req, res, ctx);
     return true;
   }
   if (method === "POST" && url.pathname === "/oauth/consent") {

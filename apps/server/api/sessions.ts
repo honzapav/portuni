@@ -944,6 +944,9 @@ const RecordSessionBody = z.union([
     // v2 rule 5: resolved on the device, recorded here.
     runner: z.string().nullable().optional(),
     instance_id: z.string().nullable().optional(),
+    // #539: the language of the device's POST /sessions; the default name
+    // is written in it (English when an older sidecar sends none).
+    locale: RequestLocale,
   }),
   z.object({
     draft: z.literal(false).optional(),
@@ -986,6 +989,7 @@ export async function handleCreateSessionRecord(
             effort: body.effort,
             runner: body.runner ?? null,
             instance_id: body.instance_id ?? null,
+            locale: body.locale,
           })
         : await store.createSession({
             node_id: body.node_id,

@@ -44,7 +44,7 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
   const { scope } = ctx;
   server.tool(
     "portuni_create_responsibility",
-    "Create a responsibility on a project/process/area node. Responsibilities are concrete duties ('Review kódu', 'Ops on-call') attached to entities; they are not nodes themselves. Optionally pass a list of actor IDs to assign immediately. Create only when the user explicitly asks.",
+    "Create a responsibility on a project/process/area node. Responsibilities are concrete duties ('Code review', 'Ops on-call') attached to entities; they are not nodes themselves. Optionally pass a list of actor IDs to assign immediately. Create only when the user explicitly asks.",
     {
       node_id: z.string().describe("Node ID (ULID). Must be a project/process/area."),
       title: z.string().describe("Short title."),

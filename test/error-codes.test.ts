@@ -99,11 +99,10 @@ describe("error codes and the errors catalog", () => {
     assert.deepEqual(unknown, [], "codes missing from shared/error-codes.ts");
   });
 
-  it("has no Czech error text left in apps/server outside comments and catalogs", () => {
-    // The consent page, the handoff file, the default thread name and the
-    // agent-facing prompt text move to the catalog in #532/#539; this test
-    // holds the error paths only.
-    const errorLine = /(Error\(|respondApiError|respondErrorPage|error:|message:)/;
+  it("has no Czech text left in apps/server outside comments and catalogs", () => {
+    // #539: the consent page, the handoff file and the default thread name
+    // were the last Czech sentences; every line of code is held now, not
+    // only the error paths.
     const czech = /[ěščřžýáíéúůťďňĚŠČŘŽÝÁÍÉÚŮ]/;
     const found: string[] = [];
     for (const file of serverSources()) {
@@ -113,7 +112,7 @@ describe("error codes and the errors catalog", () => {
         .forEach((line, i) => {
           const code = line.replace(/\/\/.*$/, "").trim();
           if (code.startsWith("*") || code.startsWith("/*")) return;
-          if (errorLine.test(code) && czech.test(code) && /(Error\(|respondApiError|respondErrorPage)/.test(code)) {
+          if (czech.test(code)) {
             found.push(`${file.slice(ROOT.length + 1)}:${i + 1}`);
           }
         });

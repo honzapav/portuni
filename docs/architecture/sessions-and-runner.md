@@ -183,6 +183,20 @@ node's mirror, registers the file, patches the record to `suspended` and
 appends the `handoff` event (the chat's "Shrnutí uloženo" row) -- one
 suspend implementation (`portuni:server-handoff reason=handoff`, the one
 reason a person chose).
+The file is in the language of the request that wrote it (#539): Předat,
+Pokračovat v nové session and a message resuming a thread carry an
+optional `locale` (#538), the runtime hands it to
+`handoffs.summarize`/`suspendFallback` (`SuspendServerSideOptions.locale`;
+for a running thread through `pendingEndLocale`, next to
+`pendingEndReason`), and `buildRunSummaryContent` renders the headings and
+labels with `getFixedT(locale, "server")` and the last activity with `Intl`
+in UTC. No `locale` means English; nothing on the device reads the
+language from process state, the account or the central server, and two
+requests in different languages never share state (a fixed `t` per call).
+The same goes for a draft's default name (`server:session.default_draft_name`):
+`createDraftSession` takes the request's `locale`, and a sync agent sends
+it with `POST /sessions/record` (`CentralClient.createDraftSessionRecord`)
+so the central server names the record in it.
 On an already `suspended` thread with its file, it is a no-op answering the
 same path. On a `suspended` thread without a file (every suspend but
 Předat leaves one), the same suspend code writes the file now

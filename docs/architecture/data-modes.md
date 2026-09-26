@@ -192,7 +192,11 @@ default thread name) comes with the request that causes it: `POST
 /sessions`, a message, Předat and Pokračovat v nové session carry an
 optional `locale` (REST body or live-channel frame payload) that the router
 hands to the runtime; nothing on the device reads it from process state or
-from the central server. Detail:
+from the central server. The one place it crosses to the central server is
+a draft's record: the sync agent sends the request's `locale` with `POST
+/sessions/record` and the central server writes the default name in it
+(#539). The OAuth consent and sign-in error pages exist only on the central
+server; they use `users.locale`, else `Accept-Language`, else English. Detail:
 [`sessions-and-runner.md`](./sessions-and-runner.md).
 
 ## Editing files

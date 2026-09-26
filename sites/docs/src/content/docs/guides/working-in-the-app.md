@@ -387,7 +387,10 @@ optional `locale` (`"en"` or `"cs"`): the language of the text Portuni
 writes for you as a result, such as the handoff file and the default
 thread name. The app sends its current interface language, which you pick
 in Settings → Account (stored on your account, `PATCH /me` with `{ locale }`,
-so it follows you to every device).
+so it follows you to every device). A request without `locale` gets
+English. The handoff file's headings, labels and the last-activity date
+(shown in UTC) are in that language; messages, file paths and node names
+are copied as they are.
 
 Who may call what follows one access table across every task route: **read**
 (`GET /sessions/:id/events`) is anyone who can see the session's anchor

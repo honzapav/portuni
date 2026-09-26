@@ -136,7 +136,7 @@ class FakeCentral implements CentralClient {
       handoff_path: null,
       handoff_hash: null,
       handoff_inline: null,
-      name: "Nový úkol",
+      name: "New task",
       name_is_custom: 0,
       model: input.model ?? null,
       effort: input.effort ?? null,
@@ -778,10 +778,10 @@ describe("agent-router: sessions/tasks", () => {
     const mirrorRoot = await getMirrorPath(stored!.user_id, NODE_ID);
     assert.ok(mirrorRoot, "the task's mirror must exist on this device");
     const content = await readFile(join(mirrorRoot!, stored!.handoff_path!), "utf8");
-    assert.match(content, /## Zápisový rozsah\n- N1/);
-    assert.match(content, /## Čtecí rozsah\n- N1\n- N2/);
-    assert.doesNotMatch(content, /## Zápisový rozsah\n\(žádný\)/);
-    assert.match(content, /Uzel: Proj/);
+    assert.match(content, /## Write scope\n- N1/);
+    assert.match(content, /## Read scope\n- N1\n- N2/);
+    assert.doesNotMatch(content, /## Write scope\n\(none\)/);
+    assert.match(content, /Node: Proj/);
 
     assert.deepEqual(
       fake.registered,

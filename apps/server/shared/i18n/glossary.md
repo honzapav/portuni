@@ -101,6 +101,9 @@ never Title Case. Czech keeps its own casing and „…“ quotes.
 | konektor | connector | An MCP server the runner can reach. |
 | token | token | |
 | připojená aplikace | connected app | An OAuth grant. |
+| souhlas (OAuth) | consent | The page where a user allows a connected app. |
+| zápisový rozsah | write scope | The nodes a thread may write to. |
+| čtecí rozsah | read scope | The nodes a thread may read. |
 | přepis | transcript | A thread's conversation on the device. |
 | zástupná osoba / placeholder | placeholder | A person actor not yet backed by a real person. |
 | odhlásit se | sign out | Not "log out". |

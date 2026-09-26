@@ -205,7 +205,8 @@ describe("authorize parameter errors", () => {
     const html = await res.text();
     assert.match(html, /sign-in error/i);
     assert.match(html, /data-error-code="OAUTH_MISSING_PARAMETER"/);
-    assert.match(html, /A required authorization request parameter is missing\./);
+    assert.match(html, /The authorization request is missing a required parameter\./);
+    assert.match(html, /<html lang="en">/);
   });
 
   it("rejects a redirect_uri not registered for the client", async () => {
@@ -529,5 +530,73 @@ describe("unsupported token grant_type", () => {
     assert.equal(res.status, 400);
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal(body.error, "unsupported_grant_type");
+  });
+});
+
+// #539: the consent and sign-in error pages are in the user's language --
+// the account's when the user is known, else Accept-Language, else English.
+describe("sign-in pages in the user's language (#539)", () => {
+  async function consentPageWith(acceptLanguage: string): Promise<string> {
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", CLIENT_ID);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("code_challenge", lastPkce.challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("state", "s-locale");
+    authorizeUrl.searchParams.set("resource", "https://api.portuni.test/mcp");
+    const authorizeRes = await authFetch(authorizeUrl, { redirect: "manual" });
+    assert.equal(authorizeRes.status, 302);
+    const flowState = new URL(authorizeRes.headers.get("location")!).searchParams.get("state")!;
+    const callbackUrl = new URL(`${base}/oauth/google/callback`);
+    callbackUrl.searchParams.set("state", flowState);
+    callbackUrl.searchParams.set("code", "google-code-ok");
+    const res = await authFetch(callbackUrl, { headers: { "Accept-Language": acceptLanguage } });
+    assert.equal(res.status, 200);
+    return res.text();
+  }
+
+  async function setAccountLocale(locale: "en" | "cs" | null): Promise<void> {
+    await db.execute({ sql: "UPDATE users SET locale = ? WHERE email = ?", args: [locale, "a@workflow.ooo"] });
+  }
+
+  it("renders an error page in the language of Accept-Language", async () => {
+    const res = await authFetch(`${base}/oauth/authorize?client_id=${encodeURIComponent(CLIENT_ID)}`, {
+      redirect: "manual",
+      headers: { "Accept-Language": "de-DE, cs-CZ;q=0.9, en;q=0.5" },
+    });
+    assert.equal(res.status, 400);
+    const html = await res.text();
+    assert.match(html, /<html lang="cs">/);
+    assert.match(html, /Požadavku o autorizaci chybí povinný parametr\./);
+    assert.match(html, /data-error-code="OAUTH_MISSING_PARAMETER"/);
+  });
+
+  it("renders the consent page by Accept-Language when the account has no language", async () => {
+    await consentPageWith("en"); // the first callback creates the user
+    await setAccountLocale(null);
+    const html = await consentPageWith("cs-CZ,cs;q=0.9,en;q=0.8");
+    assert.match(html, /<html lang="cs">/);
+    assert.match(html, /value="allow">Povolit</);
+    assert.match(html, /<span class="client">Claude<\/span> žádá o přístup/);
+  });
+
+  it("renders the consent page in the account's language over Accept-Language", async () => {
+    await consentPageWith("en");
+    await setAccountLocale("cs");
+    const cs = await consentPageWith("en-US,en;q=0.9");
+    assert.match(cs, /<html lang="cs">/);
+    assert.match(cs, /value="deny">Odmítnout</);
+
+    await setAccountLocale("en");
+    const en = await consentPageWith("cs-CZ");
+    assert.match(en, /<html lang="en">/);
+    assert.match(en, /value="allow">Allow</);
+    assert.match(en, /<span class="client">Claude<\/span> is asking for access to your Portuni account\./);
+    await setAccountLocale(null);
+  });
+
+  it("falls back to English with no Accept-Language and no account language", async () => {
+    const res = await authFetch(`${base}/oauth/authorize?client_id=x`, { redirect: "manual" });
+    assert.match(await res.text(), /<html lang="en">/);
   });
 });

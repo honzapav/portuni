@@ -296,7 +296,7 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal(res.statusCode, 201);
     const body = JSON.parse(res.body) as { session: SessionSummary; run: SessionRunRow | null };
     assert.equal(body.session.state, "draft");
-    assert.equal(body.session.name, "Nový úkol");
+    assert.equal(body.session.name, "New task");
     assert.ok(!("brief" in body.session));
     assert.equal(body.session.runner, "fake");
     assert.equal(body.session.instance_id, null);

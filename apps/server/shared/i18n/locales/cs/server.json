@@ -1,5 +1,43 @@
 {
+  "handoff": {
+    "footer": "Konverzace nebyla uložena; pokračuj z tohoto shrnutí.",
+    "heading": {
+      "files": "## Změněné soubory",
+      "messages": "## Poslední zprávy",
+      "question": "## Otevřená otázka",
+      "read_scope": "## Čtecí rozsah",
+      "write_scope": "## Zápisový rozsah"
+    },
+    "last_active_line": "Poslední aktivita: {{when}} UTC",
+    "message_agent": "- **Agent:** {{text}}",
+    "message_user": "- **Uživatel:** {{text}}",
+    "node_line": "Uzel: {{nodeName}}",
+    "node_line_none": "Uzel: (bez uzlu)",
+    "none": {
+      "files": "(žádné)",
+      "messages": "(žádné)",
+      "question": "(žádná)",
+      "read_scope": "(žádný)",
+      "write_scope": "(žádný)"
+    }
+  },
+  "oauth": {
+    "consent": {
+      "allow": "Povolit",
+      "deny": "Odmítnout",
+      "loopback_warning": "Tato aplikace žádá o přihlášení pro lokální (loopback) adresu <strong>{{host}}</strong>, typicky jde o aplikaci běžící na tomto počítači.",
+      "redirect_notice": "Po povolení bude aplikace přesměrována na:",
+      "requests_access": "<span class=\"client\">{{clientName}}</span> žádá o přístup k vašemu účtu Portuni.",
+      "title": "Portuni – žádost o přístup"
+    },
+    "error": {
+      "title": "Portuni – chyba přihlášení"
+    }
+  },
   "sample": {
     "message": "Dobrý den, {{userName}}."
+  },
+  "session": {
+    "default_draft_name": "Nový úkol"
   }
 }

@@ -24,6 +24,8 @@ These all share the same connector UI:
 4. A consent screen shows who you're signing in as and which client is asking (Claude) — **Allow**.
 5. Claude reconnects with a token it now holds itself; the Portuni tools appear like any other connector.
 
+The consent screen and any sign-in error page are in your language: the one set on your Portuni account (Settings → Account) once the server knows who you are, otherwise your browser's preferred language (English or Czech), otherwise English.
+
 You'll see this consent screen again roughly every 180 days (or sooner if an admin revokes the connection) — it is never silently remembered, by design.
 
 ## Claude Code

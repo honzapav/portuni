@@ -552,9 +552,9 @@ describe("session runtime: resume by writing (#378)", () => {
 
     assert.ok(capturedOrientation);
     assert.match(capturedOrientation!, /Handoff \(resumed from a summary\)/);
-    assert.match(capturedOrientation!, /Poslední zprávy/); // the summary content itself
+    assert.match(capturedOrientation!, /## Recent messages/); // the summary content itself
     // Built from this device's transcript at resume: the first run's brief.
-    assert.match(capturedOrientation!, /\*\*Uživatel:\*\* x/);
+    assert.match(capturedOrientation!, /\*\*User:\*\* x/);
     assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "and nothing is stored");
   });
 });
@@ -638,7 +638,7 @@ describe("session runtime: writing into a closed thread reopens it (#498)", () =
     const start = adapter.getLastRunStart();
     assert.equal(start?.resume, null);
     assert.match(start?.orientation ?? "", /Handoff \(resumed from a summary\)/);
-    assert.match(start?.orientation ?? "", /\*\*Uživatel:\*\* první zadání/);
+    assert.match(start?.orientation ?? "", /\*\*User:\*\* první zadání/);
     assert.equal(start?.brief, "pokračuj");
   });
 

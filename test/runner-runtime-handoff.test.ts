@@ -138,7 +138,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
     const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
     const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
     assert.equal(parseServerHandoffReason(onDisk), "handoff");
-    assert.match(onDisk, /Poslední zprávy/);
+    assert.match(onDisk, /## Recent messages/);
 
     // Registered as a tracked file of the node, so the next sync carries it.
     const files = await db.execute({
@@ -240,7 +240,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
     const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
     const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
     assert.equal(parseServerHandoffReason(onDisk), "handoff");
-    assert.match(onDisk, /\*\*Uživatel:\*\* x/);
+    assert.match(onDisk, /\*\*User:\*\* x/);
     assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
   });
 
@@ -260,7 +260,7 @@ describe("session runtime: handoff (#459 Předat)", () => {
 
     const onDisk = await readFile(join(mirrorRoot, result.handoff_path), "utf8");
     assert.doesNotMatch(onDisk, /Staré shrnutí/);
-    assert.match(onDisk, /\*\*Uživatel:\*\* x/);
+    assert.match(onDisk, /\*\*User:\*\* x/);
   });
 
   it("an idle suspend with a mirror here writes no file, tracks nothing and appends no handoff event (#497)", async () => {

@@ -393,7 +393,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     ((sessionId: string, reason: ServerHandoffReason, opts?: SuspendServerSideOptions) =>
       localHandoffs().suspend(sessionId, reason, opts));
   const handoffs: Pick<SessionHandoffs, "summarize" | "writeFile"> = deps.handoffs ?? {
-    summarize: (session, reason) => localHandoffs().summarize(session, reason),
+    summarize: (session, reason, locale) => localHandoffs().summarize(session, reason, locale),
     writeFile: (session, summary) => localHandoffs().writeFile(session, summary),
   };
   const resolveNodeOrgId = deps.resolveNodeOrgId ?? resolveNodeOrgIdLocal;
@@ -431,6 +431,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // rather than the generic "run_ended" catch-all handleAdapterEvent falls
   // back to. Set by endIdleRun just before closing, consumed once.
   const pendingEndReason = new Map<string, ServerHandoffReason>();
+  // #539: the language of the request that ended the run on purpose (only
+  // Předat writes a summary there), read by the same run_ended handler.
+  const pendingEndLocale = new Map<string, Locale>();
   // #378: last time ANY activity was observed for a session's live run
   // (started, a message sent, an adapter event, a question answered) --
   // the idle sweep's own cutoff. Cleared once the run ends.
@@ -744,7 +747,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     } else {
       const reason = pendingEndReason.get(sessionId) ?? "run_ended";
       pendingEndReason.delete(sessionId);
-      const suspended = await suspendFallback(sessionId, reason);
+      const locale = pendingEndLocale.get(sessionId);
+      pendingEndLocale.delete(sessionId);
+      const suspended = await (locale ? suspendFallback(sessionId, reason, { locale }) : suspendFallback(sessionId, reason));
       if (suspended) {
         // #494: the run_ended above already fanned a session_state out
         // (api/sessions-ws.ts reads the row the moment it sees one) --
@@ -913,6 +918,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       effort: input.effort ?? null,
       runner: defaults.runner,
       instance_id: defaults.instanceId,
+      locale: input.locale,
     });
   }
 
@@ -974,6 +980,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // after the run it was written for refused it).
     logged = false,
     attempt = 0,
+    // #539: the language of the summary a resume by writing may build.
+    locale?: Locale,
   ): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (live) {
@@ -998,7 +1006,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         // end and for the suspend that follows, then deliver it the way a
         // message into a suspended thread is delivered -- as the next
         // run's first message, written once.
-        await deliverAfterRunEnd(sessionId, text, attempt, true);
+        await deliverAfterRunEnd(sessionId, text, attempt, true, locale);
       }
       return;
     }
@@ -1008,7 +1016,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // message is not refused -- it waits for the state that suspend leaves
     // behind and goes to the run it starts.
     if (runSettling.has(sessionId)) {
-      await deliverAfterRunEnd(sessionId, text, attempt, logged);
+      await deliverAfterRunEnd(sessionId, text, attempt, logged, locale);
       return;
     }
 
@@ -1021,7 +1029,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // #498: Uzavřít is "done, off the active lists", not "never again" --
     // writing into a closed thread reopens it exactly like a suspended one.
     if (session.state === "suspended" || session.state === "closed") {
-      await resumeByWriting(sessionId, session, text, logged);
+      await resumeByWriting(sessionId, session, text, logged, locale);
       return;
     }
     throw new NoLiveRunError("sendMessage", sessionId);
@@ -1035,12 +1043,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     text: string,
     attempt: number,
     logged: boolean,
+    locale?: Locale,
   ): Promise<void> {
     if (attempt + 1 >= MAX_DELIVERY_ATTEMPTS) {
       throw new Error(`sendMessage: session ${sessionId} keeps ending runs before the message can be delivered`);
     }
     await waitForRunToSettle(sessionId);
-    await sendMessageLocked(sessionId, text, logged, attempt + 1);
+    await sendMessageLocked(sessionId, text, logged, attempt + 1, locale);
   }
 
   // A thread is a session row from the moment it opens (#374, "the session
@@ -1119,6 +1128,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // #489: true when `text` is already in the transcript -- a message the
     // previous run refused while it was ending.
     logged = false,
+    locale?: Locale,
   ): Promise<void> {
     if (!session.node_id) throw new Error(`sendMessage: session ${sessionId} has no anchor node`);
     const runner = session.runner;
@@ -1158,7 +1168,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     if (canResumeConversation && lastRun?.agent_session_id) {
       runStartResume = { agentSessionId: lastRun.agent_session_id };
     } else {
-      const summary = await resumeSummary(session, provisioned.cwd);
+      const summary = await resumeSummary(session, provisioned.cwd, locale);
       // #497: nothing to continue from here -- no conversation, no Předat
       // file, no transcript and no content at all on this device. The same
       // refusals Předat gives: the transcript is on the device the thread
@@ -1205,13 +1215,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // handoff uses. With no transcript here either, an inline summary an
   // older sidecar left behind is the last resort, and with none of the
   // three the thread resumes on its orientation alone, as before.
-  async function resumeSummary(session: SessionRow, cwd: string): Promise<string | null> {
+  async function resumeSummary(session: SessionRow, cwd: string, locale?: Locale): Promise<string | null> {
     if (session.handoff_path) {
       const file = await readFile(join(cwd, session.handoff_path), "utf8").catch(() => null);
       if (file) return file;
     }
     if ((await content.listEvents(session.id, { limit: 1 })).length > 0) {
-      return handoffs.summarize(session, "run_ended");
+      return handoffs.summarize(session, "run_ended", locale);
     }
     return (await content.getContent(session.id))?.handoff_inline ?? null;
   }
@@ -1313,10 +1323,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // -- the resulting run_ended is meant to fall through to the auto-
   // summary/suspend path in handleAdapterEvent, tagged "idle" specifically
   // (via pendingEndReason) rather than the generic "run_ended".
-  async function endRunWithReason(sessionId: string, reason: ServerHandoffReason): Promise<boolean> {
+  async function endRunWithReason(
+    sessionId: string,
+    reason: ServerHandoffReason,
+    locale?: Locale,
+  ): Promise<boolean> {
     const live = liveRuns.get(sessionId);
     if (!live) return false;
     pendingEndReason.set(sessionId, reason);
+    if (locale) pendingEndLocale.set(sessionId, locale);
     await live.handle.close();
     await drain(sessionId);
     return true;
@@ -1344,7 +1359,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // this device but has no live handle any more (the device restarted
   // under it) still gets its summary: the suspend path needs no adapter.
   // Suspended with no file: the same summary path writes the file now.
-  async function handoffLocked(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
+  async function handoffLocked(
+    sessionId: string,
+    locale?: Locale,
+  ): Promise<{ session: SessionRow; handoff_path: string }> {
     const session = await mustGetSession(sessionId);
     if (session.state === "suspended" && session.handoff_path) {
       return { session, handoff_path: session.handoff_path };
@@ -1373,14 +1391,14 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         }
       }
       await interruptLocked(sessionId);
-      if (!(await endRunWithReason(sessionId, "handoff"))) {
-        await suspendFallback(sessionId, "handoff");
+      if (!(await endRunWithReason(sessionId, "handoff", locale))) {
+        await suspendFallback(sessionId, "handoff", { locale });
       }
     } else {
       if (!(await contentIsHere(sessionId))) {
         await refuseForMissingContent(session, "handoff");
       }
-      await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true });
+      await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true, locale });
     }
     const after = await mustGetSession(sessionId);
     if (!after.handoff_path) throw noMirrorHandoffError();
@@ -1551,7 +1569,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // is written as the old thread's handoff file (when this device has a
   // mirror of the node) and the new thread's orientation points at it, the
   // way Navázat na handoff's does.
-  async function continueSessionLocked(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
+  async function continueSessionLocked(
+    sessionId: string,
+    locale?: Locale,
+  ): Promise<{ session: SessionRow; run: SessionRunRow }> {
     const oldSession = await mustGetSession(sessionId);
     if (!oldSession.node_id) throw new Error(`continueSession: session ${sessionId} has no anchor node`);
     const runner = oldSession.runner;
@@ -1573,7 +1594,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await drain(sessionId);
     }
 
-    const summary = await handoffs.summarize(oldSession, "continue");
+    const summary = await handoffs.summarize(oldSession, "continue", locale);
     // The old run is already ended: a file that cannot be written (a full
     // disk, a mirror gone read-only) must not strand the old thread running
     // with no live run. The summary still seeds the new thread inline, the
@@ -1659,8 +1680,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // arriving during a start therefore finds the run that start produced and
   // goes to it as an ordinary message; Uzavřít and Předat wait for the
   // start and then end that run.
-  function sendMessage(sessionId: string, text: string): Promise<void> {
-    return withLifecycleLock(sessionId, () => sendMessageLocked(sessionId, text));
+  function sendMessage(sessionId: string, text: string, opts?: SessionRequestOptions): Promise<void> {
+    return withLifecycleLock(sessionId, () => sendMessageLocked(sessionId, text, false, 0, opts?.locale));
   }
 
   // Stop and an answer act on the live run too: during a start they wait
@@ -1678,12 +1699,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return withLifecycleLock(sessionId, () => closeSessionLocked(sessionId));
   }
 
-  function handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
-    return withLifecycleLock(sessionId, () => handoffLocked(sessionId));
+  function handoff(sessionId: string, opts?: SessionRequestOptions): Promise<{ session: SessionRow; handoff_path: string }> {
+    return withLifecycleLock(sessionId, () => handoffLocked(sessionId, opts?.locale));
   }
 
-  function continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
-    return withLifecycleLock(sessionId, () => continueSessionLocked(sessionId));
+  function continueSession(
+    sessionId: string,
+    opts?: SessionRequestOptions,
+  ): Promise<{ session: SessionRow; run: SessionRunRow }> {
+    return withLifecycleLock(sessionId, () => continueSessionLocked(sessionId, opts?.locale));
   }
 
   function subscriberCount(target: string): number {

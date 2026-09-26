@@ -27,6 +27,7 @@ import {
 import type { SessionRow, SessionState } from "../../shared/types.js";
 import type { SessionRunRow } from "../../shared/api-types.js";
 import type { RunEndReason } from "./types.js";
+import type { Locale } from "../../shared/i18n/config.js";
 
 // SessionRunRow/SessionEventRow are defined in shared/api-types.ts (so the
 // web can type the REST responses without importing server domain code);
@@ -83,6 +84,9 @@ export interface CreateDraftSessionInput {
   // the store only records. null means "no runner is logged in here".
   runner?: string | null;
   instance_id?: string | null;
+  // #539: the language of the POST /sessions that opened the draft; its
+  // default name is written in it (English when missing).
+  locale?: Locale;
 }
 
 export interface PatchSessionInput {
@@ -163,6 +167,7 @@ export class DbSessionStore implements SessionStore {
       effort: input.effort,
       runner: input.runner,
       instance_id: input.instance_id,
+      locale: input.locale,
     });
   }
 
