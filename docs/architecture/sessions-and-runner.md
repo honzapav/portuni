@@ -885,10 +885,12 @@ human verification.
 - Env values never reach a client (`env_keys` only); an empty submitted
   value for a known key means "leave unchanged". Secret-shaped keys
   (`shared/runner-env.ts` `isSecretShapedEnvKey`) and `PORTUNI_*` keys are
-  refused with `INSTANCE_ENV_KEY_REFUSED`. A leading `~` expands to `$HOME`
+  refused with `INSTANCE_ENV_KEY_SECRET` / `INSTANCE_ENV_KEY_RESERVED`
+  (`params.key`). A leading `~` expands to `$HOME`
   only when `getInstanceEnv` reads the value for a run.
 - `defaults: { model?, effort? }`: an unknown key or invalid effort throws
-  `InstanceDefaultsKeyRefusedError`; `updateInstance` replaces `defaults`
+  `InstanceDefaultsKeyRefusedError` (`INSTANCE_DEFAULTS_KEY_UNKNOWN` or
+  `INSTANCE_DEFAULTS_EFFORT_INVALID`); `updateInstance` replaces `defaults`
   wholesale, unlike `env`'s per-key merge.
 - A run's instance lands in `sessions.instance_id`. An old desktop
   `config.json` with a `profiles` key loads; the key is ignored and dropped

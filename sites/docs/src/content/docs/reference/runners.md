@@ -21,9 +21,9 @@ Requires `read` scope.
 
 ## Provider instances
 
-An **instance** is a named set of environment variables (and which runner they apply to) a task can be started under — most commonly `CLAUDE_CONFIG_DIR`, to run a task under a different Claude Code account. Instances are persisted in `<dataDir>/runners.json` on the sidecar (`PORTUNI_DATA_DIR`; the standalone server keeps it next to its database). The file is device-local: in a team workspace the desktop routes every `/runners*` call to this device's own sync agent, never to the central server, so the Runnery tab always describes the machine a task would actually run on. This replaces the desktop's old `config.json` profiles registry (`apps/desktop/src/workspace.rs`), which is removed in a later step of the runner batch.
+An **instance** is a named set of environment variables (and which runner they apply to) a task can be started under — most commonly `CLAUDE_CONFIG_DIR`, to run a task under a different Claude Code account. Instances are persisted in `<dataDir>/runners.json` on the sidecar (`PORTUNI_DATA_DIR`; the standalone server keeps it next to its database). The file is device-local: in a team workspace the desktop routes every `/runners*` call to this device's own sync agent, never to the central server, so the Runners tab always describes the machine a task would actually run on. This replaces the desktop's old `config.json` profiles registry (`apps/desktop/src/workspace.rs`), which is removed in a later step of the runner batch.
 
-Env values are never returned to any client — every response below carries `env_keys` (names only), not the values. A secret-shaped key (matching `*_TOKEN`, `*_KEY`, `*_SECRET`, or containing `PASSWORD`, case-insensitive) or any `PORTUNI_*` key is refused outright on create/update with a 400 and `code: "INSTANCE_ENV_KEY_REFUSED"` — secrets belong in the OS keychain, not this registry. A leading `~` in a value expands to the server process's home directory when the env is actually read (server-side only), never on disk.
+Env values are never returned to any client — every response below carries `env_keys` (names only), not the values. A secret-shaped key (matching `*_TOKEN`, `*_KEY`, `*_SECRET`, or containing `PASSWORD`, case-insensitive) or any `PORTUNI_*` key is refused outright on create/update with a 400 and `code: "INSTANCE_ENV_KEY_SECRET"` (secret-shaped) or `code: "INSTANCE_ENV_KEY_RESERVED"` (`PORTUNI_*`), the key in `params.key` — secrets belong in the OS keychain, not this registry. A leading `~` in a value expands to the server process's home directory when the env is actually read (server-side only), never on disk.
 
 ### GET /runners/instances
 
@@ -36,7 +36,7 @@ Returns `{ instances: RunnerInstanceSummary[] }`, each `{ id, name, runner, env_
 | `name` | string | yes | Display name |
 | `runner` | string | yes | Adapter id this instance applies to |
 | `env` | object | no | Environment variables merged into a run started under this instance |
-| `defaults` | object | no | `{ model?: string, effort?: "low"\|"medium"\|"high"\|"xhigh"\|"max" }` -- an unknown key or an invalid `effort` value is refused with 400 `INSTANCE_DEFAULTS_KEY_REFUSED` |
+| `defaults` | object | no | `{ model?: string, effort?: "low"\|"medium"\|"high"\|"xhigh"\|"max" }` -- an unknown key or an invalid `effort` value is refused with 400 `INSTANCE_DEFAULTS_KEY_UNKNOWN` (`params.key`) or `INSTANCE_DEFAULTS_EFFORT_INVALID` (`params.effort`, `params.allowed`) |
 
 Returns the created `RunnerInstanceSummary` (201). Requires `write` scope.
 
@@ -73,14 +73,14 @@ Content is never sent to the central server. `SessionSummary` and the
 never quote it — and `GET /sessions/:id/events` is a device-local route,
 answered by the machine you ask. Ask a device that did not run the thread
 and it answers 200 with an empty list plus `transcript_host`, the label of
-the machine that has the log; the app shows that as „Transkript je na
-zařízení X" rather than an empty chat.
+the machine that has the log; the app shows that as "The transcript is on
+the device X" rather than an empty chat.
 
 There is no backup of transcripts: losing a device's database loses the
 conversations that ran on it. The records on the central server and the
 `wip/sessions/<id>-handoff.md` files tracked in the nodes remain, and the
-handoff file is the supported way to move work between machines (**Předat**
-there, **Navázat na handoff** here).
+handoff file is the supported way to move work between machines (**Hand off**
+there, **Continue from handoff** here).
 
 In a personal workspace both halves are the same machine, so nothing about
 this is visible — the split only decides what a team workspace's sidecar
@@ -116,4 +116,4 @@ Returns `{ models: RunnerModel[] }`, each `{ id, displayName, description, descr
 
 The Claude adapter never starts a process just to answer this: before this server process has run any task under this runner, it returns the three documented aliases (`sonnet`, `opus`, `haiku` — the SDK accepts any of these as a bare `model` string) with `supportsEffort: false`, since the real per-model answer isn't known yet. The first live run fills a process-wide cache from the SDK's own `Query.supportedModels()`, and every call after — for any session, on this device — serves that cached list instead. A model not in the list can still be sent as free text; the picker in the app doesn't restrict to it.
 
-The task chat's composer (Práce) shows this list in a model selector, preselecting the thread's own `session.model` (blank means "use the resolved default" above). A reasoning-effort selector appears next to it only when the currently-selected model's `supportsEffort` is true, offering that model's own `effortLevels`; it's labelled as applying from the next run, matching the REST behavior above.
+The task chat's composer (Work) shows this list in a model selector, preselecting the thread's own `session.model` (blank means "use the resolved default" above). A reasoning-effort selector appears next to it only when the currently-selected model's `supportsEffort` is true, offering that model's own `effortLevels`; it's labelled as applying from the next run, matching the REST behavior above.

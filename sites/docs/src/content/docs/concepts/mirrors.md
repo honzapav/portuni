@@ -11,13 +11,13 @@ totally different layouts without stepping on each other.
 ## What's inside a mirror
 
 A mirror is usually created implicitly the first time a task is started
-for a node ("Nový úkol"). In the desktop app, the node detail header also offers
-a direct "Vytvořit pracovní složku" button when the node has no mirror on
+for a node ("New task"). In the desktop app, the node detail header also offers
+a direct "Create mirror" button when the node has no mirror on
 this device yet, so you can create the folder without starting a task
 first. The Files tab offers the same action: a node with remote files but
-no mirror on this device shows a banner instead of the sync button ("Tento
-uzel nemá na tomto počítači pracovní složku..."); creating the folder from
-there reveals "Synchronizovat" so you can pull the existing files in
+no mirror on this device shows a banner instead of the sync button ("This
+node has no mirror on this computer..."); creating the folder from
+there reveals "Sync" so you can pull the existing files in
 explicitly.
 
 When you call `portuni_mirror`, Portuni creates a folder structure for you:
@@ -104,7 +104,7 @@ file, a mirror that moved away), it used to reach only
 `~/Library/Logs/ooo.workflow.portuni/sidecar-<workspace>.log` — the user
 just saw that files "were not there". A bounded per-node buffer of recent
 failures (path, error message, timestamp) now backs a warning banner on the
-node's Files tab and a workspace-wide banner on Nastavení → Synchronizace
+node's Files tab and a workspace-wide banner on Settings → Sync
 (`GET /sync/health`, and the `watcher_errors` field on
 `GET /nodes/:id/sync-status`), so a misconfiguration is diagnosable without
 opening logs. A later successful reconcile of the same path clears it.
@@ -121,7 +121,7 @@ The watcher also understands the two everyday shell operations:
   the record and the remote copy and shows as "deleted locally" for an
   explicit decision.
 
-A deliberate delete — the Files tab's "Smazat" button, or `portuni_delete_file`
+A deliberate delete — the Files tab's "Delete" button, or `portuni_delete_file`
 — is a different action from the on-disk `rm` above: it removes the record,
 the remote object, **and** the local mirror copy, in every data mode. A
 team-workspace/agent workspace routes the disk-cleanup half through the local
@@ -129,7 +129,7 @@ sync agent (`DELETE /nodes/:id/files/:fileId` is served by the device, not
 proxied straight to the central server, precisely so the mirror copy does
 not survive the delete and get re-registered by the next backfill sweep).
 
-Creating a file — the Files tab's "+ Nový soubor" button — is served the
+Creating a file — the Files tab's "+ New file" button — is served the
 same way in a team-workspace/agent workspace: `POST /nodes/:id/files` writes
 the file into the device's own mirror and registers it centrally **without
 waiting on the Drive upload**, so the new file appears and opens instantly
@@ -152,7 +152,7 @@ delete never matches and stays untracked; local data is never destroyed.
 
 A file deleted directly on the remote (Drive UI, another tool — nothing
 that goes through Portuni) is only noticed by the **remote sweep**, which
-runs at the start of every deliberate sync ("Synchronizovat"): it removes
+runs at the start of every deliberate sync ("Sync"): it removes
 the record and writes the tombstone above, and — symmetrically — adopts
 any file that showed up anywhere under `wip/`, `outputs/`, or
 `resources/` — at any depth — without going through `portuni_store`/`portuni_adopt_files`
@@ -169,29 +169,29 @@ up the stale copy at the old path instead of pushing it back.
 central server watches each remote's own change feed and keeps the file
 records current — a file a teammate adds, edits or deletes on Drive is
 registered, re-hashed or tombstoned within about a minute, without anyone
-running a sync. Your device then reads it as "ke stažení": the *bytes*
+running a sync. Your device then reads it as "to pull": the *bytes*
 still arrive only through a deliberate sync, exactly as the mirror watcher
-registers local files but never pushes them. The sidebar shows „Nové na
-remote: N uzlů" when a node you mirror has such records, and Nastavení ›
-Synchronizace shows one line per remote with what the watcher last saw
+registers local files but never pushes them. The status footer shows "3 nodes
+on the remote" when nodes you mirror have such records, and Settings ›
+Sync shows one line per remote with what the watcher last saw
 (and its error, if it is failing). A personal workspace has no remote, so
 neither appears there; a backend without a change feed (a plain filesystem
 remote) is covered by the periodic full sweep instead.
 
 The watcher's own catch-up sweep and a sync you start yourself never run
 over the same node at once: every entry point — the single-node
-„Synchronizovat", „Synchronizovat vše", the MCP tools and the watcher's
+"Sync", "Sync all", the MCP tools and the watcher's
 sweep — takes the same per-node lock, so the later one waits instead of
 racing the other's adoptions and tombstones. A remote that starts refusing
 (rate limits, an outage) backs the watcher off exponentially instead of
-being retried every minute, and Nastavení › Synchronizace says when the
+being retried every minute, and Settings › Sync says when the
 next attempt is due; until it recovers, changes on that remote arrive with
 the next successful tick or the periodic full sweep.
 
 Two situations need a human decision, and the sync run never guesses:
 a **conflict** (both sides changed) and a **deleted_local** file (removed
 locally, still on the remote). The file row in the app shows the choice —
-"Ponechat lokální" / "Vzít z remote" for a conflict, "Obnovit" to restore
+"Keep local" / "Take from remote" for a conflict, "Restore" to restore
 a deleted local copy — backed by `POST /nodes/:id/files/:fileId/resolve`.
 Restoring refuses (with a clear error) to overwrite a local change that
 was never pushed.

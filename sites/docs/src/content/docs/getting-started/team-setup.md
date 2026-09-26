@@ -55,7 +55,7 @@ The full variable inventory, including tunables not listed here, lives in [`docs
 | write | `PORTUNI_GROUPS_WRITE` members | Everyday work: create and edit nodes, edges, actors, responsibilities, data sources and tools; log and resolve events; files (store, pull, move, snapshot) |
 | read | any authenticated user from an allowed domain | Read only: context, nodes, files, events. Cannot create or edit anything |
 
-Each variable takes a comma-separated list, so several groups can grant the same scope (e.g. `PORTUNI_GROUPS_WRITE=portuni-team@yourdomain,tempo-crew@yourdomain`). Highest matching group wins. On top of these global scopes, individual nodes can be restricted with `group` visibility — a node a user can't see simply answers "not found." A restricted node in **request** mode instead shows up as a locked chip; the user can ask for access from there, and managers approve or deny the request in the node's sharing section or in Settings → Žádosti o přístup.
+Each variable takes a comma-separated list, so several groups can grant the same scope (e.g. `PORTUNI_GROUPS_WRITE=portuni-team@yourdomain,tempo-crew@yourdomain`). Highest matching group wins. On top of these global scopes, individual nodes can be restricted with `group` visibility — a node a user can't see simply answers "not found." A restricted node in **request** mode instead shows up as a locked chip; the user can ask for access from there, and managers approve or deny the request in the node's sharing section or in Settings → Access requests.
 
 One operational note: removing someone from a group takes effect within about an hour (group-membership cache, session JWT lifetime, and MCP session TTL each add delay). For immediate revocation, also delete the user's device tokens.
 
@@ -68,12 +68,12 @@ Put the server behind a reverse proxy with TLS (e.g. `api.yourcompany.com`). Tea
 As a teammate you install the regular desktop app and point it at your organization's server. All you need from your admin is the **server URL**.
 
 1. Install `Portuni.app` from [GitHub releases](https://github.com/honzapav/portuni/releases) as in [Setup](/getting-started/setup/).
-2. On first launch the app asks how to start — choose **Připojit se k týmu** and enter the server URL. The app fetches the organization's sign-in configuration from the server (`GET /auth/desktop-config`) and switches the workspace to central data mode.
+2. On first launch the app asks how to start — choose **Join a team** and enter the server URL. The app fetches the organization's sign-in configuration from the server (`GET /auth/desktop-config`) and switches the workspace to central data mode.
 3. Sign in with your Google account when prompted. The app stores a device token in the macOS Keychain; no database or Drive credentials ever touch your machine.
 
 That's it. The graph you see — and everything your AI agents can do — is filtered through your permissions on the server.
 
-Mirror folders work in a team workspace too: the local sidecar runs as a **sync agent** that keeps your mirror folders and file status current, brokering every read and write through the central server with your device token. Folders materialize per node — open a node and hit **Vytvořit pracovní složku** (or run a sync) and the app creates the local mirror for you. The app walks you through this right after your first sign-in.
+Mirror folders work in a team workspace too: the local sidecar runs as a **sync agent** that keeps your mirror folders and file status current, brokering every read and write through the central server with your device token. Folders materialize per node — open a node and hit **Create mirror** (or run a sync) and the app creates the local mirror for you. The app walks you through this right after your first sign-in.
 
 Advanced: the same settings can still be written by hand into the app's `config.json` (`~/Library/Application Support/ooo.workflow.portuni/config.json`, keys `server_url`, `google_client_id`, `google_client_secret`, `data_mode: "central"`) — useful when the server does not serve `/auth/desktop-config`.
 

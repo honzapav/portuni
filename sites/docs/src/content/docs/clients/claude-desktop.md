@@ -10,7 +10,7 @@ Claude Desktop speaks MCP, but it cannot attach a bearer header to a remote serv
 ## What you need
 
 1. A central Portuni server (see [Team Setup](/getting-started/team-setup/)) and a Google account in one of its allowed domains.
-2. A **device token**: in the desktop app open Settings → Účet → Device tokeny and create one. It is shown once; it inherits your current role and can be revoked from the same place.
+2. A **device token**: in the desktop app open Settings → Account → Device tokens and create one. It is shown once; it inherits your current role and can be revoked from the same place.
 3. Node.js on the machine running Claude Desktop (`npx` is used to start `mcp-remote`).
 
 ## Configuration

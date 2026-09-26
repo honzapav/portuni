@@ -62,7 +62,7 @@ Writes: a node you create from a connector session (`portuni_create_node`) is wr
 
 ## Revoking access
 
-Settings → Účet → **Připojené aplikace** in the desktop app (or ask an admin) lists every connected client with its connect date and last-used time, and an **Odpojit** button. Revoking invalidates that client's access immediately — it has to log in and consent again to reconnect.
+Settings → Account → **Connected apps** in the desktop app (or ask an admin) lists every connected client with its connect date and last-used time, and a **Disconnect** button. Revoking invalidates that client's access immediately — it has to log in and consent again to reconnect.
 
 ## Why not `mcp-remote` here
 
