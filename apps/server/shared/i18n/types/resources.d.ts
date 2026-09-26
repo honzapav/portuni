@@ -680,6 +680,7 @@ export default interface Resources {
     "INVALID_EVENT_DATE": "The event date is not valid.",
     "INVALID_HEALTH": "The health value “{{health}}” is not valid.",
     "INVALID_JSON": "The request could not be read.",
+    "INVALID_LOCALE": "That language is not available.",
     "INVALID_PATH": "The file name or path is not valid.",
     "INVALID_REQUEST": "The request was not valid.",
     "INVALID_RESOLVE_ACTION": "This conflict resolution is not valid.",
@@ -1351,6 +1352,16 @@ export default interface Resources {
         "dismiss": "Close"
       },
       "intro": "Sign-in to the central Portuni server with Google OAuth.",
+      "language": {
+        "description": "The language of Portuni's interface. Saved to your account, so it applies on all your devices.",
+        "label": "Language",
+        "options": {
+          "cs": "Čeština",
+          "en": "English",
+          "pseudo": "Pseudo"
+        },
+        "select_aria_label": "Interface language"
+      },
       "loading": "Checking sign-in status…",
       "not_configured": {
         "body": "Add <code>server_url</code> and <code>google_client_id</code> to the config file:",

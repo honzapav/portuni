@@ -254,7 +254,11 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
 - All windows share one webview origin, so per-workspace UI state is keyed
   `portuni:<ws_id>:<key>` (`apps/web/src/lib/workspace-storage.ts`):
   `openNodes`, `fileTreeCollapsed`, `workspace.detailVisible`,
-  `first-steps-pending` (the team workspace's first-login guidance flag).
+  `first-steps-pending` (the team workspace's first-login guidance flag),
+  `locale` (the window's language cache, #538: per window because each
+  workspace window can belong to another account; the account's
+  `users.locale` from `/me` overwrites it when they differ, and a `null`
+  account keeps what the window resolved).
   `currentWorkspaceId()` reads the id synchronously from
   `getCurrentWindow().label`; `scopedKey(key)` falls back to the unscoped
   `portuni:<key>` in a plain browser or Vite build, which has no workspace.

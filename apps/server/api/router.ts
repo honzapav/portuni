@@ -14,6 +14,7 @@ import {
   handleLogin,
   handleDesktopConfig,
   handleMe,
+  handlePatchMe,
   handleMintDeviceToken,
   handleListDeviceTokens,
   handleRevokeDeviceToken,
@@ -237,6 +238,10 @@ export async function routeApiRequest(
   }
   if (url.pathname === "/me" && req.method === "GET") {
     await handleMe(req, res, identity);
+    return true;
+  }
+  if (url.pathname === "/me" && req.method === "PATCH") {
+    await handlePatchMe(req, res, identity);
     return true;
   }
   if (url.pathname === "/device-tokens" && req.method === "POST") {

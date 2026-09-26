@@ -380,6 +380,15 @@ chat view above renders from. `POST /sessions/:id/suspend` and `POST
 /sessions/:id/resume` are gone — there is no separate suspend handshake
 any more, and resuming is just sending a message.
 
+`POST /sessions`, `POST /sessions/:id/messages`, `POST
+/sessions/:id/handoff` (Předat) and `POST /sessions/:id/continue` — and the
+live channel's `message`, `continue` and `handoff` frames — accept an
+optional `locale` (`"en"` or `"cs"`): the language of the text Portuni
+writes for you as a result, such as the handoff file and the default
+thread name. The app sends its current interface language, which you pick
+in Settings → Account (stored on your account, `PATCH /me` with `{ locale }`,
+so it follows you to every device).
+
 Who may call what follows one access table across every task route: **read**
 (`GET /sessions/:id/events`) is anyone who can see the session's anchor
 node; **message** (send a message, answer a question, rename) and

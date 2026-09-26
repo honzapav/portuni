@@ -52,6 +52,7 @@
   "INVALID_EVENT_DATE": "Datum události není platné.",
   "INVALID_HEALTH": "Hodnota zdraví „{{health}}“ není platná.",
   "INVALID_JSON": "Požadavek nešel přečíst.",
+  "INVALID_LOCALE": "Tento jazyk není k dispozici.",
   "INVALID_PATH": "Název nebo cesta souboru není platná.",
   "INVALID_REQUEST": "Požadavek nebyl platný.",
   "INVALID_RESOLVE_ACTION": "Tohle řešení konfliktu není platné.",

@@ -1582,7 +1582,26 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration040,
   },
+  // #538 (docs/superpowers/specs/2026-09-25-localization-design.md, "Data
+  // model and routes"): the user's UI language, "en" | "cs" | NULL (no
+  // choice yet, the window keeps what it resolved). One ADD COLUMN with its
+  // CHECK, no rebuild, no index -- docs/lessons-learned.md section 7. The
+  // fresh DDL keeps the pre-016 users shape like google_sub does, so a fresh
+  // install takes this migration too; the same column is in PG_BASELINE_DDL
+  // and the Postgres cutover has not run, so there is no pg-002.
+  {
+    id: "041_users_locale",
+    isApplied: async (db) => {
+      const r = await db.execute("PRAGMA table_info(users)");
+      return r.rows.some((row) => String(row.name) === "locale");
+    },
+    up: runMigration041,
+  },
 ];
+
+export async function runMigration041(db: DbClient): Promise<void> {
+  await db.execute("ALTER TABLE users ADD COLUMN locale TEXT CHECK(locale IN ('en','cs'))");
+}
 
 // Table rebuild: sessions without brief and handoff_inline, and the
 // graph db's session_events dropped (#462). ONE executeMultiple, like 030

@@ -16,7 +16,13 @@ import {
 } from "../../server/shared/i18n/config";
 import { createI18n } from "../../server/shared/i18n/create";
 import enCommon from "../../server/shared/i18n/locales/en/common.json";
-import { readCachedLocale, resolveBootLocale } from "./lib/locale";
+import {
+  accountLocaleSwitch,
+  readCachedLocale,
+  resolveBootLocale,
+  setRequestLanguageSource,
+  writeCachedLocale,
+} from "./lib/locale";
 
 // Every catalog file the web may load, one chunk each. `server` and
 // `desktop` never reach the web; en/common is bundled above.
@@ -42,7 +48,7 @@ async function loadCatalog(lng: string, ns: string): Promise<Record<string, unkn
   return (await load()).default;
 }
 
-const PSEUDO_ENABLED = import.meta.env.DEV;
+export const PSEUDO_ENABLED = import.meta.env.DEV;
 
 const bootLocale: UiLocale = resolveBootLocale({
   cached: readCachedLocale(window.localStorage),
@@ -65,13 +71,39 @@ const created = createI18n({
 
 export const i18n = created.i18n;
 
+setRequestLanguageSource(() => i18n.language);
+
+function setHtmlLang(locale: string): void {
+  document.documentElement.lang = locale === PSEUDO_LOCALE ? DEFAULT_LOCALE : locale;
+}
+
+// Switches this window's UI language: the window cache, i18next (no
+// reload) and <html lang>. Writing the account (PATCH /me) is the
+// caller's business; this never touches it.
+export async function applyUiLocale(locale: UiLocale): Promise<void> {
+  writeCachedLocale(window.localStorage, locale);
+  if (i18n.language !== locale) await i18n.changeLanguage(locale);
+  setHtmlLang(locale);
+}
+
+// After /me answers: the account's language wins over the boot guess.
+export async function syncAccountLocale(account: string | null | undefined): Promise<void> {
+  const target = accountLocaleSwitch({
+    account,
+    cached: readCachedLocale(window.localStorage),
+    current: i18n.language,
+    allowPseudo: PSEUDO_ENABLED,
+  });
+  if (target) await applyUiLocale(target);
+}
+
 // Waits for init, loads the boot language's boot namespaces (and English as
 // the fallback) and sets <html lang>. main.tsx awaits this before
 // createRoot.
 export async function bootI18n(): Promise<UiLocale> {
   await created.ready;
   await i18n.loadNamespaces([...BOOT_NAMESPACES]);
-  document.documentElement.lang = bootLocale === PSEUDO_LOCALE ? DEFAULT_LOCALE : bootLocale;
+  setHtmlLang(bootLocale);
   return bootLocale;
 }
 

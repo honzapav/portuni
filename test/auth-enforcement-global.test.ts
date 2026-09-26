@@ -135,6 +135,7 @@ describe("minScopeForRoute", () => {
 
   it("maps GET /me -> read", () => {
     assert.equal(minScopeForRoute("GET", "/me"), "read");
+    assert.equal(minScopeForRoute("PATCH", "/me"), "read");
   });
 
   // Task 14 point 9: GET /users only backs the write-gated actor

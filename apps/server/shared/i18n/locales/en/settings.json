@@ -44,6 +44,16 @@
       "dismiss": "Close"
     },
     "intro": "Sign-in to the central Portuni server with Google OAuth.",
+    "language": {
+      "description": "The language of Portuni's interface. Saved to your account, so it applies on all your devices.",
+      "label": "Language",
+      "options": {
+        "cs": "Čeština",
+        "en": "English",
+        "pseudo": "Pseudo"
+      },
+      "select_aria_label": "Interface language"
+    },
     "loading": "Checking sign-in status…",
     "not_configured": {
       "body": "Add <code>server_url</code> and <code>google_client_id</code> to the config file:",

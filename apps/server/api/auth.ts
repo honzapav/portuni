@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getDb } from "../infra/db.js";
 import {
   getIdentityContext,
+  parseBody,
   parseJsonBody,
   respondApiError,
   respondError,
@@ -12,7 +13,16 @@ import {
   type RequestIdentity,
 } from "../http/middleware.js";
 import { GoogleAdapter } from "../auth/google-adapter.js";
-import { upsertUserFromIdentity, listUsers, listUsersAdmin, inviteUser, UserExistsError } from "../auth/users.js";
+import {
+  upsertUserFromIdentity,
+  listUsers,
+  listUsersAdmin,
+  inviteUser,
+  UserExistsError,
+  getUserLocale,
+  setUserLocale,
+} from "../auth/users.js";
+import { isLocale, LOCALES } from "../shared/i18n/config.js";
 import { signSessionToken } from "../auth/session-token.js";
 import {
   listDeviceTokens,
@@ -86,14 +96,54 @@ export async function handleMe(
   res: ServerResponse,
   identity: RequestIdentity,
 ): Promise<void> {
-  respondJson(res, 200, {
+  try {
+    respondJson(res, 200, await meBody(identity));
+  } catch (err) {
+    respondError(res, "GET /me", err);
+  }
+}
+
+async function meBody(identity: RequestIdentity): Promise<Record<string, unknown>> {
+  return {
     id: identity.userId,
     email: identity.email,
     name: identity.name,
     global_scope: identity.globalScope,
     groups: identity.groups,
     via: identity.via,
-  });
+    locale: await getUserLocale(getDb(), identity.userId),
+  };
+}
+
+// #538: the one field a user sets on their own row -- the UI language,
+// "en" | "cs", or null to clear the choice. Scope "read": it touches nobody
+// else's data. In a team workspace this is a graph route the desktop proxy
+// sends to the central server, so every device of the user sees it on its
+// next /me.
+export async function handlePatchMe(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    let raw: unknown;
+    try {
+      raw = await parseBody(req);
+    } catch {
+      respondApiError(res, 400, "INVALID_JSON", "Invalid JSON body");
+      return;
+    }
+    const body = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const locale = body.locale;
+    if (!("locale" in body) || (locale !== null && !isLocale(locale))) {
+      respondApiError(res, 400, "INVALID_LOCALE", `locale must be one of ${LOCALES.join(", ")} or null`);
+      return;
+    }
+    await setUserLocale(getDb(), identity.userId, locale);
+    respondJson(res, 200, await meBody(identity));
+  } catch (err) {
+    respondError(res, "PATCH /me", err);
+  }
 }
 
 const MintBody = z.object({

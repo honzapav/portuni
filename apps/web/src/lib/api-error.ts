@@ -165,6 +165,7 @@ const MESSAGES: Record<DisplayErrorCode, Render> = {
   INVALID_JSON: (t) => t(($) => $.INVALID_JSON, { ns: "errors" }),
   INVALID_PATH: (t) => t(($) => $.INVALID_PATH, { ns: "errors" }),
   INVALID_REQUEST: (t) => t(($) => $.INVALID_REQUEST, { ns: "errors" }),
+  INVALID_LOCALE: (t) => t(($) => $.INVALID_LOCALE, { ns: "errors" }),
   INVALID_RESOLVE_ACTION: (t) => t(($) => $.INVALID_RESOLVE_ACTION, { ns: "errors" }),
   INVALID_SESSION_TRANSITION: (t) => t(($) => $.INVALID_SESSION_TRANSITION, { ns: "errors" }),
   INVALID_VISIBILITY: (t, p) => t(($) => $.INVALID_VISIBILITY, { ns: "errors", visibility: s(p.visibility) }),

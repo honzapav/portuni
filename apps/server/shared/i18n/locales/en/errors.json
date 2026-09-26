@@ -50,6 +50,7 @@
   "INVALID_EVENT_DATE": "The event date is not valid.",
   "INVALID_HEALTH": "The health value “{{health}}” is not valid.",
   "INVALID_JSON": "The request could not be read.",
+  "INVALID_LOCALE": "That language is not available.",
   "INVALID_PATH": "The file name or path is not valid.",
   "INVALID_REQUEST": "The request was not valid.",
   "INVALID_RESOLVE_ACTION": "This conflict resolution is not valid.",

@@ -99,6 +99,7 @@ import { DbSessionStore } from "../domain/runner/store.js";
 import { sessionContentStoreForProcess } from "../domain/runner/store-content.js";
 import { EFFORT_LEVELS, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
+import { LOCALES } from "../shared/i18n/config.js";
 import type {
   SessionResumeInfo,
   SessionScopeRecord,
@@ -552,6 +553,14 @@ async function sessionNodeName(db: DbClient, nodeId: string): Promise<string | n
 
 // --- Tasks (runner batch): starting a session's task and driving its run --
 
+// #538: the optional `locale` every session request that causes text for a
+// person carries -- POST /sessions, a message, Předat, Pokračovat v nové
+// session. Shared with api/agent-router.ts and api/sessions-ws.ts.
+export const RequestLocale = z.enum(LOCALES).optional();
+// The body of Předat and Pokračovat v nové session: nothing but the locale,
+// and an empty body is fine.
+export const SessionLocaleBody = z.object({ locale: RequestLocale });
+
 // Shared with api/agent-router.ts's POST /sessions: one schema, both routers.
 // brief/runner optional (#374): a thread opens empty (spec rule 5, "no
 // modal, no required field") -- omitting brief creates a draft instead of
@@ -575,6 +584,9 @@ export const StartSessionBody = z
       .string()
       .regex(/^wip\/sessions\/[A-Za-z0-9_-]+-handoff\.md$/, "handoff_path must be wip/sessions/<id>-handoff.md")
       .optional(),
+    // #538: the language of text the device writes for this thread (see
+    // SessionRequestOptions in domain/runner/session-runtime.ts).
+    locale: RequestLocale,
   })
   .refine((b) => !(b.handoff_path && b.brief), {
     message: "handoff_path cannot be combined with brief",
@@ -608,6 +620,7 @@ export async function handleStartSession(
           nodeId: body.node_id,
           handoffPath: body.handoff_path,
           policy: body.policy,
+          locale: body.locale,
         });
         await logAudit(identity.userId, "session_start", "session", session.id, {
           node_id: body.node_id,
@@ -638,6 +651,7 @@ export async function handleStartSession(
         nodeId: body.node_id,
         model: body.model,
         effort: body.effort,
+        locale: body.locale,
       });
       await logAudit(identity.userId, "session_start", "session", session.id, {
         node_id: body.node_id,
@@ -670,6 +684,7 @@ export async function handleStartSession(
       policy: body.policy,
       model: body.model,
       effort: body.effort,
+      locale: body.locale,
     });
     await logAudit(identity.userId, "session_start", "session", session.id, {
       node_id: body.node_id,
@@ -707,8 +722,9 @@ export async function handleDeleteSession(
   }
 }
 
-const MessageBody = z.object({
+export const MessageBody = z.object({
   text: z.string().trim().min(1),
+  locale: RequestLocale,
 });
 
 export async function handleSendSessionMessage(
@@ -725,7 +741,7 @@ export async function handleSendSessionMessage(
     if (!body) return;
 
     try {
-      await getSessionRuntime().sendMessage(sessionId, body.text);
+      await getSessionRuntime().sendMessage(sessionId, body.text, { locale: body.locale });
     } catch (err) {
       // #497: a resume with nothing to continue from on this device; #530:
       // NO_LIVE_RUN from the error's type.
@@ -811,7 +827,9 @@ export async function handleContinueSession(
     const db = getDb();
     const existing = await guardSessionAccess(res, db, identity, sessionId, "resume");
     if (!existing) return;
-    const { session, run } = await getSessionRuntime().continueSession(sessionId);
+    const body = await parseJsonBody(req, res, SessionLocaleBody);
+    if (!body) return;
+    const { session, run } = await getSessionRuntime().continueSession(sessionId, { locale: body.locale });
     await logAudit(identity.userId, "session_continue", "session", sessionId, { new_session_id: session.id });
     respondJson(res, 200, { session: await toSummary(session), run });
   } catch (err) {
@@ -837,8 +855,10 @@ export async function handleHandoffSession(
     const db = getDb();
     const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
     if (!existing) return;
+    const body = await parseJsonBody(req, res, SessionLocaleBody);
+    if (!body) return;
     try {
-      const { session, handoff_path } = await getSessionRuntime().handoff(sessionId);
+      const { session, handoff_path } = await getSessionRuntime().handoff(sessionId, { locale: body.locale });
       await logAudit(identity.userId, "session_handoff", "session", sessionId, { handoff_path });
       respondJson(res, 200, { session: await toSummary(session), handoff_path });
     } catch (err) {

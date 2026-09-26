@@ -14,6 +14,16 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { patchMeLocale } from "../api";
+import { applyUiLocale, PSEUDO_ENABLED } from "../i18n";
+import { isLocale, PSEUDO_LOCALE, type UiLocale } from "../../../server/shared/i18n/config";
 import { copyText } from "../lib/clipboard";
 import {
   isTauri,
@@ -139,6 +149,8 @@ export default function AccountSection() {
         </div>
       )}
 
+      <LanguagePicker />
+
       {state.kind === "loading" && (
         <div className="text-[13px] text-[var(--color-text-dim)]">
           {t(($) => $.account.loading)}
@@ -199,6 +211,62 @@ export default function AccountSection() {
         </div>
       )}
     </section>
+  );
+}
+
+// --- Language ----------------------------------------------------------------
+
+// The account's UI language (users.locale). en/cs are saved to the account
+// with PATCH /me, then applied to this window; the dev-only pseudo-locale
+// is never sent (the server holds only en/cs) and applies to this window
+// alone.
+function LanguagePicker() {
+  const { t } = useTranslation("settings");
+  const current = useLocale();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleChange(value: string) {
+    if (value === current) return;
+    setError(null);
+    setPending(true);
+    try {
+      if (isLocale(value)) await patchMeLocale(value);
+      else if (!(PSEUDO_ENABLED && value === PSEUDO_LOCALE)) return;
+      await applyUiLocale(value as UiLocale);
+    } catch (e) {
+      setError(displayError(e));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="mb-4 flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[13.5px] text-[var(--color-text)]">
+            {t(($) => $.account.language.label)}
+          </div>
+          <div className="text-[13px] text-[var(--color-text-dim)]">
+            {t(($) => $.account.language.description)}
+          </div>
+        </div>
+        <Select value={current} disabled={pending} onValueChange={(v) => void handleChange(v)}>
+          <SelectTrigger size="sm" aria-label={t(($) => $.account.language.select_aria_label)}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="en">{t(($) => $.account.language.options.en)}</SelectItem>
+            <SelectItem value="cs">{t(($) => $.account.language.options.cs)}</SelectItem>
+            {PSEUDO_ENABLED && (
+              <SelectItem value={PSEUDO_LOCALE}>{t(($) => $.account.language.options.pseudo)}</SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+      </div>
+      {error && <ErrorBox message={error} onDismiss={() => setError(null)} />}
+    </div>
   );
 }
 

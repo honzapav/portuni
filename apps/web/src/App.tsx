@@ -65,7 +65,7 @@ import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import { loadOpenNodes, saveOpenNodes } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
-import { lazyWithNamespaces } from "./i18n";
+import { lazyWithNamespaces, syncAccountLocale } from "./i18n";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
 // Náhled by default; everything else starts in the source editor.
@@ -190,7 +190,10 @@ export default function App() {
     let cancelled = false;
     void fetchMe()
       .then((me) => {
-        if (cancelled || !isGlobalScope(me.global_scope)) return;
+        if (cancelled) return;
+        // The account's language wins over the boot guess (cache / OS).
+        void syncAccountLocale(me.locale);
+        if (!isGlobalScope(me.global_scope)) return;
         setCanCreateNode(scopeAtLeast(me.global_scope, CREATE_NODE_SCOPE));
       })
       .catch(() => {

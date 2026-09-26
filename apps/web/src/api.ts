@@ -26,6 +26,8 @@ import type {
   OverviewPayload,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
+import { requestLocale } from "./lib/locale";
+import type { Locale } from "../../server/shared/i18n/config";
 import { isCentralMode } from "./lib/data-mode";
 import type { MoveTarget } from "./lib/file-plan";
 import type { SessionStore } from "./lib/session-store";
@@ -257,7 +259,11 @@ export function closePersistentSession(id: string): Promise<SessionSummary> {
 // HANDOFF_* code, which the caller renders with displayError.
 export async function handoffSession(id: string): Promise<{ session: SessionSummary; handoff_path: string }> {
   const path = `/sessions/${encodeURIComponent(id)}/handoff`;
-  const res = await apiFetch(path, { method: "POST" });
+  const res = await apiFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locale: requestLocale() }),
+  });
   if (res.status === 409) {
     const refusal = parseHandoffRefusal(res.status, await res.clone().text().catch(() => ""));
     if (refusal) throw refusal;
@@ -373,7 +379,10 @@ export function startSession(input: {
   // no runner goes with it, the server resolves it.
   handoff_path?: string;
 }): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
-  return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", input).then(
+  return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", {
+    ...input,
+    locale: requestLocale(),
+  }).then(
     (r) => {
       sessionStore?.put(r.session);
       return r;
@@ -429,6 +438,7 @@ export function continueSession(id: string): Promise<{ session: SessionSummary; 
   return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>(
     "POST",
     `/sessions/${encodeURIComponent(id)}/continue`,
+    { locale: requestLocale() },
   ).then((r) => {
     sessionStore?.put(r.session);
     return r;
@@ -1085,11 +1095,24 @@ export async function fetchAccountUsers(): Promise<AccountUser[]> {
 // #457 no session surface gates on identity any more -- every thread the
 // app lists is the caller's own -- so `id` is carried for future callers.
 // /me returns more (email, name, groups, via) but nothing else here
-// consumes it yet.
-export async function fetchMe(): Promise<{ id: string; global_scope: string }> {
+// consumes it yet. `locale` is the account's UI language (users.locale),
+// null when the account never chose one.
+export interface MeResponse {
+  id: string;
+  global_scope: string;
+  locale: Locale | null;
+}
+
+export async function fetchMe(): Promise<MeResponse> {
   const res = await apiFetch("/me");
   await throwForStatus(res, "me");
   return res.json();
+}
+
+// PATCH /me -- sets the account's UI language (Nastavení > Účet). The
+// server accepts only a catalog language or null (400 INVALID_LOCALE).
+export function patchMeLocale(locale: Locale | null): Promise<MeResponse> {
+  return jsonRequest<MeResponse>("PATCH", "/me", { locale });
 }
 
 // GET /auth/users/admin (admin-only): full account list for the Nastavení >

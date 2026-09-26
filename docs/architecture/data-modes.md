@@ -151,7 +151,10 @@ Which routes stay central on purpose: graph reads and writes, the session
 record half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`,
 `/runs…`, `/sessions/record`; the live half of a model change is
 `POST /sessions/:id/model`, device-local), `GET /nodes/:id/sessions`, `/overview`,
-`/sync/watch`, `/nodes/:id/file-url`, `/nodes/:id/folder-url`. Per-route
+`/sync/watch`, `/nodes/:id/file-url`, `/nodes/:id/folder-url`, and `GET`/`PATCH /me`
+(the user's UI language, `users.locale`, lives in the central server's db, so
+every device of the user reads the same value on its next `/me`; the device
+needs no `CentralClient` method for it). Per-route
 detail: [`desktop-shell.md`](./desktop-shell.md) (routing, write gate),
 [`file-state-and-sync-runs.md`](./file-state-and-sync-runs.md) (file
 lifecycle routes and their device half), [`sessions-and-runner.md`](./sessions-and-runner.md)
@@ -183,7 +186,13 @@ record REST routes, `provision-central.ts` (`createMirrorForNodeCentral`,
 `CentralClient.orientation`), the `scope`/`suspendRecord`/`trackHandoff`
 seams of `createSuspendServerSide` (#458), and
 `CentralClient.nodeOrganizationId` for the organization's default runner
-instance. Access checks run exactly once, on the central server. Detail:
+instance. Access checks run exactly once, on the central server. The
+language of text the device writes for a person (the handoff file, the
+default thread name) comes with the request that causes it: `POST
+/sessions`, a message, Předat and Pokračovat v nové session carry an
+optional `locale` (REST body or live-channel frame payload) that the router
+hands to the runtime; nothing on the device reads it from process state or
+from the central server. Detail:
 [`sessions-and-runner.md`](./sessions-and-runner.md).
 
 ## Editing files

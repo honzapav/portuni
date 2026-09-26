@@ -676,6 +676,17 @@ message may use are fixed in its `glossary.md`; translator notes are in
   language (and of English, the fallback) are loaded and
   `<html lang>` is set before anything renders. A failed catalog load
   still renders, falling back to the bundled English `common`.
+- **The account's language (#538).** `users.locale` (`"en" | "cs" |
+  NULL`) is the source of truth. After `/me` answers, `syncAccountLocale`
+  (`i18n.ts`, decision in `lib/locale.ts` `accountLocaleSwitch`) writes the
+  window cache and calls `changeLanguage` when the account's value differs;
+  `NULL` keeps the resolved language and is never written back. Settings ›
+  Účet has the picker: `PATCH /me` with `{ locale }`, then `applyUiLocale`
+  (cache, `changeLanguage`, `<html lang>`); the dev-only pseudo-locale
+  applies to the window alone and is never sent. Session requests that
+  cause text for a person (`POST /sessions`, the `message` and `continue`
+  frames, Předat) carry `locale: requestLocale()` -- the UI language, or
+  `en` under pseudo.
 - **Namespaces follow the lazy chunks.** A lazy component that needs its
   own namespace is created with `lazyWithNamespaces(() => import("./X"),
   ["x"])`, which loads the chunk and the namespace together

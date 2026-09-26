@@ -44,6 +44,16 @@
       "dismiss": "Zavřít"
     },
     "intro": "Přihlášení k centrálnímu Portuni serveru přes Google OAuth.",
+    "language": {
+      "description": "Jazyk rozhraní Portuni. Ukládá se k tvému účtu, takže platí na všech tvých zařízeních.",
+      "label": "Jazyk",
+      "options": {
+        "cs": "Čeština",
+        "en": "English",
+        "pseudo": "Pseudo"
+      },
+      "select_aria_label": "Jazyk rozhraní"
+    },
     "loading": "Zjišťuji stav přihlášení…",
     "not_configured": {
       "body": "Doplň <code>server_url</code> a <code>google_client_id</code> do konfiguračního souboru:",

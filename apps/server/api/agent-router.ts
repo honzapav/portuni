@@ -55,6 +55,8 @@ import {
   RenameSessionBody,
   SetSessionModelBody,
   StartSessionBody,
+  MessageBody,
+  SessionLocaleBody,
   sessionResumeInfoPayload,
 } from "./sessions.js";
 import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
@@ -464,6 +466,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
             nodeId: body.node_id,
             handoffPath: body.handoff_path,
             policy: body.policy,
+            locale: body.locale,
           });
           const updated = await sessionRuntime.getSession(session.id);
           respondJson(res, 201, { session: updated ?? session, run });
@@ -485,6 +488,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
             nodeId: body.node_id,
             model: body.model,
             effort: body.effort,
+            locale: body.locale,
           });
           respondJson(res, 201, { session, run: null });
         } catch (err) {
@@ -517,6 +521,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           policy: body.policy,
           model: body.model,
           effort: body.effort,
+          locale: body.locale,
         });
         // Same reason as the local route: startTask's own return value is
         // the session row as of creation, before the run had a chance to
@@ -534,10 +539,10 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     if (sessionMessagesMatch && method === "POST") {
       const sessionId = decodeURIComponent(sessionMessagesMatch[1]);
       if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
-      const body = await parseJsonBody(req, res, z.object({ text: z.string().trim().min(1) }));
+      const body = await parseJsonBody(req, res, MessageBody);
       if (!body) return true;
       try {
-        await sessionRuntime.sendMessage(sessionId, body.text);
+        await sessionRuntime.sendMessage(sessionId, body.text, { locale: body.locale });
         respondJson(res, 202, { ok: true });
       } catch (err) {
         // #497: a resume with nothing to continue from on this device.
@@ -637,8 +642,10 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     if (sessionContinueMatch && method === "POST") {
       const sessionId = decodeURIComponent(sessionContinueMatch[1]);
       if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(req, res, SessionLocaleBody);
+      if (!body) return true;
       try {
-        const { session, run } = await sessionRuntime.continueSession(sessionId);
+        const { session, run } = await sessionRuntime.continueSession(sessionId, { locale: body.locale });
         respondJson(res, 200, { session, run });
       } catch (err) {
         if (respondSessionRefusal(res, err)) return true;
@@ -668,8 +675,10 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     if (sessionHandoffMatch && method === "POST") {
       const sessionId = decodeURIComponent(sessionHandoffMatch[1]);
       if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(req, res, SessionLocaleBody);
+      if (!body) return true;
       try {
-        const { session, handoff_path } = await sessionRuntime.handoff(sessionId);
+        const { session, handoff_path } = await sessionRuntime.handoff(sessionId, { locale: body.locale });
         respondJson(res, 200, { session, handoff_path });
       } catch (err) {
         if (respondSessionRefusal(res, err)) return true;

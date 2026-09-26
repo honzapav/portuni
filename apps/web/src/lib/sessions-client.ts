@@ -21,6 +21,8 @@
 
 import { isTauri } from "./backend-url.js";
 import { ApiError, ClientError } from "./api-error.js";
+import { requestLocale } from "./locale.js";
+import type { Locale } from "../../../server/shared/i18n/config";
 import type { ErrorParams } from "../../../server/shared/error-codes";
 import type { SessionSummary, SessionRunRow } from "../types";
 import type { QuestionAnswer } from "./session-chat.js";
@@ -97,14 +99,14 @@ type ServerFrame =
 type ClientFrame =
   | { id: string; type: "subscribe"; payload: { session_id: string; after?: number } }
   | { id: string; type: "unsubscribe"; payload: { session_id: string } }
-  | { id: string; type: "message"; payload: { session_id: string; text: string } }
+  | { id: string; type: "message"; payload: { session_id: string; text: string; locale?: Locale } }
   | {
       id: string;
       type: "answer";
       payload: { session_id: string; request_id: string; decision: { value: QuestionAnswer } };
     }
   | { id: string; type: "interrupt"; payload: { session_id: string } }
-  | { id: string; type: "continue"; payload: { session_id: string } }
+  | { id: string; type: "continue"; payload: { session_id: string; locale?: Locale } }
   | { id: string; type: "close"; payload: { session_id: string } };
 
 // 1s -> 30s, doubling, same schedule as the Rust bridge's own
@@ -662,7 +664,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       transport.send({ id: randomFrameId(), type: "unsubscribe", payload: { session_id: sessionId } });
     },
     async message(sessionId, text) {
-      await send({ type: "message", payload: { session_id: sessionId, text } });
+      await send({ type: "message", payload: { session_id: sessionId, text, locale: requestLocale() } });
     },
     async answer(sessionId, requestId, value) {
       await send({
@@ -676,7 +678,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     async continueSession(sessionId) {
       return send<{ session: SessionSummary; run: SessionRunRow }>({
         type: "continue",
-        payload: { session_id: sessionId },
+        payload: { session_id: sessionId, locale: requestLocale() },
       });
     },
     async close(sessionId) {

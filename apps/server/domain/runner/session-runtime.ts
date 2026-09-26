@@ -41,6 +41,7 @@ import { removePidFile, writePidFile } from "./pid-file.js";
 import { isRunEndedError } from "./types.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
 import type { ErrorParams } from "../../shared/error-codes.js";
+import type { Locale } from "../../shared/i18n/config.js";
 import type {
   CanonicalEvent,
   DeltaFrame,
@@ -229,7 +230,16 @@ export interface CreateSessionRuntimeDeps {
   resolveNodeOrgId?: ResolveNodeOrgId;
 }
 
-export interface StartTaskInput {
+// #538: the language of the request that causes text the device writes for
+// a person (the handoff file, the default thread name). The web sends it
+// with POST /sessions, a message, Předat and Pokračovat v nové session;
+// nothing on the device reads it from process state or from the central
+// server (spec 2026-09-25-localization-design.md, "Server").
+export interface SessionRequestOptions {
+  locale?: Locale;
+}
+
+export interface StartTaskInput extends SessionRequestOptions {
   userId: string;
   nodeId: string;
   brief: string;
@@ -250,7 +260,7 @@ export interface SetModelAndEffortInput {
   effort?: string | null;
 }
 
-export interface CreateDraftInput {
+export interface CreateDraftInput extends SessionRequestOptions {
   userId: string;
   nodeId: string;
   model?: string | null;
@@ -262,7 +272,7 @@ export interface CreateDraftInput {
 // is the whole point. Only the node and the file's node-relative path: the
 // runner/instance are resolved here the way a draft's are, and the name
 // comes out of the summary's own title.
-export interface StartFromHandoffInput {
+export interface StartFromHandoffInput extends SessionRequestOptions {
   userId: string;
   nodeId: string;
   handoffPath: string;
@@ -301,7 +311,7 @@ export interface SessionRuntime {
   // summary) -- there is no separate resume verb to call first. #498: a
   // closed thread reopens the same way. Throws "has no live run" only for
   // an archived session, same wording as before.
-  sendMessage(sessionId: string, text: string): Promise<void>;
+  sendMessage(sessionId: string, text: string, opts?: SessionRequestOptions): Promise<void>;
   answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void>;
   // Cancels the CURRENT TURN only (Query.interrupt()) -- the process, the
   // prompt queue and the run all stay alive; a message right after is
@@ -329,7 +339,7 @@ export interface SessionRuntime {
   // has its file, a no-op answering the same path. A draft, a closed
   // thread, or a node with no mirror on this device throws
   // SessionHandoffError -- there is no file to hand over.
-  handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }>;
+  handoff(sessionId: string, opts?: SessionRequestOptions): Promise<{ session: SessionRow; handoff_path: string }>;
   // #459/#460 "Navázat na handoff": the other end of Předat. Creates a new
   // thread on this device from a handoff file of the node -- a new record
   // (runner/instance resolved as for a draft, name from the summary's
@@ -345,7 +355,7 @@ export interface SessionRuntime {
   // one, running, on the same node -- "Pokračovat v nové session" (offered
   // any time) and "Navázat" (a closed thread, same call minus the prior
   // close) both call this.
-  continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }>;
+  continueSession(sessionId: string, opts?: SessionRequestOptions): Promise<{ session: SessionRow; run: SessionRunRow }>;
   subscribe(target: string, listener: RuntimeListener): () => void;
   sessionSignals(sessionId: string): Promise<SessionSignals>;
   // The session's currently open question, or null -- lets a caller (the

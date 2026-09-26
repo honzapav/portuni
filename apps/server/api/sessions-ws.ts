@@ -47,7 +47,7 @@ import { CentralHttpError, type CentralClient } from "../domain/sync/central/cli
 import { ApiError } from "../http/middleware.js";
 import { isErrorCode, type ErrorCode, type ErrorParams } from "../shared/error-codes.js";
 import { logAudit } from "../infra/audit.js";
-import { toSummary } from "./sessions.js";
+import { RequestLocale, toSummary } from "./sessions.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { DeltaFrame, QuestionDecision } from "../domain/runner/types.js";
 import type { PublishedEvent, SessionChangedFrame } from "../domain/runner/session-runtime.js";
@@ -71,7 +71,8 @@ const ClientFrameSchema = z.discriminatedUnion("type", [
   z.object({
     id: z.string().optional(),
     type: z.literal("message"),
-    payload: z.object({ session_id: z.string(), text: z.string() }),
+    // #538: `locale` as on the REST twins (RequestLocale in api/sessions.ts).
+    payload: z.object({ session_id: z.string(), text: z.string(), locale: RequestLocale }),
   }),
   z.object({
     id: z.string().optional(),
@@ -97,14 +98,14 @@ const ClientFrameSchema = z.discriminatedUnion("type", [
   z.object({
     id: z.string().optional(),
     type: z.literal("continue"),
-    payload: z.object({ session_id: z.string() }),
+    payload: z.object({ session_id: z.string(), locale: RequestLocale }),
   }),
   // #459: "Předat" -- ends the turn and the run and writes the thread's
   // handoff file, so another machine can pick the work up from it.
   z.object({
     id: z.string().optional(),
     type: z.literal("handoff"),
-    payload: z.object({ session_id: z.string() }),
+    payload: z.object({ session_id: z.string(), locale: RequestLocale }),
   }),
 ]);
 type ClientFrame = z.infer<typeof ClientFrameSchema>;
@@ -448,7 +449,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       throw err;
     }
     try {
-      await deps.runtime().sendMessage(sessionId, text);
+      await deps.runtime().sendMessage(sessionId, text, { locale: frame.payload.locale });
     } catch (err) {
       // #497: a resume with nothing to continue from on this device; #530:
       // NO_LIVE_RUN from the error's type.
@@ -529,7 +530,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       throw err;
     }
     const runtime = deps.runtime();
-    const { session, run } = await runtime.continueSession(sessionId);
+    const { session, run } = await runtime.continueSession(sessionId, { locale: frame.payload.locale });
     await deps.audit(conn.identity, "session_continue", sessionId, { new_session_id: session.id });
     sendReply(conn.ws, frame.id, { session: await toSummary(session), run });
   }
@@ -551,7 +552,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       throw err;
     }
     try {
-      const { session, handoff_path } = await deps.runtime().handoff(sessionId);
+      const { session, handoff_path } = await deps.runtime().handoff(sessionId, { locale: frame.payload.locale });
       await deps.audit(conn.identity, "session_handoff", sessionId, { handoff_path });
       sendReply(conn.ws, frame.id, { session: await toSummary(session), handoff_path });
     } catch (err) {
