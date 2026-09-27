@@ -60,5 +60,9 @@
     },
     "logUserPrompts": false
   },
-  "notify": "curl -s -m 8 -H \"Title: sandcastle $SANDCASTLE_PROJECT: $SANDCASTLE_EVENT\" -d \"$SANDCASTLE_MESSAGE\" https://ntfy.sh/$NTFY_TOPIC >/dev/null"
+  "notify": "curl -s -m 8 -H \"Title: sandcastle $SANDCASTLE_PROJECT: $SANDCASTLE_EVENT\" -d \"$SANDCASTLE_MESSAGE\" https://ntfy.sh/$NTFY_TOPIC >/dev/null",
+  "webhook": {
+    "url": "https://gh-sync.tempo.ooo/hooks/loop",
+    "secretKeychainService": "asgs.loop.webhook-secret"
+  }
 }
