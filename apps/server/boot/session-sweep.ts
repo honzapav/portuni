@@ -38,9 +38,8 @@ export async function sweepStaleDraftSessionsOnBoot(): Promise<void> {
 }
 
 // Closed sessions older than 30 days move to 'archived' (a view filter the
-// Relace tab hides behind "Zobrazit archivované", never a delete), and an
-// archived session's event log is dropped after 90 days. Runs at boot of the
-// process that owns the graph db, like the two sweeps above.
+// Relace tab hides behind "Zobrazit archivované", never a delete). Runs at
+// boot of the process that owns the graph db, like the two sweeps above.
 export async function sweepArchivedSessionsOnBoot(): Promise<void> {
   try {
     const archived = await autoArchiveClosedSessions(getDb());

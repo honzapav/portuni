@@ -141,8 +141,8 @@ workspace) go through. `archived` has no composer and no way back.
 `archived` is reached only by the auto-archive sweep
 (`sweepArchivedSessionsOnBoot` in `boot/session-sweep.ts`, run at boot of the
 process that owns the graph db: closed for more than 30 days moves to
-archived, an archived session's event log is dropped after 90 days; the
-row, runs, audit and handoff stay). Everything else that ends a run
+archived; nothing is deleted, the row, runs, audit, handoff and the
+device's transcript stay). Everything else that ends a run
 suspends. A suspend writes no handoff (#497): idle, a provider error or
 limit, the process ending, a restart's boot sweep and a lost host only move
 the record to `suspended` (and clear any `handoff_path`/`handoff_hash` an
