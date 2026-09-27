@@ -12,7 +12,9 @@
 // are gated by isTauri(); in plain browser dev mode the buttons are
 // disabled with an explanation, so the page still renders.
 
+import { displayError } from "../errors";
 import { useEffect, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -20,6 +22,7 @@ import { apiFetch, isTauri } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 import { listWorkspaces } from "../lib/workspaces";
 import { copyText } from "../lib/clipboard";
+import { invoke } from "../lib/tauri-invoke";
 
 type McpInfo = {
   url: string;
@@ -33,9 +36,10 @@ type Status =
   | { kind: "error"; reason: string };
 
 export default function McpServerSection() {
+  const { t } = useTranslation("settings");
   // Token rotation only applies to the local per-launch sidecar token. In
   // central data_mode the bearer credential is a device token managed in
-  // Settings -> Ucet (revoke + re-mint), so the rotate button is hidden
+  // Settings -> Account (revoke + re-mint), so the rotate button is hidden
   // there. null while loading: keep the button hidden to avoid flicker.
   const dataMode = useDataMode();
   const [status, setStatus] = useState<Status>({ kind: "loading" });
@@ -65,7 +69,7 @@ export default function McpServerSection() {
           if (!ws || ws.mcp_port === null) {
             setStatus({
               kind: "error",
-              reason: "aktivní workspace nemá přiřazený MCP port",
+              reason: t(($) => $.mcp.status.no_port),
             });
             return;
           }
@@ -91,7 +95,7 @@ export default function McpServerSection() {
         if (!cancelled)
           setStatus({
             kind: "error",
-            reason: e instanceof Error ? e.message : String(e),
+            reason: displayError(e),
           });
       }
     })();
@@ -105,54 +109,52 @@ export default function McpServerSection() {
     window.setTimeout(() => setMessage(null), 3500);
   }
 
-  async function copy(text: string, label: string) {
+  async function copy(text: string, copiedMessage: string) {
     try {
       await copyText(text);
-      flash("ok", `${label} zkopírováno do schránky`);
+      flash("ok", copiedMessage);
     } catch (e) {
-      flash("err", `Kopírování selhalo: ${e instanceof Error ? e.message : String(e)}`);
+      flash("err", t(($) => $.mcp.flash.copy_failed, { error: displayError(e) }));
     }
   }
 
   async function loadToken(): Promise<string | null> {
     if (token) return token;
     if (!isTauri()) {
-      flash("err", "Token je dostupný jen v desktop appce.");
+      flash("err", t(($) => $.mcp.flash.token_desktop_only));
       return null;
     }
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const t = await invoke<string>("get_mcp_token");
-      setToken(t);
-      return t;
+      const loaded = await invoke<string>("get_mcp_token");
+      setToken(loaded);
+      return loaded;
     } catch (e) {
-      flash("err", `Nepodařilo se načíst token: ${e instanceof Error ? e.message : String(e)}`);
+      flash("err", t(($) => $.mcp.flash.token_load_failed, { error: displayError(e) }));
       return null;
     }
   }
 
   async function toggleTokenVisible() {
     if (!tokenVisible) {
-      const t = await loadToken();
-      if (t === null) return;
+      const loaded = await loadToken();
+      if (loaded === null) return;
     }
     setTokenVisible((v) => !v);
   }
 
   async function copyToken() {
-    const t = await loadToken();
-    if (t) await copy(t, "Token");
+    const loaded = await loadToken();
+    if (loaded) await copy(loaded, t(($) => $.mcp.flash.token_copied));
   }
 
   async function install(target: "claude" | "codex" | "vibe") {
     if (!isTauri()) {
-      flash("err", "Instalaci konfigurace lze spustit jen z desktop appky.");
+      flash("err", t(($) => $.mcp.flash.install_desktop_only));
       return;
     }
     setBusy(target);
     setEnvHint(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const cmd =
         target === "claude"
           ? "install_claude_global"
@@ -169,10 +171,10 @@ export default function McpServerSection() {
         setEnvHint({ agent: target === "codex" ? "Codex" : "Vibe", path });
         setMessage(null);
       } else {
-        flash("ok", `Zapsáno do ${path}`);
+        flash("ok", t(($) => $.mcp.flash.install_written, { path }));
       }
     } catch (e) {
-      flash("err", `Chyba: ${e instanceof Error ? e.message : String(e)}`);
+      flash("err", t(($) => $.mcp.flash.install_failed, { error: displayError(e) }));
     } finally {
       setBusy(null);
     }
@@ -180,7 +182,7 @@ export default function McpServerSection() {
 
   async function regenerate() {
     if (!isTauri()) {
-      flash("err", "Rotace tokenu je dostupná jen z desktop appky.");
+      flash("err", t(($) => $.mcp.flash.regenerate_desktop_only));
       return;
     }
     // window.confirm() is a no-op in the Tauri webview (see d229d84).
@@ -189,16 +191,12 @@ export default function McpServerSection() {
     setBusy("regenerate");
     setEnvHint(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const fresh = await invoke<string>("regenerate_mcp_token");
       setToken(fresh);
       setTokenVisible(true);
-      flash(
-        "ok",
-        "Nový token vygenerován. Nezapomeň znovu spustit instalaci pro Claude Code, Codex i Vibe.",
-      );
+      flash("ok", t(($) => $.mcp.flash.regenerated));
     } catch (e) {
-      flash("err", `Chyba: ${e instanceof Error ? e.message : String(e)}`);
+      flash("err", t(($) => $.mcp.flash.regenerate_failed, { error: displayError(e) }));
     } finally {
       setBusy(null);
     }
@@ -207,23 +205,28 @@ export default function McpServerSection() {
   return (
     <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
       <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        MCP server
+        {t(($) => $.mcp.title)}
       </div>
       <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-        Endpoint, ke kterému se připojuje Claude Code, Codex a Mistral Vibe.
-        Token žije v macOS Keychain a přežívá restarty appky.
+        {t(($) => $.mcp.intro)}
       </p>
 
       {status.kind === "loading" && (
         <div className="text-[13px] text-[var(--color-text-dim)]">
-          Zjišťuji stav serveru…
+          {t(($) => $.mcp.status.loading)}
         </div>
       )}
 
       {status.kind === "error" && (
         <Alert variant="destructive">
           <AlertDescription>
-            MCP server není dostupný: <span className="font-mono">{status.reason}</span>
+            <Trans
+              t={t}
+              ns="settings"
+              i18nKey={($) => $.mcp.status.unavailable}
+              values={{ reason: status.reason }}
+              components={{ mono: <span className="font-mono" /> }}
+            />
           </AlertDescription>
         </Alert>
       )}
@@ -231,37 +234,41 @@ export default function McpServerSection() {
       {status.kind === "ok" && (
         <div className="flex flex-col gap-4">
           <div className="grid grid-cols-[100px_1fr] items-start gap-x-4 gap-y-2 text-[13px]">
-            <div className="text-[var(--color-text-dim)]">URL</div>
+            <div className="text-[var(--color-text-dim)]">{t(($) => $.mcp.fields.url)}</div>
             <div className="flex items-center gap-2">
               <code className="flex-1 truncate rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 font-mono text-[12.5px] text-[var(--color-text)]">
                 {status.info.url}
               </code>
               <IconButton
-                title="Kopírovat URL"
-                onClick={() => void copy(status.info.url, "URL")}
+                title={t(($) => $.mcp.fields.copy_url)}
+                onClick={() => void copy(status.info.url, t(($) => $.mcp.flash.url_copied))}
               >
                 <Copy />
               </IconButton>
             </div>
 
-            <div className="text-[var(--color-text-dim)]">Token</div>
+            <div className="text-[var(--color-text-dim)]">{t(($) => $.mcp.fields.token)}</div>
             <div className="flex items-center gap-2">
               <code className="flex-1 truncate rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 font-mono text-[12.5px] text-[var(--color-text)]">
                 {tokenVisible && token
                   ? token
                   : status.info.has_auth_token
                     ? "••••••••••••••••••••••••••••••••••••••••••••••••"
-                    : "(server bez auth)"}
+                    : t(($) => $.mcp.fields.no_auth)}
               </code>
               {status.info.has_auth_token && (
                 <>
                   <IconButton
-                    title={tokenVisible ? "Skrýt token" : "Zobrazit token"}
+                    title={
+                      tokenVisible
+                        ? t(($) => $.mcp.fields.hide_token)
+                        : t(($) => $.mcp.fields.show_token)
+                    }
                     onClick={() => void toggleTokenVisible()}
                   >
                     {tokenVisible ? <EyeOff /> : <Eye />}
                   </IconButton>
-                  <IconButton title="Kopírovat token" onClick={() => void copyToken()}>
+                  <IconButton title={t(($) => $.mcp.fields.copy_token)} onClick={() => void copyToken()}>
                     <Copy />
                   </IconButton>
                 </>
@@ -275,21 +282,21 @@ export default function McpServerSection() {
               disabled={busy !== null || !isTauri()}
               onClick={() => void install("claude")}
             >
-              Přidat do Claude Code (~/.claude.json)
+              {t(($) => $.mcp.actions.install_claude)}
             </ActionButton>
             <ActionButton
               busy={busy === "codex"}
               disabled={busy !== null || !isTauri()}
               onClick={() => void install("codex")}
             >
-              Přidat do Codexu (~/.codex/config.toml)
+              {t(($) => $.mcp.actions.install_codex)}
             </ActionButton>
             <ActionButton
               busy={busy === "vibe"}
               disabled={busy !== null || !isTauri()}
               onClick={() => void install("vibe")}
             >
-              Přidat do Vibu (~/.vibe/config.toml)
+              {t(($) => $.mcp.actions.install_vibe)}
             </ActionButton>
             {dataMode?.mode === "local" && (
               <ActionButton
@@ -299,25 +306,30 @@ export default function McpServerSection() {
                 variant="ghost"
               >
                 <RefreshCw />
-                Vygenerovat nový token
+                {t(($) => $.mcp.actions.regenerate)}
               </ActionButton>
             )}
           </div>
 
           {dataMode?.mode === "central" && (
             <div className="text-[12px] text-[var(--color-text-dim)]">
-              Front door na tomto zařízení: nástroje grafu se proxují na{" "}
-              <span className="font-mono">{dataMode.server_url ?? "centrální server"}</span>,
-              nástroje pro soubory a složky běží na tomto zařízení. Token
-              patří front dooru na tomto zařízení; device token pro centrální server
-              se spravuje v sekci Účet.
+              {dataMode.server_url ? (
+                <Trans
+                  t={t}
+                  ns="settings"
+                  i18nKey={($) => $.mcp.central_note.with_url}
+                  values={{ serverUrl: dataMode.server_url }}
+                  components={{ mono: <span className="font-mono" /> }}
+                />
+              ) : (
+                t(($) => $.mcp.central_note.without_url)
+              )}
             </div>
           )}
 
           {!isTauri() && (
             <div className="text-[12px] text-[var(--color-text-dim)]">
-              Akce výše fungují pouze v desktop appce; v dev režimu prohlížeče
-              jsou vypnuté.
+              {t(($) => $.mcp.browser_only_note)}
             </div>
           )}
 
@@ -326,7 +338,7 @@ export default function McpServerSection() {
               agent={envHint.agent}
               path={envHint.path}
               loadToken={loadToken}
-              onCopy={(text, label) => void copy(text, label)}
+              onCopy={(text, copiedMessage) => void copy(text, copiedMessage)}
               onDismiss={() => setEnvHint(null)}
             />
           )}
@@ -362,17 +374,18 @@ function EnvTokenInstallHint({
   agent: string;
   path: string;
   loadToken: () => Promise<string | null>;
-  onCopy: (text: string, label: string) => void;
+  onCopy: (text: string, copiedMessage: string) => void;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation("settings");
   const [exportLine, setExportLine] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const t = await loadToken();
+      const loaded = await loadToken();
       if (cancelled) return;
-      if (t) setExportLine(`export PORTUNI_MCP_TOKEN='${t}'`);
+      if (loaded) setExportLine(`export PORTUNI_MCP_TOKEN='${loaded}'`);
     })();
     return () => {
       cancelled = true;
@@ -382,22 +395,25 @@ function EnvTokenInstallHint({
   return (
     <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-3 text-[12.5px] text-[var(--color-text-muted)]">
       <div className="mb-2 font-medium text-[var(--color-text)]">
-        Zapsáno do {path}
+        {t(($) => $.mcp.env_hint.written, { path })}
       </div>
       <p className="mb-2 leading-relaxed">
-        {agent} načítá bearer token z proměnné prostředí — token v
-        config.toml nepoužije. Přidej tenhle řádek na konec{" "}
-        <code className="font-mono text-[12px]">~/.zshrc</code> (nebo svého
-        shell rc) a otevři nový terminál:
+        <Trans
+          t={t}
+          ns="settings"
+          i18nKey={($) => $.mcp.env_hint.body}
+          values={{ agent }}
+          components={{ code: <code className="font-mono text-[12px]" /> }}
+        />
       </p>
       <div className="flex items-center gap-2">
         <code className="flex-1 truncate rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 font-mono text-[12px] text-[var(--color-text)]">
-          {exportLine ?? "Načítám token..."}
+          {exportLine ?? t(($) => $.mcp.env_hint.loading_token)}
         </code>
         <IconButton
-          title="Kopírovat export"
+          title={t(($) => $.mcp.env_hint.copy_export)}
           onClick={() => {
-            if (exportLine) onCopy(exportLine, "Export");
+            if (exportLine) onCopy(exportLine, t(($) => $.mcp.env_hint.export_copied));
           }}
         >
           <Copy />
@@ -409,7 +425,7 @@ function EnvTokenInstallHint({
           onClick={onDismiss}
           className="text-muted-foreground"
         >
-          Skrýt
+          {t(($) => $.mcp.env_hint.dismiss)}
         </Button>
       </div>
     </div>

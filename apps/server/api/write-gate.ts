@@ -89,8 +89,13 @@
 // unconditional "env" write context, matching its historical behavior.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestIdentity } from "../auth/request-identity.js";
-import { guardWrite, writeGuardError, type WriteContext } from "../domain/write-gate.js";
-import { respondJson, timingSafeStringEqual } from "../http/middleware.js";
+import {
+  guardWrite,
+  writeGuardError,
+  type WriteContext,
+  type WriteGuardErrorPayload,
+} from "../domain/write-gate.js";
+import { respondApiError, timingSafeStringEqual } from "../http/middleware.js";
 import { getDb } from "../infra/db.js";
 import { getSession, getSessionScope } from "../domain/sessions.js";
 
@@ -203,11 +208,22 @@ export function guardRestSessionWrite(
   identity: RequestIdentity,
 ): boolean {
   if (webviewMutationAllowed(req, identity)) return true;
-  respondJson(res, 403, {
-    error: "session actions over REST are reserved for the desktop app; drive a session through the Portuni MCP tools from a terminal",
-    code: "WEBVIEW_PROXY_REQUIRED",
-  });
+  respondApiError(
+    res,
+    403,
+    "WEBVIEW_PROXY_REQUIRED",
+    "session actions over REST are reserved for the desktop app; drive a session through the Portuni MCP tools from a terminal",
+  );
   return false;
+}
+
+// The write gate's refusal as the one error shape. `error` keeps its
+// machine value (write_refused / write_expansion_required) for clients that
+// branch on it; node_id, hint and the dialog flags ride along unchanged.
+function respondWriteGuardError(res: ServerResponse, payload: WriteGuardErrorPayload): void {
+  const { error, ...rest } = payload;
+  const code = error === "write_refused" ? "WRITE_REFUSED" : "WRITE_EXPANSION_REQUIRED";
+  respondApiError(res, 403, code, error, { nodeId: payload.node_id }, rest);
 }
 
 export function guardAgentRestWrite(
@@ -217,9 +233,8 @@ export function guardAgentRestWrite(
   nodeId: string,
 ): boolean {
   if (webviewMutationAllowed(req, identity)) return true;
-  respondJson(
+  respondWriteGuardError(
     res,
-    403,
     writeGuardError(
       nodeId,
       "refused",
@@ -241,7 +256,7 @@ export async function guardRestNodeWrite(
   const ctx = await resolveRestWriteContext(req, identity);
   const outcome = guardWrite(ctx, nodeId);
   if (outcome.kind === "allow") return true;
-  respondJson(res, 403, writeGuardError(nodeId, outcome.kind, outcome.agentHint));
+  respondWriteGuardError(res, writeGuardError(nodeId, outcome.kind, outcome.agentHint));
   return false;
 }
 

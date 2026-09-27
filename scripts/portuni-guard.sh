@@ -12,26 +12,33 @@
 #   tier3 (outside PORTUNI_ROOT)      -> exit 2  (deny with stderr message)
 #   target unparsable for write tool  -> exit 2  (FAIL CLOSED)
 #   non-write tool                    -> exit 0  (allow silently)
+#   /scope answers 401/403            -> exit 2  (token missing or wrong)
 #   server unreachable                -> exit 0  (soft fallback only)
 #
 # Configuration:
-#   PORTUNI_URL          base URL of Portuni server (default http://localhost:4011)
-#   PORTUNI_AUTH_TOKEN   bearer token if Portuni server has auth enabled
+#   PORTUNI_URL             base URL of Portuni server (default http://localhost:4011)
+#   PORTUNI_GUARD_TOKEN     bearer token for the server's front door
+#                           (PORTUNI_AUTH_TOKEN is still accepted as a fallback)
+#   PORTUNI_GUARD_TOKEN_VAR name of the variable the shell exports the token
+#                           in, used only in the error message
+#                           (default PORTUNI_MCP_TOKEN)
 
 set -euo pipefail
 
 URL="${PORTUNI_URL:-http://localhost:4011}"
-TOKEN="${PORTUNI_AUTH_TOKEN:-}"
+TOKEN="${PORTUNI_GUARD_TOKEN:-${PORTUNI_AUTH_TOKEN:-}}"
+TOKEN_VAR="${PORTUNI_GUARD_TOKEN_VAR:-PORTUNI_MCP_TOKEN}"
 
 # Single Python program does the whole job. Passed via -c so that stdin
 # stays bound to the JSON payload from the harness (a here-doc would steal
 # it). cwd is captured before the python call so it reflects the harness.
 
-PORTUNI_GUARD_URL="$URL" PORTUNI_GUARD_TOKEN="$TOKEN" PORTUNI_GUARD_CWD="$(pwd)" \
+PORTUNI_GUARD_URL="$URL" PORTUNI_GUARD_TOKEN="$TOKEN" PORTUNI_GUARD_TOKEN_VAR="$TOKEN_VAR" PORTUNI_GUARD_CWD="$(pwd)" \
 exec python3 -c '
 import json
 import os
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -86,6 +93,24 @@ if token:
 try:
     with urllib.request.urlopen(req, timeout=1.0) as resp:
         data = json.loads(resp.read().decode("utf-8"))
+except urllib.error.HTTPError as e:
+    if e.code in (401, 403):
+        # The server is up but refuses this bearer: never let a token
+        # mismatch silently turn the guard off.
+        token_var = os.environ.get("PORTUNI_GUARD_TOKEN_VAR") or "PORTUNI_MCP_TOKEN"
+        problem = "is missing" if not token else "does not match the server"
+        sys.stderr.write(
+            "portuni-guard: write blocked. The Portuni token "
+            + problem
+            + " (HTTP "
+            + str(e.code)
+            + " from /scope). Export the workspace token in "
+            + token_var
+            + " in this shell.\n"
+        )
+        sys.exit(2)
+    # Any other HTTP error: soft fallback, like an unreachable server.
+    sys.exit(0)
 except Exception:
     # Server unreachable: soft fallback. Do not block.
     sys.exit(0)

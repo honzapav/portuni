@@ -3,15 +3,27 @@
 // States:
 //   loading → auth_status
 //   not-configured → info about config.json
-//   configured + logged-out → "Přihlásit přes Google" button
+//   configured + logged-out → "Sign in with Google" button
 //   logged-in → user card (avatar/name/email/role/groups) + device token table
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Copy, RefreshCw, Trash2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { patchMeLocale } from "../api";
+import { applyUiLocale, PSEUDO_ENABLED } from "../i18n";
+import { isLocale, PSEUDO_LOCALE, type UiLocale } from "../../../server/shared/i18n/config";
 import { copyText } from "../lib/clipboard";
 import {
   isTauri,
@@ -26,6 +38,8 @@ import {
   type NewDeviceToken,
   type OAuthGrant,
 } from "../lib/central";
+import { formatDate } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 type SectionState =
   | { kind: "loading" }
@@ -35,6 +49,7 @@ type SectionState =
   | { kind: "logged-in"; user: UserInfo };
 
 export default function AccountSection() {
+  const { t } = useTranslation("settings");
   const [state, setState] = useState<SectionState>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +78,7 @@ export default function AccountSection() {
         setState({ kind: "logged-in", user: enriched });
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(displayError(e));
       setState({ kind: "logged-out" });
     }
   }, []);
@@ -87,7 +102,7 @@ export default function AccountSection() {
       }
       setState({ kind: "logged-in", user: enriched });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -100,7 +115,7 @@ export default function AccountSection() {
       await authLogout();
       setState({ kind: "logged-out" });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(displayError(e));
     } finally {
       setBusy(false);
     }
@@ -109,17 +124,17 @@ export default function AccountSection() {
   return (
     <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
       <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        Účet
+        {t(($) => $.account.title)}
       </div>
       <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-        Přihlášení k centrálnímu Portuni serveru přes Google OAuth.
+        {t(($) => $.account.intro)}
       </p>
       {dataMode && (
         <div className="mb-4 flex items-center gap-2 text-[13px] text-[var(--color-text-dim)]">
-          <span>Druh workspace:</span>
+          <span>{t(($) => $.account.workspace_kind.label)}</span>
           {dataMode.mode === "central" ? (
             <span className="font-mono text-[var(--color-text-muted)]">
-              týmový
+              {t(($) => $.account.workspace_kind.team)}
               {dataMode.server_url ? (
                 <span className="ml-1 text-[var(--color-text-dim)]">
                   ({dataMode.server_url})
@@ -127,20 +142,24 @@ export default function AccountSection() {
               ) : null}
             </span>
           ) : (
-            <span className="font-mono text-[var(--color-text-muted)]">osobní</span>
+            <span className="font-mono text-[var(--color-text-muted)]">
+              {t(($) => $.account.workspace_kind.personal)}
+            </span>
           )}
         </div>
       )}
 
+      <LanguagePicker />
+
       {state.kind === "loading" && (
         <div className="text-[13px] text-[var(--color-text-dim)]">
-          Zjišťuji stav přihlášení…
+          {t(($) => $.account.loading)}
         </div>
       )}
 
       {state.kind === "not-desktop" && (
         <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] text-[var(--color-text-muted)]">
-          Dostupné jen v desktop aplikaci.
+          {t(($) => $.account.not_desktop)}
         </div>
       )}
 
@@ -148,10 +167,14 @@ export default function AccountSection() {
         <div className="flex flex-col gap-3">
           <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
             <div className="mb-1 font-medium text-[var(--color-text)]">
-              Centrální server není nakonfigurován.
+              {t(($) => $.account.not_configured.title)}
             </div>
-            Doplň <code className="font-mono text-[12px]">server_url</code> a{" "}
-            <code className="font-mono text-[12px]">google_client_id</code> do konfiguračního souboru:
+            <Trans
+              t={t}
+              ns="settings"
+              i18nKey={($) => $.account.not_configured.body}
+              components={{ code: <code className="font-mono text-[12px]" /> }}
+            />
             <code className="mt-2 block rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 font-mono text-[12px] text-[var(--color-text)]">
               ~/Library/Application Support/ooo.workflow.portuni/config.json
             </code>
@@ -167,7 +190,7 @@ export default function AccountSection() {
           <div>
             <Button type="button" disabled={busy} onClick={() => void handleLogin()}>
               {busy ? <RefreshCw className="animate-spin" /> : <GoogleIcon />}
-              {busy ? "Přihlašuji…" : "Přihlásit přes Google"}
+              {busy ? t(($) => $.account.sign_in.busy) : t(($) => $.account.sign_in.button)}
             </Button>
           </div>
         </div>
@@ -191,6 +214,62 @@ export default function AccountSection() {
   );
 }
 
+// --- Language ----------------------------------------------------------------
+
+// The account's UI language (users.locale). en/cs are saved to the account
+// with PATCH /me, then applied to this window; the dev-only pseudo-locale
+// is never sent (the server holds only en/cs) and applies to this window
+// alone.
+function LanguagePicker() {
+  const { t } = useTranslation("settings");
+  const current = useLocale();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleChange(value: string) {
+    if (value === current) return;
+    setError(null);
+    setPending(true);
+    try {
+      if (isLocale(value)) await patchMeLocale(value);
+      else if (!(PSEUDO_ENABLED && value === PSEUDO_LOCALE)) return;
+      await applyUiLocale(value as UiLocale);
+    } catch (e) {
+      setError(displayError(e));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="mb-4 flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[13.5px] text-[var(--color-text)]">
+            {t(($) => $.account.language.label)}
+          </div>
+          <div className="text-[13px] text-[var(--color-text-dim)]">
+            {t(($) => $.account.language.description)}
+          </div>
+        </div>
+        <Select value={current} disabled={pending} onValueChange={(v) => void handleChange(v)}>
+          <SelectTrigger size="sm" aria-label={t(($) => $.account.language.select_aria_label)}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="en">{t(($) => $.account.language.options.en)}</SelectItem>
+            <SelectItem value="cs">{t(($) => $.account.language.options.cs)}</SelectItem>
+            {PSEUDO_ENABLED && (
+              <SelectItem value={PSEUDO_LOCALE}>{t(($) => $.account.language.options.pseudo)}</SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+      </div>
+      {error && <ErrorBox message={error} onDismiss={() => setError(null)} />}
+    </div>
+  );
+}
+
 // --- User card ---------------------------------------------------------------
 
 function UserCard({
@@ -202,6 +281,7 @@ function UserCard({
   busy: boolean;
   onLogout: () => void;
 }) {
+  const { t } = useTranslation("settings");
   const initials = user.name
     .split(" ")
     .map((p) => p[0])
@@ -236,7 +316,7 @@ function UserCard({
         </div>
         {user.global_scope && (
           <div className="mt-1 text-[12px] text-[var(--color-text-dim)]">
-            Role:{" "}
+            {t(($) => $.account.user.role)}{" "}
             <span className="font-mono text-[var(--color-text-muted)]">
               {user.global_scope}
             </span>
@@ -265,7 +345,7 @@ function UserCard({
         onClick={onLogout}
         className="shrink-0"
       >
-        {busy ? "…" : "Odhlásit"}
+        {busy ? "…" : t(($) => $.account.user.sign_out)}
       </Button>
     </div>
   );
@@ -279,6 +359,8 @@ type GrantsState =
   | { kind: "ok"; grants: OAuthGrant[] };
 
 function ConnectedAppsTable() {
+  const { t } = useTranslation("settings");
+  const locale = useLocale();
   const [state, setState] = useState<GrantsState>({ kind: "loading" });
   const [revoking, setRevoking] = useState<Set<string>>(() => new Set());
 
@@ -288,7 +370,7 @@ function ConnectedAppsTable() {
       const grants = await centralFetch<OAuthGrant[]>("GET", "/auth/oauth-grants");
       setState({ kind: "ok", grants });
     } catch (e) {
-      setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
+      setState({ kind: "error", reason: displayError(e) });
     }
   }, []);
 
@@ -302,7 +384,7 @@ function ConnectedAppsTable() {
       await centralFetch("DELETE", `/auth/oauth-grants/${encodeURIComponent(id)}`);
       void loadGrants();
     } catch (e) {
-      setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
+      setState({ kind: "error", reason: displayError(e) });
     } finally {
       setRevoking((prev) => {
         const next = new Set(prev);
@@ -315,12 +397,12 @@ function ConnectedAppsTable() {
   return (
     <div>
       <div className="mb-3 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        Připojené aplikace
+        {t(($) => $.account.connected_apps.title)}
       </div>
 
       {state.kind === "loading" && (
         <div className="text-[13px] text-[var(--color-text-dim)]">
-          Načítám připojené aplikace…
+          {t(($) => $.account.connected_apps.loading)}
         </div>
       )}
 
@@ -328,14 +410,13 @@ function ConnectedAppsTable() {
         <ErrorBox
           message={state.reason}
           onDismiss={() => void loadGrants()}
-          dismissLabel="Zkusit znovu"
+          dismissLabel={t(($) => $.account.connected_apps.retry)}
         />
       )}
 
       {state.kind === "ok" && state.grants.length === 0 && (
         <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
-          Zatím žádné připojené aplikace. Přidej Portuni jako konektor v claude.ai
-          nebo v Claude Code a přihlas se přes Google.
+          {t(($) => $.account.connected_apps.empty)}
         </div>
       )}
 
@@ -344,9 +425,13 @@ function ConnectedAppsTable() {
           <table className="w-full border-collapse text-[12.5px]">
             <thead>
               <tr className="border-b border-[var(--color-border)] text-left text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
-                <th className="pb-2 pr-4 font-semibold">Aplikace</th>
-                <th className="pb-2 pr-4 font-semibold">Připojeno</th>
-                <th className="pb-2 pr-4 font-semibold">Naposledy použito</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.account.connected_apps.columns.app)}</th>
+                <th className="pb-2 pr-4 font-semibold">
+                  {t(($) => $.account.connected_apps.columns.connected)}
+                </th>
+                <th className="pb-2 pr-4 font-semibold">
+                  {t(($) => $.account.connected_apps.columns.last_used)}
+                </th>
                 <th className="pb-2 font-semibold"></th>
               </tr>
             </thead>
@@ -357,10 +442,10 @@ function ConnectedAppsTable() {
                     {g.client_name}
                   </td>
                   <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                    {fmtDate(g.created_at)}
+                    {formatDate(locale, g.created_at)}
                   </td>
                   <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                    {g.last_used_at ? fmtDate(g.last_used_at) : "—"}
+                    {g.last_used_at ? formatDate(locale, g.last_used_at) : "—"}
                   </td>
                   <td className="py-2">
                     <Button
@@ -372,17 +457,19 @@ function ConnectedAppsTable() {
                         if (
                           window.confirm
                             ? window.confirm(
-                                `Odpojit aplikaci „${g.client_name}"? Bude se muset znovu přihlásit.`,
+                                t(($) => $.account.connected_apps.disconnect.confirm, {
+                                  appName: g.client_name,
+                                }),
                               )
                             : true
                         ) {
                           void handleRevoke(g.id);
                         }
                       }}
-                      title="Odpojit aplikaci"
+                      title={t(($) => $.account.connected_apps.disconnect.title)}
                     >
                       <Trash2 />
-                      {revoking.has(g.id) ? "…" : "Odpojit"}
+                      {revoking.has(g.id) ? "…" : t(($) => $.account.connected_apps.disconnect.button)}
                     </Button>
                   </td>
                 </tr>
@@ -408,6 +495,8 @@ type NewTokenState =
   | { kind: "created"; token: NewDeviceToken };
 
 function DeviceTokensTable() {
+  const { t } = useTranslation("settings");
+  const locale = useLocale();
   const [tokensState, setTokensState] = useState<TokensState>({ kind: "loading" });
   const [newToken, setNewToken] = useState<NewTokenState>(null);
   const [revoking, setRevoking] = useState<Set<string>>(() => new Set());
@@ -422,7 +511,7 @@ function DeviceTokensTable() {
     } catch (e) {
       setTokensState({
         kind: "error",
-        reason: e instanceof Error ? e.message : String(e),
+        reason: displayError(e),
       });
     }
   }, []);
@@ -444,7 +533,7 @@ function DeviceTokensTable() {
       setNewToken({ kind: "input", label, busy: false });
       setTokensState({
         kind: "error",
-        reason: e instanceof Error ? e.message : String(e),
+        reason: displayError(e),
       });
     }
   }
@@ -457,7 +546,7 @@ function DeviceTokensTable() {
     } catch (e) {
       setTokensState({
         kind: "error",
-        reason: e instanceof Error ? e.message : String(e),
+        reason: displayError(e),
       });
     } finally {
       setRevoking((prev) => {
@@ -483,7 +572,7 @@ function DeviceTokensTable() {
     <div>
       <div className="mb-3 flex items-center justify-between">
         <div className="font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-          Device tokeny
+          {t(($) => $.account.tokens.title)}
         </div>
         {newToken === null && (
           <Button
@@ -492,7 +581,7 @@ function DeviceTokensTable() {
             size="sm"
             onClick={() => setNewToken({ kind: "input", label: "", busy: false })}
           >
-            Nový token
+            {t(($) => $.account.tokens.new_token)}
           </Button>
         )}
       </div>
@@ -511,7 +600,7 @@ function DeviceTokensTable() {
               if (e.key === "Enter") void handleCreateToken();
               if (e.key === "Escape") setNewToken(null);
             }}
-            placeholder="Název tokenu (např. dev-laptop)"
+            placeholder={t(($) => $.account.tokens.label_placeholder)}
             disabled={newToken.busy}
             className="flex-1"
           />
@@ -521,7 +610,7 @@ function DeviceTokensTable() {
             disabled={newToken.busy || !newToken.label.trim()}
             onClick={() => void handleCreateToken()}
           >
-            {newToken.busy ? "Vytvářím…" : "Vytvořit"}
+            {newToken.busy ? t(($) => $.account.tokens.creating) : t(($) => $.account.tokens.create)}
           </Button>
           <Button
             type="button"
@@ -531,7 +620,7 @@ function DeviceTokensTable() {
             onClick={() => setNewToken(null)}
             className="text-muted-foreground"
           >
-            Zrušit
+            {t(($) => $.account.tokens.cancel)}
           </Button>
         </div>
       )}
@@ -540,10 +629,10 @@ function DeviceTokensTable() {
       {newToken?.kind === "created" && (
         <div className="mb-4 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
           <div className="mb-1.5 text-[12.5px] font-medium text-[var(--color-text)]">
-            Token vytvořen
+            {t(($) => $.account.tokens.created.title)}
           </div>
           <p className="mb-2 text-[12px] leading-relaxed text-red-400">
-            Token se zobrazuje jen jednou. Zkopíruj ho a ulož na bezpečné místo.
+            {t(($) => $.account.tokens.created.warning)}
           </p>
           <div className="flex items-center gap-2">
             <code className="flex-1 truncate rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 font-mono text-[12px] text-[var(--color-text)]">
@@ -556,7 +645,7 @@ function DeviceTokensTable() {
               onClick={() => void copyToken(newToken.token.token)}
             >
               <Copy />
-              {copied ? "Zkopírováno" : "Zkopírovat"}
+              {copied ? t(($) => $.account.tokens.created.copied) : t(($) => $.account.tokens.created.copy)}
             </Button>
           </div>
           <Button
@@ -566,14 +655,14 @@ function DeviceTokensTable() {
             onClick={() => setNewToken(null)}
             className="mt-2 text-muted-foreground"
           >
-            Zavřít
+            {t(($) => $.account.tokens.created.close)}
           </Button>
         </div>
       )}
 
       {tokensState.kind === "loading" && (
         <div className="text-[13px] text-[var(--color-text-dim)]">
-          Načítám tokeny…
+          {t(($) => $.account.tokens.loading)}
         </div>
       )}
 
@@ -581,13 +670,13 @@ function DeviceTokensTable() {
         <ErrorBox
           message={tokensState.reason}
           onDismiss={() => void loadTokens()}
-          dismissLabel="Zkusit znovu"
+          dismissLabel={t(($) => $.account.tokens.retry)}
         />
       )}
 
       {tokensState.kind === "ok" && tokensState.tokens.length === 0 && (
         <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
-          Zatím žádné device tokeny.
+          {t(($) => $.account.tokens.empty)}
         </div>
       )}
 
@@ -596,39 +685,45 @@ function DeviceTokensTable() {
           <table className="w-full border-collapse text-[12.5px]">
             <thead>
               <tr className="border-b border-[var(--color-border)] text-left text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
-                <th className="pb-2 pr-4 font-semibold">Název</th>
-                <th className="pb-2 pr-4 font-semibold">Vytvořen</th>
-                <th className="pb-2 pr-4 font-semibold">Naposledy použit</th>
-                <th className="pb-2 pr-4 font-semibold">Expirace</th>
-                <th className="pb-2 pr-4 font-semibold">Stav</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.account.tokens.columns.name)}</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.account.tokens.columns.created)}</th>
+                <th className="pb-2 pr-4 font-semibold">
+                  {t(($) => $.account.tokens.columns.last_used)}
+                </th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.account.tokens.columns.expires)}</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.account.tokens.columns.status)}</th>
                 <th className="pb-2 font-semibold"></th>
               </tr>
             </thead>
             <tbody>
-              {tokensState.tokens.map((t) => {
-                const revoked = t.revoked_at !== null;
+              {tokensState.tokens.map((tok) => {
+                const revoked = tok.revoked_at !== null;
                 return (
                   <tr
-                    key={t.id}
+                    key={tok.id}
                     className={`border-b border-[var(--color-border)] last:border-b-0 ${revoked ? "opacity-40" : ""}`}
                   >
                     <td className="py-2 pr-4 font-medium text-[var(--color-text)]">
-                      {t.label}
+                      {tok.label}
                     </td>
                     <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                      {fmtDate(t.created_at)}
+                      {formatDate(locale, tok.created_at)}
                     </td>
                     <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                      {t.last_used_at ? fmtDate(t.last_used_at) : "—"}
+                      {tok.last_used_at ? formatDate(locale, tok.last_used_at) : "—"}
                     </td>
                     <td className="py-2 pr-4 text-[var(--color-text-muted)]">
-                      {t.expires_at ? fmtDate(t.expires_at) : "—"}
+                      {tok.expires_at ? formatDate(locale, tok.expires_at) : "—"}
                     </td>
                     <td className="py-2 pr-4">
                       {revoked ? (
-                        <span className="text-[var(--color-text-dim)]">revokován</span>
+                        <span className="text-[var(--color-text-dim)]">
+                          {t(($) => $.account.tokens.status.revoked)}
+                        </span>
                       ) : (
-                        <span className="text-green-400">aktivní</span>
+                        <span className="text-green-400">
+                          {t(($) => $.account.tokens.status.active)}
+                        </span>
                       )}
                     </td>
                     <td className="py-2">
@@ -637,22 +732,24 @@ function DeviceTokensTable() {
                           type="button"
                           variant="destructive"
                           size="sm"
-                          disabled={revoking.has(t.id)}
+                          disabled={revoking.has(tok.id)}
                           onClick={() => {
                             if (
                               window.confirm
                                 ? window.confirm(
-                                    `Revokovat token „${t.label}"? Tuto akci nelze vrátit.`,
+                                    t(($) => $.account.tokens.revoke.confirm, {
+                                      tokenLabel: tok.label,
+                                    }),
                                   )
                                 : true
                             ) {
-                              void handleRevoke(t.id);
+                              void handleRevoke(tok.id);
                             }
                           }}
-                          title="Revokovat token"
+                          title={t(($) => $.account.tokens.revoke.title)}
                         >
                           <Trash2 />
-                          {revoking.has(t.id) ? "…" : "Revokovat"}
+                          {revoking.has(tok.id) ? "…" : t(($) => $.account.tokens.revoke.button)}
                         </Button>
                       )}
                     </td>
@@ -669,27 +766,16 @@ function DeviceTokensTable() {
 
 // --- Helpers -----------------------------------------------------------------
 
-function fmtDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString("cs-CZ", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
-
 function ErrorBox({
   message,
   onDismiss,
-  dismissLabel = "Zavřít",
+  dismissLabel,
 }: {
   message: string;
   onDismiss: () => void;
   dismissLabel?: string;
 }) {
+  const { t } = useTranslation("settings");
   return (
     <Alert variant="destructive">
       <AlertDescription className="flex items-start justify-between gap-3">
@@ -701,7 +787,7 @@ function ErrorBox({
           onClick={onDismiss}
           className="shrink-0 text-destructive"
         >
-          {dismissLabel}
+          {dismissLabel ?? t(($) => $.account.error_box.dismiss)}
         </Button>
       </AlertDescription>
     </Alert>

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { ulid } from "ulid";
 import WebSocket from "ws";
 import type { AddressInfo } from "node:net";
+import { useTestBearer } from "./helpers/auth.js";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
 import { ensureSchema } from "../apps/server/infra/schema.js";
 import { getDb, setDbForTesting } from "../apps/server/infra/db.js";
@@ -166,6 +167,10 @@ describe("GET /sessions/ws", () => {
       args: [ulid(), nodeId, orgId, U1],
     });
 
+    // The process's auth mode stays env (the google identity context is
+    // injected below), and an env-mode server never starts without a
+    // bearer (#521).
+    useTestBearer();
     handle = startHttpServer({ port: 0, host: "127.0.0.1", registerSigint: false });
     if (!handle.server.listening) {
       await new Promise<void>((resolve) => handle.server.once("listening", resolve));

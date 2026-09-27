@@ -5,8 +5,9 @@
 
 process.env.PORT = "14931";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, readFile, stat, mkdir } from "node:fs/promises";
@@ -65,7 +66,7 @@ describe("sync run: remote sweep", () => {
     const stored = await storeFile(shared.db, { userId: USER, nodeId: shared.nodeId, localPath });
     await rm(join(shared.remoteRoot, stored.remote_path));
 
-    const res = await fetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
+    const res = await authFetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       deleted_on_remote: Array<{ file_id: string; filename: string }>;
@@ -98,7 +99,7 @@ describe("sync run: remote sweep", () => {
     // new push instead.
     await writeFile(localPath, "obsah upraveny");
 
-    const res = await fetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
+    const res = await authFetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       deleted_on_remote: Array<{ file_id: string; filename: string }>;
@@ -120,7 +121,7 @@ describe("sync run: remote sweep", () => {
     await mkdir(join(shared.remoteRoot, nodeRoot, "outputs"), { recursive: true });
     await writeFile(join(shared.remoteRoot, nodeRoot, "outputs", "report.md"), "from drive");
 
-    const res = await fetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
+    const res = await authFetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       adopted_remote: Array<{ file_id: string; filename: string }>;
@@ -159,7 +160,7 @@ describe("sync run: ordinary pull of an out-of-band remote edit", () => {
     // refreshes it during this run's ordinary pull_candidates loop.
     await writeFile(join(shared.remoteRoot, stored.remote_path), "obsah b");
 
-    const res = await fetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
+    const res = await authFetch(`${BASE}/nodes/${shared.nodeId}/sync`, { method: "POST" });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { pulled: Array<{ file_id: string }> };
     assert.deepEqual(
@@ -168,7 +169,7 @@ describe("sync run: ordinary pull of an out-of-band remote edit", () => {
     );
     assert.equal(await readFile(localPath, "utf8"), "obsah b");
 
-    const statusRes = await fetch(`${BASE}/nodes/${shared.nodeId}/sync-status`);
+    const statusRes = await authFetch(`${BASE}/nodes/${shared.nodeId}/sync-status`);
     assert.equal(statusRes.status, 200);
     const status = (await statusRes.json()) as {
       files: Array<{ file_id: string; sync_class: string }>;

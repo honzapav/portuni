@@ -154,8 +154,9 @@ describe("runner registry REST endpoints", () => {
       env: { API_KEY: "sk-x" },
     });
     assert.equal(res.statusCode, 400);
-    const body = JSON.parse(res.body) as { code: string };
-    assert.equal(body.code, "INSTANCE_ENV_KEY_REFUSED");
+    const body = JSON.parse(res.body) as { code: string; params?: Record<string, unknown> };
+    assert.equal(body.code, "INSTANCE_ENV_KEY_SECRET");
+    assert.deepEqual(body.params, { key: "API_KEY" });
   });
 
   test("PATCH /runners/instances/:id updates an existing instance", async () => {

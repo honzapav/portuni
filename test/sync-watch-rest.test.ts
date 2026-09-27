@@ -6,8 +6,9 @@
 
 process.env.PORT = "14937";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
@@ -79,7 +80,7 @@ describe("GET /sync/watch", () => {
     // (#310), so there is nothing to report and the UI renders no line.
     delete process.env.PORTUNI_AGENT_MODE;
     setRemoteWatchStatusSource(() => [watching]);
-    const res = await fetch(`${base}/sync/watch`);
+    const res = await authFetch(`${base}/sync/watch`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as SyncWatchResponse;
     assert.deepEqual(body, { remotes: [] });
@@ -87,7 +88,7 @@ describe("GET /sync/watch", () => {
 
   it("answers an empty list when no watcher is running", async () => {
     process.env.PORTUNI_AGENT_MODE = "1";
-    const res = await fetch(`${base}/sync/watch`);
+    const res = await authFetch(`${base}/sync/watch`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as SyncWatchResponse;
     assert.deepEqual(body.remotes, []);
@@ -96,7 +97,7 @@ describe("GET /sync/watch", () => {
   it("reports a watching remote", async () => {
     process.env.PORTUNI_AGENT_MODE = "1";
     setRemoteWatchStatusSource(() => [watching]);
-    const res = await fetch(`${base}/sync/watch`);
+    const res = await authFetch(`${base}/sync/watch`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as SyncWatchResponse;
     assert.equal(body.remotes.length, 1);
@@ -106,7 +107,7 @@ describe("GET /sync/watch", () => {
   it("reports the error and backoff of a failing remote", async () => {
     process.env.PORTUNI_AGENT_MODE = "1";
     setRemoteWatchStatusSource(() => [failing]);
-    const res = await fetch(`${base}/sync/watch`);
+    const res = await authFetch(`${base}/sync/watch`);
     const body = (await res.json()) as SyncWatchResponse;
     assert.equal(body.remotes[0].watching, false);
     assert.match(body.remotes[0].last_error ?? "", /429/);

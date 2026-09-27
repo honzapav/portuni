@@ -26,19 +26,19 @@ record/content split).
   existing row; it never creates a second one.
 - **The run's MCP bearer is the front door's own token** (#507).
   `provisionRun` and `createProvisionRunCentral` both take it from
-  `resolveRunnerMcpToken()` (`domain/write-scope.ts`), which reads
-  `PORTUNI_AUTH_TOKEN` -- the token `http/middleware.ts` verifies and the
-  desktop gives every sidecar -- never `resolveTokenEnvVar()`'s
-  `PORTUNI_MCP_TOKEN[_<WS>]`, which is only the name per-mirror configs
-  expand in a user's own shell and is never set in the sidecar. With no
-  token the provision throws `RunnerMcpTokenMissingError` before any mirror
-  work; a run never starts with an empty `Authorization: Bearer `. The
-  runtime provisions before it creates or changes anything: `startTask`
-  and Navázat na handoff before the record, a draft's first message
-  before the draft is promoted, Pokračovat v nové session before the old
-  thread is closed -- a refused run leaves no half-made thread. REST
-  answers the refusal with 503 `RUNNER_MCP_TOKEN_MISSING`
-  (`respondError`), the live channel with an error reply of that code.
+  `resolveRunnerMcpToken()` (`domain/write-scope.ts`), which returns
+  `serverBearerToken()` from `infra/auth-config.ts` -- the
+  `PORTUNI_AUTH_TOKEN` the front door verifies and the desktop gives every
+  sidecar -- never `clientTokenEnvVar()`'s `PORTUNI_MCP_TOKEN[_<WS>]`,
+  which is only the name per-mirror configs expand in a user's own shell
+  and is never set in the sidecar. An env-mode server does not start
+  without the token (#521), so a run never meets an empty one; the former
+  `RunnerMcpTokenMissingError` and its 503 are gone as unreachable. The
+  token is still read before any mirror work. The runtime provisions
+  before it creates or changes anything: `startTask` and Navázat na
+  handoff before the record, a draft's first message before the draft is
+  promoted, Pokračovat v nové session before the old thread is closed --
+  a refused run leaves no half-made thread.
   `test/runner-mcp-front-door.test.ts` connects a runner-style client with
   the provisioned URL and token to the real front door in both workspaces.
 - `createMcpServer` returns `bindSession(cli?)`; the caller invokes it at its
@@ -79,34 +79,33 @@ record/content split).
   `domain/runner/store-content.ts`'s `SessionContentStore`, which also
   owns `session_content(brief, handoff_inline)`. Every event kind and
   payload is in `domain/runner/types.ts`'s `CanonicalEvent` union. The
-  `sessions.brief` and `sessions.handoff_inline` columns and the graph
-  db's own `session_events` table still exist; nothing writes them after
-  #456 except the central routes that keep accepting them for a sidecar
-  released before it, and the central migration drops them.
+  graph db has no `session_events` and `sessions` has no `brief` or
+  `handoff_inline`: migration 040 (#462, the central migration) dropped
+  them, and the record routes no longer take either field.
 - **The central server never opens a `content.db`** (`getDeviceContentDb`
-  refuses when `isCentralServer()`). Its content store,
-  `sessionContentStoreForProcess()`, is `LegacyGraphContentStore`: the
-  graph db's `session_events` plus the two `sessions` columns. That is
-  where an older sidecar's `POST /sessions/:id/events` writes and where
-  its `GET /sessions/:id/events` and `resume-info` read, so it reads back
-  what it wrote. On a device (sidecar, sync agent, a standalone personal
-  server) the same function answers the device's `content.db`.
+  refuses when `isCentralServer()`), and it holds no content at all. Its
+  content store, `sessionContentStoreForProcess()`, is
+  `CentralNoContentStore`: every read answers empty (so its
+  `GET /sessions/:id/events` is an empty list with `transcript_host`), a
+  clear is a no-op, a write is refused. There is no
+  `POST /sessions/:id/events`. On a device (sidecar, sync agent, a
+  standalone personal server) the same function answers the device's
+  `content.db`.
 - **The history that predates `content.db` is imported once**
   (`boot/content-import.ts`, step 2 of `content.db`'s version history).
-  A personal workspace copies its graph db's rows at boot, before serving
-  (`importPersonalWorkspaceSessionContentOnBoot`, called by both
-  `index.ts` and `desktop.ts`'s local branch). A sync agent downloads,
-  in the background after it binds, the legacy content of its user's
-  threads that ran on this device (the record's `host_id` or a run's):
-  `CentralClient.listLegacySessionContent(hostId)` and
-  `getLegacySessionContent(id, {after})` over the central, owner-only
-  `GET /sessions/legacy-content?host_id=…` and
-  `GET /sessions/:id/legacy-content` (500 events a page). The central copy
-  stays. Each thread is copied in one transaction and skipped when an
-  earlier attempt already copied it; events a thread got here before a
-  retried import stay after the imported ones. The version is raised only
-  when every thread went through, so a failure runs again on the next
-  boot. Imported timestamps are normalised to `YYYY-MM-DD HH:MM:SS`.
+  A personal workspace copies its graph db's rows at boot, before
+  `ensureSchema` and before serving (`ensurePersonalWorkspaceSchema`,
+  called by both `index.ts` and `desktop.ts`'s local branch); a boot
+  whose copy did not complete holds migration 040 back, so nothing is
+  dropped before it is in `content.db`. Each thread is copied in one
+  transaction and skipped when an earlier attempt already copied it;
+  events a thread got here before a retried import stay after the
+  imported ones. The version is raised only when every thread went
+  through, so a failure runs again on the next boot. Imported timestamps
+  are normalised to `YYYY-MM-DD HH:MM:SS`. The sync agent's one-time
+  download of its threads' legacy content from the central server
+  (`/sessions/legacy-content`) ran on every device before migration 040
+  and was removed with it.
 - `GET /sessions/:id/events` answers from the `content.db` of the device
   serving it, in both routers. When that device has no rows for the thread
   and the record's `host_id` is another device, the answer carries
@@ -126,10 +125,20 @@ record/content split).
 | `draft` | `running` (deletion is the only other exit, `deleteDraftSession`) |
 | `running` | `suspended`, `closed` |
 | `suspended` | `running`, `closed` |
-| `closed` | `archived` |
+| `closed` | `running` (writing into it, #498), `archived` |
 
 `closed` is reached only by the user's explicit Uzavřít (or `continue`, see
-below) and `archived` only by the auto-archive sweep
+below). It means "done, off the active lists", not "never again" (#498):
+`sendMessage` into a closed thread reopens it exactly the way it resumes a
+suspended one (`resumeByWriting`: `--resume` on the last run's
+conversation while it exists, else a summary built from this device's
+transcript, or Předat's / Pokračovat's file when one exists), publishes
+`state_changed {from: "closed", to: "running"}` and clears `closed_at`.
+The transition is validated once, in `transitionSessionState`, which is
+what both the local store and the central record route
+(`PATCH /sessions/:id`, `CentralSessionStore.patchSession` in a team
+workspace) go through. `archived` has no composer and no way back.
+`archived` is reached only by the auto-archive sweep
 (`sweepArchivedSessionsOnBoot` in `boot/session-sweep.ts`, run at boot of the
 process that owns the graph db: closed for more than 30 days moves to
 archived, an archived session's event log is dropped after 90 days; the
@@ -174,15 +183,31 @@ node's mirror, registers the file, patches the record to `suspended` and
 appends the `handoff` event (the chat's "Shrnutí uloženo" row) -- one
 suspend implementation (`portuni:server-handoff reason=handoff`, the one
 reason a person chose).
+The file is in the language of the request that wrote it (#539): Předat,
+Pokračovat v nové session and a message resuming a thread carry an
+optional `locale` (#538), the runtime hands it to
+`handoffs.summarize`/`suspendFallback` (`SuspendServerSideOptions.locale`;
+for a running thread through `pendingEndLocale`, next to
+`pendingEndReason`), and `buildRunSummaryContent` renders the headings and
+labels with `getFixedT(locale, "server")` and the last activity with `Intl`
+in UTC. No `locale` means English; nothing on the device reads the
+language from process state, the account or the central server, and two
+requests in different languages never share state (a fixed `t` per call).
+The same goes for a draft's default name (`server:session.default_draft_name`):
+`createDraftSession` takes the request's `locale`, and a sync agent sends
+it with `POST /sessions/record` (`CentralClient.createDraftSessionRecord`)
+so the central server names the record in it.
 On an already `suspended` thread with its file, it is a no-op answering the
 same path. On a `suspended` thread without a file (every suspend but
 Předat leaves one), the same suspend code writes the file now
 (`createSuspendServerSide`'s `writeFileIfSuspended`): the summary built
 from the transcript here, or, only when there is no transcript here, the
 inline summary in `content.db` (nothing refreshes it at suspend, so it can
-be older than the transcript). Every refusal is a `SessionHandoffError` (REST 409, Czech
-message; `api/session-handoff-errors.ts` is the one mapping the local
-router, the agent router and the socket share) and comes before any side
+be older than the transcript). Every refusal is a `SessionHandoffError` (REST 409 with
+`code` and `params`, English message for logs, #531; `api/session-refusals.ts` is the one mapping the local
+router, the agent router and the socket share, for `NoLiveRunError`'s
+`NO_LIVE_RUN` too, and it reads the code off the error's type, never its
+message text, #530) and comes before any side
 effect -- nothing is interrupted, ended or suspended:
 `HANDOFF_NOT_ALLOWED` (a `draft` or `closed` thread), `HANDOFF_NO_MIRROR`
 (no mirror of the node on this device: nowhere to write the file),
@@ -193,8 +218,8 @@ here while the thread last ran on another device) and `HANDOFF_NO_CONTENT`
 (suspended without a file and no content here although it ran here: the
 first-boot download has not finished, and an empty summary would stand in
 for the real one). `HANDOFF_RUN_ELSEWHERE` and `HANDOFF_TRANSCRIPT_ELSEWHERE`
-name the device the way `transcript_host` does. The web shows the message as-is
-(`apps/web/src/lib/handoff-refusal.ts`) and does not offer Předat in the
+name the device the way `transcript_host` does, in `params.host`. The web renders
+the code from the `errors` catalog (`displayError`, `apps/web/src/lib/api-error.ts`) and does not offer Předat in the
 chat where the transcript is on another device. The other machine picks
 the work up from the file once it syncs.
 
@@ -206,15 +231,14 @@ path is node-relative and must be exactly what `handoffRelativePath` writes
 mirror **on this device** (`readNodeHandoffFile`, the mirror registry in
 `sync.db` plus the local bytes, so a sync agent answers it without reaching
 central) before it creates anything. No mirror or no file yet is
-`HANDOFF_FILE_NOT_HERE` (409, „Soubor handoffu ještě není na tomto
-zařízení.") and no record is created; a path of any other shape is
+`HANDOFF_FILE_NOT_HERE` (409, `params.path`) and no record is created; a path of any other shape is
 `HANDOFF_PATH_INVALID` (the routers' schema rejects it as a 400 first). With
 the file in hand it is `continueSession`'s shape minus the close: a new
 record on this device (`runner`/`instance_id` resolved as for a draft,
 `host_id` this device, `name` from the summary's own H1 via
 `extractHandoffTitle`, `name_is_custom` left 0 so this thread's own first
 summary may rename it), and a first run with no brief whose orientation
-carries the file's content under "## Navázání na handoff", the way a resume
+carries the file's content under "## Continuing from a handoff", the way a resume
 from a summary does -- generalised to a file that belongs to another
 session. No events are imported: the transcript starts on this device, and
 the source thread's record, file and transcript are never touched, which is
@@ -287,10 +311,9 @@ orientation, translates events, ends and suspends) is one implementation,
   `createRun`/`listRuns`) because `patchRun(runId, patch)` carries no
   session id. **There is no event method on it and none on
   `CentralClient`**: the transcript never crosses to the central server.
-  `POST /sessions/:id/events` and the `brief`/`handoff_inline` fields of
-  `POST /sessions/record` and `PATCH /sessions/:id` stay on the central
-  server only so a sidecar released before #456 keeps working; the central
-  migration removes them.
+  Since the central migration (#462) there is no `POST /sessions/:id/events`,
+  and `POST /sessions/record` and `PATCH /sessions/:id` take no `brief` or
+  `handoff_inline`.
 - Where each write goes: `promoteDraftAndStart` puts the first message in
   `session_content.brief` and the `user_message` event in the device's
   `session_events`, then patches the record (`state`, `name`, `runner`,
@@ -327,9 +350,7 @@ agent (`api/agent-router.ts`): bare `POST /sessions`, and per-session
 `signals`, `resume-info`, `questions/:request_id`. The record half stays on the
 central server: bare `GET`/`PATCH /sessions/:id`, `/state`, `/scope`,
 `/runs...`, `/sessions/record`, plus `GET /nodes/:id/sessions` and
-`/overview`. The two legacy-content routes (`/sessions/legacy-content`,
-`/sessions/:id/legacy-content`) are central too; only the sync agent's
-boot import calls them, through `CentralClient`.
+`/overview`.
 `resume-info` is device-local (#456) because both of its inputs are the
 device's: the inline handoff summary in `content.db` and the handoff file
 in this device's mirror, which it hashes to report `handoff_changed`.
@@ -448,7 +469,7 @@ human verification.
   `updatedInput: {...originalInput, answers}`, `answers` keyed by question
   text -- the field the tool reads (`sdk-tools.d.ts`); `false` denies as
   the user's refusal and a bare `true`, which carries no answer, denies
-  with "Uživatel na otázku neodpověděl." -- never an allow with nothing
+  with "The user did not answer the question." -- never an allow with nothing
   answered. The decision is a string (it
   answers every dotaz) or a map `{ [question text]: answer }`
   (`askUserQuestionAnswers`); the `question` event carries every dotaz
@@ -617,8 +638,38 @@ human verification.
   method rejects into the existing `.catch`); a failure leaves it `null`
   and the next run retries. Until then `models()` answers
   `CLAUDE_ALIAS_MODELS` (`sonnet`, `opus`, `haiku`, each
-  `supportsEffort: false`). `GET /runners/:runner/models` just calls it.
+  `supportsEffort: false`, `description: ""` with a `description_code`
+  the web renders from `chat:model.description.*`; a list the provider
+  answered carries the provider's own `description` and no code).
+  `GET /runners/:runner/models` just calls it.
   `FakeRunnerAdapter.models()` returns its constructor's `models` option.
+
+- **The runner's own text in the chat is a code (#532).** Codes live in
+  `shared/chat-event-codes.ts`; the web renders them with
+  `apps/web/src/lib/chat-event-text.ts` from the `chat` namespace.
+  - A `question` event carries `code` + `params` next to an English
+    `title` (`scope_expand`, `agent_question`, `plan_approval`, and
+    `mcp_confirmation` with `{ server }` for an MCP dialog without a title
+    of its own; a dialog's own title is the server's text and has no
+    code). `scope_expand` also covers the card's detail; every other
+    detail is the agent's or the server's and is shown as stored.
+  - An `error` event the runner writes itself carries `code` + `params`
+    (`provider_failed` with `{ subtype }` for a failed result with no
+    text, `provider_not_logged_in`, `browser_sign_in_declined` with
+    `{ server }`); a provider's own text has no code.
+  - A denial (`permissions.ts` returns `code`/`params` with its English
+    `message`; the adapter's own `DENY_MESSAGES`) goes to the agent as an
+    English tool result. The adapter remembers it by `toolUseID`, and the
+    failed `tool_call` its `tool_result` produces carries `output_code` +
+    `output_params`; `output_excerpt` keeps what the agent read.
+  - A row without a code (written before #532, or a code this build does
+    not know) is shown as stored. Content -- the agent's questions,
+    options and answers, a provider's error, a tool's output -- is never
+    translated and carries `translate="no"` in the chat.
+  - The orientation's resume and handoff sections (`provision.ts`,
+    `provision-central.ts`, `session-runtime.ts`) are English, like the
+    rest of the prompt. All of this lives in the device's `content.db`;
+    the central server stores and relays none of it.
 
 ## Thread lifecycle
 
@@ -679,7 +730,9 @@ human verification.
   other state refuses. Promotion uses the draft's own `runner`/`instance_id`
   and resolves them (`resolveTaskDefaults`: the first `detectAll()` runner
   with `installed && logged_in`, and the node organization's default
-  instance for it; `NoRunnerAvailableError` -> `400 NO_RUNNER_AVAILABLE`)
+  instance for it; `NoRunnerAvailableError` -> `400 NO_RUNNER_AVAILABLE`
+  through `api/session-refusals.ts`, so the sync agent's router and the
+  live channel's error frame answer the same code)
   only when the draft carries none. Central's `PatchSessionBody` accepts
   the promotion fields (`brief`, `runner`, `instance_id`, `name_is_custom`).
 - **Naming.** `threadNameFromFirstMessage` (`domain/sessions.ts`, mirrored
@@ -753,7 +806,8 @@ human verification.
   else, with no transcript here, a `handoff_inline` an older sidecar left.
   With none of them and no content of the thread on this device at all,
   the send is refused before any run is created, with Předat's errors:
-  `HANDOFF_TRANSCRIPT_ELSEWHERE` naming the device the thread last ran on,
+  `SESSION_TRANSCRIPT_ELSEWHERE` (its own code: the sentence says "continue
+  it there", not "hand it off there") naming the device the thread last ran on,
   or `HANDOFF_NO_CONTENT` while the first-boot download has not arrived
   (409 over REST, an error reply on the live channel). A thread whose
   content row is here but holds none of them starts on its orientation
@@ -784,8 +838,9 @@ human verification.
   file fails (logged; the old run is already ended by then), the summary
   goes into the orientation only. The new run is provisioned before the
   old thread is touched. It answers `{session, run}` (the WS reply carries `toSummary`'s
-  `SessionSummary`). Web labels: "Pokračovat v nové session" on an open
-  thread, "Navázat" on a closed one.
+  `SessionSummary`). Web label: "Pokračovat v nové session" on a running
+  or suspended thread; a closed thread has no Navázat (#498), writing
+  into it reopens it.
 - No context-usage ring exists: `RunEndedEvent.payload.usage` is
   adapter-reported and untyped, so nothing tracks tokens per thread.
 
@@ -832,10 +887,12 @@ human verification.
 - Env values never reach a client (`env_keys` only); an empty submitted
   value for a known key means "leave unchanged". Secret-shaped keys
   (`shared/runner-env.ts` `isSecretShapedEnvKey`) and `PORTUNI_*` keys are
-  refused with `INSTANCE_ENV_KEY_REFUSED`. A leading `~` expands to `$HOME`
+  refused with `INSTANCE_ENV_KEY_SECRET` / `INSTANCE_ENV_KEY_RESERVED`
+  (`params.key`). A leading `~` expands to `$HOME`
   only when `getInstanceEnv` reads the value for a run.
 - `defaults: { model?, effort? }`: an unknown key or invalid effort throws
-  `InstanceDefaultsKeyRefusedError`; `updateInstance` replaces `defaults`
+  `InstanceDefaultsKeyRefusedError` (`INSTANCE_DEFAULTS_KEY_UNKNOWN` or
+  `INSTANCE_DEFAULTS_EFFORT_INVALID`); `updateInstance` replaces `defaults`
   wholesale, unlike `env`'s per-key merge.
 - A run's instance lands in `sessions.instance_id`. An old desktop
   `config.json` with a `profiles` key loads; the key is ignored and dropped
@@ -860,8 +917,8 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   (`guardRestSessionWrite` in `routeSessions`).
 - Every frame goes through the same `sessionAccess` tier and the same
   `SessionRuntime` method as its REST twin. A refused action is an
-  `{id, type: "error", payload: {code, message}}` frame, never a closed
-  socket.
+  `{id, type: "error", payload: {code, message, params?}}` frame, never a
+  closed socket; `code` is from `shared/error-codes.ts`, `message` English.
 - **Mounted in both kinds of workspace** through `SessionsWsDeps` (`runtime`, `access`,
   `snapshot`, `canSee`): `createLocalSessionsWsDeps()` over the graph db;
   `agentMain` passes `createSessionsWsServer(createAgentSessionsWsDeps(

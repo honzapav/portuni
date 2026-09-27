@@ -25,7 +25,12 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
   sequence).
 - Per-mirror MCP configs reference the token as `PORTUNI_MCP_TOKEN_<ID>`
   (the server learns its id from `PORTUNI_WORKSPACE_ID`; a standalone
-  server without one keeps `PORTUNI_MCP_TOKEN`). Global MCP entries are
+  server without one keeps `PORTUNI_MCP_TOKEN`). The name comes from
+  `workspace::token_env_var` in Rust and `clientTokenEnvVar()` on the
+  server; both are tested against `apps/server/shared/token-env-var-cases.json`
+  (#521). The sidecar itself verifies `PORTUNI_AUTH_TOKEN`, which the host
+  always passes: a sidecar without it refuses to start and the host shows
+  the `PORTUNI_BACKEND_ERROR=` line. Global MCP entries are
   named `portuni-<id>`; a workspace migrated from the single-workspace
   layout keeps the historical `portuni` entry.
 - **Every config.json load-modify-save goes through `ConfigLock`**, a
@@ -128,6 +133,14 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   means this window's own), and `auth.rs`'s `auth_status`,
   `google_login`, `auth_refresh`, `auth_logout`, `central_request`
   (`load_auth_config` takes an explicit `ws_id`).
+- `regenerate_mcp_token` writes the fresh token to Keychain and
+  `AuthTokens`, then restarts that workspace's sidecar (in a team
+  workspace, its sync agent) with it through the same kill + spawn as
+  `restart_sidecar` (#522): the sidecar checks the `PORTUNI_AUTH_TOKEN` it
+  was spawned with, so without the restart every proxied request answers
+  401 until the app restarts. A failed respawn reaches the window as
+  `backend-error`, like a failed start; the live channel reconnects with the
+  new token on its own.
 - App-global commands keep `AppHandle` and never call `ws_of`, because a
   `bootstrap` window legitimately calls them: workspace list and CRUD,
   updater, clipboard, `open_external`, exit, `workspace_migration_status`,
@@ -235,13 +248,59 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   `record_pending_backend_error`, `retire_pending_backend_error`.
 - In a team workspace before login the replayed `backend-ready` carries the
   sentinel port `0`.
+- The `backend-error` payload is a `CmdError` (below):
+  `DESKTOP_BACKEND_FAILED` with the sidecar's `PORTUNI_BACKEND_ERROR=` text
+  as `detail`, `DESKTOP_BACKEND_EXITED` with `exitCode`, or
+  `DESKTOP_CONFIG_INVALID` when `config.json` cannot be read at boot.
+
+## Language and command errors (#540)
+
+- **One UI language for the app.** `UiLocaleState` (managed,
+  `desktop_i18n.rs`) holds `en` or `cs`, English until a window reports
+  its own. The web calls `set_ui_locale { locale }` after boot, on every
+  i18next `languageChanged` and on window `focus`
+  (`apps/web/src/lib/desktop-locale.ts`); a call from a window without
+  focus changes nothing, so the language follows the focused window --
+  windows of different accounts can run in different languages. Anything
+  but `en`/`cs` (the dev pseudo-locale included) is sent as `en` by the web
+  and ignored by Rust.
+- **Texts from the catalog.** The Quit item of the macOS app menu and the
+  two loopback pages the browser lands on after Google sign-in come from
+  the `desktop` namespace (`apps/server/shared/i18n/locales/*/desktop.json`,
+  embedded with `include_str!`). `build_app_menu` builds the menu;
+  `set_ui_locale` rebuilds it when the language changes. `google_login`
+  reads the language when the flow starts and hands it to the loopback
+  listener.
+- **`CFBundleLocalizations`** `en`, `cs` (and `CFBundleDevelopmentRegion`
+  `en`) come from `apps/desktop/Info.plist`, merged through
+  `bundle.macOS.infoPlist` in `tauri.conf.json`, so macOS localizes its own
+  menu items and dialogs.
+- **Command errors are codes.** Every `#[tauri::command]` returns
+  `Result<_, CmdError>` (`errors.rs`), serialized as
+  `{ code, params, message }`. `code` is a `DESKTOP_*` code, a shared one
+  (`UNAUTHORIZED`, `SYNC_AGENT_DOWN`, `NO_MIRROR`, `INVALID_PATH`,
+  `DESKTOP_CONFIG_UNAVAILABLE`), a server code passed through
+  (`CmdError::from_http_answer`, e.g. a refused Showtime handoff), or
+  `UNKNOWN_DETAIL` for plumbing failures (`From<String>`: I/O, HTTP, a
+  poisoned lock), whose raw text is shown as data. `message` is English and
+  only for logs. The web wraps `invoke` (`apps/web/src/lib/tauri-invoke.ts`)
+  into a `DesktopError` and renders it with `displayError`; the web's
+  `DESKTOP_ERROR_CODES` list and both `errors.json` catalogs carry every
+  desktop code, which `errors::tests` checks against the embedded catalogs.
+  Helpers that stay `Result<_, String>` convert both ways (`From<String>`,
+  `From<CmdError> for String`).
+- No Czech text in `apps/desktop/src` outside comments.
 
 ## localStorage namespacing
 
 - All windows share one webview origin, so per-workspace UI state is keyed
   `portuni:<ws_id>:<key>` (`apps/web/src/lib/workspace-storage.ts`):
   `openNodes`, `fileTreeCollapsed`, `workspace.detailVisible`,
-  `first-steps-pending` (the team workspace's first-login guidance flag).
+  `first-steps-pending` (the team workspace's first-login guidance flag),
+  `locale` (the window's language cache, #538: per window because each
+  workspace window can belong to another account; the account's
+  `users.locale` from `/me` overwrites it when they differ, and a `null`
+  account keeps what the window resolved).
   `currentWorkspaceId()` reads the id synchronously from
   `getCurrentWindow().label`; `scopedKey(key)` falls back to the unscoped
   `portuni:<key>` in a plain browser or Vite build, which has no workspace.

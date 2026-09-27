@@ -16,7 +16,7 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_TEST_PG_URL` | Live Postgres connection string for `test/db-client-conformance.test.ts`'s `pg` driver leg; unset (the default -- no live Postgres in CI or this repo's dev loop) skips just that one suite |
 | `PORTUNI_WORKSPACE_ROOT` | Root for local mirrors; also anchors the per-device `.portuni/sync.db` |
 | `PORTUNI_USER_EMAIL`, `PORTUNI_USER_NAME` | Solo-user identity seeded at boot |
-| `PORTUNI_AUTH_TOKEN` | Bearer for HTTP/MCP auth (sensitive); required for non-loopback bind or remote Turso. Also the bearer a runner-driven run's own MCP connection presents to this process's front door; a run's provisioning refuses to start without it (#507) |
+| `PORTUNI_AUTH_TOKEN` | Server-side bearer for HTTP/MCP auth (sensitive). **Required in env mode** (personal workspace, sync agent, standalone server) on any host and with or without `TURSO_URL`: without it the server refuses to start with an error naming the variable (in the desktop via `PORTUNI_BACKEND_ERROR=`). There is no "auth disabled" state. **Ignored in google mode** (the central server; one warning line at boot when set). Also the bearer a runner-driven run's own MCP connection presents to this process's front door (#507). Read only by `apps/server/infra/auth-config.ts` (#521) |
 | `PORTUNI_WEBVIEW_PROXY_SECRET` | Env-mode REST write gate (sensitive, #213): when set, hardens the blanket write exemption -- a request needs a matching `X-Portuni-Webview-Proxy` header (proof it came through a trusted proxy, not some other process on this device holding the same `PORTUNI_AUTH_TOKEN`) or a resolvable `X-Portuni-Spawn-Id` session, or it is refused. Empty (default) = legacy behavior, every env-mode REST write allowed. The packaged desktop app always sets its own per-launch value |
 
 ## HTTP server
@@ -57,7 +57,7 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_DRIVE_FOLDER_MEMO_MAX` | `5000` | Drive adapter ancestor cache (`apps/server/domain/sync/drive-folder-cache.ts`, #419): how many folder `id -> path` entries the in-process LRU memo keeps. The tier below it is the `remote_folder_cache` table, so an eviction costs a DB read, not a Drive `files.get`. A non-positive/non-integer value is ignored with one warning. |
 | `PORTUNI_REMOTE_SWEEP_INTERVAL_MS` | `21600000` (6 h) | Remote watcher: how often the full catch-up `remoteSweep` runs over every node routed to the remote, on top of the sweep at boot and after a change-feed `reset`. Central only. Same validation as above. |
 | `PORTUNI_WORKSPACE_ID` | unset | Desktop sidecar only; the workspace's unique ID as set in `config.json`. Unset in standalone mode. Determines which token env var name the scope materializer generates for per-mirror configs (e.g., `PORTUNI_MCP_TOKEN_<ID>` when set, plain `PORTUNI_MCP_TOKEN` when unset). |
-| `PORTUNI_MCP_TOKEN_<ID>` | unset | Per-workspace MCP token (sensitive). `<ID>` matches the workspace ID (from `PORTUNI_WORKSPACE_ID`). Each enabled workspace gets its own token env var so the per-mirror configs scope materialization writes can reference the right one by name, never a literal. Portuni has no terminal of its own to export it into (#345) — a shell outside the app exports it itself (Settings → Copy token). |
+| `PORTUNI_MCP_TOKEN`, `PORTUNI_MCP_TOKEN_<ID>` | unset | Client-side name of the MCP token (sensitive): what per-mirror configs and the guard hook expand in a user's shell. **The server never reads it**; it only writes the name (`clientTokenEnvVar()` in `infra/auth-config.ts`, kept in parity with the desktop's `workspace::token_env_var` by `apps/server/shared/token-env-var-cases.json`). An unset or empty variable means an empty bearer and a 401. `<ID>` matches the workspace ID (from `PORTUNI_WORKSPACE_ID`); a standalone server uses plain `PORTUNI_MCP_TOKEN`. Each enabled workspace gets its own token env var so the per-mirror configs scope materialization writes can reference the right one by name, never a literal. Portuni has no terminal of its own to export it into (#345) — a shell outside the app exports it itself (Settings → Copy token). |
 | `PORTUNI_REMOTE_<NAME>__SERVICE_ACCOUNT_JSON` | unset | Per-remote Google Drive Service Account key (sensitive), read by the `varlock` token store (`token-store-varlock.ts`). `<NAME>` is the remote name upper-cased with `-` → `_`. **Required on the VPS for central-mode file content over the server** (the Drive-direct read/write in `file-content-remote.ts` resolves the adapter via this credential). Sibling fields: `__ACCESS_TOKEN`, `__REFRESH_TOKEN`, `__EXPIRES_AT`. |
 | `PORTUNI_AGENT_MODE` | unset | `=1` boots the desktop sidecar as the central-mode **sync agent** (teammate mirrors): no Turso, no graph db; serves the mirror/sync/scope routes backed by the central server and the local MCP front door (device-local tools run here, graph tools are proxied to central) (`desktop.ts` → `api/agent-router.ts`, engine in `domain/sync/central/`). Set by the Tauri host in central data_mode. |
 | `PORTUNI_CENTRAL_URL` | unset | Agent mode: base URL of the central server (e.g. `https://api.portuni.com`). Required with `PORTUNI_AGENT_MODE=1`. |
@@ -76,7 +76,7 @@ rest are optional tunables with code defaults. Grep check:
 | Var | Default | Sensitive | Purpose |
 |---|---|---|---|
 | `PORTUNI_AUTH_MODE` | `env` | No | Authentication mode (`env` or `google`) |
-| `PORTUNI_AUTH_TOKEN` | — | Yes | Bearer for HTTP/MCP auth (see Core). Empty disables auth (safe only on loopback, trusted single-user box) |
+| `PORTUNI_AUTH_TOKEN` | — | Yes | Bearer for HTTP/MCP auth (see Core). Required; the server does not start without it |
 | `PORTUNI_WEBVIEW_PROXY_SECRET` | — | Yes | REST write gate proxy marker (see Core). Generated per-launch by the desktop app; unset elsewhere = legacy unscoped writes. Set the same value here and in `apps/web`'s env to opt the standalone/Vite dev flow into the hardened posture |
 | `PORTUNI_USER_EMAIL` | `solo@localhost` | No | Solo user email recorded on events/nodes in env mode |
 | `PORTUNI_USER_NAME` | `Solo User` | No | Solo user display name in env mode |
@@ -88,7 +88,7 @@ required when google mode is active (except the optional group mappings).
 
 | Var | Default | Sensitive | Purpose |
 |---|---|---|---|
-| `PORTUNI_JWT_SECRET` | — | Yes | Secret for signing Portuni session JWTs (HS256). Min 32 chars |
+| `PORTUNI_JWT_SECRET` | — | Yes | Secret for signing Portuni session JWTs (HS256). Min 32 chars; the server refuses to start without it (checked at boot, #521) |
 | `PORTUNI_GOOGLE_CLIENT_IDS` | — | No | Comma-separated accepted Google OAuth client IDs (Google Cloud Console) |
 | `PORTUNI_DESKTOP_GOOGLE_CLIENT_ID` | — | No | Google desktop OAuth client id served by public `GET /auth/desktop-config` (onboarding wizard). Must also be listed in `PORTUNI_GOOGLE_CLIENT_IDS` |
 | `PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET` | — | No | Secret of that desktop OAuth client — non-confidential per Google's installed-app model; served alongside the id |

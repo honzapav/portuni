@@ -126,12 +126,12 @@ describe("moveNodeToOrganization", () => {
 });
 
 describe("disconnectEdgeById", () => {
-  it("rejects removing the only belongs_to -> organization edge with code ORG_INVARIANT", async () => {
+  it("rejects removing the only belongs_to -> organization edge with code ORG_LAST_EDGE", async () => {
     const { db, edgeId } = await freshEnv();
     await assert.rejects(
       () => disconnectEdgeById(db, "U1", edgeId),
       (err: Error & { code?: string }) =>
-        err.code === "ORG_INVARIANT" &&
+        err.code === "ORG_LAST_EDGE" &&
         /cannot remove the only belongs_to/.test(err.message),
     );
   });

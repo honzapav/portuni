@@ -7,6 +7,7 @@
 // They are pure, so they are tested from the server's node:test runner
 // (test/file-tree.test.ts); DetailPane.files.tsx only renders them.
 
+import type { TFunction } from "i18next";
 import type { SyncStatusFile } from "../types";
 
 // Unified leaf model: registered DetailFile or an untracked disk file.
@@ -68,14 +69,29 @@ export function buildFileTree(files: TreeFile[], folders: readonly string[] = []
   return root;
 }
 
+// What a folder's dot says about the files inside it, worst first.
+export type FolderSyncState = "conflict" | "pending" | "remote_missing" | "clean";
+
+const FOLDER_SYNC_TITLE: Record<FolderSyncState, (t: TFunction<"files">) => string> = {
+  conflict: (t) => t(($) => $.tree.folder_sync.conflict, { ns: "files" }),
+  pending: (t) => t(($) => $.tree.folder_sync.pending, { ns: "files" }),
+  remote_missing: (t) => t(($) => $.tree.folder_sync.remote_missing, { ns: "files" }),
+  clean: (t) => t(($) => $.tree.folder_sync.clean, { ns: "files" }),
+};
+
+export function folderSyncTitle(state: FolderSyncState, t: TFunction<"files">): string {
+  return FOLDER_SYNC_TITLE[state](t);
+}
+
 // Walk a folder subtree and aggregate sync classes of all files inside.
-// Returns the worst color, mirroring the per-tab dot logic. Returns null
-// if no file inside is mapped yet (so the folder shows no dot during
-// initial load instead of misleading green).
+// Returns the worst color, mirroring the per-tab dot logic, and the state
+// its title renders from (folderSyncTitle). Returns null if no file inside
+// is mapped yet (so the folder shows no dot during initial load instead of
+// misleading green).
 export function aggregateFolderSync(
   node: TreeNode,
   map: Map<string, SyncStatusFile>,
-): { color: string; title: string } | null {
+): { color: string; state: FolderSyncState } | null {
   let hasConflict = false;
   let hasPending = false;
   let hasRemoteMissing = false;
@@ -102,23 +118,10 @@ export function aggregateFolderSync(
     }
   }
   if (!any) return null;
-  if (hasConflict)
-    return { color: "var(--color-danger)", title: "Konflikt uvnitř" };
-  if (hasPending)
-    return {
-      color: "var(--color-node-process)",
-      title: "Soubory čekají na synchronizaci",
-    };
-  if (hasRemoteMissing)
-    return {
-      color: "var(--color-status-archived)",
-      title: "Některé soubory chybí na remote",
-    };
-  if (hasClean)
-    return {
-      color: "var(--color-status-active)",
-      title: "Vše synchronizováno",
-    };
+  if (hasConflict) return { color: "var(--color-danger)", state: "conflict" };
+  if (hasPending) return { color: "var(--color-node-process)", state: "pending" };
+  if (hasRemoteMissing) return { color: "var(--color-status-archived)", state: "remote_missing" };
+  if (hasClean) return { color: "var(--color-status-active)", state: "clean" };
   return null;
 }
 

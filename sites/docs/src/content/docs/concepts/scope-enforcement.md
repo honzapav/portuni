@@ -55,7 +55,7 @@ Writes divide into three concentric zones, each with different default behavior:
 
 The primary mechanism is declarative: when a mirror is created or renamed, Portuni writes per-harness configuration into `local_path`, layering on top of user-owned files (never replacing them). Portuni does not try to intercept individual filesystem calls from arbitrary harnesses – cross-harness interception is fragile and easy to bypass.
 
-There is one runtime layer on top: a **task** started from the desktop app ("Nový úkol") runs through Portuni's runner, which decides each write itself by the same write-scope rules the guard hook applies (`apps/server/domain/runner/permissions.ts`): editing inside the current mirror is allowed, editing another node's mirror is refused, and a scope-expanding or plan-approval request shows up as a question in the task's chat. Hand-opened shells rely on the declarative configs alone.
+There is one runtime layer on top: a **task** started from the desktop app ("New task") runs through Portuni's runner, which decides each write itself by the same write-scope rules the guard hook applies (`apps/server/domain/runner/permissions.ts`): editing inside the current mirror is allowed, editing another node's mirror is refused, and a scope-expanding or plan-approval request shows up as a question in the task's chat. Hand-opened shells rely on the declarative configs alone.
 
 The generated files:
 
@@ -103,6 +103,7 @@ Behaviour at the edges is deliberate:
 - A non-write tool always allows.
 - A malformed JSON payload allows (we cannot tell what the harness wanted).
 - An unreachable Portuni server allows. The guard is a soft fallback, not the primary defense; the harness's own permission system is.
+- A server that refuses the token (401/403 from `/scope`) blocks the write, with a message saying the token is missing or does not match and naming the variable to export (`PORTUNI_MCP_TOKEN` or the workspace's `PORTUNI_MCP_TOKEN_<ID>`). A token mismatch never silently turns the guard off.
 
 This catches drift in the declarative config, harness bugs, and cases where the config was never written.
 
@@ -208,10 +209,10 @@ scope: a request from anyone but the owner answers `SESSION_NOT_FOUND`
 
 The list routes follow the same rule: `GET /sessions`, a node's
 `GET /nodes/:id/sessions` and the sessions part of `GET /overview` return
-the caller's own threads only. So a node's Relace tab, the Práce sidebar,
-the Přehled inbox and the running count show each person their own work,
+the caller's own threads only. So a node's Threads tab, the Work sidebar,
+the Overview inbox and the running count show each person their own work,
 even on a node the whole organisation can see. What people share on a node
-is its **files** — including the handoff file Předat writes —
+is its **files** — including the handoff file Hand off writes —
 not the conversations that produced them.
 
 ### The record is central, the content is the device's
@@ -223,15 +224,18 @@ the first message, every event of the transcript, the inline handoff
 summary. The central server holds the record, because the MCP handshake,
 scope enforcement and the write gate key on it. The content is written to
 the **device that ran the thread**, in the sidecar's own database, and is
-never sent to the central server.
+never sent to the central server. The central database has no place for it
+either: no transcript table, no first-message or summary column. Content
+an older desktop version had sent there was copied back to the device that
+wrote it, and then dropped.
 
 So `GET /sessions/:id/events` is a device-local route: it answers from the
 machine you are asking, which is the machine that has the log. Asked on a
 device that did not run the thread it answers 200 with an empty list and
 `transcript_host` — the label of the machine that does — which the app
-shows as „Transkript je na zařízení X" instead of an empty chat. The way
+shows as "The transcript is on the device X" instead of an empty chat. The way
 across is the handoff file, not a copy of the conversation (see
-[Předat / Navázat na handoff](/guides/working-in-the-app/#task-chat-práce)).
+[Hand off / Continue from handoff](/guides/working-in-the-app/#task-chat)).
 
 There is **no backup of transcripts**. Losing a device's database loses the
 conversations it ran; the records on the central server and the handoff

@@ -25,7 +25,7 @@ For a standalone CLI server, add Portuni to `~/.claude.json` yourself:
 }
 ```
 
-Claude Code expands `${VAR:-}` at config load, so the token stays out of the file – export `PORTUNI_MCP_TOKEN` in your shell (Settings → MCP Server → Copy token in the desktop app). The standalone server requires the header whenever `PORTUNI_AUTH_TOKEN` is set; the desktop sidecar always requires it.
+Claude Code expands `${VAR:-}` at config load, so the token stays out of the file – export `PORTUNI_MCP_TOKEN` in your shell (Settings → MCP Server → Copy token in the desktop app). Every Portuni server requires the header (a standalone server does not start without `PORTUNI_AUTH_TOKEN`); an unset or empty `PORTUNI_MCP_TOKEN` sends an empty bearer and gets 401.
 
 :::caution
 Use `type: "http"` (Streamable HTTP), not `"sse"` – Claude Code quietly ignores SSE transport in the global config, and you'll be left wondering why nothing's connecting.
@@ -101,10 +101,10 @@ A couple of useful modes worth knowing about:
 - **Plan mode** (default `Shift+Tab`) – read-only exploration. Useful when you're still figuring out what you want the agent to do and don't want it writing anything yet.
 - **Bypass mode** (`--dangerously-skip-permissions`) – skips every permission check. Handy inside ephemeral sandboxes (Docker, VMs); worth avoiding on a host machine with a populated Portuni mirror root.
 
-## Claude Code jako runner
+## Claude Code as a runner
 
 Everything above is about a hand-opened terminal. A **task** started from a
-node's "Nový úkol" button (or `POST /sessions`) runs Claude Code the same
+node's "New task" button (or `POST /sessions`) runs Claude Code the same
 way, but Portuni drives it directly over
 [`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
 instead of spawning a terminal:
@@ -121,12 +121,12 @@ instead of spawning a terminal:
   task's chat instead of a terminal prompt.
 - **Login stays entirely in the CLI.** The task runner uses whatever
   account `claude` is already logged into on this machine (`CLAUDE_CONFIG_DIR`,
-  set per Runnery instance in Settings → Runnery, selects which one) — Portuni
+  set per runner instance in Settings → Runners, selects which one) — Portuni
   never asks for or stores Anthropic credentials of its own.
 - If nothing is logged in, the task's chat shows an error saying so instead
   of quietly failing.
 
-Nastavení → Runnery shows whether `claude` is installed and logged in on
+Settings → Runners shows whether `claude` is installed and logged in on
 this device (`claude --version` / `claude auth status`), and lets you
 manage the provider instances (name, environment, default per organization)
 a task's runner picks from when more than one exists.

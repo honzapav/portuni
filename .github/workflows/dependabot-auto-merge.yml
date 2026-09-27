@@ -1,0 +1,29 @@
+# Minor and patch updates from Dependabot merge on their own once the
+# required checks are green; a major version always waits for Honza.
+#
+# Auto-merge enabled with GITHUB_TOKEN merges without triggering new
+# workflow runs, so a dependency bump reaches the server with the next
+# regular deploy, not on its own.
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'honzapav/portuni'
+    runs-on: ubuntu-latest
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "$PR_URL"

@@ -30,6 +30,7 @@ apps/desktop/sidecar-deps/
 # Sandcastle loop (agent harness) runtime state
 .sandcastle/logs/
 .sandcastle/worktrees/
+.sandcastle/agent-repo/
 .sandcastle/node_modules/
 .sandcastle/prompt.generated.md
 .sandcastle/prompt.review.generated.md

@@ -9,6 +9,7 @@
 // no reason to have it). This module stays React-free.
 
 import { isTauri } from "./backend-url";
+import { invoke } from "./tauri-invoke";
 
 // Shape returned by the get_data_mode Tauri command.
 export type DataMode = {
@@ -20,7 +21,6 @@ export type DataMode = {
 // workspace.
 export async function getDataMode(): Promise<DataMode> {
   if (!isTauri()) return { mode: "local", server_url: null };
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<DataMode>("get_data_mode");
 }
 

@@ -1,5 +1,5 @@
 // Verifies GET /mcp/info reports endpoint metadata for the Settings UI
-// without requiring auth, even when AUTH_ENABLED is true. The token must
+// without requiring auth, while every other route requires the bearer. The token must
 // not appear in the response body — only a flag indicating one is set.
 
 import { test } from "node:test";

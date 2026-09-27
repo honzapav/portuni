@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { DataSourceRow } from "../shared/types.js";
+import { clientTokenEnvVar, serverBearerToken } from "../infra/auth-config.js";
 
 export type WriteTier = "tier1_current" | "tier2_sibling" | "tier3_outside";
 
@@ -253,40 +254,13 @@ export function resolvePortuniMcpUrl(): string {
   return `http://${host}:${port}/mcp`;
 }
 
-// Name of the env var per-mirror configs reference for the MCP bearer
-// token. In the multi-workspace desktop each sidecar gets
-// PORTUNI_WORKSPACE_ID and its mirrors reference a workspace-suffixed
-// variable, so a terminal carrying tokens for several workspaces resolves
-// the right one. Standalone servers (no PORTUNI_WORKSPACE_ID) keep the
-// historical PORTUNI_MCP_TOKEN — byte-identical output, zero regression.
-export function resolveTokenEnvVar(): string {
-  const id = process.env.PORTUNI_WORKSPACE_ID?.trim();
-  if (!id) return "PORTUNI_MCP_TOKEN";
-  return "PORTUNI_MCP_TOKEN_" + id.toUpperCase().replace(/-/g, "_");
-}
-
 // The bearer a runner-driven run's own MCP client presents to this
 // process's front door (#507): exactly the PORTUNI_AUTH_TOKEN the front
-// door verifies (http/middleware.ts), which the desktop hands every
-// sidecar. Not resolveTokenEnvVar()'s PORTUNI_MCP_TOKEN[_<WS>] -- that name
-// is only what per-mirror configs expand in a user's own shell, and nothing
-// sets it in the sidecar's env. A missing token is an error, never an
-// empty `Authorization: Bearer ` the front door answers with 401.
-export class RunnerMcpTokenMissingError extends Error {
-  // What REST (503) and the live channel answer with.
-  readonly code = "RUNNER_MCP_TOKEN_MISSING";
-  constructor() {
-    super(
-      "PORTUNI_AUTH_TOKEN is not set: the run's Portuni MCP connection would have no bearer for the front door",
-    );
-    this.name = "RunnerMcpTokenMissingError";
-  }
-}
-
+// door verifies, never the client-side PORTUNI_MCP_TOKEN[_<WS>] name that
+// only a user's shell expands. An env-mode server does not start without
+// it (#521), so this cannot come back empty.
 export function resolveRunnerMcpToken(): string {
-  const token = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim();
-  if (!token) throw new RunnerMcpTokenMissingError();
-  return token;
+  return serverBearerToken();
 }
 
 // Build the Claude Code project-scoped .mcp.json content. Claude Code
@@ -301,7 +275,7 @@ export function buildClaudeMcpJson(args: {
   url: string;
   homeNodeId: string | null;
 }): Record<string, unknown> {
-  const tokenVar = resolveTokenEnvVar();
+  const tokenVar = clientTokenEnvVar();
   return {
     portuni_managed: {
       generated_at: new Date().toISOString(),
@@ -344,8 +318,8 @@ function buildClaudeHooksBlock(args: {
   let command = args.guardScriptPath;
   if (args.mcpUrl) {
     const base = args.mcpUrl.replace(/\/+$/, "").replace(/\/mcp$/, "");
-    const tokenVar = resolveTokenEnvVar();
-    command = `PORTUNI_URL=${JSON.stringify(base)} PORTUNI_AUTH_TOKEN="\${${tokenVar}:-}" ${JSON.stringify(args.guardScriptPath)}`;
+    const tokenVar = clientTokenEnvVar();
+    command = `PORTUNI_URL=${JSON.stringify(base)} PORTUNI_GUARD_TOKEN="\${${tokenVar}:-}" PORTUNI_GUARD_TOKEN_VAR=${tokenVar} ${JSON.stringify(args.guardScriptPath)}`;
   }
   return {
     hooks: {

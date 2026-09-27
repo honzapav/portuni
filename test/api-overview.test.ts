@@ -176,7 +176,6 @@ describe("GET /overview", () => {
   // and quote nothing -- the field is not merely null, it is absent.
   test("a session row carries no brief, only the thread's name", async () => {
     const running = await createSession(db, SOLO, { node_id: visibleNodeId, session_type: "interactive_task" });
-    await db.execute({ sql: "UPDATE sessions SET brief = ? WHERE id = ?", args: ["Fix the bug", running.id] });
 
     const res = await call(makeIdentity(SOLO, "admin"), "/overview");
     const body = JSON.parse(res.body) as OverviewPayload;

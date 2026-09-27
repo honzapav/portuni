@@ -6,6 +6,8 @@
 // this device shows it disabled with the reason, since Showtime writes to
 // disk and there is nowhere to put the deck.
 
+import type { PlanReason } from "./file-plan";
+
 export interface NewFileMenuInput {
   showtimeEnabled: boolean;
   showtimeInstalled: boolean;
@@ -14,9 +16,9 @@ export interface NewFileMenuInput {
 
 export type NewFileMenu =
   | { kind: "plain" }
-  | { kind: "split"; presentation: { enabled: true } | { enabled: false; reason: string } };
+  | { kind: "split"; presentation: { enabled: true } | { enabled: false; reason: PlanReason } };
 
-export const NO_MIRROR_REASON = "Nejdřív vytvoř mirror uzlu";
+export const NO_MIRROR_REASON: PlanReason = { code: "no_mirror" };
 
 export function newFileMenu(input: NewFileMenuInput): NewFileMenu {
   if (!input.showtimeEnabled || !input.showtimeInstalled) return { kind: "plain" };

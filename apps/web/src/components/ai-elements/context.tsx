@@ -21,13 +21,16 @@
 // result), in which case the icon draws no arc and the trigger shows the
 // bare count; the trigger text is the `label` prop, formatted by
 // lib/context-ring.ts, not an en-US percent; `"use client"` removed.
+// The icon's and the usage rows' labels come from the `chat` catalog (#536).
 
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import { formatTokens } from "@/lib/context-ring";
+import { formatTokens } from "@/lib/format";
+import { useLocale } from "@/lib/use-locale";
 import { type ComponentProps, createContext, useContext } from "react";
+import { useTranslation } from "react-i18next";
 
 const PERCENT_MAX = 100;
 const ICON_RADIUS = 10;
@@ -71,13 +74,14 @@ const usedFraction = (usedTokens: number, maxTokens: number | null): number | nu
 
 const ContextIcon = () => {
   const { usedTokens, maxTokens } = useContextValue();
+  const { t } = useTranslation("chat");
   const circumference = 2 * Math.PI * ICON_RADIUS;
   const fraction = usedFraction(usedTokens, maxTokens);
   const dashOffset = circumference * (1 - (fraction ?? 0));
 
   return (
     <svg
-      aria-label="Využití kontextového okna"
+      aria-label={t(($) => $.context.ring_label)}
       height="20"
       role="img"
       style={{ color: "currentcolor" }}
@@ -138,6 +142,7 @@ export type ContextContentHeaderProps = ComponentProps<"div">;
 
 export const ContextContentHeader = ({ children, className, ...props }: ContextContentHeaderProps) => {
   const { usedTokens, maxTokens, label } = useContextValue();
+  const locale = useLocale();
   const fraction = usedFraction(usedTokens, maxTokens);
 
   return (
@@ -147,7 +152,9 @@ export const ContextContentHeader = ({ children, className, ...props }: ContextC
           <div className="flex items-center justify-between gap-3 text-xs">
             <p>{label}</p>
             <p className="font-mono text-muted-foreground">
-              {maxTokens === null ? formatTokens(usedTokens) : `${formatTokens(usedTokens)} / ${formatTokens(maxTokens)}`}
+              {maxTokens === null
+                ? formatTokens(locale, usedTokens)
+                : `${formatTokens(locale, usedTokens)} / ${formatTokens(locale, maxTokens)}`}
             </p>
           </div>
           {fraction !== null && (
@@ -169,39 +176,45 @@ export const ContextContentBody = ({ children, className, ...props }: ContextCon
   </div>
 );
 
-const UsageRow = ({ label, tokens, className, ...props }: ComponentProps<"div"> & { label: string; tokens: number }) => (
-  <div className={cn("flex items-center justify-between text-xs", className)} {...props}>
-    <span className="text-muted-foreground">{label}</span>
-    <span>{formatTokens(tokens)}</span>
-  </div>
-);
+const UsageRow = ({ label, tokens, className, ...props }: ComponentProps<"div"> & { label: string; tokens: number }) => {
+  const locale = useLocale();
+  return (
+    <div className={cn("flex items-center justify-between text-xs", className)} {...props}>
+      <span className="text-muted-foreground">{label}</span>
+      <span>{formatTokens(locale, tokens)}</span>
+    </div>
+  );
+};
 
 export type ContextInputUsageProps = ComponentProps<"div">;
 
 export const ContextInputUsage = ({ children, ...props }: ContextInputUsageProps) => {
   const { usage } = useContextValue();
+  const { t } = useTranslation("chat");
   const inputTokens = usage?.inputTokens ?? 0;
   if (children) return children;
   if (!inputTokens) return null;
-  return <UsageRow label="Vstup" tokens={inputTokens} {...props} />;
+  return <UsageRow label={t(($) => $.context.input)} tokens={inputTokens} {...props} />;
 };
 
 export type ContextOutputUsageProps = ComponentProps<"div">;
 
 export const ContextOutputUsage = ({ children, ...props }: ContextOutputUsageProps) => {
   const { usage } = useContextValue();
+  const { t } = useTranslation("chat");
   const outputTokens = usage?.outputTokens ?? 0;
   if (children) return children;
   if (!outputTokens) return null;
-  return <UsageRow label="Výstup" tokens={outputTokens} {...props} />;
+  return <UsageRow label={t(($) => $.context.output)} tokens={outputTokens} {...props} />;
 };
 
 export type ContextCacheUsageProps = ComponentProps<"div">;
 
 export const ContextCacheUsage = ({ children, ...props }: ContextCacheUsageProps) => {
   const { usage } = useContextValue();
+  const { t } = useTranslation("chat");
   const cacheTokens = usage?.cachedInputTokens ?? 0;
   if (children) return children;
   if (!cacheTokens) return null;
-  return <UsageRow label="Cache" tokens={cacheTokens} {...props} />;
+  return <UsageRow label={t(($) => $.context.cache)} tokens={cacheTokens} {...props} />;
 };

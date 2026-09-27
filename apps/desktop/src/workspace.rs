@@ -162,7 +162,8 @@ pub(crate) fn is_valid_workspace_id(id: &str) -> bool {
 }
 
 /// Env var per-mirror configs reference for this workspace's MCP token.
-/// Must match resolveTokenEnvVar() in apps/server/domain/write-scope.ts.
+/// Must match clientTokenEnvVar() in apps/server/infra/auth-config.ts; both
+/// are tested against apps/server/shared/token-env-var-cases.json.
 pub(crate) fn token_env_var(id: &str) -> String {
     format!(
         "PORTUNI_MCP_TOKEN_{}",
@@ -243,23 +244,26 @@ pub(crate) fn global_front_door_url(cfg: &WorkspaceConfig) -> Result<String, Str
 /// Plain http:// is allowed only for loopback (local dev) — on a real
 /// host a MITM could tamper with the desktop-config response and swap
 /// the OAuth client. Rejects non-http(s) schemes rather than guessing.
-pub(crate) fn normalize_server_url(input: &str) -> Result<String, String> {
+pub(crate) fn normalize_server_url(input: &str) -> Result<String, crate::errors::CmdError> {
+    use crate::errors::CmdError;
     let trimmed = input.trim().trim_end_matches('/');
     if trimmed.is_empty() {
-        return Err("server URL is required".to_string());
+        return Err(CmdError::ServerUrlRequired);
     }
     if let Some(rest) = trimmed.strip_prefix("http://") {
         let host = rest.split(['/', ':']).next().unwrap_or("");
         if host == "localhost" || host == "127.0.0.1" {
             return Ok(trimmed.to_string());
         }
-        return Err("http:// is allowed only for localhost — use https://".to_string());
+        return Err(CmdError::ServerUrlInsecure);
     }
     if trimmed.starts_with("https://") {
         return Ok(trimmed.to_string());
     }
     if trimmed.contains("://") {
-        return Err(format!("unsupported URL scheme: {trimmed}"));
+        return Err(CmdError::ServerUrlScheme {
+            url: trimmed.to_string(),
+        });
     }
     Ok(format!("https://{trimmed}"))
 }
@@ -334,6 +338,24 @@ mod tests {
     fn token_env_var_uppercases_and_replaces_dashes() {
         assert_eq!(token_env_var("honzapav"), "PORTUNI_MCP_TOKEN_HONZAPAV");
         assert_eq!(token_env_var("honza-pav"), "PORTUNI_MCP_TOKEN_HONZA_PAV");
+    }
+
+    // Parity with clientTokenEnvVar() on the server (#521): both sides read
+    // the same fixture, so drifting one of them fails its own test.
+    #[test]
+    fn token_env_var_matches_shared_fixture() {
+        const CASES: &str = include_str!("../../server/shared/token-env-var-cases.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(CASES).expect("token-env-var-cases.json is valid JSON");
+        let cases = parsed["cases"]
+            .as_array()
+            .expect("token-env-var-cases.json has a cases array");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let id = case["ws_id"].as_str().expect("ws_id is a string");
+            let want = case["env_var"].as_str().expect("env_var is a string");
+            assert_eq!(token_env_var(id), want, "ws_id {id}");
+        }
     }
 
     #[test]
@@ -556,6 +578,14 @@ mod tests {
         assert!(normalize_server_url("").is_err());
         assert!(normalize_server_url("   ").is_err());
         assert!(normalize_server_url("ftp://x").is_err());
+        assert_eq!(
+            normalize_server_url("").unwrap_err().code(),
+            "DESKTOP_SERVER_URL_REQUIRED"
+        );
+        assert_eq!(
+            normalize_server_url("ftp://x").unwrap_err().code(),
+            "DESKTOP_SERVER_URL_SCHEME"
+        );
     }
 
     #[test]
@@ -564,5 +594,9 @@ mod tests {
         // the desktop-config response — https only, loopback excepted for dev.
         assert!(normalize_server_url("http://api.example.com").is_err());
         assert!(normalize_server_url("http://192.168.1.10:4011").is_err());
+        assert_eq!(
+            normalize_server_url("http://api.example.com").unwrap_err().code(),
+            "DESKTOP_SERVER_URL_INSECURE"
+        );
     }
 }

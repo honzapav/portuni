@@ -5,8 +5,11 @@
 // header), live-state overlay, and Přehled's inbox ordering. Dependency-
 // free so test/session-views-helpers.test.ts can exercise it directly.
 
+import type { TFunction } from "i18next";
 import type { SessionState, OverviewSessionRow } from "../types";
 import type { SessionStateMessage } from "./sessions-client";
+
+type CommonT = TFunction<"common">;
 
 export type SessionRowChip = { label: string; color: string; pulsing: boolean };
 
@@ -14,14 +17,22 @@ export type SessionRowChip = { label: string; color: string; pulsing: boolean };
 // sub-rows, the full one for SessionChat's own header.
 export type SessionChipVariant = "row" | "header";
 
-const STATE_LABEL: Record<SessionChipVariant, Record<SessionState, string>> = {
-  row: { running: "Běží", suspended: "Pozastaveno", closed: "Hotovo", archived: "Archiv", draft: "Nový" },
+// Complete Records of literal selectors, so a state added to SessionState
+// fails the typecheck until it has a label in both variants.
+const STATE_LABEL: Record<SessionChipVariant, Record<SessionState, (t: CommonT) => string>> = {
+  row: {
+    running: (t) => t(($) => $.thread.state.row.running, { ns: "common" }),
+    suspended: (t) => t(($) => $.thread.state.row.suspended, { ns: "common" }),
+    closed: (t) => t(($) => $.thread.state.row.closed, { ns: "common" }),
+    archived: (t) => t(($) => $.thread.state.row.archived, { ns: "common" }),
+    draft: (t) => t(($) => $.thread.state.row.draft, { ns: "common" }),
+  },
   header: {
-    running: "Běží",
-    suspended: "Pozastaveno",
-    closed: "Uzavřeno",
-    archived: "Archivováno",
-    draft: "Nový",
+    running: (t) => t(($) => $.thread.state.header.running, { ns: "common" }),
+    suspended: (t) => t(($) => $.thread.state.header.suspended, { ns: "common" }),
+    closed: (t) => t(($) => $.thread.state.header.closed, { ns: "common" }),
+    archived: (t) => t(($) => $.thread.state.header.archived, { ns: "common" }),
+    draft: (t) => t(($) => $.thread.state.header.draft, { ns: "common" }),
   },
 };
 
@@ -38,12 +49,13 @@ const ROW_STATE_COLOR: Record<SessionState, string> = {
 export function sessionRowChip(
   state: SessionState,
   waitingSince: string | null,
+  t: CommonT,
   variant: SessionChipVariant = "row",
 ): SessionRowChip {
   if (state === "running" && waitingSince !== null) {
-    return { label: "Čeká na mě", color: "var(--color-node-process)", pulsing: true };
+    return { label: t(($) => $.thread.state.waiting, { ns: "common" }), color: "var(--color-node-process)", pulsing: true };
   }
-  return { label: STATE_LABEL[variant][state], color: ROW_STATE_COLOR[state], pulsing: state === "running" };
+  return { label: STATE_LABEL[variant][state](t), color: ROW_STATE_COLOR[state], pulsing: state === "running" };
 }
 
 // Overlays a live `session_state` frame onto a REST-fetched summary --
@@ -158,11 +170,49 @@ export function hostDisplayName(session: {
 // ---------------------------------------------------------------- #429
 
 // A thread renders as chat while it is steerable: running (waiting
-// included), suspended (the composer disables, Nahodit resumes) and draft
-// (#374, rule 5: a thread opens empty). closed and archived are history,
-// so their node falls back to the plain detail surface.
+// included), suspended (the next message resumes it) and draft (#374,
+// rule 5: a thread opens empty). These are the Práce sidebar's threads.
+// closed and archived are history, so their node falls back to the plain
+// detail surface -- except a closed thread the user opens on purpose
+// (#498: Relace's Otevřít chat), see isOpenableChatState.
 export function isChatSessionState(state: SessionState): boolean {
   return state === "running" || state === "suspended" || state === "draft";
+}
+
+// #498: Uzavřít is "done, off the active lists", not "never again". A
+// closed thread is not in the sidebar, but opening it from Relace shows its
+// chat, and writing into it reopens it (the server resumes it the way it
+// resumes a suspended one). An archived thread has no chat at all.
+export function isOpenableChatState(state: SessionState): boolean {
+  return isChatSessionState(state) || state === "closed";
+}
+
+// #498: the composer takes a message in every state but archived -- a
+// closed thread reopens on the message.
+export function threadAcceptsMessages(state: SessionState): boolean {
+  return state !== "archived";
+}
+
+// The composer's placeholder for the thread's own state (a question
+// waiting or a transcript elsewhere say their own thing first): every
+// state that takes a message (threadAcceptsMessages) invites one.
+const COMPOSER_PLACEHOLDER: Record<SessionState, (t: CommonT) => string> = {
+  draft: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  running: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  suspended: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  closed: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  archived: (t) => t(($) => $.thread.composer.placeholder.archived, { ns: "common" }),
+};
+
+export function composerStatePlaceholder(state: SessionState, t: CommonT): string {
+  return COMPOSER_PLACEHOLDER[state](t);
+}
+
+// #498: Relace's Otevřít chat, the same for a closed thread as for a
+// suspended one (there is no Navázat anymore -- the closed thread has a
+// composer).
+export function sessionRowOpensChat(state: SessionState): boolean {
+  return state === "running" || state === "suspended" || state === "closed";
 }
 
 // The pane Práce shows for the selected node: the open session, but only
@@ -177,7 +227,7 @@ export function shownChatSessionId(
   openSession: { id: string; node_id: string | null; state: SessionState } | null,
 ): string | null {
   if (!selectedNodeId || !openSession) return null;
-  if (!isChatSessionState(openSession.state)) return null;
+  if (!isOpenableChatState(openSession.state)) return null;
   if (openSession.node_id !== selectedNodeId) return null;
   return openSession.id;
 }
@@ -186,13 +236,15 @@ export function shownChatSessionId(
 
 // What the close control on a thread does, the same on every surface that
 // offers it (the sidebar's Uzly and Stav rows, the chat header, the Relace
-// row): a draft is deleted outright (api.ts's deleteDraftSession, no
-// dialog), a running or suspended thread is Uzavřít behind its
-// confirmation, and a closed or archived one has no close control at all.
-export type ThreadCloseAction = "delete" | "confirm" | null;
+// row): a draft is deleted outright (api.ts's deleteDraftSession), a
+// running or suspended thread is Uzavřít -- both without a dialog (#498: a
+// closed thread reopens by writing into it, so only an unfinished turn can
+// be lost, the same as with Stop) -- and a closed or archived one has no
+// close control at all.
+export type ThreadCloseAction = "delete" | "close" | null;
 
 export function threadCloseAction(state: SessionState): ThreadCloseAction {
   if (state === "draft") return "delete";
-  if (state === "running" || state === "suspended") return "confirm";
+  if (state === "running" || state === "suspended") return "close";
   return null;
 }

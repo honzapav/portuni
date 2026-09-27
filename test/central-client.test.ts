@@ -422,21 +422,9 @@ describe("createHttpCentralClient", () => {
     const c = createHttpCentralClient({ ...BASE, fetchImpl: fakeFetch([]).fetchImpl }) as unknown as Record<string, unknown>;
     assert.equal(c.appendSessionEvents, undefined);
     assert.equal(c.listSessionEvents, undefined);
-  });
-
-  // The one-time legacy download (boot/content-import.ts): the list names
-  // the device, a page is one thread's content from `after`.
-  it("legacy content: lists by host and pages one thread's content", async () => {
-    const page = { session_id: "S1", brief: "b", handoff_inline: null, events: [], next_after: null };
-    const { fetchImpl, calls } = fakeFetch([
-      { status: 200, json: { sessions: ["S1"] } },
-      { status: 200, json: page },
-    ]);
-    const c = createHttpCentralClient({ ...BASE, fetchImpl });
-    assert.deepEqual(await c.listLegacySessionContent("honzas mac"), ["S1"]);
-    assert.equal(calls[0].url, "https://api.example.com/sessions/legacy-content?host_id=honzas%20mac");
-    assert.deepEqual(await c.getLegacySessionContent("S1", { after: 500 }), page);
-    assert.equal(calls[1].url, "https://api.example.com/sessions/S1/legacy-content?after=500");
+    // #462: nor a legacy-content download -- the central server has none.
+    assert.equal(c.listLegacySessionContent, undefined);
+    assert.equal(c.getLegacySessionContent, undefined);
   });
 
   it("orientation GETs /nodes/:id/orientation and returns null on 404 or a null orientation", async () => {

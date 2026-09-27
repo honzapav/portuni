@@ -7,6 +7,7 @@
 // text is correct for the caller's own `DbClient.dialect`, so the same
 // query source works against libsql and pg/PGlite alike.
 import type { DbDialect } from "./db.js";
+import type { ErrorCode } from "../shared/error-codes.js";
 
 // `datetime('now')` (SQLite) vs `CURRENT_TIMESTAMP` (Postgres) -- both
 // interpolate directly into a SQL string wherever "right now" is needed
@@ -115,6 +116,35 @@ export function isUniqueViolation(err: unknown): boolean {
   return err.message.includes("UNIQUE constraint failed");
 }
 
+// The message each graph-db trigger raises (schema-triggers.ts and
+// schema-triggers.pg.ts carry the same text), and the error code a client
+// gets for it. A trigger has no channel but its message, so this table is
+// the one place the text is read; test/error-codes.test.ts holds it to the
+// trigger sources, so rewording a trigger without updating it fails there.
+export const TRIGGER_ERROR_CODES = {
+  "non-organization node already belongs to an organization; disconnect the existing belongs_to edge first":
+    "ORG_ALREADY_ASSIGNED",
+  "cannot remove last belongs_to -> organization edge; every non-organization node must belong to exactly one organization":
+    "ORG_LAST_EDGE",
+  "responsibilities can only attach to project/process/area nodes": "RESPONSIBILITY_TARGET_INVALID",
+  "data_sources can only attach to project/process/area nodes": "DATA_SOURCE_TARGET_INVALID",
+  "tools can only attach to project/process/area nodes": "TOOL_TARGET_INVALID",
+  "owner_id must reference an actor of type=person with user_id set": "OWNER_NOT_PERSON",
+  "invalid lifecycle_state for node type": "LIFECYCLE_STATE_INVALID",
+  "nodes.sync_key must be a non-empty string": "SYNC_KEY_EMPTY",
+} as const satisfies Record<string, ErrorCode>;
+
+// A DB-level constraint/trigger rejection as the code and English message a
+// client receives: a known trigger gets its own code, any other
+// unique/check/fk/not-null violation CONSTRAINT_VIOLATION. Null when `err`
+// is not one (see constraintViolationMessage).
+export function constraintViolation(err: Error): { code: ErrorCode; message: string } | null {
+  const message = constraintViolationMessage(err);
+  if (message === null) return null;
+  const code = (TRIGGER_ERROR_CODES as Record<string, ErrorCode>)[message] ?? "CONSTRAINT_VIOLATION";
+  return { code, message };
+}
+
 // A friendly message for a DB-level constraint/trigger rejection --
 // SQLite's `RAISE(ABORT, 'msg')` or Postgres's `RAISE EXCEPTION 'msg'`
 // (P0001) and the unique/check/fk/not-null violation classes (Postgres
@@ -123,7 +153,7 @@ export function isUniqueViolation(err: unknown): boolean {
 // already the trigger's raw text (or a reasonably readable constraint
 // message); libsql wraps it as "SQLite error: <text>", so that shape still
 // needs the regex extraction it always has.
-export function constraintViolationMessage(err: Error): string | null {
+function constraintViolationMessage(err: Error): string | null {
   const code = (err as { code?: unknown }).code;
   if (typeof code === "string" && (code === "P0001" || /^23\d{3}$/.test(code))) {
     return err.message;

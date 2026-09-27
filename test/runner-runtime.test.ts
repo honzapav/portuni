@@ -124,7 +124,7 @@ describe("session runtime: question / answer", () => {
           request_id: "req-1",
           type: "approval",
           tool: "mcp__portuni__portuni_expand_scope",
-          title: "Rozšířit rozsah?",
+          title: "Expand the scope?",
           detail: "detail",
           options: null,
           decision: null,
@@ -492,7 +492,7 @@ describe("session runtime: resume by writing (#378)", () => {
     const { runs, lastStart, resumeMode } = await profileResume({ transcript: false });
     assert.equal(runs.length, 2);
     assert.equal(lastStart?.resume, null);
-    assert.match(lastStart?.orientation ?? "", /Předání \(obnovení ze shrnutí\)/);
+    assert.match(lastStart?.orientation ?? "", /Handoff \(resumed from a summary\)/);
     assert.equal(resumeMode, "handoff");
   });
 
@@ -551,11 +551,108 @@ describe("session runtime: resume by writing (#378)", () => {
     await runtime.sendMessage(session.id, "keep going");
 
     assert.ok(capturedOrientation);
-    assert.match(capturedOrientation!, /Předání \(obnovení ze shrnutí\)/);
-    assert.match(capturedOrientation!, /Poslední zprávy/); // the summary content itself
+    assert.match(capturedOrientation!, /Handoff \(resumed from a summary\)/);
+    assert.match(capturedOrientation!, /## Recent messages/); // the summary content itself
     // Built from this device's transcript at resume: the first run's brief.
-    assert.match(capturedOrientation!, /\*\*Uživatel:\*\* x/);
+    assert.match(capturedOrientation!, /\*\*User:\*\* x/);
     assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "and nothing is stored");
+  });
+});
+
+// #498: Uzavřít is "done, off the active lists", not "never again" --
+// writing into a closed thread reopens it the way it reopens a suspended
+// one: the same history, the conversation when it still exists, else a
+// summary from this device's transcript.
+describe("session runtime: writing into a closed thread reopens it (#498)", () => {
+  it("resumes the conversation when its transcript still exists", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const dir = await mkdtemp(join(tmpdir(), "portuni-closed-resume-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      const configDir = join(dir, "claude-profile");
+      const cwd = join(dir, "mirror");
+      const instance = await createInstance({ name: "JRD", runner: "fake", env: { CLAUDE_CONFIG_DIR: configDir } });
+      await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+      await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-closed.jsonl"), "{}\n", "utf8");
+
+      const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }], agentSessionId: "conv-closed" });
+      const runtime = createSessionRuntime({
+        store,
+        content,
+        registry: registryOf(adapter),
+        provision: stubProvision({ cwd, mirrors: [cwd] }),
+      });
+      const { session, run: firstRun } = await runtime.startTask({
+        userId: "U1",
+        nodeId,
+        brief: "x",
+        runner: "fake",
+        instanceId: instance.id,
+      });
+      await db.execute({ sql: "UPDATE sessions SET cli = 'claude' WHERE id = ?", args: [session.id] });
+      await runtime.closeSession(session.id);
+      assert.equal((await store.getSession(session.id))?.state, "closed");
+
+      const frames: Array<{ from: unknown; to: unknown }> = [];
+      runtime.subscribe(session.id, (_id, event) => {
+        if ("kind" in event && event.kind === "state_changed") frames.push({ from: event.payload.from, to: event.payload.to });
+      });
+      await runtime.sendMessage(session.id, "ještě jedna věc");
+
+      const row = await store.getSession(session.id);
+      assert.equal(row?.state, "running");
+      assert.equal(row?.closed_at, null);
+      const runs = await store.listRuns(session.id);
+      assert.equal(runs.length, 2);
+      assert.equal(runs[1].resumed_from_run_id, firstRun.id);
+      assert.equal(runs[1].agent_session_id, "conv-closed", "the new run continues the same conversation");
+      assert.deepEqual(adapter.getLastRunStart()?.resume, { agentSessionId: "conv-closed" });
+      assert.deepEqual(frames, [{ from: "closed", to: "running" }]);
+      const events = await content.listEvents(session.id);
+      const started = events.find((e) => e.run_id === runs[1].id && e.kind === "run_started");
+      assert.equal(JSON.parse(started!.payload).resume, "conversation");
+      assert.ok(
+        events.some((e) => e.run_id === runs[1].id && e.kind === "user_message" && JSON.parse(e.payload).text === "ještě jedna věc"),
+      );
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("without the conversation starts from a summary of this device's transcript", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "první zadání", runner: "fake" });
+    await runtime.closeSession(session.id);
+
+    await runtime.sendMessage(session.id, "pokračuj");
+
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    assert.equal((await store.listRuns(session.id)).length, 2);
+    const start = adapter.getLastRunStart();
+    assert.equal(start?.resume, null);
+    assert.match(start?.orientation ?? "", /Handoff \(resumed from a summary\)/);
+    assert.match(start?.orientation ?? "", /\*\*User:\*\* první zadání/);
+    assert.equal(start?.brief, "pokračuj");
+  });
+
+  it("an archived thread still has no composer: the message is refused", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.closeSession(session.id);
+    await store.patchSession(session.id, { state: "archived" });
+
+    await assert.rejects(runtime.sendMessage(session.id, "haló"), /has no live run/);
+    assert.equal((await store.listRuns(session.id)).length, 1);
   });
 });
 
@@ -575,7 +672,7 @@ describe("session runtime: event ordering", () => {
       request_id: "req-closed",
       type: "approval" as const,
       tool: "mcp__portuni",
-      title: "Potvrzení: portuni",
+      title: "Confirm: portuni",
       detail: "Allow writing?",
       options: null,
     };

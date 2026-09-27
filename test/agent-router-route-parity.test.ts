@@ -15,6 +15,7 @@
 // never "succeeds". Behaviour of each route is covered by
 // test/agent-router.test.ts and test/agent-router-sessions.test.ts.
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
@@ -80,7 +81,7 @@ let previousDataDir: string | undefined;
 
 describe("agent-router: parity with the desktop's device-local route list", () => {
   before(async () => {
-    delete process.env.PORTUNI_AUTH_TOKEN;
+    useTestBearer();
     workspace = await mkdtemp(join(tmpdir(), "portuni-route-parity-"));
     process.env.PORTUNI_WORKSPACE_ROOT = workspace;
     // The /runners routes read and create runners.json in the data dir
@@ -131,7 +132,7 @@ describe("agent-router: parity with the desktop's device-local route list", () =
     const unhandled: string[] = [];
     for (const entry of contract.device_local) {
       const hasBody = entry.method === "POST" || entry.method === "PUT" || entry.method === "PATCH";
-      const res = await fetch(`${base}${entry.example}`, {
+      const res = await authFetch(`${base}${entry.example}`, {
         method: entry.method,
         headers: hasBody ? { "content-type": "application/json" } : undefined,
         body: hasBody ? "{}" : undefined,
@@ -177,13 +178,13 @@ describe("agent-router: parity with the desktop's device-local route list", () =
   });
 
   it("GET /sync/health answers the device's own watcher error buffer", async () => {
-    const res = await fetch(`${base}/sync/health`);
+    const res = await authFetch(`${base}/sync/health`);
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { errors: [] });
   });
 
   it("GET /scope classifies a write on this device without consulting central", async () => {
-    const res = await fetch(`${base}/scope?cwd=${encodeURIComponent(workspace)}&target=${encodeURIComponent(join(workspace, "a.md"))}`);
+    const res = await authFetch(`${base}/scope?cwd=${encodeURIComponent(workspace)}&target=${encodeURIComponent(join(workspace, "a.md"))}`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { decision: string };
     assert.ok(body.decision === "allow" || body.decision === "deny");

@@ -5,7 +5,9 @@
 // the device, so its transcripts, briefs and inline summaries are sitting
 // in the graph db; the copy is what keeps them readable after the runtime
 // moves to content.db, and it runs exactly once, keyed on
-// device_schema.version.
+// device_schema.version -- before migration 040 drops the same content from
+// the graph db (#462), so every test that has content to copy starts from a
+// graph db as it was before 040 (makeLegacySessionContentSchema).
 
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
@@ -16,19 +18,20 @@ import { ulid } from "ulid";
 import { openDeviceContentDb, readDeviceContentSchemaVersion } from "../apps/server/infra/device-content-db.js";
 import {
   DEVICE_CONTENT_IMPORTED_VERSION,
-  importCentralSessionContentOnce,
+  ensurePersonalWorkspaceSchema,
   importGraphDbSessionContentOnce,
   importPersonalWorkspaceSessionContentOnBoot,
-  type LegacyContentSource,
 } from "../apps/server/boot/content-import.js";
 import { readFileSync } from "node:fs";
 import type { DbClient, InStatement } from "../apps/server/infra/db.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { setDeviceContentDbForTesting } from "../apps/server/infra/device-content-db.js";
-import type { LegacySessionContentPage, SessionEventRow } from "../apps/server/shared/api-types.js";
 import { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 import { createSession } from "../apps/server/domain/sessions.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
+import { makeLegacySessionContentSchema } from "./helpers/legacy-session-content.js";
+import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
+import { SESSION_CONTENT_DROP_MIGRATION_ID } from "../apps/server/infra/schema-migrations.js";
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), "portuni-content-import-"));
@@ -36,6 +39,7 @@ function tempDataDir(): string {
 
 test("copies the graph db's session_events, brief and handoff_inline into content.db, once", async () => {
   const { db, nodeId } = await makeSharedDb();
+  await makeLegacySessionContentSchema(db);
   const dir = tempDataDir();
   const contentDb = await openDeviceContentDb(dir);
   try {
@@ -87,9 +91,8 @@ test("is a no-op on a graph db that has no session content left to copy", async 
   const dir = tempDataDir();
   const contentDb = await openDeviceContentDb(dir);
   try {
-    // Nothing written: a fresh install, or a workspace already past the
-    // central migration that dropped the table and the two columns.
-    await db.executeMultiple("DROP TABLE session_events");
+    // A graph db past migration 040 (#462): no session_events, no brief,
+    // no handoff_inline -- and a fresh install is the same shape.
     const result = await importGraphDbSessionContentOnce(contentDb, db);
     assert.equal(result.ran, true);
     assert.equal(result.events, 0);
@@ -105,6 +108,7 @@ test("is a no-op on a graph db that has no session content left to copy", async 
 // on an earlier boot finally ran keeps them -- after the imported ones.
 test("a thread written here before a retried import keeps its new events after the imported ones", async () => {
   const { db, nodeId } = await makeSharedDb();
+  await makeLegacySessionContentSchema(db);
   const dir = tempDataDir();
   const contentDb = await openDeviceContentDb(dir);
   try {
@@ -159,6 +163,7 @@ function failingOn(db: DbClient, pattern: RegExp, times = 1): DbClient {
 
 test("a failed read of the graph db's sessions raises the version never; the next boot copies", async () => {
   const { db, nodeId } = await makeSharedDb();
+  await makeLegacySessionContentSchema(db);
   const dir = tempDataDir();
   const contentDb = await openDeviceContentDb(dir);
   try {
@@ -204,6 +209,7 @@ function failingBatchFor(contentDb: DbClient, sessionId: string): DbClient {
 
 test("a thread whose copy fails is not half-copied; the rest go through and the retry finishes it", async () => {
   const { db, nodeId } = await makeSharedDb();
+  await makeLegacySessionContentSchema(db);
   const dir = tempDataDir();
   const contentDb = await openDeviceContentDb(dir);
   try {
@@ -238,6 +244,7 @@ test("a thread whose copy fails is not half-copied; the rest go through and the 
 
 test("an imported event's ISO timestamp reads back as YYYY-MM-DD HH:MM:SS", async () => {
   const { db, nodeId } = await makeSharedDb();
+  await makeLegacySessionContentSchema(db);
   const dir = tempDataDir();
   const contentDb = await openDeviceContentDb(dir);
   try {
@@ -256,142 +263,11 @@ test("an imported event's ISO timestamp reads back as YYYY-MM-DD HH:MM:SS", asyn
   }
 });
 
-// --- Team workspace: the legacy content downloaded from the central server --
-
-function legacyEvent(sessionId: string, seq: number, text: string): SessionEventRow {
-  return {
-    id: ulid(),
-    session_id: sessionId,
-    run_id: null,
-    seq,
-    kind: seq % 2 === 1 ? "user_message" : "assistant_message",
-    payload: JSON.stringify(seq % 2 === 1 ? { text, source: "chat" } : { text }),
-    created_at: "2026-09-20T08:15:30.000Z",
-  };
-}
-
-// A central server holding legacy content for two threads, serving one
-// thread's events two per page; `failOnce` makes one thread's first page
-// fail, the way an unreachable central server would.
-class FakeLegacyCentral implements LegacyContentSource {
-  hostAsked: string[] = [];
-  failOnce = new Set<string>();
-  constructor(readonly content: Map<string, { brief: string | null; inline: string | null; events: SessionEventRow[] }>) {}
-  async listLegacySessionContent(hostId: string): Promise<string[]> {
-    this.hostAsked.push(hostId);
-    return [...this.content.keys()];
-  }
-  async getLegacySessionContent(sessionId: string, opts?: { after?: number }): Promise<LegacySessionContentPage> {
-    if (this.failOnce.delete(sessionId)) throw new Error("central unreachable");
-    const c = this.content.get(sessionId)!;
-    const rest = c.events.filter((e) => opts?.after === undefined || e.seq > opts.after);
-    const page = rest.slice(0, 2);
-    return {
-      session_id: sessionId,
-      brief: c.brief,
-      handoff_inline: c.inline,
-      events: page,
-      next_after: rest.length > 2 ? page[page.length - 1].seq : null,
-    };
-  }
-}
-
-test("a sync agent downloads its threads' legacy content once, every page, keeping the central copy", async () => {
-  const dir = tempDataDir();
-  const contentDb = await openDeviceContentDb(dir);
-  try {
-    const a = ulid();
-    const b = ulid();
-    const central = new FakeLegacyCentral(
-      new Map([
-        [a, { brief: "Oprav test", inline: null, events: [1, 2, 3, 4, 5].map((n) => legacyEvent(a, n, `a${n}`)) }],
-        [b, { brief: null, inline: "# Shrnutí", events: [] }],
-      ]),
-    );
-
-    const first = await importCentralSessionContentOnce(contentDb, central, "honzas-mac");
-    assert.deepEqual(central.hostAsked, ["honzas-mac"]);
-    assert.equal(first.events, 5);
-    assert.equal(first.contentRows, 2);
-    const content = new SessionContentStore(contentDb);
-    assert.deepEqual(
-      (await content.listEvents(a)).map((e) => e.seq),
-      [1, 2, 3, 4, 5],
-    );
-    assert.equal((await content.getContent(a))?.brief, "Oprav test");
-    assert.equal((await content.getContent(b))?.handoff_inline, "# Shrnutí");
-    assert.equal(await readDeviceContentSchemaVersion(contentDb), DEVICE_CONTENT_IMPORTED_VERSION);
-
-    // Second boot: nothing asked, nothing duplicated.
-    const second = await importCentralSessionContentOnce(contentDb, central, "honzas-mac");
-    assert.equal(second.ran, false);
-    assert.equal(central.hostAsked.length, 1);
-    assert.equal((await content.listEvents(a)).length, 5);
-  } finally {
-    await contentDb.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a sync agent whose download fails for one thread keeps the rest and retries on the next boot", async () => {
-  const dir = tempDataDir();
-  const contentDb = await openDeviceContentDb(dir);
-  try {
-    const a = ulid();
-    const b = ulid();
-    const central = new FakeLegacyCentral(
-      new Map([
-        [a, { brief: null, inline: null, events: [1, 2, 3].map((n) => legacyEvent(a, n, `a${n}`)) }],
-        [b, { brief: null, inline: null, events: [1, 2].map((n) => legacyEvent(b, n, `b${n}`)) }],
-      ]),
-    );
-    central.failOnce.add(a);
-
-    const first = await importCentralSessionContentOnce(contentDb, central, "honzas-mac");
-    assert.equal(first.failed, 1);
-    assert.equal(first.events, 2);
-    const content = new SessionContentStore(contentDb);
-    assert.equal((await content.listEvents(a)).length, 0);
-    assert.equal(await readDeviceContentSchemaVersion(contentDb), 1);
-
-    const retry = await importCentralSessionContentOnce(contentDb, central, "honzas-mac");
-    assert.equal(retry.failed, 0);
-    assert.equal(retry.events, 3);
-    assert.equal((await content.listEvents(a)).length, 3);
-    assert.equal((await content.listEvents(b)).length, 2);
-    assert.equal(await readDeviceContentSchemaVersion(contentDb), DEVICE_CONTENT_IMPORTED_VERSION);
-  } finally {
-    await contentDb.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a sync agent whose list request fails marks nothing and imports on the next boot", async () => {
-  const dir = tempDataDir();
-  const contentDb = await openDeviceContentDb(dir);
-  try {
-    const a = ulid();
-    const central = new FakeLegacyCentral(new Map([[a, { brief: "x", inline: null, events: [] }]]));
-    const failing: LegacyContentSource = {
-      listLegacySessionContent: async () => {
-        throw new Error("central unreachable");
-      },
-      getLegacySessionContent: (id, opts) => central.getLegacySessionContent(id, opts),
-    };
-    await assert.rejects(() => importCentralSessionContentOnce(contentDb, failing, "honzas-mac"));
-    assert.equal(await readDeviceContentSchemaVersion(contentDb), 1);
-    const retry = await importCentralSessionContentOnce(contentDb, central, "honzas-mac");
-    assert.equal(retry.contentRows, 1);
-  } finally {
-    await contentDb.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 // --- One boot step for a personal workspace, whichever entry point -------
 
 test("the personal-workspace boot step copies the graph db's content into the process content db", async () => {
   const { db, nodeId } = await makeSharedDb();
+  await makeLegacySessionContentSchema(db);
   const dir = tempDataDir();
   const contentDb = await openDeviceContentDb(dir);
   setDbForTesting(db);
@@ -414,6 +290,85 @@ test("the personal-workspace boot step copies the graph db's content into the pr
 test("index.ts and desktop.ts both run the personal-workspace import at boot", () => {
   for (const entry of ["apps/server/index.ts", "apps/server/desktop.ts"]) {
     const source = readFileSync(join(process.cwd(), entry), "utf8");
-    assert.match(source, /await importPersonalWorkspaceSessionContentOnBoot\(\)/, entry);
+    assert.match(source, /await ensurePersonalWorkspaceSchema\(\)/, entry);
+  }
+});
+
+// --- #462: copy first, migrate second -------------------------------------
+
+async function hasSessionContentInGraphDb(db: DbClient): Promise<{ events: boolean; brief: boolean; inline: boolean }> {
+  const tables = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_events'");
+  const cols = new Set((await db.execute("PRAGMA table_info(sessions)")).rows.map((r) => String(r.name)));
+  return { events: tables.rows.length > 0, brief: cols.has("brief"), inline: cols.has("handoff_inline") };
+}
+
+async function migrationRecorded(db: DbClient): Promise<boolean> {
+  const r = await db.execute({ sql: "SELECT 1 FROM migrations WHERE id = ?", args: [SESSION_CONTENT_DROP_MIGRATION_ID] });
+  return r.rows.length > 0;
+}
+
+test("a device booting with an old graph db copies its content into content.db first, then migration 040 drops it", async () => {
+  // libsql: migration 040 and the personal workspace's graph db are libsql.
+  const { db, nodeId } = await makeSharedDb("libsql");
+  await makeLegacySessionContentSchema(db);
+  const { db: contentDb, content } = await installTestContentDb();
+  setDbForTesting(db);
+  try {
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await db.execute({
+      sql: "UPDATE sessions SET brief = ?, handoff_inline = ? WHERE id = ?",
+      args: ["Oprav ten test", "# Shrnutí", session.id],
+    });
+    await new SessionContentStore(db).appendEvents(session.id, null, [
+      { kind: "user_message", payload: { text: "Oprav ten test", source: "chat" } },
+      { kind: "assistant_message", payload: { text: "Hotovo." } },
+    ]);
+
+    await ensurePersonalWorkspaceSchema();
+
+    assert.equal((await content.getContent(session.id))?.brief, "Oprav ten test");
+    assert.equal((await content.getContent(session.id))?.handoff_inline, "# Shrnutí");
+    assert.deepEqual(
+      (await content.listEvents(session.id)).map((e) => e.kind),
+      ["user_message", "assistant_message"],
+    );
+    assert.equal(await readDeviceContentSchemaVersion(contentDb), DEVICE_CONTENT_IMPORTED_VERSION);
+    assert.deepEqual(await hasSessionContentInGraphDb(db), { events: false, brief: false, inline: false });
+    assert.equal(await migrationRecorded(db), true);
+    assert.equal((await db.execute({ sql: "SELECT name FROM sessions WHERE id = ?", args: [session.id] })).rows.length, 1);
+  } finally {
+    setDbForTesting(null);
+    clearTestContentDb();
+  }
+});
+
+test("a boot whose copy did not complete holds migration 040 back; the next boot copies and migrates", async () => {
+  const { db, nodeId } = await makeSharedDb("libsql");
+  await makeLegacySessionContentSchema(db);
+  const { db: contentDb, content } = await installTestContentDb();
+  setDbForTesting(db);
+  try {
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await db.execute({ sql: "UPDATE sessions SET brief = ? WHERE id = ?", args: ["první zpráva", session.id] });
+    // content.db cannot take the thread on this boot.
+    await contentDb.execute("ALTER TABLE session_content RENAME TO session_content_away");
+
+    await ensurePersonalWorkspaceSchema();
+
+    assert.equal(await readDeviceContentSchemaVersion(contentDb), 1, "the copy is not marked done");
+    assert.deepEqual(await hasSessionContentInGraphDb(db), { events: true, brief: true, inline: true });
+    assert.equal(await migrationRecorded(db), false);
+    const kept = await db.execute({ sql: "SELECT brief FROM sessions WHERE id = ?", args: [session.id] });
+    assert.equal(kept.rows[0]?.brief, "první zpráva");
+
+    await contentDb.execute("ALTER TABLE session_content_away RENAME TO session_content");
+    await ensurePersonalWorkspaceSchema();
+
+    assert.equal((await content.getContent(session.id))?.brief, "první zpráva");
+    assert.deepEqual(await hasSessionContentInGraphDb(db), { events: false, brief: false, inline: false });
+    assert.equal(await migrationRecorded(db), true);
+  } finally {
+    setDbForTesting(null);
+    clearTestContentDb();
   }
 });

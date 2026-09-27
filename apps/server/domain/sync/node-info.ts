@@ -4,12 +4,21 @@
 import type { DbClient } from "../../infra/db.js";
 import type { NodeInfo } from "./remote-path.js";
 
+// #530: a node id that matches no row. Callers that answer 404 test the
+// type, never the message text.
+export class NodeNotFoundError extends Error {
+  constructor(readonly nodeId: string) {
+    super(`Node ${nodeId} not found`);
+    this.name = "NodeNotFoundError";
+  }
+}
+
 export async function resolveNodeInfo(db: DbClient, nodeId: string): Promise<NodeInfo> {
   const r = await db.execute({
     sql: "SELECT type, sync_key FROM nodes WHERE id = ?",
     args: [nodeId],
   });
-  if (r.rows.length === 0) throw new Error(`Node ${nodeId} not found`);
+  if (r.rows.length === 0) throw new NodeNotFoundError(nodeId);
   const type = r.rows[0].type as string;
   const syncKey = r.rows[0].sync_key as string;
   if (type === "organization") {

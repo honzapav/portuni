@@ -8,12 +8,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { minScopeForRoute } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
-import { respondJson } from "../http/middleware.js";
+import { respondApiError } from "../http/middleware.js";
 import { getDb } from "../infra/db.js";
 import {
   handleLogin,
   handleDesktopConfig,
   handleMe,
+  handlePatchMe,
   handleMintDeviceToken,
   handleListDeviceTokens,
   handleRevokeDeviceToken,
@@ -109,7 +110,6 @@ import {
 } from "./events.js";
 import {
   handleAnswerSessionQuestion,
-  handleAppendSessionEvents,
   handleCloseSession,
   handleContinueSession,
   handleHandoffSession,
@@ -132,8 +132,6 @@ import {
   handleStartSession,
   handleListSessions,
   handleTransitionSessionState,
-  handleListLegacySessionContent,
-  handleGetLegacySessionContent,
 } from "./sessions.js";
 import {
   handleCreateRunnerInstance,
@@ -191,7 +189,7 @@ export async function routeApiRequest(
   // placeholder identity has, so login remains reachable.
   const required = minScopeForRoute(method, url.pathname);
   if (!scopeAtLeast(identity.globalScope, required)) {
-    respondJson(res, 403, { error: "forbidden", required_scope: required });
+    respondApiError(res, 403, "FORBIDDEN", "forbidden", { requiredScope: required }, { required_scope: required });
     return true;
   }
 
@@ -240,6 +238,10 @@ export async function routeApiRequest(
   }
   if (url.pathname === "/me" && req.method === "GET") {
     await handleMe(req, res, identity);
+    return true;
+  }
+  if (url.pathname === "/me" && req.method === "PATCH") {
+    await handlePatchMe(req, res, identity);
     return true;
   }
   if (url.pathname === "/device-tokens" && req.method === "POST") {
@@ -773,19 +775,6 @@ async function routeSessions(
     await handleCreateSessionRecord(req, res, identity);
     return true;
   }
-  // Central, read once by a sync agent on its first boot (#456 follow-up):
-  // the legacy content of the caller's own threads that ran on that device.
-  // Before the bare /sessions/:id match, which would read the literal
-  // segment as a session id.
-  if (pathname === "/sessions/legacy-content" && method === "GET") {
-    await handleListLegacySessionContent(req, res, identity, url);
-    return true;
-  }
-  const legacyContentMatch = pathname.match(/^\/sessions\/([^/]+)\/legacy-content$/);
-  if (legacyContentMatch && method === "GET") {
-    await handleGetLegacySessionContent(req, res, identity, decodeURIComponent(legacyContentMatch[1]), url);
-    return true;
-  }
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
   if (stateMatch && method === "POST") {
     await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));
@@ -866,11 +855,6 @@ async function routeSessions(
   const eventsMatch = pathname.match(/^\/sessions\/([^/]+)\/events$/);
   if (eventsMatch && method === "GET") {
     await handleListSessionEvents(req, res, identity, decodeURIComponent(eventsMatch[1]), url);
-    return true;
-  }
-  // Central record half (#323): batch event append, alongside the GET above.
-  if (eventsMatch && method === "POST") {
-    await handleAppendSessionEvents(req, res, identity, decodeURIComponent(eventsMatch[1]));
     return true;
   }
   // Central record half (#323): run records. /runs/:run_id MUST match

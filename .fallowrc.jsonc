@@ -7,9 +7,17 @@
   "entry": [
     // Tauri sidecar entry. Bundled by scripts/build-sidecar.mjs and spawned
     // by the Rust host as a child process; never imported.
-    "src/desktop.ts",
+    "apps/server/desktop.ts",
     // MCP stdio transport entry. Spawned by Claude Desktop's MCP client over
     // stdio; never imported.
-    "src/mcp/stdio-entry.ts"
-  ]
+    "apps/server/mcp/stdio-entry.ts"
+  ],
+
+  // Complexity is reported, never a gate: unused code and new duplication are
+  // what scripts/fallow-gate.sh fails on.
+  "rules": {
+    "complexity-cyclomatic": "warn",
+    "complexity-cognitive": "warn",
+    "complexity-crap": "warn"
+  }
 }

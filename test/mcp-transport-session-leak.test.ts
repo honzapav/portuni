@@ -5,13 +5,8 @@
 // non-initialize first request leaves no row behind, and a real initialize
 // creates exactly one, with `cli` populated from clientInfo.
 //
-// PORTUNI_AUTH_TOKEN must be set before any apps/server module that reads
-// it at load time (http/middleware.ts's AUTH_ENABLED) is imported. Static
-// `import` bindings are hoisted and their target modules evaluated before
-// ANY of this file's own top-level code runs -- even a plain assignment
-// written before the import declarations -- so those modules are loaded
-// dynamically below, after the env assignment has actually executed. Same
-// pattern as agent-mcp-e2e.test.ts.
+// The server reads the bearer live (#521); it only has to be set before
+// the server starts.
 process.env.PORTUNI_AUTH_TOKEN = "test-token";
 
 import { before, test } from "node:test";
@@ -23,6 +18,11 @@ import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { installTestContentDb } from "./helpers/content-db.js";
+import { startHttpServer } from "../apps/server/http/server.js";
+import { ensureSchema } from "../apps/server/infra/schema.js";
+import { getDb, setDbForTesting } from "../apps/server/infra/db.js";
+import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
+import { listSessions } from "../apps/server/domain/sessions.js";
 
 // A suspend on disconnect writes content: into memory, not a content.db
 // in the repo root.
@@ -31,11 +31,6 @@ before(async () => {
 });
 
 test("a non-initialize first request creates no sessions row; a real handshake creates exactly one, with cli set", async (t) => {
-  const { startHttpServer } = await import("../apps/server/http/server.js");
-  const { ensureSchema } = await import("../apps/server/infra/schema.js");
-  const { getDb, setDbForTesting } = await import("../apps/server/infra/db.js");
-  const { resetGateCachesForTesting } = await import("../apps/server/http/middleware.js");
-  const { listSessions } = await import("../apps/server/domain/sessions.js");
 
   const tmp = mkdtempSync(join(tmpdir(), "portuni-mcp-transport-leak-"));
   const dbPath = join(tmp, "portuni.db");

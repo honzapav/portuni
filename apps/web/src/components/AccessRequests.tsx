@@ -1,14 +1,15 @@
 // Access-request UI for access_mode='request' nodes (spec: "Rezim omezeni"
 // in docs/archive/specs/2026-07-04-node-sharing-design.md). Three pieces:
-//   RequestAccessControl  -- the "Požádat o přístup" affordance on a locked
+//   RequestAccessControl  -- the "Request access" affordance on a locked
 //                            chip in Propojení (non-member side).
-//   AccessRequestList     -- pending requests with Schválit / Zamítnout,
+//   AccessRequestList     -- pending requests with Approve / Deny,
 //                            shared by the node's sharing section and the
 //                            Settings tab (manager side).
-//   SettingsAccessRequestsPanel -- Nastavení > Žádosti o přístup: the
+//   SettingsAccessRequestsPanel -- Settings > Access requests: the
 //                            caller's whole queue across visible nodes.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, KeyRound, X } from "lucide-react";
 import type { AccessRequest } from "../types";
 import {
@@ -21,6 +22,9 @@ import {
 } from "../api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
+import { useListLoad } from "../lib/use-list-load";
 
 // --- Non-member side -------------------------------------------------------
 
@@ -32,11 +36,12 @@ type RequestState =
   | { kind: "visible" }
   | { kind: "error"; reason: string };
 
-// Tiny inline form on a locked chip: click "Požádat o přístup", optionally
-// type a message, send. "Žádost odeslána" persists for the chip's lifetime
+// Tiny inline form on a locked chip: click "Request access", optionally
+// type a message, send. "Request sent" persists for the chip's lifetime
 // (the chip remounts with the node detail, and the server answers 409
 // already_pending on a repeat, which lands in the same state).
 export function RequestAccessControl({ nodeId }: { nodeId: string }) {
+  const { t } = useTranslation("settings");
   const [state, setState] = useState<RequestState>({ kind: "idle" });
   const [message, setMessage] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -60,19 +65,19 @@ export function RequestAccessControl({ nodeId }: { nodeId: string }) {
         return;
       }
       console.error(e);
-      setState({ kind: "error", reason: "Odeslání se nepovedlo." });
+      setState({ kind: "error", reason: t(($) => $.access_requests.request.send_failed) });
     }
   };
 
   if (state.kind === "sent") {
     return (
-      <span className="shrink-0 text-[12px] text-[var(--color-text-dim)]">Žádost odeslána</span>
+      <span className="shrink-0 text-[12px] text-[var(--color-text-dim)]">{t(($) => $.access_requests.request.sent)}</span>
     );
   }
   if (state.kind === "visible") {
     return (
       <span className="shrink-0 text-[12px] text-[var(--color-text-dim)]">
-        Přístup už máš – obnov detail
+        {t(($) => $.access_requests.request.already_visible)}
       </span>
     );
   }
@@ -92,7 +97,7 @@ export function RequestAccessControl({ nodeId }: { nodeId: string }) {
             if (e.key === "Escape") setState({ kind: "idle" });
           }}
           disabled={busy}
-          placeholder="Zpráva (volitelné)"
+          placeholder={t(($) => $.access_requests.request.message_placeholder)}
           maxLength={1000}
           className="w-[160px]"
         />
@@ -101,7 +106,7 @@ export function RequestAccessControl({ nodeId }: { nodeId: string }) {
           size="icon-xs"
           onClick={() => void send()}
           disabled={busy}
-          title="Odeslat žádost"
+          title={t(($) => $.access_requests.request.send_title)}
           className="text-[var(--color-accent)]"
         >
           <Check />
@@ -111,7 +116,7 @@ export function RequestAccessControl({ nodeId }: { nodeId: string }) {
           size="icon-xs"
           onClick={() => setState({ kind: "idle" })}
           disabled={busy}
-          title="Zrušit"
+          title={t(($) => $.access_requests.request.cancel_title)}
           className="text-muted-foreground"
         >
           <X />
@@ -135,7 +140,7 @@ export function RequestAccessControl({ nodeId }: { nodeId: string }) {
       className="shrink-0 text-muted-foreground"
     >
       <KeyRound />
-      Požádat o přístup
+      {t(($) => $.access_requests.request.button)}
     </Button>
   );
 }
@@ -155,6 +160,8 @@ export function AccessRequestList({
   showNode?: boolean;
   onResolved: (request: AccessRequest, decision: "approve" | "deny") => void;
 }) {
+  const locale = useLocale();
+  const { t } = useTranslation("settings");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errorId, setErrorId] = useState<string | null>(null);
 
@@ -199,7 +206,7 @@ export function AccessRequestList({
               <div className="flex flex-wrap items-baseline gap-x-2">
                 <span className="text-[13px] font-medium text-[var(--color-text)]">{r.user_name}</span>
                 <span className="text-[12px] text-[var(--color-text-dim)]">{r.user_email}</span>
-                <span className="text-[11.5px] text-[var(--color-text-dim)]">{fmtDateTime(r.created_at)}</span>
+                <span className="text-[11.5px] text-[var(--color-text-dim)]">{formatDateTime(locale, r.created_at)}</span>
               </div>
               {showNode && (
                 <div className="text-[12px] text-[var(--color-text-muted)]">
@@ -214,13 +221,13 @@ export function AccessRequestList({
               )}
               {errorId === r.id && (
                 <div className="mt-0.5 text-[12px]" style={{ color: "var(--color-danger)" }}>
-                  Vyřízení se nepovedlo. Zkus to znovu.
+                  {t(($) => $.access_requests.list.resolve_failed)}
                 </div>
               )}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <Button size="sm" onClick={() => void resolve(r, "approve")} disabled={busy}>
-                {busy ? "…" : "Schválit"}
+                {busy ? t(($) => $.access_requests.list.approving) : t(($) => $.access_requests.list.approve)}
               </Button>
               <Button
                 variant="outline"
@@ -229,7 +236,7 @@ export function AccessRequestList({
                 disabled={busy}
                 className="text-muted-foreground hover:text-[var(--color-danger)]"
               >
-                Zamítnout
+                {t(($) => $.access_requests.list.deny)}
               </Button>
             </div>
           </div>
@@ -239,12 +246,11 @@ export function AccessRequestList({
   );
 }
 
-type QueueState =
-  | { kind: "loading" }
-  | { kind: "error"; reason: string }
-  | { kind: "ok"; requests: AccessRequest[] };
+const fetchPendingRequests = async () => ({
+  requests: await fetchAccessRequests("pending"),
+});
 
-// Nastavení > Žádosti o přístup. Visible gating (manage/admin) happens in
+// Settings > Access requests. Visible gating (manage/admin) happens in
 // SettingsPage.tsx; the list itself is already filtered server-side to
 // nodes the caller can see.
 export default function SettingsAccessRequestsPanel({
@@ -253,44 +259,20 @@ export default function SettingsAccessRequestsPanel({
   // Fired after every approve/deny so the tab badge can refresh.
   onChanged?: () => void;
 }) {
-  const [state, setState] = useState<QueueState>({ kind: "loading" });
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const load = useCallback(async () => {
-    if (!mountedRef.current) return;
-    setState({ kind: "loading" });
-    try {
-      const requests = await fetchAccessRequests("pending");
-      if (mountedRef.current) setState({ kind: "ok", requests });
-    } catch (e) {
-      if (mountedRef.current) {
-        setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const { t } = useTranslation("settings");
+  const { state, setState, load } = useListLoad(fetchPendingRequests);
 
   return (
     <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
       <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        Žádosti o přístup
+        {t(($) => $.access_requests.panel.title)}
       </div>
       <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-        Čekající žádosti o přístup k uzlům v režimu „Na vyžádání". Schválením
-        se žadatel přidá mezi příjemce sdílení uzlu (u zděděného omezení
-        nadřazeného uzlu).
+        {t(($) => $.access_requests.panel.description)}
       </p>
 
       {state.kind === "loading" && (
-        <div className="text-[13px] text-[var(--color-text-dim)]">Načítám žádosti…</div>
+        <div className="text-[13px] text-[var(--color-text-dim)]">{t(($) => $.access_requests.panel.loading)}</div>
       )}
 
       {state.kind === "error" && (
@@ -302,14 +284,14 @@ export default function SettingsAccessRequestsPanel({
             onClick={() => void load()}
             className="shrink-0 text-red-400 hover:text-red-200"
           >
-            Zkusit znovu
+            {t(($) => $.access_requests.panel.retry)}
           </Button>
         </div>
       )}
 
       {state.kind === "ok" && state.requests.length === 0 && (
         <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
-          Žádné čekající žádosti.
+          {t(($) => $.access_requests.panel.empty)}
         </div>
       )}
 
@@ -339,23 +321,4 @@ function initials(name: string): string {
     .join("")
     .toUpperCase()
     .slice(0, 2);
-}
-
-function fmtDateTime(value: string): string {
-  // SQLite datetime('now') yields "YYYY-MM-DD HH:MM:SS" in UTC without a
-  // zone marker; normalise so Date parses it as UTC, not local time.
-  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
-    ? value.replace(" ", "T") + "Z"
-    : value;
-  try {
-    return new Date(iso).toLocaleString("cs-CZ", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return value;
-  }
 }

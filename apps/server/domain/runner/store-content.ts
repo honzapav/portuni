@@ -19,7 +19,6 @@
 import { ulid } from "ulid";
 import { z } from "zod";
 import { getDeviceContentDb } from "../../infra/device-content-db.js";
-import { getDb } from "../../infra/db.js";
 import { dbTimestamp } from "../../infra/sql.js";
 import { isCentralServer } from "../../infra/server-config.js";
 import type { DbClient, InStatement, InValue } from "../../infra/db.js";
@@ -221,51 +220,40 @@ export class SessionContentStore {
   }
 }
 
-// The central server's content: the legacy graph-db rows only. A sidecar
-// released before #456 still sends its transcript (POST /sessions/:id/events)
-// and its brief/inline summary (the record routes) to the central server and
-// reads them back from there (GET /sessions/:id/events, resume-info), so on
-// the central server those reads and writes go to the SAME rows: the graph
-// db's `session_events` (same shape as content.db's, so the event methods
-// are inherited unchanged) and the `sessions.brief` / `sessions.handoff_inline`
-// columns. It is also what a sync agent downloads on its first boot
-// (boot/content-import.ts). The central migration (#462) drops all three.
-export class LegacyGraphContentStore extends SessionContentStore {
-  override async getContent(sessionId: string): Promise<SessionContentRow | null> {
-    const res = await (await this.db()).execute({
-      sql: "SELECT id AS session_id, brief, handoff_inline FROM sessions WHERE id = ?",
-      args: [sessionId],
+// The central server's content store: it holds none (#462). Migration 040
+// dropped the graph db's `session_events` and `sessions.brief` /
+// `sessions.handoff_inline`; a thread's content is on the device that ran
+// it. Reads answer as if the thread had none (the events route then names
+// the transcript's host), clearing is a no-op, and an append -- which no
+// code path on the central server makes -- is refused rather than dropped.
+export class CentralNoContentStore extends SessionContentStore {
+  constructor() {
+    super(() => {
+      throw new Error("the central server holds no session content");
     });
-    if (res.rows.length === 0) return null;
-    const row = SessionContentRowSchema.parse(res.rows[0]);
-    return row.brief === null && row.handoff_inline === null ? null : row;
+  }
+
+  override async appendEvents(): Promise<number[]> {
+    throw new Error("the central server holds no session content: events are written on the device");
+  }
+
+  override async listEvents(): Promise<SessionEventRow[]> {
+    return [];
+  }
+
+  override async getContent(): Promise<SessionContentRow | null> {
+    return null;
   }
 
   override async setContent(sessionId: string, input: SetSessionContentInput): Promise<SessionContentRow> {
-    const sets: string[] = [];
-    const args: InValue[] = [];
-    if (input.brief !== undefined) {
-      sets.push("brief = ?");
-      args.push(input.brief);
+    if ((input.brief ?? null) !== null || (input.handoff_inline ?? null) !== null) {
+      throw new Error("the central server holds no session content: it is written on the device");
     }
-    if (input.handoff_inline !== undefined) {
-      sets.push("handoff_inline = ?");
-      args.push(input.handoff_inline);
-    }
-    if (sets.length > 0) {
-      await (await this.db()).execute({ sql: `UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, args: [...args, sessionId] });
-    }
-    return (await this.getContent(sessionId)) ?? { session_id: sessionId, brief: null, handoff_inline: null };
+    return { session_id: sessionId, brief: null, handoff_inline: null };
   }
 
-  override async deleteContent(sessionId: string): Promise<void> {
-    await (await this.db()).batch(
-      [
-        { sql: "DELETE FROM session_events WHERE session_id = ?", args: [sessionId] },
-        { sql: "UPDATE sessions SET brief = NULL, handoff_inline = NULL WHERE id = ?", args: [sessionId] },
-      ],
-      "write",
-    );
+  override async deleteContent(): Promise<void> {
+    // Nothing held, nothing to delete.
   }
 }
 
@@ -284,14 +272,13 @@ export function deviceSessionContentStore(): SessionContentStore {
 
 // The content store of THIS process, for code that runs in the standalone
 // server as well as on a device (the local runtime, resume-info, the
-// transport's and the boot sweep's suspend): content.db on a device, the
-// legacy graph-db rows on the central server, which never opens a
-// content.db. Decided per call, so a test flipping PORTUNI_AUTH_MODE is
-// honoured.
-let legacyStore: LegacyGraphContentStore | null = null;
+// transport's and the boot sweep's suspend): content.db on a device, none
+// on the central server, which never opens a content.db. Decided per call,
+// so a test flipping PORTUNI_AUTH_MODE is honoured.
+let centralStore: CentralNoContentStore | null = null;
 
 export function sessionContentStoreForProcess(): SessionContentStore {
   if (!isCentralServer()) return deviceSessionContentStore();
-  if (!legacyStore) legacyStore = new LegacyGraphContentStore(() => getDb());
-  return legacyStore;
+  if (!centralStore) centralStore = new CentralNoContentStore();
+  return centralStore;
 }

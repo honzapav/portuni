@@ -30,6 +30,7 @@ import type {
   SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import { isPortuniEnvKey } from "../../../shared/runner-env.js";
+import type { ChatEventParams, DenyCode, RunErrorCode } from "../../../shared/chat-event-codes.js";
 import { askUserQuestionAnswers, decidePermission } from "../permissions.js";
 import { isProcessAlive } from "../process-liveness.js";
 import { RunEndedError } from "../types.js";
@@ -53,11 +54,24 @@ import type {
 // everyday default. Effort support is left false/[] here (deliberately
 // conservative -- the real per-model answer only exists once
 // supportedModels() has actually answered).
+// #532: the description is a code the web renders; a list the provider
+// answered carries the provider's own text instead.
 const CLAUDE_ALIAS_MODELS: readonly RunnerModel[] = [
-  { id: "sonnet", displayName: "Sonnet", description: "Vyvážený model pro každodenní práci.", supportsEffort: false, effortLevels: [] },
-  { id: "opus", displayName: "Opus", description: "Nejschopnější model, pomalejší a dražší.", supportsEffort: false, effortLevels: [] },
-  { id: "haiku", displayName: "Haiku", description: "Nejrychlejší a nejlevnější model.", supportsEffort: false, effortLevels: [] },
+  { id: "sonnet", displayName: "Sonnet", description: "", description_code: "balanced", supportsEffort: false, effortLevels: [] },
+  { id: "opus", displayName: "Opus", description: "", description_code: "most_capable", supportsEffort: false, effortLevels: [] },
+  { id: "haiku", displayName: "Haiku", description: "", description_code: "fastest", supportsEffort: false, effortLevels: [] },
 ];
+
+// #532: what the agent reads as the tool result of a call the runner denied
+// on its own (always English); the chat renders the code instead.
+const DENY_MESSAGES = {
+  connector_disabled: "This connector is disabled for the run: use the portuni server (mcp__portuni__*).",
+  run_ended: "The run ended before an answer arrived.",
+  turn_stopped: "The turn was stopped before an answer arrived.",
+  denied_by_user: "Denied by the user.",
+  not_answered: "The user did not answer the question.",
+} as const satisfies Partial<Record<DenyCode, string>>;
+type RunnerDenyCode = keyof typeof DENY_MESSAGES;
 
 const DETECT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLOSE_POLL_INTERVAL_MS = 500;
@@ -388,6 +402,8 @@ interface PendingToolCall {
 interface PendingPermission {
   resolve: (result: PermissionResult) => void;
   input: Record<string, unknown>;
+  // The tool call asked about, so a denial can be named in the chat (#532).
+  toolUseId: string | undefined;
   // What the chat was asked: an approval allows only on `true`; an input
   // question (AskUserQuestion) carries the typed answer back as input.
   type: "approval" | "input";
@@ -475,6 +491,9 @@ interface RunTranslationState {
   // a Stop cut off never dates the next turn's reasoning.
   reasoningStartedAt: number | null;
   pendingToolCalls: Map<string, PendingToolCall>;
+  // #532: calls the runner denied, by tool_use id -- their tool_result
+  // becomes a failed tool_call that carries the denial's code.
+  deniedToolUses: Map<string, { code: DenyCode; params: ChatEventParams }>;
   pendingPermissions: Map<string, PendingPermission>;
   pendingElicitations: Map<string, PendingElicitation>;
   // #509: one stop per dialog still open or waiting in line. interrupt()
@@ -531,6 +550,7 @@ function createState(): RunTranslationState {
     compactionTrigger: null,
     reasoningStartedAt: null,
     pendingToolCalls: new Map(),
+    deniedToolUses: new Map(),
     pendingPermissions: new Map(),
     pendingElicitations: new Map(),
     elicitationStops: new Set(),
@@ -562,7 +582,7 @@ function notLoggedInMessage(message: string): boolean {
 // ordinary successful turn.
 export function providerResultFailure(
   msg: Extract<SDKMessage, { type: "result" }>,
-): { reason: RunEndReason; message: string } | null {
+): { reason: RunEndReason; message: string; code?: RunErrorCode; params?: ChatEventParams } | null {
   const subtype = typeof msg.subtype === "string" ? msg.subtype : "success";
   const isError = (msg as { is_error?: unknown }).is_error === true;
   if (!isError && subtype === "success") return null;
@@ -575,14 +595,20 @@ export function providerResultFailure(
   } else if (Array.isArray(errors)) {
     message = errors.filter((e): e is string => typeof e === "string" && e.trim() !== "").join("\n");
   }
-  if (message.trim() === "") message = `Běh skončil chybou poskytovatele (${subtype}).`;
+  // #532: with no text of the provider's own, the runner's sentence is a
+  // code the web renders.
+  let own: { code: RunErrorCode; params: ChatEventParams } | null = null;
+  if (message.trim() === "") {
+    message = `The run ended with a provider error (${subtype}).`;
+    own = { code: "provider_failed", params: { subtype } };
+  }
 
   const terminalReason = (msg as { terminal_reason?: unknown }).terminal_reason;
   const limitByMetadata =
     /budget|limit/i.test(subtype) ||
     (typeof terminalReason === "string" && /budget|limit|exhaust/i.test(terminalReason));
-  const reason: RunEndReason = limitByMetadata || /limit/i.test(message) ? "limit" : "error";
-  return { reason, message };
+  const reason: RunEndReason = limitByMetadata || (own === null && /limit/i.test(message)) ? "limit" : "error";
+  return { reason, message, ...(own ?? {}) };
 }
 
 // --- message translation --------------------------------------------------
@@ -790,6 +816,8 @@ function translateUserMessage(
     if (!pending) continue;
     state.pendingToolCalls.delete(result.tool_use_id);
     const isError = result.is_error === true;
+    const denied = state.deniedToolUses.get(result.tool_use_id);
+    state.deniedToolUses.delete(result.tool_use_id);
     sink({
       kind: "tool_call",
       payload: {
@@ -801,6 +829,7 @@ function translateUserMessage(
         status: isError ? "failed" : "completed",
         output_excerpt: excerptFromToolResultContent(result.content),
         truncated: false,
+        ...(isError && denied ? { output_code: denied.code, output_params: denied.params } : {}),
       },
     });
     if (!isError && pending.category === "file_change" && pending.writeOp && pending.path) {
@@ -905,16 +934,21 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     };
     if (run.brief !== null) pushPrompt(run.brief);
 
+    // A denial of the runner's own: the agent reads the English message, the
+    // chat shows the failed call from the code (#532).
+    function deny(toolUseId: string | undefined, code: RunnerDenyCode): PermissionResult {
+      if (toolUseId !== undefined) state.deniedToolUses.set(toolUseId, { code, params: {} });
+      return { behavior: "deny", message: DENY_MESSAGES[code] };
+    }
+
     async function canUseTool(
       toolName: string,
       input: Record<string, unknown>,
-      options: { requestId: string; signal: AbortSignal },
+      options: { requestId: string; signal: AbortSignal; toolUseID?: string },
     ): Promise<PermissionResult> {
+      const toolUseId = options.toolUseID;
       if (state.disabledToolPrefixes.some((prefix) => toolName.startsWith(prefix))) {
-        return {
-          behavior: "deny",
-          message: "Tento konektor je pro běh vypnutý: použij server portuni (mcp__portuni__*).",
-        };
+        return deny(toolUseId, "connector_disabled");
       }
       const decision = decidePermission({
         tool: toolName,
@@ -925,23 +959,28 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         policy: run.policy,
       });
       if (decision.kind === "allow") return { behavior: "allow", updatedInput: input };
-      if (decision.kind === "deny") return { behavior: "deny", message: decision.message };
+      if (decision.kind === "deny") {
+        if (toolUseId !== undefined) state.deniedToolUses.set(toolUseId, { code: decision.code, params: decision.params });
+        return { behavior: "deny", message: decision.message };
+      }
 
-      const ended: PermissionResult = { behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." };
+      const ended = (): PermissionResult => deny(toolUseId, "run_ended");
       // The run is already over (the SDK can still call this from a turn
       // that was in flight when the iterator finished): nobody is left to
       // answer, so deny instead of parking a promise nothing will resolve.
-      if (state.ended) return ended;
+      if (state.ended) return ended();
       // #493: the SDK aborts the signal when the turn is cancelled (Stop,
       // Esc): the tool call is gone, so nobody will use an answer.
-      const cancelled: PermissionResult = { behavior: "deny", message: "Tah byl zastaven dřív, než přišla odpověď." };
-      if (options.signal.aborted) return cancelled;
+      const cancelled = (): PermissionResult => deny(toolUseId, "turn_stopped");
+      if (options.signal.aborted) return cancelled();
       const requestId = options.requestId;
       const payload = {
         request_id: requestId,
         type: decision.question.type,
         tool: toolName,
         title: decision.question.title,
+        code: decision.question.code,
+        params: {},
         detail: decision.question.detail,
         options: decision.question.options,
         ...(decision.question.questions ? { questions: decision.question.questions } : {}),
@@ -950,7 +989,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         () => {
           // Cancelled while waiting in line behind another question: never
           // shown, so there is nothing to close in the chat either.
-          if (options.signal.aborted) return Promise.resolve(cancelled);
+          if (options.signal.aborted) return Promise.resolve(cancelled());
           sink({ kind: "question", payload: { ...payload, decision: null } });
           // Settling the ask frees the question line (askInTurn), and the
           // question event carrying a decision tells the runtime the
@@ -960,7 +999,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
             const pending = state.pendingPermissions.get(requestId);
             if (!pending) return;
             state.pendingPermissions.delete(requestId);
-            pending.resolve(cancelled);
+            pending.resolve(cancelled());
             sink({
               kind: "question",
               payload: { ...payload, decision: { by: "system", value: false, at: new Date(now()).toISOString() } },
@@ -968,15 +1007,15 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           };
           options.signal.addEventListener("abort", onAbort, { once: true });
           return new Promise<PermissionResult>((resolve) => {
-            state.pendingPermissions.set(requestId, { resolve, input, type: decision.question.type });
+            state.pendingPermissions.set(requestId, { resolve, input, toolUseId, type: decision.question.type });
           }).finally(() => {
             // Answered, ended or aborted: the listener has nothing left to
             // settle, and the signal may outlive the ask by a whole turn.
             options.signal.removeEventListener("abort", onAbort);
           });
         },
-        () => ended,
-        { signal: options.signal, result: () => cancelled },
+        ended,
+        { signal: options.signal, result: cancelled },
       );
     }
 
@@ -1034,7 +1073,9 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           kind: "error",
           payload: {
             class: "permission",
-            message: `Server ${request.displayName ?? request.serverName} žádá přihlášení v prohlížeči; chat ho otevřít neumí, žádost byla odmítnuta.`,
+            message: `Server ${request.displayName ?? request.serverName} asked for a sign-in in a browser; the chat cannot open one, so the request was declined.`,
+            code: "browser_sign_in_declined",
+            params: { server: request.displayName ?? request.serverName },
           },
         });
         return { action: "decline" };
@@ -1047,7 +1088,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         request_id: requestId,
         type: "approval" as const,
         tool: `mcp__${request.serverName}`,
-        title: request.title ?? `Potvrzení: ${request.displayName ?? request.serverName}`,
+        // The dialog's own title is the MCP server's text (English, shown as
+        // stored); without one the runner names the server (#532).
+        title: request.title ?? `Confirm: ${request.displayName ?? request.serverName}`,
+        ...(request.title ? {} : { code: "mcp_confirmation" as const, params: { server: request.displayName ?? request.serverName } }),
         detail: request.message,
         options: null,
       };
@@ -1239,7 +1283,14 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         const failure = interrupted ? null : providerResultFailure(msg);
         if (failure !== null && state.providerEndReason === null) {
           state.providerEndReason = failure.reason;
-          sink({ kind: "error", payload: { class: "provider", message: failure.message } });
+          sink({
+            kind: "error",
+            payload: {
+              class: "provider",
+              message: failure.message,
+              ...(failure.code ? { code: failure.code, params: failure.params ?? {} } : {}),
+            },
+          });
           void endAfterProviderFailure(failure.reason);
         } else if (failure === null) {
           // The turn is over and the process waits for the next prompt: say
@@ -1264,7 +1315,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       state.ended = true;
       for (const [requestId, pending] of state.pendingPermissions) {
         state.pendingPermissions.delete(requestId);
-        pending.resolve({ behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." });
+        pending.resolve(deny(pending.toolUseId, "run_ended"));
       }
       for (const settle of [...state.pendingElicitations.values()]) settle({ action: "cancel" });
       // Asks still waiting in line: each runs, sees the run ended and
@@ -1315,7 +1366,12 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           if (notLoggedInMessage(message)) {
             sink({
               kind: "error",
-              payload: { class: "provider", message: "Claude Code není přihlášený na tomto zařízení." },
+              payload: {
+                class: "provider",
+                message: "Claude Code is not signed in on this device.",
+                code: "provider_not_logged_in",
+                params: {},
+              },
             });
           } else {
             sink({ kind: "error", payload: { class: "unknown", message } });
@@ -1395,15 +1451,15 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
             const answers = askUserQuestionAnswers(pending.input, decision.value);
             pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answers } });
           } else if (decision.value === false) {
-            pending.resolve({ behavior: "deny", message: "Zamítnuto uživatelem." });
+            pending.resolve(deny(pending.toolUseId, "denied_by_user"));
           } else {
-            pending.resolve({ behavior: "deny", message: "Uživatel na otázku neodpověděl." });
+            pending.resolve(deny(pending.toolUseId, "not_answered"));
           }
         } else if (decision.value === true) {
           pending.resolve({ behavior: "allow", updatedInput: pending.input });
         } else {
           // `false`, or text where an approval was asked: never an allow.
-          pending.resolve({ behavior: "deny", message: "Zamítnuto uživatelem." });
+          pending.resolve(deny(pending.toolUseId, "denied_by_user"));
         }
       },
       // #378 ("Stop, not Přerušit"): cancels the CURRENT TURN only

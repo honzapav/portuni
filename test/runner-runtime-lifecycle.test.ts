@@ -15,7 +15,6 @@ import type { CanonicalEvent, RunnerAdapter } from "../apps/server/domain/runner
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
 import { createSuspendServerSide, localSuspendDeps } from "../apps/server/domain/session-handoff.js";
-import { RunnerMcpTokenMissingError } from "../apps/server/domain/write-scope.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 import { GatedAdapter } from "./helpers/gated-adapter.js";
@@ -52,12 +51,13 @@ function registryOf(adapter: RunnerAdapter) {
 // The first turn is over and the run waits for the next message.
 const TURN_DONE: FakeScriptStep = { kind: "turn_ended", payload: { run_id: "fake" } };
 
-// #507: a run that cannot be provisioned (no front-door token) is refused
-// before anything is created -- no record, no first message, no closed
-// source thread.
+// #507: a run that cannot be provisioned is refused before anything is
+// created -- no record, no first message, no closed source thread.
+class ProvisionRefused extends Error {}
+
 describe("session runtime: a run that cannot be provisioned", () => {
   const refusingProvision = async (): Promise<ProvisionRunResult> => {
-    throw new RunnerMcpTokenMissingError();
+    throw new ProvisionRefused("provision refused");
   };
 
   async function sessionCount(db: SharedDb["db"]): Promise<number> {
@@ -74,7 +74,7 @@ describe("session runtime: a run that cannot be provisioned", () => {
     const before = await sessionCount(db);
     await assert.rejects(
       runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" }),
-      RunnerMcpTokenMissingError,
+      ProvisionRefused,
     );
     assert.equal(await sessionCount(db), before, "no session row");
   });
@@ -89,7 +89,7 @@ describe("session runtime: a run that cannot be provisioned", () => {
 
     try {
       const draft = await runtime.createDraft({ userId: "U1", nodeId });
-      await assert.rejects(runtime.sendMessage(draft.id, "ahoj"), RunnerMcpTokenMissingError);
+      await assert.rejects(runtime.sendMessage(draft.id, "ahoj"), ProvisionRefused);
       assert.equal((await store.getSession(draft.id))?.state, "draft");
       assert.equal((await content.getContent(draft.id))?.brief ?? null, null);
       assert.equal((await content.listEvents(draft.id)).length, 0);
@@ -113,7 +113,7 @@ describe("session runtime: a run that cannot be provisioned", () => {
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const before = await sessionCount(db);
     refuse = true;
-    await assert.rejects(runtime.continueSession(session.id), RunnerMcpTokenMissingError);
+    await assert.rejects(runtime.continueSession(session.id), ProvisionRefused);
     assert.equal((await store.getSession(session.id))?.state, "running");
     assert.equal(await sessionCount(db), before);
     await runtime.closeSession(session.id);

@@ -17,6 +17,7 @@
 // Changed: dropped `ConversationDownload`/`messagesToMarkdown` (a
 // download-as-markdown feature keyed on the `ai` package's `UIMessage`,
 // unused here -- a thread has no such feature in this phase).
+// The empty state's default texts come from the `chat` catalog (#536).
 
 "use client";
 
@@ -25,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { ArrowDownIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
@@ -61,12 +63,16 @@ export type ConversationEmptyStateProps = ComponentProps<"div"> & {
 
 export const ConversationEmptyState = ({
   className,
-  title = "No messages yet",
-  description = "Start a conversation to see messages here",
+  title,
+  description,
   icon,
   children,
   ...props
-}: ConversationEmptyStateProps) => (
+}: ConversationEmptyStateProps) => {
+  const { t } = useTranslation("chat");
+  const shownTitle = title ?? t(($) => $.conversation.empty.title);
+  const shownDescription = description ?? t(($) => $.conversation.empty.description);
+  return (
   <div
     className={cn(
       "flex size-full flex-col items-center justify-center gap-3 p-8 text-center",
@@ -78,15 +84,16 @@ export const ConversationEmptyState = ({
       <>
         {icon && <div className="text-muted-foreground">{icon}</div>}
         <div className="space-y-1">
-          <h3 className="font-medium text-sm">{title}</h3>
-          {description && (
-            <p className="text-muted-foreground text-sm">{description}</p>
+          <h3 className="font-medium text-sm">{shownTitle}</h3>
+          {shownDescription && (
+            <p className="text-muted-foreground text-sm">{shownDescription}</p>
           )}
         </div>
       </>
     )}
   </div>
-);
+  );
+};
 
 export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
 

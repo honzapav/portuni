@@ -6,6 +6,16 @@ import {
   runnerPickerGroups,
   runnerChoiceLabel,
 } from "../apps/web/src/lib/runner-picker.js";
+import { createI18n } from "../apps/server/shared/i18n/create.js";
+import { RESOURCES } from "../apps/server/shared/i18n/resources.js";
+
+const { i18n } = createI18n({
+  lng: "en",
+  resources: { en: RESOURCES.en },
+  escapeValue: false,
+  initAsync: false,
+});
+const t = i18n.getFixedT("en", "chat");
 
 describe("runner picker", () => {
   it("encodes and decodes a runner + optional instance", () => {
@@ -21,6 +31,7 @@ describe("runner picker", () => {
         { id: "01B", name: "Home", runner: "claude" },
       ],
       { runner: "claude", instanceId: "01B" },
+      t,
     );
     assert.deepEqual(
       groups.map((g) => g.runner),
@@ -29,22 +40,22 @@ describe("runner picker", () => {
     assert.deepEqual(
       groups[0].options.map((o) => [o.label, o.isDefault]),
       [
-        ["výchozí instance", false],
+        ["default instance", false],
         ["Work", false],
         ["Home", true],
       ],
     );
     assert.deepEqual(
       groups[1].options.map((o) => o.label),
-      ["výchozí instance"],
+      ["default instance"],
     );
   });
 
   it("labels the fixed choice, or says no runner is logged in", () => {
     const instances = [{ id: "01A", name: "Work" }];
-    assert.equal(runnerChoiceLabel({ runner: "claude", instance_id: "01A" }, instances), "claude · Work");
-    assert.equal(runnerChoiceLabel({ runner: "claude", instance_id: null }, instances), "claude");
-    assert.equal(runnerChoiceLabel({ runner: "claude", instance_id: "01Z" }, instances), "claude · 01Z");
-    assert.equal(runnerChoiceLabel({ runner: null, instance_id: null }, instances), "Žádný runner není přihlášený");
+    assert.equal(runnerChoiceLabel({ runner: "claude", instance_id: "01A" }, instances, t), "claude · Work");
+    assert.equal(runnerChoiceLabel({ runner: "claude", instance_id: null }, instances, t), "claude");
+    assert.equal(runnerChoiceLabel({ runner: "claude", instance_id: "01Z" }, instances, t), "claude · 01Z");
+    assert.equal(runnerChoiceLabel({ runner: null, instance_id: null }, instances, t), "No runner is signed in");
   });
 });

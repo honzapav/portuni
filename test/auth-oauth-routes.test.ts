@@ -7,9 +7,10 @@
 
 process.env.PORT = "14940";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 process.env.PORTUNI_PUBLIC_URL = "https://api.portuni.test";
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -105,7 +106,7 @@ async function runAuthorizeThroughConsent(): Promise<{ code: string; state: stri
   authorizeUrl.searchParams.set("resource", "https://api.portuni.test/mcp");
   authorizeUrl.searchParams.set("scope", "portuni offline_access");
 
-  const authorizeRes = await fetch(authorizeUrl, { redirect: "manual" });
+  const authorizeRes = await authFetch(authorizeUrl, { redirect: "manual" });
   assert.equal(authorizeRes.status, 302);
   const googleUrl = new URL(authorizeRes.headers.get("location")!);
   const flowState = googleUrl.searchParams.get("state")!;
@@ -114,14 +115,14 @@ async function runAuthorizeThroughConsent(): Promise<{ code: string; state: stri
   const callbackUrl = new URL(`${base}/oauth/google/callback`);
   callbackUrl.searchParams.set("state", flowState);
   callbackUrl.searchParams.set("code", "google-code-ok");
-  const callbackRes = await fetch(callbackUrl);
+  const callbackRes = await authFetch(callbackUrl);
   assert.equal(callbackRes.status, 200);
   const html = await callbackRes.text();
   assert.match(html, /A Person/);
   assert.match(html, /Claude/);
   const continuationToken = extractHidden(html, "token");
 
-  const consentRes = await fetch(`${base}/oauth/consent`, {
+  const consentRes = await authFetch(`${base}/oauth/consent`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ token: continuationToken, decision: "allow" }),
@@ -175,7 +176,7 @@ beforeEach(() => {
 
 describe("discovery documents", () => {
   it("GET /.well-known/oauth-authorization-server", async () => {
-    const res = await fetch(`${base}/.well-known/oauth-authorization-server`);
+    const res = await authFetch(`${base}/.well-known/oauth-authorization-server`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal(body.issuer, "https://api.portuni.test");
@@ -186,7 +187,7 @@ describe("discovery documents", () => {
   });
 
   it("GET /.well-known/oauth-protected-resource", async () => {
-    const res = await fetch(`${base}/.well-known/oauth-protected-resource`);
+    const res = await authFetch(`${base}/.well-known/oauth-protected-resource`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal(body.resource, "https://api.portuni.test/mcp");
@@ -196,13 +197,16 @@ describe("discovery documents", () => {
 
 describe("authorize parameter errors", () => {
   it("renders an error page instead of redirecting on a missing parameter", async () => {
-    const res = await fetch(`${base}/oauth/authorize?client_id=${encodeURIComponent(CLIENT_ID)}`, {
+    const res = await authFetch(`${base}/oauth/authorize?client_id=${encodeURIComponent(CLIENT_ID)}`, {
       redirect: "manual",
     });
     assert.equal(res.status, 400);
     assert.equal(res.headers.get("content-type")?.includes("text/html"), true);
     const html = await res.text();
-    assert.match(html, /chyb/i);
+    assert.match(html, /sign-in error/i);
+    assert.match(html, /data-error-code="OAUTH_MISSING_PARAMETER"/);
+    assert.match(html, /The authorization request is missing a required parameter\./);
+    assert.match(html, /<html lang="en">/);
   });
 
   it("rejects a redirect_uri not registered for the client", async () => {
@@ -213,8 +217,9 @@ describe("authorize parameter errors", () => {
     url.searchParams.set("code_challenge_method", "S256");
     url.searchParams.set("state", "s1");
     url.searchParams.set("resource", "https://api.portuni.test/mcp");
-    const res = await fetch(url, { redirect: "manual" });
+    const res = await authFetch(url, { redirect: "manual" });
     assert.equal(res.status, 400);
+    assert.match(await res.text(), /data-error-code="OAUTH_REDIRECT_URI_UNREGISTERED"/);
   });
 
   it("rejects an unrecognized resource", async () => {
@@ -225,7 +230,7 @@ describe("authorize parameter errors", () => {
     url.searchParams.set("code_challenge_method", "S256");
     url.searchParams.set("state", "s1");
     url.searchParams.set("resource", "https://not-us.example/mcp");
-    const res = await fetch(url, { redirect: "manual" });
+    const res = await authFetch(url, { redirect: "manual" });
     assert.equal(res.status, 400);
   });
 });
@@ -234,7 +239,7 @@ describe("full authorize -> consent -> token flow", () => {
   it("issues an access + refresh token pair", async () => {
     const { code } = await runAuthorizeThroughConsent();
 
-    const tokenRes = await fetch(`${base}/oauth/token`, {
+    const tokenRes = await authFetch(`${base}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -253,7 +258,7 @@ describe("full authorize -> consent -> token flow", () => {
     assert.equal(tokens.expires_in, 3600);
 
     // Refresh rotation: old refresh token works once...
-    const refreshRes = await fetch(`${base}/oauth/token`, {
+    const refreshRes = await authFetch(`${base}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -267,7 +272,7 @@ describe("full authorize -> consent -> token flow", () => {
     assert.notEqual(rotated.refresh_token, tokens.refresh_token);
 
     // ...and a replay of the superseded refresh token is invalid_grant.
-    const replayRes = await fetch(`${base}/oauth/token`, {
+    const replayRes = await authFetch(`${base}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -281,7 +286,7 @@ describe("full authorize -> consent -> token flow", () => {
 
     // The rotated (currently valid) refresh token is also dead now: theft
     // detection revoked the whole grant.
-    const afterTheftRes = await fetch(`${base}/oauth/token`, {
+    const afterTheftRes = await authFetch(`${base}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -303,14 +308,14 @@ describe("full authorize -> consent -> token flow", () => {
         code_verifier: lastPkce.verifier,
       });
 
-    const first = await fetch(`${base}/oauth/token`, {
+    const first = await authFetch(`${base}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body(),
     });
     assert.equal(first.status, 200);
 
-    const second = await fetch(`${base}/oauth/token`, {
+    const second = await authFetch(`${base}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body(),
@@ -322,7 +327,7 @@ describe("full authorize -> consent -> token flow", () => {
 
   it("rejects a mismatched PKCE code_verifier", async () => {
     const { code } = await runAuthorizeThroughConsent();
-    const res = await fetch(`${base}/oauth/token`, {
+    const res = await authFetch(`${base}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -346,17 +351,17 @@ describe("full authorize -> consent -> token flow", () => {
     authorizeUrl.searchParams.set("code_challenge_method", "S256");
     authorizeUrl.searchParams.set("state", "client-state-deny");
     authorizeUrl.searchParams.set("resource", "https://api.portuni.test/mcp");
-    const authorizeRes = await fetch(authorizeUrl, { redirect: "manual" });
+    const authorizeRes = await authFetch(authorizeUrl, { redirect: "manual" });
     const googleUrl = new URL(authorizeRes.headers.get("location")!);
     const flowState = googleUrl.searchParams.get("state")!;
 
     const callbackUrl = new URL(`${base}/oauth/google/callback`);
     callbackUrl.searchParams.set("state", flowState);
     callbackUrl.searchParams.set("code", "google-code-ok");
-    const html = await (await fetch(callbackUrl)).text();
+    const html = await (await authFetch(callbackUrl)).text();
     const continuationToken = extractHidden(html, "token");
 
-    const consentRes = await fetch(`${base}/oauth/consent`, {
+    const consentRes = await authFetch(`${base}/oauth/consent`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ token: continuationToken, decision: "deny" }),
@@ -402,7 +407,7 @@ describe("consent redirect preserves an existing query string (loopback)", () =>
     authorizeUrl.searchParams.set("state", "loopback-state-1");
     authorizeUrl.searchParams.set("resource", "https://api.portuni.test/mcp");
 
-    const authorizeRes = await fetch(authorizeUrl, { redirect: "manual" });
+    const authorizeRes = await authFetch(authorizeUrl, { redirect: "manual" });
     assert.equal(authorizeRes.status, 302);
     const googleUrl = new URL(authorizeRes.headers.get("location")!);
     const flowState = googleUrl.searchParams.get("state")!;
@@ -410,10 +415,10 @@ describe("consent redirect preserves an existing query string (loopback)", () =>
     const callbackUrl = new URL(`${base}/oauth/google/callback`);
     callbackUrl.searchParams.set("state", flowState);
     callbackUrl.searchParams.set("code", "google-code-ok");
-    const html = await (await fetch(callbackUrl)).text();
+    const html = await (await authFetch(callbackUrl)).text();
     const continuationToken = extractHidden(html, "token");
 
-    const consentRes = await fetch(`${base}/oauth/consent`, {
+    const consentRes = await authFetch(`${base}/oauth/consent`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ token: continuationToken, decision: "allow" }),
@@ -439,9 +444,9 @@ describe("disabled configuration -> 404", () => {
       soloUserId: "01SOLO0000000000000000000",
     });
     try {
-      const res = await fetch(`${base}/.well-known/oauth-authorization-server`);
+      const res = await authFetch(`${base}/.well-known/oauth-authorization-server`);
       assert.equal(res.status, 404);
-      const authorizeRes = await fetch(`${base}/oauth/authorize?client_id=x`);
+      const authorizeRes = await authFetch(`${base}/oauth/authorize?client_id=x`);
       assert.equal(authorizeRes.status, 404);
     } finally {
       setIdentityContextForTesting({
@@ -457,7 +462,7 @@ describe("disabled configuration -> 404", () => {
   it("404s in google mode without PORTUNI_PUBLIC_URL", async () => {
     delete process.env.PORTUNI_PUBLIC_URL;
     try {
-      const res = await fetch(`${base}/.well-known/oauth-authorization-server`);
+      const res = await authFetch(`${base}/.well-known/oauth-authorization-server`);
       assert.equal(res.status, 404);
     } finally {
       process.env.PORTUNI_PUBLIC_URL = "https://api.portuni.test";
@@ -473,7 +478,7 @@ describe("disabled configuration -> 404", () => {
       soloUserId: "01SOLO0000000000000000000",
     });
     try {
-      const res = await fetch(`${base}/.well-known/oauth-authorization-server`);
+      const res = await authFetch(`${base}/.well-known/oauth-authorization-server`);
       assert.equal(res.status, 404);
     } finally {
       setIdentityContextForTesting({
@@ -489,7 +494,7 @@ describe("disabled configuration -> 404", () => {
 
 describe("/mcp 401 responses (issue #173)", () => {
   it("carries resource_metadata when the OAuth connector is enabled", async () => {
-    const res = await fetch(`${base}/mcp`, { method: "GET" });
+    const res = await authFetch(`${base}/mcp`, { method: "GET" });
     assert.equal(res.status, 401);
     assert.equal(
       res.headers.get("www-authenticate"),
@@ -500,7 +505,7 @@ describe("/mcp 401 responses (issue #173)", () => {
   it("omits resource_metadata when the OAuth connector is not configured", async () => {
     delete process.env.PORTUNI_PUBLIC_URL;
     try {
-      const res = await fetch(`${base}/mcp`, { method: "GET" });
+      const res = await authFetch(`${base}/mcp`, { method: "GET" });
       assert.equal(res.status, 401);
       assert.equal(res.headers.get("www-authenticate"), 'Bearer realm="portuni"');
     } finally {
@@ -509,7 +514,7 @@ describe("/mcp 401 responses (issue #173)", () => {
   });
 
   it("does not add resource_metadata to non-/mcp 401 responses even when the connector is enabled", async () => {
-    const res = await fetch(`${base}/nodes`, { method: "GET" });
+    const res = await authFetch(`${base}/nodes`, { method: "GET" });
     assert.equal(res.status, 401);
     assert.equal(res.headers.get("www-authenticate"), 'Bearer realm="portuni"');
   });
@@ -517,7 +522,7 @@ describe("/mcp 401 responses (issue #173)", () => {
 
 describe("unsupported token grant_type", () => {
   it("returns unsupported_grant_type", async () => {
-    const res = await fetch(`${base}/oauth/token`, {
+    const res = await authFetch(`${base}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "password" }),
@@ -525,5 +530,73 @@ describe("unsupported token grant_type", () => {
     assert.equal(res.status, 400);
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal(body.error, "unsupported_grant_type");
+  });
+});
+
+// #539: the consent and sign-in error pages are in the user's language --
+// the account's when the user is known, else Accept-Language, else English.
+describe("sign-in pages in the user's language (#539)", () => {
+  async function consentPageWith(acceptLanguage: string): Promise<string> {
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", CLIENT_ID);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("code_challenge", lastPkce.challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("state", "s-locale");
+    authorizeUrl.searchParams.set("resource", "https://api.portuni.test/mcp");
+    const authorizeRes = await authFetch(authorizeUrl, { redirect: "manual" });
+    assert.equal(authorizeRes.status, 302);
+    const flowState = new URL(authorizeRes.headers.get("location")!).searchParams.get("state")!;
+    const callbackUrl = new URL(`${base}/oauth/google/callback`);
+    callbackUrl.searchParams.set("state", flowState);
+    callbackUrl.searchParams.set("code", "google-code-ok");
+    const res = await authFetch(callbackUrl, { headers: { "Accept-Language": acceptLanguage } });
+    assert.equal(res.status, 200);
+    return res.text();
+  }
+
+  async function setAccountLocale(locale: "en" | "cs" | null): Promise<void> {
+    await db.execute({ sql: "UPDATE users SET locale = ? WHERE email = ?", args: [locale, "a@workflow.ooo"] });
+  }
+
+  it("renders an error page in the language of Accept-Language", async () => {
+    const res = await authFetch(`${base}/oauth/authorize?client_id=${encodeURIComponent(CLIENT_ID)}`, {
+      redirect: "manual",
+      headers: { "Accept-Language": "de-DE, cs-CZ;q=0.9, en;q=0.5" },
+    });
+    assert.equal(res.status, 400);
+    const html = await res.text();
+    assert.match(html, /<html lang="cs">/);
+    assert.match(html, /Požadavku o autorizaci chybí povinný parametr\./);
+    assert.match(html, /data-error-code="OAUTH_MISSING_PARAMETER"/);
+  });
+
+  it("renders the consent page by Accept-Language when the account has no language", async () => {
+    await consentPageWith("en"); // the first callback creates the user
+    await setAccountLocale(null);
+    const html = await consentPageWith("cs-CZ,cs;q=0.9,en;q=0.8");
+    assert.match(html, /<html lang="cs">/);
+    assert.match(html, /value="allow">Povolit</);
+    assert.match(html, /<span class="client">Claude<\/span> žádá o přístup/);
+  });
+
+  it("renders the consent page in the account's language over Accept-Language", async () => {
+    await consentPageWith("en");
+    await setAccountLocale("cs");
+    const cs = await consentPageWith("en-US,en;q=0.9");
+    assert.match(cs, /<html lang="cs">/);
+    assert.match(cs, /value="deny">Odmítnout</);
+
+    await setAccountLocale("en");
+    const en = await consentPageWith("cs-CZ");
+    assert.match(en, /<html lang="en">/);
+    assert.match(en, /value="allow">Allow</);
+    assert.match(en, /<span class="client">Claude<\/span> is asking for access to your Portuni account\./);
+    await setAccountLocale(null);
+  });
+
+  it("falls back to English with no Accept-Language and no account language", async () => {
+    const res = await authFetch(`${base}/oauth/authorize?client_id=x`, { redirect: "manual" });
+    assert.match(await res.text(), /<html lang="en">/);
   });
 });

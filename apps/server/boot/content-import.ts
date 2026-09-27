@@ -3,32 +3,32 @@
 // content store on the device" and "The central migration"). #456 moves
 // every new write of a thread's content -- the transcript, the first
 // message, the inline handoff summary -- into this device's `content.db`;
-// what was written before is still where it was, and without this copy it
-// would stop being readable.
+// what a personal workspace wrote before is in its graph db
+// (`session_events`, `sessions.brief`, `sessions.handoff_inline`), and
+// importGraphDbSessionContentOnce copies it over.
 //
-//   - A personal workspace has always kept everything on the device, in its
-//     graph db: `session_events`, `sessions.brief`, `sessions.handoff_inline`.
-//     importGraphDbSessionContentOnce copies them over.
-//   - A team workspace's sidecar used to send the same content to the
-//     central server. importCentralSessionContentOnce downloads the rows of
-//     this device's user's threads that ran on this device
-//     (CentralClient.listLegacySessionContent / getLegacySessionContent,
-//     owner-only on the central server) and writes them here. The central
-//     copy stays; dropping it is the central migration's business (#462).
-//
-// Both are step 2 of content.db's own version history
+// The copy is step 2 of content.db's own version history
 // (infra/device-content-db.ts): the version is raised only when every
 // thread was copied. A failure anywhere leaves it where it was and the next
 // boot tries again. The copy is per thread and each thread is one
 // transaction, so a thread is either all here or not at all, and a retry
 // skips what an earlier attempt already copied.
+//
+// It runs BEFORE ensureSchema (#462): migration 040 drops the same table
+// and columns, and a boot whose copy did not complete holds that migration
+// back (ensureSchemaOn's holdSessionContentDrop), so the graph db keeps the
+// content until content.db has it.
+//
+// A team workspace's sync agent used to download the legacy content its
+// older sidecar had sent to the central server; every device did that
+// before the central migration dropped it there, and the download is gone
+// with it (#462).
 
 import type { DbClient, InStatement } from "../infra/db.js";
 import { getDb } from "../infra/db.js";
+import { ensureSchema } from "../infra/schema.js";
 import { columnExistsSql, normalizeDbTimestamp, tableExistsSql } from "../infra/sql.js";
 import { getDeviceContentDb, readDeviceContentSchemaVersion } from "../infra/device-content-db.js";
-import { localHostId } from "../domain/runner/hosts.js";
-import type { CentralClient } from "../domain/sync/central/client.js";
 import type { SessionEventRow } from "../shared/api-types.js";
 
 // The version the content db carries once the copy has run completely.
@@ -46,7 +46,7 @@ export interface ContentImportResult {
   failed: number;
 }
 
-// One thread's pre-content.db content, from either source.
+// One thread's pre-content.db content.
 export interface LegacySessionContent {
   session_id: string;
   brief: string | null;
@@ -241,36 +241,6 @@ export async function importGraphDbSessionContentOnce(
   return importOnce(contentDb, list, load, "session content import");
 }
 
-// --- Team workspace: down from the central server -------------------------
-
-export type LegacyContentSource = Pick<CentralClient, "listLegacySessionContent" | "getLegacySessionContent">;
-
-export async function importCentralSessionContentOnce(
-  contentDb: DbClient,
-  client: LegacyContentSource,
-  hostId: string,
-): Promise<ContentImportResult> {
-  const list = () => client.listLegacySessionContent(hostId);
-  const load = async (sessionId: string): Promise<LegacySessionContent> => {
-    const events: SessionEventRow[] = [];
-    let after: number | undefined;
-    let brief: string | null = null;
-    let inline: string | null = null;
-    // The events come in pages; the thread is written only once all of
-    // them are here, so a page that fails leaves the thread for next boot.
-    for (;;) {
-      const page = await client.getLegacySessionContent(sessionId, { after });
-      brief = page.brief;
-      inline = page.handoff_inline;
-      events.push(...page.events);
-      if (page.next_after === null) break;
-      after = page.next_after;
-    }
-    return { session_id: sessionId, brief, handoff_inline: inline, events };
-  };
-  return importOnce(contentDb, list, load, "central session content import");
-}
-
 // --- Boot entry points ------------------------------------------------------
 
 function logImport(label: string, r: ContentImportResult): void {
@@ -283,26 +253,29 @@ function logImport(label: string, r: ContentImportResult): void {
 
 // The personal workspace's boot step, shared by both entry points that can
 // be one (index.ts standalone, desktop.ts local branch): opens content.db
-// and copies the graph db's session content into it, before the server
-// serves a request. Never fatal -- a failure is logged and retried on the
-// next boot.
-export async function importPersonalWorkspaceSessionContentOnBoot(): Promise<void> {
+// and copies the graph db's session content into it, before ensureSchema
+// and before the server serves a request. Never fatal -- a failure is
+// logged and retried on the next boot. Answers whether content.db now holds
+// everything (version >= 2): the caller holds migration 040 back when not.
+export async function importPersonalWorkspaceSessionContentOnBoot(): Promise<boolean> {
   try {
-    const result = await importGraphDbSessionContentOnce(await getDeviceContentDb(), getDb());
+    const contentDb = await getDeviceContentDb();
+    const result = await importGraphDbSessionContentOnce(contentDb, getDb());
     logImport("session content import", result);
+    const version = await readDeviceContentSchemaVersion(contentDb);
+    return version !== null && version >= DEVICE_CONTENT_IMPORTED_VERSION;
   } catch (e) {
     console.error("[boot] session content import failed; it runs again on the next boot:", e);
+    return false;
   }
 }
 
-// The sync agent's boot step (desktop.ts agentMain): downloads this user's
-// threads that ran on this device. Never fatal and never blocks the boot on
-// the network -- the caller does not await it.
-export async function importTeamWorkspaceSessionContentOnBoot(client: LegacyContentSource): Promise<void> {
-  try {
-    const result = await importCentralSessionContentOnce(await getDeviceContentDb(), client, localHostId());
-    logImport("central session content import", result);
-  } catch (e) {
-    console.error("[boot] central session content import failed; it runs again on the next boot:", e);
-  }
+// The personal workspace's schema step, shared by both entry points that
+// can be one (index.ts standalone, desktop.ts local branch): the copy into
+// content.db first, then ensureSchema -- whose migration 040 drops that
+// content from the graph db, and is held back on a boot whose copy did not
+// complete (#462). The central server calls ensureSchema directly.
+export async function ensurePersonalWorkspaceSchema(): Promise<void> {
+  const contentCopied = await importPersonalWorkspaceSessionContentOnBoot();
+  await ensureSchema({ holdSessionContentDrop: !contentCopied });
 }

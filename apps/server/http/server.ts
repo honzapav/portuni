@@ -15,13 +15,8 @@ import { createSessionsWsServer, type SessionsWsServer } from "../api/sessions-w
 import { webviewMutationAllowed } from "../api/write-gate.js";
 import { minScopeForRoute } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
-import {
-  AUTH_ENABLED,
-  applyGates,
-  assertAuthRequiredIfNotLoopback,
-  checkUpgradeAuth,
-  respondError,
-} from "./middleware.js";
+import { applyGates, checkUpgradeAuth, respondApiError, respondError } from "./middleware.js";
+import { assertAuthConfig, authSummary } from "../infra/auth-config.js";
 import { getOrCreateLimiter, rateLimitKey } from "./rate-limit.js";
 
 export interface HttpServerHandle {
@@ -61,7 +56,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
   const registerSigint = opts.registerSigint ?? true;
   const route = opts.router ?? routeApiRequest;
 
-  assertAuthRequiredIfNotLoopback(host);
+  assertAuthConfig();
 
   const mcp = opts.mcpTransport ?? (opts.mountMcp === false ? null : createMcpTransport());
 
@@ -105,11 +100,10 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       );
       const result = limiter.check(key);
       if (!result.allowed) {
-        res.writeHead(429, {
-          "Content-Type": "application/json",
-          "Retry-After": String(result.retryAfterSeconds),
+        res.setHeader("Retry-After", String(result.retryAfterSeconds));
+        respondApiError(res, 429, "RATE_LIMITED", "rate limited", {
+          retryAfterSeconds: result.retryAfterSeconds,
         });
-        res.end(JSON.stringify({ error: "rate limited" }));
         return;
       }
     }
@@ -145,13 +139,10 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       const address = httpServer.address();
       const boundPort =
         address && typeof address !== "string" ? address.port : port;
-      // Read the env var directly rather than the AUTH_ENABLED constant:
-      // tests (and any future runtime token rotation) need a live answer,
-      // and the constant is captured at module import.
       const body = {
         url: `http://${host}:${boundPort}/mcp`,
         port: boundPort,
-        has_auth_token: (process.env.PORTUNI_AUTH_TOKEN ?? "").trim().length > 0,
+        has_auth_token: authSummary().has_auth_token,
       };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -162,15 +153,14 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
     // event below -- reject it explicitly rather than 404ing or falling
     // into the REST router, which has no handler for this path.
     if (url.pathname === "/sessions/ws") {
-      res.writeHead(426, { "Content-Type": "application/json", Upgrade: "websocket" });
-      res.end(JSON.stringify({ error: "this endpoint is a WebSocket upgrade" }));
+      res.setHeader("Upgrade", "websocket");
+      respondApiError(res, 426, "WEBSOCKET_UPGRADE_REQUIRED", "this endpoint is a WebSocket upgrade");
       return;
     }
 
     const handled = await route(req, res, url, identity);
     if (!handled) {
-      res.writeHead(404);
-      res.end("Not found");
+      respondApiError(res, 404, "ROUTE_NOT_FOUND", "Not found");
     }
   }
 
@@ -218,11 +208,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
   httpServer.listen(port, host, () => {
     console.log(`Portuni MCP server listening on http://${host}:${port}`);
     console.log(`Streamable HTTP endpoint: http://${host}:${port}/mcp`);
-    console.log(
-      AUTH_ENABLED
-        ? "Auth: bearer token required (Authorization: Bearer <PORTUNI_AUTH_TOKEN>)"
-        : "Auth: DISABLED (PORTUNI_AUTH_TOKEN unset). Loopback-only access trusted.",
-    );
+    console.log(authSummary().banner);
   });
 
   const shutdown = async (): Promise<void> => {

@@ -10,12 +10,24 @@ import assert from "node:assert/strict";
 import {
   aggregateFolderSync,
   buildFileTree,
+  folderSyncTitle,
   isSectionRoot,
   sortChildren,
   type TreeFile,
   type TreeNode,
 } from "../apps/web/src/lib/file-tree.js";
 import type { SyncStatusFile } from "../apps/web/src/types.js";
+import { createI18n } from "../apps/server/shared/i18n/create.js";
+import { RESOURCES } from "../apps/server/shared/i18n/resources.js";
+
+const { i18n } = createI18n({
+  lng: "en",
+  resources: { en: RESOURCES.en, cs: RESOURCES.cs },
+  escapeValue: false,
+  initAsync: false,
+});
+const tEn = i18n.getFixedT("en", "files");
+const tCs = i18n.getFixedT("cs", "files");
 
 function file(relPath: string, fileId: string | null = relPath): TreeFile {
   const filename = relPath.slice(relPath.lastIndexOf("/") + 1);
@@ -172,7 +184,9 @@ describe("file tree", () => {
         ]),
       );
       assert.equal(dot?.color, "var(--color-status-active)");
-      assert.equal(dot?.title, "Vše synchronizováno");
+      assert.equal(dot?.state, "clean");
+      assert.equal(folderSyncTitle("clean", tEn), "All synced");
+      assert.equal(folderSyncTitle("clean", tCs), "Vše synchronizováno");
     });
   });
 });

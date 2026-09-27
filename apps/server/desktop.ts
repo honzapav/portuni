@@ -3,19 +3,17 @@
 //   - DB path derived from PORTUNI_DATA_DIR
 //   - port from PORTUNI_PORT (0 = OS-assigned), printed on stdout so the
 //     parent process can read it back as PORTUNI_LISTENING_PORT=<n>
-//   - no AUTH_TOKEN by default — loopback-only is the security boundary
+//   - PORTUNI_AUTH_TOKEN always passed by the Tauri host; without it the
+//     sidecar refuses to start (PORTUNI_BACKEND_ERROR=..., #521)
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { startHttpServer, type HttpServerHandle } from "./http/server.js";
+import { assertAuthConfig } from "./infra/auth-config.js";
 import { getDb } from "./infra/db.js";
 import { getDeviceContentDb } from "./infra/device-content-db.js";
-import {
-  importPersonalWorkspaceSessionContentOnBoot,
-  importTeamWorkspaceSessionContentOnBoot,
-} from "./boot/content-import.js";
-import { ensureSchema } from "./infra/schema.js";
+import { ensurePersonalWorkspaceSchema } from "./boot/content-import.js";
 import { SOLO_USER } from "./infra/schema.js";
 import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
@@ -212,12 +210,6 @@ async function agentMain(client: CentralClient): Promise<void> {
   // its session read "running" forever. The idle sweep cannot see them: it
   // filters an in-process map that is empty after a restart.
   void sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client));
-  // The content an older sidecar sent to the central server, downloaded
-  // once for the threads this device's user ran here, so their history
-  // stays readable after the upgrade (boot/content-import.ts). In the
-  // background: the central server may be slow or unreachable, and a
-  // failed import runs again on the next boot.
-  void importTeamWorkspaceSessionContentOnBoot(client);
   // #406: agent mode spills too (readNodeFileOrPath downloads through
   // CentralClient.getFileRaw for a node this device does not mirror), and no
   // MCP transport survives a restart.
@@ -343,6 +335,9 @@ async function agentMain(client: CentralClient): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // The front door always needs a bearer (#521); fail before any boot work
+  // so the host shows the reason instead of a half-started sidecar.
+  assertAuthConfig();
   const dataDir = process.env.PORTUNI_DATA_DIR;
   if (!dataDir) {
     throw new Error("PORTUNI_DATA_DIR must be set in desktop mode");
@@ -369,15 +364,16 @@ async function main(): Promise<void> {
   }
 
   await waitForDb();
-  await ensureSchema();
 
   // Personal workspace, one-time copy (#456): this device has always kept
   // everything, so its transcripts, briefs and inline summaries are in the
   // graph db. Moved into content.db before serving a single request, so a
   // thread opened right after the upgrade still has its history. The same
   // boot step index.ts runs; idempotent, keyed on content.db's own
-  // device_schema.version, retried on the next boot after a failure.
-  await importPersonalWorkspaceSessionContentOnBoot();
+  // device_schema.version, retried on the next boot after a failure. It
+  // runs before ensureSchema: migration 040 drops that content from the
+  // graph db and is held back while the copy is incomplete (#462).
+  await ensurePersonalWorkspaceSchema();
 
   const port = Number(process.env.PORTUNI_PORT ?? 0);
   process.env.PORT = String(port);

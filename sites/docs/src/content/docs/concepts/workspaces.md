@@ -78,7 +78,7 @@ for them to go. The two planes are explained in
 
 | In the docs | In the app and code |
 |---|---|
-| team workspace | `data_mode: "central"`, "Připojit se k týmu" in onboarding |
+| team workspace | `data_mode: "central"`, "Join a team" in onboarding |
 | personal workspace | `data_mode: "local"` |
 | central server | `PORTUNI_AUTH_MODE=google`, the `server_url` in a team workspace's settings |
 | sync agent | `PORTUNI_AGENT_MODE=1`, the sidecar of a team workspace |

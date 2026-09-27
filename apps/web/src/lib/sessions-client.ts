@@ -20,8 +20,13 @@
 // comment for the canonical protocol description.
 
 import { isTauri } from "./backend-url.js";
+import { ApiError, ClientError } from "./api-error.js";
+import { requestLocale } from "./locale.js";
+import type { Locale } from "../../../server/shared/i18n/config";
+import type { ErrorParams } from "../../../server/shared/error-codes";
 import type { SessionSummary, SessionRunRow } from "../types";
 import type { QuestionAnswer } from "./session-chat.js";
+import { invoke } from "./tauri-invoke.js";
 
 export type SessionState = "running" | "suspended" | "closed" | "archived";
 export type ConnectionStatus = "open" | "reconnecting" | "closed";
@@ -58,7 +63,7 @@ interface ReplyFrame {
 interface ErrorFrame {
   id?: string;
   type: "error";
-  payload: { code: string; message: string };
+  payload: { code: string; message: string; params?: ErrorParams };
 }
 interface EventFrame {
   type: "event";
@@ -95,14 +100,14 @@ type ServerFrame =
 type ClientFrame =
   | { id: string; type: "subscribe"; payload: { session_id: string; after?: number } }
   | { id: string; type: "unsubscribe"; payload: { session_id: string } }
-  | { id: string; type: "message"; payload: { session_id: string; text: string } }
+  | { id: string; type: "message"; payload: { session_id: string; text: string; locale?: Locale } }
   | {
       id: string;
       type: "answer";
       payload: { session_id: string; request_id: string; decision: { value: QuestionAnswer } };
     }
   | { id: string; type: "interrupt"; payload: { session_id: string } }
-  | { id: string; type: "continue"; payload: { session_id: string } }
+  | { id: string; type: "continue"; payload: { session_id: string; locale?: Locale } }
   | { id: string; type: "close"; payload: { session_id: string } };
 
 // 1s -> 30s, doubling, same schedule as the Rust bridge's own
@@ -144,8 +149,7 @@ export interface DirectWsTransportOptions {
   minBackoffMs?: number;
   maxBackoffMs?: number;
   // The WebSocket constructor to use; defaults to the global one. The
-  // server-side test runner (CI is Node 20, which has no global WebSocket)
-  // passes the `ws` package's class instead.
+  // server-side test runner passes the `ws` package's class instead.
   WebSocket?: WebSocketLike;
   // How long a socket may sit in CONNECTING before this transport gives up
   // on it and schedules a reconnect. A TCP connect to a host that accepts
@@ -325,15 +329,13 @@ function createTauriTransport(): Transport {
 
   return {
     send(frame) {
-      void import("@tauri-apps/api/core").then(({ invoke }) =>
-        invoke("sessions_send", { frame: JSON.stringify(frame) }),
-      );
+      void invoke("sessions_send", { frame: JSON.stringify(frame) });
     },
     cancel(id) {
-      // Same import-then-invoke chain as send, so a cancel issued after a
-      // send reaches Rust after it (the module promise is already settled,
-      // both continuations run in order).
-      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("sessions_cancel", { id }));
+      // Same import-then-invoke chain as send (lib/tauri-invoke.ts awaits one
+      // shared module promise), so a cancel issued after a send reaches Rust
+      // after it: both continuations run in order.
+      void invoke("sessions_cancel", { id });
     },
     onFrame(cb) {
       frameListeners.add(cb);
@@ -345,7 +347,6 @@ function createTauriTransport(): Transport {
     },
     connect() {
       void (async () => {
-        const { invoke } = await import("@tauri-apps/api/core");
         const { listen } = await import("@tauri-apps/api/event");
         unlistenEvent = await listen<{ frame: ServerFrame }>("session-event", (ev) => {
           for (const cb of frameListeners) cb(ev.payload.frame);
@@ -361,7 +362,7 @@ function createTauriTransport(): Transport {
       unlistenStatus?.();
       unlistenEvent = null;
       unlistenStatus = null;
-      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("sessions_disconnect"));
+      void invoke("sessions_disconnect");
     },
   };
 }
@@ -479,7 +480,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     return setTimeout(() => {
       pendingReplies.delete(id);
       transport.cancel(id);
-      reject(new Error(`request_timeout: ${type} got no reply within ${REQUEST_TIMEOUT_MS} ms`));
+      reject(new ClientError("REQUEST_TIMEOUT", `request_timeout: ${type} got no reply within ${REQUEST_TIMEOUT_MS} ms`));
     }, REQUEST_TIMEOUT_MS);
   }
 
@@ -532,7 +533,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       if (pending.type === "subscribe" && subscribedSessions.has(pending.sessionId)) {
         void park(pending.sessionId, lastSeq.get(pending.sessionId)).then(pending.resolve, pending.reject);
       } else {
-        pending.reject(new Error(`disconnected: the session channel dropped before the ${pending.type} reply arrived`));
+        pending.reject(new ClientError("DISCONNECTED", `disconnected: the session channel dropped before the ${pending.type} reply arrived`));
       }
     }
   }
@@ -571,10 +572,10 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
   }
 
   function rejectAllPending(reason: string): void {
-    for (const [, pending] of pendingReplies) pending.reject(new Error(reason));
+    for (const [, pending] of pendingReplies) pending.reject(new ClientError("DISCONNECTED", reason));
     pendingReplies.clear();
     for (const [, parked] of parkedSubscribes) {
-      for (const w of parked.waiters) w.reject(new Error(reason));
+      for (const w of parked.waiters) w.reject(new ClientError("DISCONNECTED", reason));
     }
     parkedSubscribes.clear();
   }
@@ -586,7 +587,8 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       if (!pending) return;
       pendingReplies.delete(frame.id);
       if (frame.type === "error") {
-        pending.reject(new Error(`${frame.payload.code}: ${frame.payload.message}`));
+        const { code, message, params } = frame.payload;
+        pending.reject(new ApiError(0, code, `${code}: ${message}`, params ?? {}));
       } else {
         pending.resolve(frame.payload);
       }
@@ -659,7 +661,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       transport.send({ id: randomFrameId(), type: "unsubscribe", payload: { session_id: sessionId } });
     },
     async message(sessionId, text) {
-      await send({ type: "message", payload: { session_id: sessionId, text } });
+      await send({ type: "message", payload: { session_id: sessionId, text, locale: requestLocale() } });
     },
     async answer(sessionId, requestId, value) {
       await send({
@@ -673,7 +675,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     async continueSession(sessionId) {
       return send<{ session: SessionSummary; run: SessionRunRow }>({
         type: "continue",
-        payload: { session_id: sessionId },
+        payload: { session_id: sessionId, locale: requestLocale() },
       });
     },
     async close(sessionId) {

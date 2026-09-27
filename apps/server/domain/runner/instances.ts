@@ -66,26 +66,49 @@ export interface UpdateInstanceInput {
   defaults?: InstanceDefaults;
 }
 
-// Key rules live in shared/runner-env.ts (the web form echoes them).
+// Key rules live in shared/runner-env.ts (the web form echoes them). Each
+// refusal reason is its own code (shared/error-codes.ts) with the key as a
+// param, so the web renders the reason from its catalog.
+export type InstanceEnvKeyRefusal = "INSTANCE_ENV_KEY_SECRET" | "INSTANCE_ENV_KEY_RESERVED";
+
+const ENV_KEY_REASON: Record<InstanceEnvKeyRefusal, string> = {
+  INSTANCE_ENV_KEY_SECRET:
+    "looks like a secret (*_TOKEN/*_KEY/*_SECRET/*PASSWORD*); store it in the OS keychain, not in the instance registry",
+  INSTANCE_ENV_KEY_RESERVED: "PORTUNI_* variables cannot be set from the instance registry",
+};
+
 export class InstanceEnvKeyRefusedError extends Error {
-  readonly code = "INSTANCE_ENV_KEY_REFUSED" as const;
   constructor(
     readonly key: string,
-    reason: string,
+    readonly code: InstanceEnvKeyRefusal,
+    readonly params: { key: string } = { key },
   ) {
-    super(`Klíč prostředí '${key}' byl odmítnut: ${reason}`);
+    super(`Environment key '${key}' refused: ${ENV_KEY_REASON[code]}`);
     this.name = "InstanceEnvKeyRefusedError";
   }
 }
 
 // #375: an unknown key inside `defaults` is refused the same way an
 // unknown/secret-shaped env key is -- silently dropping it would leave the
-// caller believing a setting was saved that never was.
+// caller believing a setting was saved that never was. An `effort` outside
+// EFFORT_LEVELS is refused with its own code.
 const DEFAULTS_KEYS = new Set(["model", "effort"]);
+export type InstanceDefaultsRefusal = "INSTANCE_DEFAULTS_KEY_UNKNOWN" | "INSTANCE_DEFAULTS_EFFORT_INVALID";
+
 export class InstanceDefaultsKeyRefusedError extends Error {
-  readonly code = "INSTANCE_DEFAULTS_KEY_REFUSED" as const;
-  constructor(readonly key: string) {
-    super(`Neznámý klíč '${key}' v defaults instance -- povolené jsou pouze 'model' a 'effort'`);
+  constructor(
+    readonly key: string,
+    readonly code: InstanceDefaultsRefusal = "INSTANCE_DEFAULTS_KEY_UNKNOWN",
+    readonly value?: string,
+    readonly params: Record<string, string> = code === "INSTANCE_DEFAULTS_EFFORT_INVALID"
+      ? { effort: value ?? "", allowed: EFFORT_LEVELS.join(", ") }
+      : { key },
+  ) {
+    super(
+      code === "INSTANCE_DEFAULTS_EFFORT_INVALID"
+        ? `Invalid effort '${value ?? ""}' in instance defaults; allowed: ${EFFORT_LEVELS.join(", ")}`
+        : `Unknown key '${key}' in instance defaults; only 'model' and 'effort' are allowed`,
+    );
     this.name = "InstanceDefaultsKeyRefusedError";
   }
 }
@@ -95,20 +118,21 @@ function assertValidDefaults(defaults: InstanceDefaults): void {
     if (!DEFAULTS_KEYS.has(key)) throw new InstanceDefaultsKeyRefusedError(key);
   }
   if (defaults.effort !== undefined && !EFFORT_LEVELS.includes(defaults.effort)) {
-    throw new InstanceDefaultsKeyRefusedError("effort");
+    throw new InstanceDefaultsKeyRefusedError(
+      "effort",
+      "INSTANCE_DEFAULTS_EFFORT_INVALID",
+      String(defaults.effort),
+    );
   }
 }
 
 function assertValidEnvKeys(env: Record<string, string>): void {
   for (const key of Object.keys(env)) {
     if (isSecretShapedEnvKey(key)) {
-      throw new InstanceEnvKeyRefusedError(
-        key,
-        "vypadá jako secret (*_TOKEN/*_KEY/*_SECRET/*PASSWORD*) – ulož jej do OS klíčenky, ne do registru instancí",
-      );
+      throw new InstanceEnvKeyRefusedError(key, "INSTANCE_ENV_KEY_SECRET");
     }
     if (isPortuniEnvKey(key)) {
-      throw new InstanceEnvKeyRefusedError(key, "PORTUNI_* proměnné nelze nastavit z registru instancí");
+      throw new InstanceEnvKeyRefusedError(key, "INSTANCE_ENV_KEY_RESERVED");
     }
   }
 }

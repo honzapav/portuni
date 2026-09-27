@@ -1,10 +1,18 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  GROUP_THRESHOLD,
-  groupNodesByType,
-  nodeTypeLabel,
-} from "../apps/web/src/lib/node-search.js";
+import { createI18n } from "../apps/server/shared/i18n/create.js";
+import { RESOURCES } from "../apps/server/shared/i18n/resources.js";
+import { GROUP_THRESHOLD, groupNodesByType } from "../apps/web/src/lib/node-search.js";
+import { nodeTypeLabel } from "../apps/web/src/lib/node-type-labels.js";
+
+const { i18n } = createI18n({
+  lng: "en",
+  resources: { en: RESOURCES.en, cs: RESOURCES.cs },
+  escapeValue: false,
+  initAsync: false,
+});
+const tEn = i18n.getFixedT("en", "common");
+const tCs = i18n.getFixedT("cs", "common");
 
 type N = { id: string; type: string };
 
@@ -23,10 +31,10 @@ describe("groupNodesByType", () => {
       ["area", 4],
     ]);
     assert.equal(short.length, GROUP_THRESHOLD);
-    assert.equal(groupNodesByType(short), null);
+    assert.equal(groupNodesByType(short, "en", tEn), null);
   });
 
-  it("groups a longer list in the fixed POPP order with Czech labels", () => {
+  it("groups a longer list in the fixed POPP order with catalog labels", () => {
     const long = nodes([
       ["principle", 2],
       ["process", 2],
@@ -34,7 +42,7 @@ describe("groupNodesByType", () => {
       ["area", 2],
       ["organization", 2],
     ]);
-    const groups = groupNodesByType(long);
+    const groups = groupNodesByType(long, "en", tEn);
     assert.ok(groups);
     assert.deepEqual(
       groups.map((g) => g.type),
@@ -42,6 +50,10 @@ describe("groupNodesByType", () => {
     );
     assert.deepEqual(
       groups.map((g) => g.label),
+      ["Organization", "Area", "Project", "Process", "Principle"],
+    );
+    assert.deepEqual(
+      groupNodesByType(long, "cs", tCs)?.map((g) => g.label),
       ["Organizace", "Oblast", "Projekt", "Proces", "Princip"],
     );
     assert.deepEqual(
@@ -51,14 +63,17 @@ describe("groupNodesByType", () => {
   });
 
   it("stays flat when a long list holds a single type, and sorts unknown types last", () => {
-    assert.equal(groupNodesByType(nodes([["project", 12]])), null);
+    assert.equal(groupNodesByType(nodes([["project", 12]]), "en", tEn), null);
     const mixed = groupNodesByType(
       nodes([
         ["widget", 5],
         ["project", 5],
       ]),
+      "en",
+      tEn,
     );
     assert.deepEqual(mixed?.map((g) => g.type), ["project", "widget"]);
-    assert.equal(nodeTypeLabel("widget"), "widget");
+    assert.deepEqual(mixed?.map((g) => g.label), ["Project", "widget"]);
+    assert.equal(nodeTypeLabel("widget", tEn), "widget");
   });
 });

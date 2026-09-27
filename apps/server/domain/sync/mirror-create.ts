@@ -14,6 +14,7 @@
 // distinguish "we just made the directory" from "it was already there".
 
 import { mkdir } from "node:fs/promises";
+import type { ErrorParams } from "../../shared/error-codes.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { DbClient } from "../../infra/db.js";
@@ -59,6 +60,7 @@ export class MirrorCreateError extends Error {
       | "WORKSPACE_ROOT_UNSET"
       | "PATH_TRAVERSAL"
       | "PATH_IN_USE",
+    readonly params?: ErrorParams,
   ) {
     super(message);
     this.name = "MirrorCreateError";
@@ -195,6 +197,7 @@ async function resolveMirrorPath(
         throw new MirrorCreateError(
           `custom_path must be inside PORTUNI_WORKSPACE_ROOT (${workspaceRoot})`,
           "PATH_TRAVERSAL",
+          { workspaceRoot },
         );
       }
       throw e;
@@ -232,6 +235,7 @@ export async function createMirrorForNode(
     throw new MirrorCreateError(
       `node ${args.nodeId} not found`,
       "NODE_NOT_FOUND",
+      { nodeId: args.nodeId },
     );
   }
   const row = nodeResult.rows[0];
@@ -282,6 +286,7 @@ export async function createMirrorForNode(
     throw new MirrorCreateError(
       `path ${localPath} is already registered as the mirror of node ${taken.node_id}`,
       "PATH_IN_USE",
+      { path: localPath, nodeId: String(taken.node_id) },
     );
   }
 

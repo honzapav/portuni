@@ -5,7 +5,7 @@
 // Browser builds use navigator.clipboard. Rejects when neither path works;
 // callers decide how to surface that.
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./tauri-invoke";
 import { isTauri } from "./backend-url";
 
 export async function copyText(text: string): Promise<void> {

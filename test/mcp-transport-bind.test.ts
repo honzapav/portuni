@@ -16,6 +16,12 @@ import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { installTestContentDb } from "./helpers/content-db.js";
+import { startHttpServer } from "../apps/server/http/server.js";
+import { ensureSchema, SOLO_USER } from "../apps/server/infra/schema.js";
+import { getDb, setDbForTesting } from "../apps/server/infra/db.js";
+import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
+import { createSession, getSession, listSessions, transitionSessionState } from "../apps/server/domain/sessions.js";
+import { ulid } from "ulid";
 
 // A suspend on disconnect writes content: into memory, not a content.db
 // in the repo root.
@@ -24,11 +30,6 @@ before(async () => {
 });
 
 async function setupServer() {
-  const { startHttpServer } = await import("../apps/server/http/server.js");
-  const { ensureSchema } = await import("../apps/server/infra/schema.js");
-  const { getDb, setDbForTesting } = await import("../apps/server/infra/db.js");
-  const { resetGateCachesForTesting } = await import("../apps/server/http/middleware.js");
-  const { SOLO_USER } = await import("../apps/server/infra/schema.js");
 
   const tmp = mkdtempSync(join(tmpdir(), "portuni-mcp-transport-bind-"));
   const dbPath = join(tmp, "portuni.db");
@@ -64,7 +65,6 @@ test("a running, owned session row is bound to instead of creating a second one"
   const { base, db, soloUser, teardown } = await setupServer();
   t.after(teardown);
 
-  const { createSession, getSession, listSessions } = await import("../apps/server/domain/sessions.js");
 
   const row = await createSession(db, soloUser, { node_id: null, session_type: "interactive_task" });
   const before = await listSessions(db);
@@ -89,7 +89,6 @@ test("a spawn id naming a suspended row is refused with SESSION_BIND_REFUSED", a
   const { base, db, soloUser, teardown } = await setupServer();
   t.after(teardown);
 
-  const { createSession, transitionSessionState } = await import("../apps/server/domain/sessions.js");
 
   const row = await createSession(db, soloUser, { node_id: null, session_type: "interactive_task" });
   await transitionSessionState(db, soloUser, row.id, "suspended");
@@ -108,8 +107,6 @@ test("a spawn id with no matching row falls back to creating one under that id (
   const { base, teardown } = await setupServer();
   t.after(teardown);
 
-  const { getSession } = await import("../apps/server/domain/sessions.js");
-  const { ulid } = await import("ulid");
   const freshId = ulid();
 
   const client = new Client({ name: "claude-code", version: "1.2.3" });

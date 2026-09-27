@@ -6,6 +6,7 @@ import type { DbClient } from "../infra/db.js";
 import { ulid } from "ulid";
 import type { Identity } from "./adapter.js";
 import { nowExpr, isUniqueViolation } from "../infra/sql.js";
+import { isLocale, type Locale } from "../shared/i18n/config.js";
 
 // Thrown by inviteUser() when the email is already registered (paired or
 // invited). Handlers map this to 409.
@@ -157,4 +158,17 @@ export async function inviteUser(
     throw err;
   }
   return { id, email: normalized, name };
+}
+
+// #538: the user's UI language (users.locale, migration 041). NULL means no
+// choice yet -- the window keeps the language it resolved on its own. The
+// row is always the caller's own: /me reads it and PATCH /me writes it.
+export async function getUserLocale(db: DbClient, userId: string): Promise<Locale | null> {
+  const r = await db.execute({ sql: "SELECT locale FROM users WHERE id = ?", args: [userId] });
+  const value = r.rows[0]?.locale;
+  return isLocale(value) ? value : null;
+}
+
+export async function setUserLocale(db: DbClient, userId: string, locale: Locale | null): Promise<void> {
+  await db.execute({ sql: "UPDATE users SET locale = ? WHERE id = ?", args: [locale, userId] });
 }
