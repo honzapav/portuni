@@ -32,6 +32,7 @@ import {
   selectThreadsByNode,
 } from "./lib/session-selectors";
 import { useSessionStore } from "./lib/use-session-store";
+import { countOpenTasks } from "./lib/workspace-list";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { deriveWorkspaceNodeRows } from "./lib/sessions";
@@ -1014,7 +1015,7 @@ export default function App() {
           onOpenSettings={openSettingsView}
           onCreateNode={handleCreateNodeClick}
           canCreateNode={canCreateNode}
-          workspaceBadge={workspaceRows.length}
+          workspaceBadge={countOpenTasks(workspaceThreadsByNode)}
           workspaceRows={workspaceRows}
           workspaceSelectedNodeId={selectedWorkspaceNodeId}
           onWorkspaceSelectNode={workspaceSelectNode}

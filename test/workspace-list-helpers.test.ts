@@ -2,7 +2,7 @@
 // node's status dot and the Stav grouping.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { summarizeNodeActivity, taskGroupOf } from "../apps/web/src/lib/workspace-list.js";
+import { countOpenTasks, summarizeNodeActivity, taskGroupOf } from "../apps/web/src/lib/workspace-list.js";
 
 describe("summarizeNodeActivity", () => {
   it("waiting beats running", () => {
@@ -35,5 +35,23 @@ describe("taskGroupOf", () => {
     assert.equal(taskGroupOf({ state: "suspended", waiting_since: null }), "suspended");
     assert.equal(taskGroupOf({ state: "draft", waiting_since: null }), "draft");
     assert.equal(taskGroupOf({ state: "closed", waiting_since: null }), "done");
+  });
+});
+
+describe("countOpenTasks", () => {
+  it("counts every open node's tasks except the done ones", () => {
+    assert.equal(
+      countOpenTasks({
+        a: [
+          { state: "suspended", waiting_since: null },
+          { state: "running", waiting_since: "x" },
+          { state: "closed", waiting_since: null },
+        ],
+        b: [{ state: "draft", waiting_since: null }],
+        c: [],
+      }),
+      3,
+    );
+    assert.equal(countOpenTasks({}), 0);
   });
 });
