@@ -4,6 +4,7 @@
 // and slows to 5s once it's running again to avoid generating
 // background traffic on idle desktops.
 
+import { displayError } from "../errors";
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "./backend-url";
 
@@ -57,7 +58,7 @@ export function useMcpStatus(): McpStatus {
         if (cancelled) return;
         apply({
           state: "down",
-          reason: e instanceof Error ? e.message : String(e),
+          reason: displayError(e),
         });
       }
       if (!cancelled) {

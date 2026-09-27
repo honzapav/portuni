@@ -208,7 +208,7 @@ describe("Postgres baseline (PGlite): sessions.terminal_id index and files uniqu
     const project = await seedNode(db, "project", u);
     const sessionId = ulid();
     await db.execute({
-      sql: "INSERT INTO sessions (id, node_id, user_id, session_type, state, name) VALUES (?, ?, ?, 'interactive_task', 'draft', 'Nový úkol')",
+      sql: "INSERT INTO sessions (id, node_id, user_id, session_type, state, name) VALUES (?, ?, ?, 'interactive_task', 'draft', 'New task')",
       args: [sessionId, project, u],
     });
     const res = await db.execute({ sql: "SELECT state FROM sessions WHERE id = ?", args: [sessionId] });

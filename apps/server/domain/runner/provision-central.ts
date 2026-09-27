@@ -8,16 +8,9 @@
 // has the real graph db) instead of never at all.
 
 import { createMirrorForNodeCentral } from "../sync/central/engine-central.js";
-import { listUserMirrors } from "../sync/mirror-registry.js";
-import {
-  appendHomeNodeIdToUrl,
-  buildOrientationHint,
-  resolvePortuniMcpUrl,
-  resolvePortuniRoot,
-  resolveRunnerMcpToken,
-} from "../write-scope.js";
+import { resolveRunnerMcpToken } from "../write-scope.js";
 import type { CentralClient } from "../sync/central/client.js";
-import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
+import { completeProvisionRun, type ProvisionRunInput, type ProvisionRunResult } from "./provision.js";
 
 export function createProvisionRunCentral(
   client: CentralClient,
@@ -31,27 +24,6 @@ export function createProvisionRunCentral(
     const mirror = await createMirrorForNodeCentral(client, input.userId, { nodeId: input.nodeId });
     const cwd = mirror.local_path;
 
-    const allMirrors = await listUserMirrors(input.userId);
-    const mirrorPaths = allMirrors.map((m) => m.local_path);
-    const portuniRoot =
-      resolvePortuniRoot({ envValue: process.env.PORTUNI_ROOT ?? null, knownMirrors: mirrorPaths }) ?? cwd;
-
-    const summary = await client.orientation(input.nodeId).catch(() => null);
-    const handoffResume = input.resume?.mode === "handoff" && !!input.resume.handoffPath;
-    let orientation = summary ? buildOrientationHint(handoffResume ? { ...summary, handoff: null } : summary) : "";
-    if (handoffResume && input.resume?.handoffPath) {
-      orientation +=
-        `\n## Předání (obnovení z handoffu)\n\n` +
-        `Konverzace se neobnovuje přímo; pokračuješ ze zápisu na \`${input.resume.handoffPath}\`. ` +
-        `Přečti si ho, než začneš.\n`;
-    }
-
-    // resolvePortuniMcpUrl already resolves to the local sidecar front door
-    // in agent mode (PORTUNI_AGENT_MODE branch) -- device-local tools stay
-    // local, graph/scope tools proxy to central, same as every other agent-
-    // mode MCP connection.
-    const url = appendHomeNodeIdToUrl(resolvePortuniMcpUrl(), input.nodeId);
-
-    return { cwd, orientation, mcp: { url, token, homeNodeId: input.nodeId }, portuniRoot, mirrors: mirrorPaths };
+    return completeProvisionRun(input, token, cwd, () => client.orientation(input.nodeId).catch(() => null));
   };
 }

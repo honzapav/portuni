@@ -21,7 +21,7 @@ fi
 export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin"
 
 if ! command -v npm >/dev/null 2>&1; then
-  echo "No node/npm found (PATH and ~/.nvm/versions/node/*/bin); install node 22+ on this machine." >&2
+  echo "No node/npm found (PATH and ~/.nvm/versions/node/*/bin); install node 24+ on this machine." >&2
   exit 1
 fi
 

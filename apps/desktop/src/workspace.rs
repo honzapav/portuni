@@ -244,23 +244,26 @@ pub(crate) fn global_front_door_url(cfg: &WorkspaceConfig) -> Result<String, Str
 /// Plain http:// is allowed only for loopback (local dev) — on a real
 /// host a MITM could tamper with the desktop-config response and swap
 /// the OAuth client. Rejects non-http(s) schemes rather than guessing.
-pub(crate) fn normalize_server_url(input: &str) -> Result<String, String> {
+pub(crate) fn normalize_server_url(input: &str) -> Result<String, crate::errors::CmdError> {
+    use crate::errors::CmdError;
     let trimmed = input.trim().trim_end_matches('/');
     if trimmed.is_empty() {
-        return Err("server URL is required".to_string());
+        return Err(CmdError::ServerUrlRequired);
     }
     if let Some(rest) = trimmed.strip_prefix("http://") {
         let host = rest.split(['/', ':']).next().unwrap_or("");
         if host == "localhost" || host == "127.0.0.1" {
             return Ok(trimmed.to_string());
         }
-        return Err("http:// is allowed only for localhost — use https://".to_string());
+        return Err(CmdError::ServerUrlInsecure);
     }
     if trimmed.starts_with("https://") {
         return Ok(trimmed.to_string());
     }
     if trimmed.contains("://") {
-        return Err(format!("unsupported URL scheme: {trimmed}"));
+        return Err(CmdError::ServerUrlScheme {
+            url: trimmed.to_string(),
+        });
     }
     Ok(format!("https://{trimmed}"))
 }
@@ -575,6 +578,14 @@ mod tests {
         assert!(normalize_server_url("").is_err());
         assert!(normalize_server_url("   ").is_err());
         assert!(normalize_server_url("ftp://x").is_err());
+        assert_eq!(
+            normalize_server_url("").unwrap_err().code(),
+            "DESKTOP_SERVER_URL_REQUIRED"
+        );
+        assert_eq!(
+            normalize_server_url("ftp://x").unwrap_err().code(),
+            "DESKTOP_SERVER_URL_SCHEME"
+        );
     }
 
     #[test]
@@ -583,5 +594,9 @@ mod tests {
         // the desktop-config response — https only, loopback excepted for dev.
         assert!(normalize_server_url("http://api.example.com").is_err());
         assert!(normalize_server_url("http://192.168.1.10:4011").is_err());
+        assert_eq!(
+            normalize_server_url("http://api.example.com").unwrap_err().code(),
+            "DESKTOP_SERVER_URL_INSECURE"
+        );
     }
 }

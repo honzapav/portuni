@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The languages Portuni's UI is translated into (spec: Desktop).
+       macOS localizes its own menu items and dialogs to the first one of
+       these the user prefers. Merged into the bundle's Info.plist through
+       bundle.macOS.infoPlist in tauri.conf.json. -->
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>cs</string>
+  </array>
+</dict>
+</plist>

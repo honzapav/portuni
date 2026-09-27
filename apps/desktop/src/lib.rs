@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 mod auth;
+mod desktop_i18n;
+mod errors;
 mod mcp_install;
 mod sessions_ws;
 mod shell_path;
@@ -28,6 +30,15 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+use desktop_i18n::{UiLocale, UiLocaleState};
+use errors::CmdError;
+
+// config.json as the helpers below read it: a read or parse failure is
+// DESKTOP_CONFIG_INVALID with the raw text.
+fn load_config(data_dir: &Path) -> Result<workspace::LoadedConfig, CmdError> {
+    workspace::load(data_dir).map_err(|detail| CmdError::ConfigInvalid { detail })
+}
 
 // Sequential-close quit (#229). Cmd+Q / menu Quit / an OS-driven exit
 // request no longer broadcasts a single "app-exit-requested" the (one)
@@ -269,7 +280,7 @@ struct FocusHistory(Mutex<Vec<String>>);
 // about it; open_window replays this to a newly created window. Cleared
 // whenever that workspace's sidecar reports ready again (a fresh
 // spawn/restart succeeding retires the stale failure).
-struct PendingBackendErrors(Mutex<HashMap<String, String>>);
+struct PendingBackendErrors(Mutex<HashMap<String, CmdError>>);
 
 // Keychain coordinates for secrets we persist across launches. Service is
 // bundle-id-shaped so entries show up under "ooo.workflow.portuni" in
@@ -324,19 +335,21 @@ pub(crate) fn keychain_delete_ws(base: &str, ws_id: &str) {
 /// window is open"), the one use the spec itself calls out for this.
 pub(crate) fn active_workspace(
     app: &AppHandle,
-) -> Result<(String, workspace::WorkspaceConfig), String> {
+) -> Result<(String, workspace::WorkspaceConfig), CmdError> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    match workspace::load(&data_dir)? {
+    match load_config(&data_dir)? {
         workspace::LoadedConfig::V2(file) => {
             let cfg = file
                 .workspaces
                 .get(&file.active_workspace)
                 .cloned()
-                .ok_or_else(|| "active workspace missing from config".to_string())?;
+                .ok_or_else(|| CmdError::WorkspaceUnknown {
+                    id: file.active_workspace.clone(),
+                })?;
             Ok((file.active_workspace, cfg))
         }
-        workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
-        workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
+        workspace::LoadedConfig::V1(_) => Err(CmdError::ConfigNotMigrated),
+        workspace::LoadedConfig::Missing => Err(CmdError::ConfigMissing),
     }
 }
 
@@ -350,7 +363,7 @@ pub(crate) fn active_workspace(
 // wrapper and a pure(-ish, filesystem-reading) core (ws_of_from_dir) so the
 // label parsing and existence check are unit-testable with a temp data_dir
 // instead of a real Tauri window.
-pub(crate) fn ws_of(window: &tauri::Window) -> Result<String, String> {
+pub(crate) fn ws_of(window: &tauri::Window) -> Result<String, CmdError> {
     let data_dir = window
         .app_handle()
         .path()
@@ -359,18 +372,20 @@ pub(crate) fn ws_of(window: &tauri::Window) -> Result<String, String> {
     ws_of_from_dir(window.label(), &data_dir)
 }
 
-fn ws_of_from_dir(label: &str, data_dir: &Path) -> Result<String, String> {
+fn ws_of_from_dir(label: &str, data_dir: &Path) -> Result<String, CmdError> {
     let id = label
         .strip_prefix("ws:")
         .filter(|id| !id.is_empty())
-        .ok_or_else(|| format!("window '{label}' is not a workspace window"))?;
-    match workspace::load(data_dir)? {
+        .ok_or_else(|| CmdError::NotWorkspaceWindow {
+            label: label.to_string(),
+        })?;
+    match load_config(data_dir)? {
         workspace::LoadedConfig::V2(file) if file.workspaces.contains_key(id) => {
             Ok(id.to_string())
         }
-        workspace::LoadedConfig::V2(_) => Err(format!("unknown workspace '{id}'")),
-        workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
-        workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
+        workspace::LoadedConfig::V2(_) => Err(CmdError::WorkspaceUnknown { id: id.to_string() }),
+        workspace::LoadedConfig::V1(_) => Err(CmdError::ConfigNotMigrated),
+        workspace::LoadedConfig::Missing => Err(CmdError::ConfigMissing),
     }
 }
 
@@ -382,20 +397,22 @@ fn ws_of_from_dir(label: &str, data_dir: &Path) -> Result<String, String> {
 pub(crate) fn ws_and_config(
     app: &AppHandle,
     window: &tauri::Window,
-) -> Result<(String, workspace::WorkspaceConfig), String> {
+) -> Result<(String, workspace::WorkspaceConfig), CmdError> {
     let label = window.label();
     let id = label
         .strip_prefix("ws:")
         .filter(|id| !id.is_empty())
-        .ok_or_else(|| format!("window '{label}' is not a workspace window"))?;
+        .ok_or_else(|| CmdError::NotWorkspaceWindow {
+            label: label.to_string(),
+        })?;
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    match workspace::load(&data_dir)? {
+    match load_config(&data_dir)? {
         workspace::LoadedConfig::V2(file) => match file.workspaces.get(id) {
             Some(cfg) => Ok((id.to_string(), cfg.clone())),
-            None => Err(format!("unknown workspace '{id}'")),
+            None => Err(CmdError::WorkspaceUnknown { id: id.to_string() }),
         },
-        workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
-        workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
+        workspace::LoadedConfig::V1(_) => Err(CmdError::ConfigNotMigrated),
+        workspace::LoadedConfig::Missing => Err(CmdError::ConfigMissing),
     }
 }
 
@@ -404,16 +421,18 @@ pub(crate) fn ws_and_config(
 pub(crate) fn workspace_config_for(
     app: &AppHandle,
     ws_id: &str,
-) -> Result<workspace::WorkspaceConfig, String> {
+) -> Result<workspace::WorkspaceConfig, CmdError> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    match workspace::load(&data_dir)? {
+    match load_config(&data_dir)? {
         workspace::LoadedConfig::V2(file) => file
             .workspaces
             .get(ws_id)
             .cloned()
-            .ok_or_else(|| format!("workspace '{ws_id}' missing from config")),
-        workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
-        workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
+            .ok_or_else(|| CmdError::WorkspaceUnknown {
+                id: ws_id.to_string(),
+            }),
+        workspace::LoadedConfig::V1(_) => Err(CmdError::ConfigNotMigrated),
+        workspace::LoadedConfig::Missing => Err(CmdError::ConfigMissing),
     }
 }
 
@@ -428,8 +447,8 @@ pub(crate) fn workspace_config_for(
 // other writer.
 fn with_config_write_lock<T>(
     app: &AppHandle,
-    f: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
+    f: impl FnOnce() -> Result<T, CmdError>,
+) -> Result<T, CmdError> {
     let state = app.state::<ConfigLock>();
     let _guard = state.0.lock().map_err(|e| e.to_string())?;
     let result = f();
@@ -448,26 +467,26 @@ fn with_config_write_lock<T>(
 fn with_config_mut_at(
     lock: &Mutex<()>,
     data_dir: &Path,
-    mutate: impl FnOnce(&mut workspace::WorkspacesFile) -> Result<(), String>,
-) -> Result<(), String> {
+    mutate: impl FnOnce(&mut workspace::WorkspacesFile) -> Result<(), CmdError>,
+) -> Result<(), CmdError> {
     let _guard = lock.lock().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(data_dir)? {
+    let mut file = match load_config(data_dir)? {
         workspace::LoadedConfig::V2(f) => f,
         workspace::LoadedConfig::V1(_) => {
-            return Err("config awaiting workspace migration".to_string())
+            return Err(CmdError::ConfigNotMigrated)
         }
         workspace::LoadedConfig::Missing => {
-            return Err("no config.json (fresh install)".to_string())
+            return Err(CmdError::ConfigMissing)
         }
     };
     mutate(&mut file)?;
-    workspace::save(data_dir, &file)
+    Ok(workspace::save(data_dir, &file)?)
 }
 
 pub(crate) fn with_config_mut(
     app: &AppHandle,
-    mutate: impl FnOnce(&mut workspace::WorkspacesFile) -> Result<(), String>,
-) -> Result<(), String> {
+    mutate: impl FnOnce(&mut workspace::WorkspacesFile) -> Result<(), CmdError>,
+) -> Result<(), CmdError> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let result = with_config_mut_at(&app.state::<ConfigLock>().0, &data_dir, mutate);
     // See with_config_write_lock's comment (#226) -- same broadcast, this
@@ -709,27 +728,39 @@ fn focus_history_snapshot(app: &AppHandle) -> Vec<String> {
         .unwrap_or_default()
 }
 
-// Pure core of set_pending_backend_error: record ws_id's latest message,
+// Pure core of set_pending_backend_error: record ws_id's latest error,
 // overwriting any earlier one for the same workspace. Unit-testable
 // against a bare HashMap instead of the real Mutex-guarded managed state.
-fn record_pending_backend_error(pending: &mut HashMap<String, String>, ws_id: &str, msg: &str) {
-    pending.insert(ws_id.to_string(), msg.to_string());
+fn record_pending_backend_error(
+    pending: &mut HashMap<String, CmdError>,
+    ws_id: &str,
+    err: &CmdError,
+) {
+    pending.insert(ws_id.to_string(), err.clone());
 }
 
 // Pure core of clear_pending_backend_error: retire ws_id's entry only,
 // leaving every other workspace's pending error untouched.
-fn retire_pending_backend_error(pending: &mut HashMap<String, String>, ws_id: &str) {
+fn retire_pending_backend_error(pending: &mut HashMap<String, CmdError>, ws_id: &str) {
     pending.remove(ws_id);
 }
 
 // Record ws_id's latest backend-error so a window created later can replay
 // it (#227). See PendingBackendErrors' doc comment.
-fn set_pending_backend_error(app: &AppHandle, ws_id: &str, msg: &str) {
+fn set_pending_backend_error(app: &AppHandle, ws_id: &str, err: &CmdError) {
     if let Some(state) = app.try_state::<PendingBackendErrors>() {
         if let Ok(mut pending) = state.0.lock() {
-            record_pending_backend_error(&mut pending, ws_id, msg);
+            record_pending_backend_error(&mut pending, ws_id, err);
         }
     }
+}
+
+// Record and send one workspace's backend-error (#227): per window, with a
+// replay for a window created after it fires. The payload is the error's
+// code, params and English message; the web renders the code.
+fn report_backend_error_to(app: &AppHandle, ws_id: &str, err: CmdError) {
+    set_pending_backend_error(app, ws_id, &err);
+    let _ = app.emit_to(format!("ws:{ws_id}"), "backend-error", err);
 }
 
 // Retire ws_id's pending backend-error: its sidecar reported ready again.
@@ -749,9 +780,9 @@ fn clear_pending_backend_error(app: &AppHandle, ws_id: &str) {
 // present.
 fn backend_status_replay(
     port: Option<u16>,
-    pending_error: Option<&str>,
-) -> (Option<u16>, Option<String>) {
-    (port, pending_error.map(str::to_string))
+    pending_error: Option<&CmdError>,
+) -> (Option<u16>, Option<CmdError>) {
+    (port, pending_error.cloned())
 }
 
 // Replay backend-ready/backend-error to a just-created ws:<id> window
@@ -766,7 +797,7 @@ fn replay_backend_status(app: &AppHandle, ws_id: &str) {
     let pending_error = app
         .try_state::<PendingBackendErrors>()
         .and_then(|s| s.0.lock().ok().and_then(|p| p.get(ws_id).cloned()));
-    let (ready_port, error_message) = backend_status_replay(port, pending_error.as_deref());
+    let (ready_port, error_message) = backend_status_replay(port, pending_error.as_ref());
     let label = format!("ws:{ws_id}");
     if let Some(port) = ready_port {
         let _ = app.emit_to(&label, "backend-ready", port);
@@ -776,14 +807,76 @@ fn replay_backend_status(app: &AppHandle, ws_id: &str) {
     }
 }
 
+// The app menu: the platform default with our own Quit item in place of the
+// native one (see .setup() for why), its text from the `desktop` catalog in
+// `locale`. Built at startup and again by set_ui_locale when the language
+// changes. Compiled everywhere so the container build checks it; only
+// macOS installs it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn build_app_menu(handle: &AppHandle, locale: UiLocale) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, MenuItemKind};
+    let menu = Menu::default(handle)?;
+    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+        // The standard macOS app submenu always ends with Quit.
+        let items = app_menu.items()?;
+        if let Some(last) = items.last() {
+            let _ = match last {
+                MenuItemKind::MenuItem(i) => app_menu.remove(i),
+                MenuItemKind::Predefined(i) => app_menu.remove(i),
+                MenuItemKind::Submenu(i) => app_menu.remove(i),
+                MenuItemKind::Check(i) => app_menu.remove(i),
+                MenuItemKind::Icon(i) => app_menu.remove(i),
+            };
+        }
+        let quit = MenuItem::with_id(
+            handle,
+            "portuni-quit",
+            desktop_i18n::text(locale, "menu.quit"),
+            true,
+            Some("CmdOrCtrl+Q"),
+        )?;
+        app_menu.append(&quit)?;
+    }
+    Ok(menu)
+}
+
+// The UI language of the calling window ("en", "cs"; anything else is
+// ignored). One language holds for the whole app -- the menu bar is
+// app-wide -- and it follows the focused window: the web calls this after
+// boot, after a language change and when its window gains focus, and a
+// call from a window without focus changes nothing. The menu is rebuilt
+// when the language changes.
 #[tauri::command]
-fn set_turso_token(window: tauri::Window, token: String) -> Result<(), String> {
-    let ws_id = ws_of(&window)?;
-    keychain_set_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id, &token)
+fn set_ui_locale(window: tauri::Window, locale: String) -> Result<(), CmdError> {
+    let Some(locale) = UiLocale::parse(&locale) else {
+        return Ok(());
+    };
+    if !window.is_focused().unwrap_or(true) {
+        return Ok(());
+    }
+    let app = window.app_handle();
+    let changed = app.state::<UiLocaleState>().set(locale);
+    if changed {
+        info!("ui locale: {}", locale.tag());
+        #[cfg(target_os = "macos")]
+        {
+            let menu =
+                build_app_menu(app, locale).map_err(|e| CmdError::Failed(e.to_string()))?;
+            app.set_menu(menu)
+                .map_err(|e| CmdError::Failed(e.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn clear_turso_token(window: tauri::Window) -> Result<(), String> {
+fn set_turso_token(window: tauri::Window, token: String) -> Result<(), CmdError> {
+    let ws_id = ws_of(&window)?;
+    Ok(keychain_set_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id, &token)?)
+}
+
+#[tauri::command]
+fn clear_turso_token(window: tauri::Window) -> Result<(), CmdError> {
     let ws_id = ws_of(&window)?;
     keychain_delete_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id);
     Ok(())
@@ -800,7 +893,7 @@ fn clear_turso_token(window: tauri::Window) -> Result<(), String> {
 // to the central server with the device token itself, so the device token
 // is never the credential a client needs.
 #[tauri::command]
-fn get_mcp_token(window: tauri::Window) -> Result<String, String> {
+fn get_mcp_token(window: tauri::Window) -> Result<String, CmdError> {
     let ws_id = ws_of(&window)?;
     let app = window.app_handle();
     app.state::<AuthTokens>()
@@ -810,7 +903,7 @@ fn get_mcp_token(window: tauri::Window) -> Result<String, String> {
         .get(&ws_id)
         .cloned()
         .or_else(|| keychain_get_ws(KEYCHAIN_MCP_ACCOUNT, &ws_id))
-        .ok_or_else(|| "backend not ready (no token)".to_string())
+        .ok_or(CmdError::BackendNotReady)
 }
 
 // Rotates the MCP auth token: writes a fresh value to Keychain and into
@@ -825,7 +918,7 @@ fn get_mcp_token(window: tauri::Window) -> Result<String, String> {
 // Only ~/.claude.json embeds the literal token and goes stale until the
 // user re-runs "Install Claude (global)".
 #[tauri::command]
-async fn regenerate_mcp_token(window: tauri::Window) -> Result<String, String> {
+async fn regenerate_mcp_token(window: tauri::Window) -> Result<String, CmdError> {
     let ws_id = ws_of(&window)?;
     let app = window.app_handle().clone();
     // spawn_blocking: the respawn reaps the old port and, in a team
@@ -836,6 +929,7 @@ async fn regenerate_mcp_token(window: tauri::Window) -> Result<String, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+    .map_err(CmdError::from)
 }
 
 // The steps of an MCP token rotation, behind a seam so their order is
@@ -895,10 +989,13 @@ impl TokenRotation for AppTokenRotation<'_> {
     }
 
     fn report_backend_error(&mut self, ws_id: &str, msg: &str) {
-        set_pending_backend_error(self.0, ws_id, msg);
-        let _ = self
-            .0
-            .emit_to(format!("ws:{ws_id}"), "backend-error", msg.to_string());
+        report_backend_error_to(
+            self.0,
+            ws_id,
+            CmdError::BackendFailed {
+                detail: msg.to_string(),
+            },
+        );
     }
 }
 
@@ -938,15 +1035,15 @@ fn global_entry_parts(
 
 pub(crate) fn enabled_workspaces(
     app: &AppHandle,
-) -> Result<Vec<(String, workspace::WorkspaceConfig)>, String> {
+) -> Result<Vec<(String, workspace::WorkspaceConfig)>, CmdError> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    match workspace::load(&data_dir)? {
+    match load_config(&data_dir)? {
         workspace::LoadedConfig::V2(f) => Ok(f
             .workspaces
             .into_iter()
             .filter(|(_, c)| c.enabled)
             .collect()),
-        _ => Err("config not migrated to workspaces yet".to_string()),
+        _ => Err(CmdError::ConfigNotMigrated),
     }
 }
 
@@ -960,7 +1057,7 @@ pub(crate) fn enabled_workspaces(
 // env-reference pattern (same as mirror configs) so the token is never
 // hardcoded in the file.
 #[tauri::command]
-fn install_claude_global(app: AppHandle) -> Result<String, String> {
+fn install_claude_global(app: AppHandle) -> Result<String, CmdError> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".claude.json");
     // Each workspace entry installs independently; failures aggregate so
@@ -977,7 +1074,9 @@ fn install_claude_global(app: AppHandle) -> Result<String, String> {
     if failures.is_empty() {
         Ok(path.to_string_lossy().into_owned())
     } else {
-        Err(format!("some workspaces failed: {}", failures.join("; ")))
+        Err(CmdError::McpInstallPartial {
+            detail: failures.join("; "),
+        })
     }
 }
 
@@ -986,7 +1085,7 @@ fn install_claude_global(app: AppHandle) -> Result<String, String> {
 // comments so we can refresh idempotently without clobbering surrounding
 // user config.
 #[tauri::command]
-fn install_codex_global(app: AppHandle) -> Result<String, String> {
+fn install_codex_global(app: AppHandle) -> Result<String, CmdError> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".codex").join("config.toml");
     // Each workspace entry installs independently; failures aggregate so
@@ -1004,7 +1103,9 @@ fn install_codex_global(app: AppHandle) -> Result<String, String> {
     if failures.is_empty() {
         Ok(path.to_string_lossy().into_owned())
     } else {
-        Err(format!("some workspaces failed: {}", failures.join("; ")))
+        Err(CmdError::McpInstallPartial {
+            detail: failures.join("; "),
+        })
     }
 }
 
@@ -1014,7 +1115,7 @@ fn install_codex_global(app: AppHandle) -> Result<String, String> {
 // (api_key_env), so — like Codex — the literal token never lands in the
 // file in either data mode.
 #[tauri::command]
-fn install_vibe_global(app: AppHandle) -> Result<String, String> {
+fn install_vibe_global(app: AppHandle) -> Result<String, CmdError> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".vibe").join("config.toml");
     // Each workspace entry installs independently; failures aggregate so
@@ -1032,7 +1133,9 @@ fn install_vibe_global(app: AppHandle) -> Result<String, String> {
     if failures.is_empty() {
         Ok(path.to_string_lossy().into_owned())
     } else {
-        Err(format!("some workspaces failed: {}", failures.join("; ")))
+        Err(CmdError::McpInstallPartial {
+            detail: failures.join("; "),
+        })
     }
 }
 
@@ -1112,18 +1215,18 @@ fn migrate_turso_token_to_keychain(data_dir: &Path) {
 /// this to gate the one-time migration prompt. False for both v2 (already
 /// migrated) and Missing (fresh install, no migration needed).
 #[tauri::command]
-fn workspace_migration_status(app: AppHandle) -> Result<bool, String> {
+fn workspace_migration_status(app: AppHandle) -> Result<bool, CmdError> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(matches!(workspace::load(&data_dir)?, workspace::LoadedConfig::V1(_)))
+    Ok(matches!(load_config(&data_dir)?, workspace::LoadedConfig::V1(_)))
 }
 
 // One-shot v1 -> v2 migration. Order matters for idempotence: DB files and
 // Keychain first, config.json LAST — its `workspaces` key is the completion
 // marker, so an interrupted run re-enters here safely.
 #[tauri::command]
-fn migrate_to_workspaces(app: AppHandle, id: String) -> Result<(), String> {
+fn migrate_to_workspaces(app: AppHandle, id: String) -> Result<(), CmdError> {
     if !workspace::is_valid_workspace_id(&id) {
-        return Err("invalid workspace id (use lowercase letters, digits, dashes)".to_string());
+        return Err(CmdError::WorkspaceIdInvalid);
     }
     // The whole migration -- not just the final config.json write -- runs
     // under the config lock (#224): it starts with a load and ends with a
@@ -1222,7 +1325,7 @@ fn get_backend_port(window: tauri::Window) -> Option<u16> {
 // natively is reliable and logs every attempt to sidecar.log, so a failure is
 // visible instead of vanishing.
 #[tauri::command]
-fn open_external(url: String) -> Result<(), String> {
+fn open_external(url: String) -> Result<(), CmdError> {
     // Scheme allowlist mirrors the frontend's safe-url.ts: only ever hand the
     // OS a web or mail link. Without this, a crafted node/actor link could ask
     // the opener to launch file:// or some registered custom-scheme handler.
@@ -1234,13 +1337,17 @@ fn open_external(url: String) -> Result<(), String> {
         "http" | "https" | "mailto" => {}
         other => {
             error!("open_external refusing scheme {other} for {url}");
-            return Err(format!("refusing to open scheme: {other}"));
+            return Err(CmdError::UrlRefused {
+                scheme: other.to_string(),
+            });
         }
     }
     info!("open_external: {url}");
     open::that(parsed.as_str()).map_err(|e| {
         error!("open_external failed for {url}: {e}");
-        e.to_string()
+        CmdError::OpenFailed {
+            detail: e.to_string(),
+        }
     })
 }
 
@@ -1351,7 +1458,7 @@ struct DataModeResponse {
 /// Return the current data mode and server URL. Used by the React frontend
 /// to adapt its UI (hide mirror/sync affordances in a team workspace).
 #[tauri::command]
-fn get_data_mode(window: tauri::Window) -> Result<DataModeResponse, String> {
+fn get_data_mode(window: tauri::Window) -> Result<DataModeResponse, CmdError> {
     let ws_id = ws_of(&window)?;
     let cfg = workspace_config_for(window.app_handle(), &ws_id)?;
     let mode = if workspace::is_central(&cfg) {
@@ -1389,7 +1496,7 @@ struct TursoStatus {
 }
 
 #[tauri::command]
-fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
+fn get_turso_status(app: AppHandle) -> Result<TursoStatus, CmdError> {
     // Must NOT hard-error just because the config lacks a v2 active workspace:
     // TursoSetupGate treats a failed get_turso_status as "ready" and skips the
     // onboarding wizard, so a `?` on active_workspace here would strand a fresh
@@ -1443,7 +1550,7 @@ fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
 // empty `turso_url` produces a `{}` config — the marker that the user
 // has chosen local mode and we should stop showing the wizard.
 #[tauri::command]
-fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> {
+fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), CmdError> {
     let turso = turso_url
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
@@ -1451,7 +1558,7 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
     let mut active = String::new();
     with_config_write_lock(&app, || {
         let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        let loaded = workspace::load(&data_dir)?;
+        let loaded = load_config(&data_dir)?;
         // Fresh install path: .setup()'s spawn_all_sidecars was a no-op
         // (config was Missing at boot), so nothing is running yet and we
         // must spawn below.
@@ -1464,17 +1571,15 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
             workspace::LoadedConfig::Missing => {
                 workspace::migrate_v1_value(&serde_json::json!({}), "default")
             }
-            workspace::LoadedConfig::V1(_) => {
-                return Err("config awaiting workspace migration".to_string())
-            }
+            workspace::LoadedConfig::V1(_) => return Err(CmdError::ConfigNotMigrated),
         };
         active = file.active_workspace.clone();
         let cfg = file
             .workspaces
             .get_mut(&active)
-            .ok_or_else(|| "active workspace missing from config".to_string())?;
+            .ok_or_else(|| CmdError::WorkspaceUnknown { id: active.clone() })?;
         cfg.turso_url = turso;
-        workspace::save(&data_dir, &file)
+        Ok(workspace::save(&data_dir, &file)?)
     })?;
     // Fresh install: bring the just-created `default` workspace's sidecar up
     // now so the wizard's reload finds a running backend instead of polling an
@@ -1504,7 +1609,7 @@ struct DesktopClientConfig {
 }
 
 #[tauri::command]
-async fn setup_central(app: AppHandle, server_url: String) -> Result<(), String> {
+async fn setup_central(app: AppHandle, server_url: String) -> Result<(), CmdError> {
     let server = workspace::normalize_server_url(&server_url)?;
     // bound the fetch — a typo'd host must fail, not hang the wizard
     let http = reqwest::Client::builder()
@@ -1515,52 +1620,50 @@ async fn setup_central(app: AppHandle, server_url: String) -> Result<(), String>
         .get(format!("{server}/auth/desktop-config"))
         .send()
         .await
-        .map_err(|e| format!("server unreachable: {e}"))?;
+        .map_err(|e| CmdError::ServerUnreachable {
+            detail: e.to_string(),
+        })?;
     if resp.status().as_u16() == 404 {
-        return Err(format!(
-            "{server} does not serve a desktop client config — ask your admin to set PORTUNI_DESKTOP_GOOGLE_CLIENT_ID/SECRET"
-        ));
+        warn!("setup_central: {server} serves no desktop client config");
+        return Err(CmdError::DesktopConfigUnavailable);
     }
     if !resp.status().is_success() {
-        return Err(format!(
-            "desktop-config request failed: HTTP {}",
-            resp.status().as_u16()
-        ));
+        return Err(CmdError::ServerError {
+            status: resp.status().as_u16(),
+        });
     }
     let client: DesktopClientConfig = resp
         .json()
         .await
         .map_err(|e| format!("invalid desktop-config response: {e}"))?;
     if client.google_client_id.trim().is_empty() || client.google_client_secret.trim().is_empty() {
-        return Err("desktop-config response is missing the client id or secret".to_string());
+        return Err(CmdError::DesktopConfigUnavailable);
     }
 
     let mut fresh_install = false;
     let mut active = String::new();
     with_config_write_lock(&app, || {
         let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        let loaded = workspace::load(&data_dir)?;
+        let loaded = load_config(&data_dir)?;
         fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
         let mut file = match loaded {
             workspace::LoadedConfig::V2(f) => f,
             workspace::LoadedConfig::Missing => {
                 workspace::migrate_v1_value(&serde_json::json!({}), "default")
             }
-            workspace::LoadedConfig::V1(_) => {
-                return Err("config awaiting workspace migration".to_string())
-            }
+            workspace::LoadedConfig::V1(_) => return Err(CmdError::ConfigNotMigrated),
         };
         active = file.active_workspace.clone();
         let cfg = file
             .workspaces
             .get_mut(&active)
-            .ok_or_else(|| "active workspace missing from config".to_string())?;
+            .ok_or_else(|| CmdError::WorkspaceUnknown { id: active.clone() })?;
         cfg.server_url = Some(server.clone());
         cfg.google_client_id = Some(client.google_client_id.trim().to_string());
         cfg.google_client_secret = Some(client.google_client_secret.trim().to_string());
         cfg.data_mode = Some("central".to_string());
         cfg.turso_url = None;
-        workspace::save(&data_dir, &file)
+        Ok(workspace::save(&data_dir, &file)?)
     })?;
     if fresh_install {
         spawn_all_sidecars(&app);
@@ -1571,50 +1674,50 @@ async fn setup_central(app: AppHandle, server_url: String) -> Result<(), String>
 
 // Open a path in Finder. If reveal=true, uses `open -R` to select/reveal
 // the file; if false, uses `open` to open the folder itself. macOS-only;
-// on other platforms returns UNSUPPORTED_OS so callers can fall through.
+// on other platforms returns DESKTOP_UNSUPPORTED_OS so callers can fall through.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-async fn open_in_finder(path: String, reveal: bool) -> Result<(), String> {
+async fn open_in_finder(path: String, reveal: bool) -> Result<(), CmdError> {
     if path.trim().is_empty() {
-        return Err("path is required".to_string());
+        return Err(CmdError::PathInvalid);
     }
     // Defense against argv flag smuggling: `open` has no `--` end-of-options
     // sentinel, so a path beginning with `-` would be parsed as a flag.
     // Portuni only passes absolute mirror paths; reject leading-dash defensively.
     if path.starts_with('-') {
-        return Err("invalid path".to_string());
+        return Err(CmdError::PathInvalid);
     }
     if !std::path::Path::new(&path).exists() {
-        return Err(format!("path does not exist: {path}"));
+        return Err(CmdError::PathNotFound { path });
     }
     let mut cmd = std::process::Command::new("open");
     if reveal {
         cmd.arg("-R");
     }
     cmd.arg(&path);
-    let output = cmd.output().map_err(|e| format!("open failed: {e}"))?;
+    let output = cmd.output().map_err(|e| CmdError::OpenFailed {
+        detail: e.to_string(),
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "open exited with {}: {}",
-            output.status,
-            stderr.trim()
-        ));
+        return Err(CmdError::OpenFailed {
+            detail: format!("open exited with {}: {}", output.status, stderr.trim()),
+        });
     }
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
-async fn open_in_finder(_path: String, _reveal: bool) -> Result<(), String> {
-    Err("UNSUPPORTED_OS".to_string())
+async fn open_in_finder(_path: String, _reveal: bool) -> Result<(), CmdError> {
+    Err(CmdError::UnsupportedOs)
 }
 
 // Open a local file in the OS default application. For .html files this
 // means the system default browser. The path is scope-guarded against the
 // configured workspace root so only files inside the mirror are reachable.
 #[tauri::command]
-fn open_path_external(window: tauri::Window, path: String) -> Result<(), String> {
+fn open_path_external(window: tauri::Window, path: String) -> Result<(), CmdError> {
     let ws_id = ws_of(&window)?;
     let app = window.app_handle();
     let cfg = workspace_config_for(app, &ws_id)?;
@@ -1626,17 +1729,19 @@ fn open_path_external(window: tauri::Window, path: String) -> Result<(), String>
     };
     let candidate = std::path::PathBuf::from(&path);
     if !path_within_root(&root, &candidate) {
-        return Err("path out of workspace scope".into());
+        return Err(CmdError::PathOutOfScope);
     }
     // Extension allowlist: open::that launches the OS default handler, so an
     // arbitrary in-scope file type could trigger code execution. Only
     // .html/.htm (the browser) go this way; a .showtime deck goes through
     // open_in_showtime, which hands Showtime the node context with it.
     if !is_html_ext(&candidate) {
-        return Err("only .html/.htm may be opened externally".into());
+        return Err(CmdError::NotHtml);
     }
     info!("open_path_external: {path}");
-    open::that(&candidate).map_err(|e| e.to_string())
+    open::that(&candidate).map_err(|e| CmdError::OpenFailed {
+        detail: e.to_string(),
+    })
 }
 
 // Write text to the system clipboard. The webview's navigator.clipboard
@@ -1644,10 +1749,10 @@ fn open_path_external(window: tauri::Window, path: String) -> Result<(), String>
 // user activation (tauri:// origin, unfocused window), so every copy button
 // in the frontend goes through this native command instead.
 #[tauri::command]
-fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
+fn copy_text(app: AppHandle, text: String) -> Result<(), CmdError> {
     app.clipboard().write_text(text).map_err(|e| {
         error!("copy_text failed: {e}");
-        e.to_string()
+        CmdError::Failed(e.to_string())
     })
 }
 
@@ -1665,13 +1770,13 @@ fn is_html_ext(path: &std::path::Path) -> bool {
 fn showtime_deck_path(
     root: &std::path::Path,
     path: &str,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<std::path::PathBuf, CmdError> {
     let candidate = std::path::PathBuf::from(path);
     if !path_within_root(root, &candidate) {
-        return Err("path out of workspace scope".into());
+        return Err(CmdError::PathOutOfScope);
     }
     if !is_showtime_ext(&candidate) {
-        return Err("only a .showtime deck may be opened in Showtime".into());
+        return Err(CmdError::NotShowtimeDeck);
     }
     Ok(candidate)
 }
@@ -1694,13 +1799,14 @@ fn showtime_open_url(deck: &std::path::Path, portuni_base: &str, code: &str) -> 
 /// The directory „Nová prezentace" hands Showtime: the node's mirror plus
 /// `wip/` (a mirror is created with wip/outputs/resources), inside the
 /// workspace root and there on disk. Refused before any link opens.
-fn showtime_new_dir(root: &std::path::Path, mirror: &str) -> Result<std::path::PathBuf, String> {
+fn showtime_new_dir(root: &std::path::Path, mirror: &str) -> Result<std::path::PathBuf, CmdError> {
     let dir = std::path::PathBuf::from(mirror).join("wip");
     if !path_within_root(root, &dir) {
-        return Err("mirror out of workspace scope".into());
+        return Err(CmdError::PathOutOfScope);
     }
     if !dir.is_dir() {
-        return Err(format!("mirror has no wip/ directory: {}", dir.display()));
+        warn!("showtime_new_dir: no wip/ in {}", dir.display());
+        return Err(CmdError::NoWipDir);
     }
     Ok(dir)
 }
@@ -1738,7 +1844,7 @@ async fn mint_showtime_handoff(
     app: &AppHandle,
     ws_id: &str,
     node_id: &str,
-) -> Result<(String, HandoffMinted), String> {
+) -> Result<(String, HandoffMinted), CmdError> {
     let (port, token) = sidecar_port_and_token(app, ws_id)?;
     let base = format!("http://127.0.0.1:{port}");
     let http = reqwest::Client::builder()
@@ -1752,15 +1858,13 @@ async fn mint_showtime_handoff(
         .json(&serde_json::json!({ "node_id": node_id }))
         .send()
         .await
-        .map_err(|e| format!("handoff request failed: {e}"))?;
+        .map_err(|e| CmdError::Failed(format!("handoff request failed: {e}")))?;
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();
-        let detail = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
-            .unwrap_or(body);
-        return Err(format!("handoff refused (HTTP {status}): {detail}"));
+        let err = CmdError::from_http_answer(status, &body);
+        warn!("showtime handoff refused: {err}");
+        return Err(err);
     }
     let minted: HandoffMinted = resp
         .json()
@@ -1779,7 +1883,7 @@ async fn open_in_showtime(
     window: tauri::Window,
     node_id: String,
     path: String,
-) -> Result<(), String> {
+) -> Result<(), CmdError> {
     let ws_id = ws_of(&window)?;
     let app = window.app_handle().clone();
     let cfg = workspace_config_for(&app, &ws_id)?;
@@ -1793,8 +1897,8 @@ async fn open_in_showtime(
     let (base, minted) = mint_showtime_handoff(&app, &ws_id, &node_id).await?;
     let url = showtime_open_url(&deck, &base, &minted.code);
     info!("open_in_showtime: {path} (node {node_id})");
-    open::that(&url).map_err(|e| {
-        format!("Showtime neumí přijmout deck z Portuni, aktualizujte Showtime ({e})")
+    open::that(&url).map_err(|e| CmdError::ShowtimeOutdated {
+        detail: e.to_string(),
     })
 }
 
@@ -1805,7 +1909,7 @@ async fn open_in_showtime(
 /// the node to it; the mirror watcher registers the bundle. A node without a
 /// mirror on this device has nowhere to put a deck and is refused here.
 #[tauri::command]
-async fn new_in_showtime(window: tauri::Window, node_id: String) -> Result<(), String> {
+async fn new_in_showtime(window: tauri::Window, node_id: String) -> Result<(), CmdError> {
     let ws_id = ws_of(&window)?;
     let app = window.app_handle().clone();
     let cfg = workspace_config_for(&app, &ws_id)?;
@@ -1818,12 +1922,12 @@ async fn new_in_showtime(window: tauri::Window, node_id: String) -> Result<(), S
     let (base, minted) = mint_showtime_handoff(&app, &ws_id, &node_id).await?;
     let mirror = minted
         .mirror
-        .ok_or_else(|| "Uzel nemá na tomto počítači mirror".to_string())?;
+        .ok_or(CmdError::NoMirror)?;
     let dir = showtime_new_dir(&root, &mirror)?;
     let url = showtime_new_url(&dir, &base, &minted.code);
     info!("new_in_showtime: {} (node {node_id})", dir.display());
-    open::that(&url).map_err(|e| {
-        format!("Showtime neumí přijmout deck z Portuni, aktualizujte Showtime ({e})")
+    open::that(&url).map_err(|e| CmdError::ShowtimeOutdated {
+        detail: e.to_string(),
     })
 }
 
@@ -1882,7 +1986,7 @@ fn showtime_installed(app: tauri::AppHandle) -> bool {
 #[cfg(test)]
 mod showtime_preview_tests {
     use super::{
-        is_html_ext, is_previewable_ext, is_showtime_ext, showtime_deck_path, showtime_new_dir,
+        is_html_ext, is_previewable_ext, CmdError, is_showtime_ext, showtime_deck_path, showtime_new_dir,
         showtime_new_url, showtime_open_url, showtime_preview_bytes, SHOWTIME_PREVIEW_ENTRY,
     };
     use std::io::Write;
@@ -1929,21 +2033,24 @@ mod showtime_preview_tests {
             showtime_deck_path(root, "/ws/org/projects/x/outputs/deck.showtime").unwrap(),
             Path::new("/ws/org/projects/x/outputs/deck.showtime")
         );
-        assert!(showtime_deck_path(root, "/elsewhere/deck.showtime")
-            .unwrap_err()
-            .contains("workspace scope"));
-        assert!(showtime_deck_path(root, "/ws/x/../../etc/deck.showtime")
-            .unwrap_err()
-            .contains("workspace scope"));
-        assert!(showtime_deck_path(root, "/ws/x/a.html")
-            .unwrap_err()
-            .contains(".showtime"));
+        assert_eq!(
+            showtime_deck_path(root, "/elsewhere/deck.showtime").unwrap_err(),
+            CmdError::PathOutOfScope
+        );
+        assert_eq!(
+            showtime_deck_path(root, "/ws/x/../../etc/deck.showtime").unwrap_err(),
+            CmdError::PathOutOfScope
+        );
+        assert_eq!(
+            showtime_deck_path(root, "/ws/x/a.html").unwrap_err(),
+            CmdError::NotShowtimeDeck
+        );
     }
 
     #[test]
     fn showtime_open_url_percent_encodes_every_value() {
         let url = showtime_open_url(
-            Path::new("/ws/Můj projekt/outputs/deck & more.showtime"),
+            Path::new("/ws/M\u{16f}j projekt/outputs/deck & more.showtime"),
             "http://127.0.0.1:47011",
             "ab-c_D=",
         );
@@ -1968,20 +2075,22 @@ mod showtime_preview_tests {
             showtime_new_dir(root.path(), &mirror.to_string_lossy()).unwrap(),
             mirror.join("wip")
         );
-        assert!(showtime_new_dir(Path::new("/elsewhere"), &mirror.to_string_lossy())
-            .unwrap_err()
-            .contains("workspace scope"));
+        assert_eq!(
+            showtime_new_dir(Path::new("/elsewhere"), &mirror.to_string_lossy()).unwrap_err(),
+            CmdError::PathOutOfScope
+        );
         let no_wip = root.path().join("org").join("projects").join("y");
         std::fs::create_dir_all(&no_wip).unwrap();
-        assert!(showtime_new_dir(root.path(), &no_wip.to_string_lossy())
-            .unwrap_err()
-            .contains("wip"));
+        assert_eq!(
+            showtime_new_dir(root.path(), &no_wip.to_string_lossy()).unwrap_err(),
+            CmdError::NoWipDir
+        );
     }
 
     #[test]
     fn showtime_new_url_percent_encodes_every_value() {
         let url = showtime_new_url(
-            Path::new("/ws/Můj projekt/wip"),
+            Path::new("/ws/M\u{16f}j projekt/wip"),
             "http://127.0.0.1:47011",
             "ab-c_D=",
         );
@@ -2023,7 +2132,7 @@ mod showtime_preview_tests {
 // Non-macOS always returns Ok(None).
 #[cfg(target_os = "macos")]
 #[tauri::command]
-async fn clipboard_file_path() -> Result<Option<String>, String> {
+async fn clipboard_file_path() -> Result<Option<String>, CmdError> {
     let output = std::process::Command::new("osascript")
         .arg("-e")
         .arg("POSIX path of (the clipboard as \u{00ab}class furl\u{00bb})")
@@ -2044,7 +2153,7 @@ async fn clipboard_file_path() -> Result<Option<String>, String> {
 
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
-async fn clipboard_file_path() -> Result<Option<String>, String> {
+async fn clipboard_file_path() -> Result<Option<String>, CmdError> {
     Ok(None)
 }
 
@@ -2055,20 +2164,20 @@ async fn clipboard_file_path() -> Result<Option<String>, String> {
 // workspace (explicit id, which may differ from the calling window's own).
 // Idempotent: if no sidecar is running, just spawns one.
 #[tauri::command]
-async fn restart_sidecar(window: tauri::Window, id: Option<String>) -> Result<(), String> {
+async fn restart_sidecar(window: tauri::Window, id: Option<String>) -> Result<(), CmdError> {
     let app = window.app_handle().clone();
     let ws = match id {
         Some(i) => i,
         None => ws_of(&window)?,
     };
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    match workspace::load(&data_dir)? {
+    match load_config(&data_dir)? {
         workspace::LoadedConfig::V2(file) if file.workspaces.contains_key(&ws) => {}
-        workspace::LoadedConfig::V2(_) => return Err(format!("unknown workspace '{ws}'")),
-        _ => return Err("config not migrated to workspaces yet".to_string()),
+        workspace::LoadedConfig::V2(_) => return Err(CmdError::WorkspaceUnknown { id: ws }),
+        _ => return Err(CmdError::ConfigNotMigrated),
     }
     kill_sidecar_ws(&app, &ws);
-    spawn_sidecar_ws(&app, &ws).map_err(|e| e.to_string())
+    spawn_sidecar_ws(&app, &ws).map_err(|e| CmdError::Failed(e.to_string()))
 }
 
 // Snapshot the local sidecar's port + bearer token for `ws_id`, then drop
@@ -2079,19 +2188,22 @@ async fn restart_sidecar(window: tauri::Window, id: Option<String>) -> Result<()
 //
 // Port 0 is the team-workspace sentinel: the sync agent for this workspace
 // isn't running (not logged in yet, or no server_url). Callers that need to
-// distinguish that case from "genuinely not ready" should match on the
-// exact error string "sync agent not running".
-pub(crate) fn sidecar_port_and_token(app: &AppHandle, ws_id: &str) -> Result<(u16, String), String> {
+// distinguish that case from "genuinely not ready" match on
+// CmdError::SyncAgentDown.
+pub(crate) fn sidecar_port_and_token(
+    app: &AppHandle,
+    ws_id: &str,
+) -> Result<(u16, String), CmdError> {
     let port = {
         let state = app.state::<BackendPorts>();
         let guard = state.0.lock().map_err(|e| e.to_string())?;
         guard
             .get(ws_id)
             .copied()
-            .ok_or_else(|| "backend not ready".to_string())?
+            .ok_or(CmdError::BackendNotReady)?
     };
     if port == 0 {
-        return Err("sync agent not running".to_string());
+        return Err(CmdError::SyncAgentDown);
     }
     let token = app
         .state::<AuthTokens>()
@@ -2100,7 +2212,7 @@ pub(crate) fn sidecar_port_and_token(app: &AppHandle, ws_id: &str) -> Result<(u1
         .map_err(|e| e.to_string())?
         .get(ws_id)
         .cloned()
-        .ok_or_else(|| "backend not ready (no token)".to_string())?;
+        .ok_or(CmdError::BackendNotReady)?;
     Ok((port, token))
 }
 
@@ -2136,7 +2248,7 @@ async fn api_request(
     path: String,
     body: Option<String>,
     headers: Option<HashMap<String, String>>,
-) -> Result<ApiResponse, String> {
+) -> Result<ApiResponse, CmdError> {
     // Route by THIS WINDOW's workspace config (#223), not the globally
     // "active" one.
     let (ws_id, cfg) = ws_and_config(&app, &window)?;
@@ -2216,13 +2328,13 @@ async fn api_request(
     // the executor on contention.
     let (port, token) = match sidecar_port_and_token(&app, &ws_id) {
         Ok(pt) => pt,
-        Err(e) if e == "sync agent not running" => {
+        Err(CmdError::SyncAgentDown) => {
             // Team-workspace sentinel: the sync agent is not running (not
             // logged in yet, or no server_url). Device-local affordances
             // stay parked.
             return Ok(ApiResponse {
                 status: 501,
-                body: "{\"error\":\"sync_agent_down\",\"detail\":\"sync agent not running\"}"
+                body: "{\"error\":\"sync_agent_down\",\"code\":\"SYNC_AGENT_DOWN\",\"detail\":\"sync agent not running\"}"
                     .to_string(),
             });
         }
@@ -2685,8 +2797,11 @@ fn spawn_sidecar_ws_with_token(
                         error!("sidecar[{ws}] backend error: {msg}");
                         // Per-window (#227), with a replay for a window
                         // created after this fires -- see PendingBackendErrors.
-                        set_pending_backend_error(&handle, &ws, &msg);
-                        let _ = handle.emit_to(format!("ws:{ws}"), "backend-error", msg);
+                        report_backend_error_to(
+                            &handle,
+                            &ws,
+                            CmdError::BackendFailed { detail: msg },
+                        );
                     } else {
                         info!("sidecar[{ws}]: {line}");
                     }
@@ -2707,9 +2822,13 @@ fn spawn_sidecar_ws_with_token(
                         .remove(&ws);
                     // Per-window (#227), with a replay for a window created
                     // after this fires -- see PendingBackendErrors.
-                    let msg = format!("sidecar {ws} terminated (exit code {:?})", payload.code);
-                    set_pending_backend_error(&handle, &ws, &msg);
-                    let _ = handle.emit_to(format!("ws:{ws}"), "backend-error", msg);
+                    report_backend_error_to(
+                        &handle,
+                        &ws,
+                        CmdError::BackendExited {
+                            exit_code: payload.code,
+                        },
+                    );
                 }
                 _ => {}
             }
@@ -2733,7 +2852,7 @@ pub(crate) fn spawn_all_sidecars(app: &AppHandle) {
         }
         Err(e) => {
             error!("config.json unreadable: {e}");
-            let _ = app.emit("backend-error", format!("config.json: {e}"));
+            let _ = app.emit("backend-error", CmdError::ConfigInvalid { detail: e });
             return;
         }
     };
@@ -2825,9 +2944,9 @@ struct WorkspaceInfo {
 }
 
 #[tauri::command]
-fn list_workspaces(app: AppHandle) -> Result<Vec<WorkspaceInfo>, String> {
+fn list_workspaces(app: AppHandle) -> Result<Vec<WorkspaceInfo>, CmdError> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let file = match workspace::load(&data_dir)? {
+    let file = match load_config(&data_dir)? {
         workspace::LoadedConfig::V2(f) => f,
         _ => return Ok(vec![]),
     };
@@ -2863,21 +2982,23 @@ fn list_workspaces(app: AppHandle) -> Result<Vec<WorkspaceInfo>, String> {
 // open_window itself doesn't check, and a disabled/unknown id would
 // otherwise silently create an unusable window.
 #[tauri::command]
-fn open_workspace_window(app: AppHandle, id: String) -> Result<(), String> {
+fn open_workspace_window(app: AppHandle, id: String) -> Result<(), CmdError> {
     let label = format!("ws:{id}");
     if let Some(w) = app.get_webview_window(&label) {
-        return w.set_focus().map_err(|e| e.to_string());
+        return w
+            .set_focus()
+            .map_err(|e| CmdError::Failed(e.to_string()));
     }
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    match workspace::load(&data_dir)? {
+    match load_config(&data_dir)? {
         workspace::LoadedConfig::V2(file) => match file.workspaces.get(&id) {
             Some(cfg) if cfg.enabled => {}
-            Some(_) => return Err(format!("workspace '{id}' is disabled")),
-            None => return Err(format!("unknown workspace '{id}'")),
+            Some(_) => return Err(CmdError::WorkspaceDisabled { id }),
+            None => return Err(CmdError::WorkspaceUnknown { id }),
         },
-        _ => return Err("config not migrated to workspaces yet".to_string()),
+        _ => return Err(CmdError::ConfigNotMigrated),
     }
-    open_window(&app, &label).map_err(|e| e.to_string())
+    open_window(&app, &label).map_err(|e| CmdError::Failed(e.to_string()))
 }
 
 #[derive(Deserialize)]
@@ -2893,13 +3014,15 @@ struct CreateWorkspaceArgs {
 }
 
 #[tauri::command]
-fn create_workspace(app: AppHandle, args: CreateWorkspaceArgs) -> Result<(), String> {
+fn create_workspace(app: AppHandle, args: CreateWorkspaceArgs) -> Result<(), CmdError> {
     if !workspace::is_valid_workspace_id(&args.id) {
-        return Err("invalid workspace id (use lowercase letters, digits, dashes)".to_string());
+        return Err(CmdError::WorkspaceIdInvalid);
     }
     with_config_mut(&app, |file| {
         if file.workspaces.contains_key(&args.id) {
-            return Err(format!("workspace '{}' already exists", args.id));
+            return Err(CmdError::WorkspaceExists {
+                id: args.id.clone(),
+            });
         }
         let port = workspace::allocate_port(&file.workspaces);
         let cfg = workspace::WorkspaceConfig {
@@ -2938,10 +3061,10 @@ fn create_workspace(app: AppHandle, args: CreateWorkspaceArgs) -> Result<(), Str
 }
 
 #[tauri::command]
-fn set_active_workspace(app: AppHandle, id: String) -> Result<(), String> {
+fn set_active_workspace(app: AppHandle, id: String) -> Result<(), CmdError> {
     with_config_mut(&app, |file| {
         if !file.workspaces.contains_key(&id) {
-            return Err(format!("unknown workspace '{id}'"));
+            return Err(CmdError::WorkspaceUnknown { id: id.clone() });
         }
         file.active_workspace = id.clone();
         Ok(())
@@ -2949,9 +3072,9 @@ fn set_active_workspace(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
+fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), CmdError> {
     if !enabled && window_open_for(&app, &id) {
-        return Err("Nejdřív zavři okno tohoto workspace.".to_string());
+        return Err(CmdError::WorkspaceWindowOpen);
     }
     let history = focus_history_snapshot(&app);
     with_config_mut(&app, |file| {
@@ -2959,7 +3082,7 @@ fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<()
             let cfg = file
                 .workspaces
                 .get_mut(&id)
-                .ok_or_else(|| format!("unknown workspace '{id}'"))?;
+                .ok_or_else(|| CmdError::WorkspaceUnknown { id: id.clone() })?;
             cfg.enabled = enabled;
         }
         // The window-open guard above already means this workspace's own
@@ -2985,18 +3108,18 @@ fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<()
 }
 
 #[tauri::command]
-fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
+fn delete_workspace(app: AppHandle, id: String) -> Result<(), CmdError> {
     if window_open_for(&app, &id) {
-        return Err("Nejdřív zavři okno tohoto workspace.".to_string());
+        return Err(CmdError::WorkspaceWindowOpen);
     }
     let history = focus_history_snapshot(&app);
     let mut mcp_name = String::new();
     with_config_mut(&app, |file| {
         if file.workspaces.len() == 1 {
-            return Err("cannot delete the last workspace".to_string());
+            return Err(CmdError::WorkspaceLast);
         }
         if !file.workspaces.contains_key(&id) {
-            return Err(format!("unknown workspace '{id}'"));
+            return Err(CmdError::WorkspaceUnknown { id: id.clone() });
         }
         // Resolve the MCP entry name while the workspace is still in config
         // — the migrated workspace keeps the historical "portuni" name,
@@ -3088,6 +3211,7 @@ pub fn run() {
         .manage(ConfigLock(Mutex::new(())))
         .manage(FocusHistory(Mutex::new(Vec::new())))
         .manage(PendingBackendErrors(Mutex::new(HashMap::new())))
+        .manage(UiLocaleState::default())
         .manage(QuitQueue(Mutex::new(None)))
         .manage(sessions_ws::SessionsWsState::default())
         .manage(updater::PendingUpdate::default())
@@ -3178,6 +3302,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             decline_exit,
+            set_ui_locale,
             get_backend_port,
             get_data_mode,
             open_external,
@@ -3239,34 +3364,12 @@ pub fn run() {
             // bypassed every JS guard. A custom item with the same
             // accelerator routes through on_menu_event instead, where the
             // exit is delegated to the webview guards.
+            // The item's text follows the app's UI language: English until
+            // the first window reports its language (set_ui_locale).
             #[cfg(target_os = "macos")]
             {
-                use tauri::menu::{Menu, MenuItem, MenuItemKind};
-                let menu = Menu::default(&handle)?;
-                if let Some(MenuItemKind::Submenu(app_menu)) =
-                    menu.items()?.into_iter().next()
-                {
-                    // The standard macOS app submenu always ends with Quit.
-                    let items = app_menu.items()?;
-                    if let Some(last) = items.last() {
-                        let _ = match last {
-                            MenuItemKind::MenuItem(i) => app_menu.remove(i),
-                            MenuItemKind::Predefined(i) => app_menu.remove(i),
-                            MenuItemKind::Submenu(i) => app_menu.remove(i),
-                            MenuItemKind::Check(i) => app_menu.remove(i),
-                            MenuItemKind::Icon(i) => app_menu.remove(i),
-                        };
-                    }
-                    let quit = MenuItem::with_id(
-                        &handle,
-                        "portuni-quit",
-                        "Quit Portuni",
-                        true,
-                        Some("CmdOrCtrl+Q"),
-                    )?;
-                    app_menu.append(&quit)?;
-                }
-                app.set_menu(menu)?;
+                let locale = app.state::<UiLocaleState>().get();
+                app.set_menu(build_app_menu(&handle, locale)?)?;
             }
             Ok(())
         })
@@ -3619,33 +3722,40 @@ mod multi_window_phase2_tests {
 mod backend_status_replay_tests {
     use super::{
         backend_status_replay, record_pending_backend_error, retire_pending_backend_error,
+        CmdError,
     };
     use std::collections::HashMap;
+
+    fn failed(detail: &str) -> CmdError {
+        CmdError::BackendFailed {
+            detail: detail.to_string(),
+        }
+    }
 
     // --- record/retire_pending_backend_error: the replay-on-create source ---
 
     #[test]
     fn recording_overwrites_the_previous_message_for_the_same_workspace() {
         let mut pending = HashMap::new();
-        record_pending_backend_error(&mut pending, "acme", "first failure");
-        record_pending_backend_error(&mut pending, "acme", "second failure");
-        assert_eq!(pending.get("acme").map(String::as_str), Some("second failure"));
+        record_pending_backend_error(&mut pending, "acme", &failed("first failure"));
+        record_pending_backend_error(&mut pending, "acme", &failed("second failure"));
+        assert_eq!(pending.get("acme"), Some(&failed("second failure")));
         assert_eq!(pending.len(), 1);
     }
 
     #[test]
     fn retiring_removes_only_that_workspace() {
         let mut pending = HashMap::new();
-        record_pending_backend_error(&mut pending, "acme", "boom");
-        record_pending_backend_error(&mut pending, "beta", "also boom");
+        record_pending_backend_error(&mut pending, "acme", &failed("boom"));
+        record_pending_backend_error(&mut pending, "beta", &failed("also boom"));
         retire_pending_backend_error(&mut pending, "acme");
         assert!(!pending.contains_key("acme"));
-        assert_eq!(pending.get("beta").map(String::as_str), Some("also boom"));
+        assert_eq!(pending.get("beta"), Some(&failed("also boom")));
     }
 
     #[test]
     fn retiring_an_unknown_workspace_is_a_no_op() {
-        let mut pending = HashMap::new();
+        let mut pending: HashMap<String, CmdError> = HashMap::new();
         retire_pending_backend_error(&mut pending, "ghost");
         assert!(pending.is_empty());
     }
@@ -3662,9 +3772,10 @@ mod backend_status_replay_tests {
         // CommandEvent::Terminated removes the BackendPorts entry but
         // records the error -- exactly the race this window-creation
         // replay exists for.
+        let exited = CmdError::BackendExited { exit_code: Some(1) };
         assert_eq!(
-            backend_status_replay(None, Some("sidecar acme terminated")),
-            (None, Some("sidecar acme terminated".to_string()))
+            backend_status_replay(None, Some(&exited)),
+            (None, Some(exited.clone()))
         );
     }
 
@@ -3681,8 +3792,8 @@ mod backend_status_replay_tests {
         // and the webview's own state machine resolves the same way it
         // would if it had witnessed both events live.
         assert_eq!(
-            backend_status_replay(Some(47011), Some("old failure")),
-            (Some(47011), Some("old failure".to_string()))
+            backend_status_replay(Some(47011), Some(&failed("old failure"))),
+            (Some(47011), Some(failed("old failure")))
         );
     }
 }

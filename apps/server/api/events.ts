@@ -3,10 +3,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { ulid } from "ulid";
-import { getDb } from "../infra/db.js";
+import { getDb, type DbClient } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
 import { EVENT_TYPES, EVENT_STATUSES } from "../infra/schema.js";
-import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import {
+  respondApiError,
+  parseBody,
+  parseJsonBody,
+  respondError,
+  respondJson,
+  type RequestIdentity,
+} from "../http/middleware.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
 import { guardRestNodeWrite } from "./write-gate.js";
 
@@ -30,7 +37,7 @@ export async function handleCreateEvent(
       args: [body.node_id],
     });
     if (nodeCheck.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId: body.node_id });
       return;
     }
     if (!(await guardRestNodeWrite(req, res, identity, body.node_id))) return;
@@ -58,6 +65,28 @@ export async function handleCreateEvent(
   }
 }
 
+// An event is written through its node: a missing event and one on a node
+// the caller cannot see answer the same 404, a visible one must pass the
+// write gate. False once a response is sent.
+async function guardEventWrite(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  db: DbClient,
+  eventId: string,
+): Promise<boolean> {
+  const eventRow = await db.execute({
+    sql: "SELECT node_id FROM events WHERE id = ?",
+    args: [eventId],
+  });
+  const eventNodeId = eventRow.rows.length === 0 ? null : (eventRow.rows[0].node_id as string);
+  if (eventNodeId === null || !(await nodeVisibleTo(db, identity, eventNodeId))) {
+    respondApiError(res, 404, "EVENT_NOT_FOUND", "event not found", { eventId });
+    return false;
+  }
+  return guardRestNodeWrite(req, res, identity, eventNodeId);
+}
+
 export async function handleUpdateEvent(
   req: IncomingMessage,
   res: ServerResponse,
@@ -69,24 +98,11 @@ export async function handleUpdateEvent(
       | { content?: string; type?: string; status?: string; created_at?: string }
       | undefined;
     if (!body) {
-      respondJson(res, 400, { error: "body required" });
+      respondApiError(res, 400, "INVALID_REQUEST", "body required");
       return;
     }
     const db = getDb();
-    const existing = await db.execute({
-      sql: "SELECT id, status, node_id FROM events WHERE id = ?",
-      args: [eventId],
-    });
-    if (existing.rows.length === 0) {
-      respondJson(res, 404, { error: "event not found" });
-      return;
-    }
-    const eventNodeId = existing.rows[0].node_id as string;
-    if (!(await nodeVisibleTo(db, identity, eventNodeId))) {
-      respondJson(res, 404, { error: "event not found" });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, eventNodeId))) return;
+    if (!(await guardEventWrite(req, res, identity, db, eventId))) return;
     const updates: string[] = [];
     const values: (string | null)[] = [];
     if (typeof body.content === "string" && body.content.trim().length > 0) {
@@ -95,9 +111,7 @@ export async function handleUpdateEvent(
     }
     if (typeof body.type === "string") {
       if (!(EVENT_TYPES as readonly string[]).includes(body.type)) {
-        respondJson(res, 400, {
-          error: `invalid type; must be one of ${EVENT_TYPES.join(", ")}`,
-        });
+        respondApiError(res, 400, "INVALID_REQUEST", `invalid type; must be one of ${EVENT_TYPES.join(", ")}`);
         return;
       }
       updates.push("type = ?");
@@ -107,9 +121,12 @@ export async function handleUpdateEvent(
       // Validate up front like `type` -- relying on the DB CHECK produced
       // an opaque 409 instead of an actionable 400.
       if (!(EVENT_STATUSES as readonly string[]).includes(body.status)) {
-        respondJson(res, 400, {
-          error: `invalid status; must be one of ${EVENT_STATUSES.join(", ")}`,
-        });
+        respondApiError(
+          res,
+          400,
+          "INVALID_REQUEST",
+          `invalid status; must be one of ${EVENT_STATUSES.join(", ")}`,
+        );
         return;
       }
       updates.push("status = ?");
@@ -118,14 +135,16 @@ export async function handleUpdateEvent(
     if (typeof body.created_at === "string") {
       const parsed = new Date(body.created_at);
       if (Number.isNaN(parsed.getTime())) {
-        respondJson(res, 400, { error: "invalid created_at; expected ISO datetime" });
+        respondApiError(res, 400, "INVALID_EVENT_DATE", "invalid created_at; expected ISO datetime", {
+          value: body.created_at,
+        });
         return;
       }
       updates.push("created_at = ?");
       values.push(body.created_at);
     }
     if (updates.length === 0) {
-      respondJson(res, 400, { error: "no fields to update" });
+      respondApiError(res, 400, "INVALID_REQUEST", "no fields to update");
       return;
     }
     values.push(eventId);
@@ -154,26 +173,13 @@ export async function handleArchiveEvent(
 ): Promise<void> {
   try {
     const db = getDb();
-    const eventRow = await db.execute({
-      sql: "SELECT node_id FROM events WHERE id = ?",
-      args: [eventId],
-    });
-    if (eventRow.rows.length === 0) {
-      respondJson(res, 404, { error: "event not found or already archived" });
-      return;
-    }
-    const eventNodeId = eventRow.rows[0].node_id as string;
-    if (!(await nodeVisibleTo(db, identity, eventNodeId))) {
-      respondJson(res, 404, { error: "event not found or already archived" });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, eventNodeId))) return;
+    if (!(await guardEventWrite(req, res, identity, db, eventId))) return;
     const result = await db.execute({
       sql: "UPDATE events SET status = 'archived' WHERE id = ? AND status != 'archived'",
       args: [eventId],
     });
     if (result.rowsAffected === 0) {
-      respondJson(res, 404, { error: "event not found or already archived" });
+      respondApiError(res, 404, "EVENT_ALREADY_ARCHIVED", "event already archived", { eventId });
       return;
     }
     await logAudit(identity.userId, "archive_event", "event", eventId, {});

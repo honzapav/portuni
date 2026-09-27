@@ -24,6 +24,8 @@ These all share the same connector UI:
 4. A consent screen shows who you're signing in as and which client is asking (Claude) — **Allow**.
 5. Claude reconnects with a token it now holds itself; the Portuni tools appear like any other connector.
 
+The consent screen and any sign-in error page are in your language: the one set on your Portuni account (Settings → Account) once the server knows who you are, otherwise your browser's preferred language (English or Czech), otherwise English.
+
 You'll see this consent screen again roughly every 180 days (or sooner if an admin revokes the connection) — it is never silently remembered, by design.
 
 ## Claude Code
@@ -60,7 +62,7 @@ Writes: a node you create from a connector session (`portuni_create_node`) is wr
 
 ## Revoking access
 
-Settings → Účet → **Připojené aplikace** in the desktop app (or ask an admin) lists every connected client with its connect date and last-used time, and an **Odpojit** button. Revoking invalidates that client's access immediately — it has to log in and consent again to reconnect.
+Settings → Account → **Connected apps** in the desktop app (or ask an admin) lists every connected client with its connect date and last-used time, and a **Disconnect** button. Revoking invalidates that client's access immediately — it has to log in and consent again to reconnect.
 
 ## Why not `mcp-remote` here
 

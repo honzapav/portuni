@@ -505,7 +505,7 @@ describe("session REST endpoints", () => {
 
   // #427: the record half of the session's scope, read by a sync agent's
   // suspend fallback (it has no session_scope table of its own) to fill the
-  // summary's "Zápisový rozsah" / "Čtecí rozsah" sections.
+  // summary's "Write scope" / "Read scope" sections.
   test("GET /sessions/:id/scope returns the read set, the write set and the node name", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const otherId = ulid();

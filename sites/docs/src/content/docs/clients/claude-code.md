@@ -101,10 +101,10 @@ A couple of useful modes worth knowing about:
 - **Plan mode** (default `Shift+Tab`) – read-only exploration. Useful when you're still figuring out what you want the agent to do and don't want it writing anything yet.
 - **Bypass mode** (`--dangerously-skip-permissions`) – skips every permission check. Handy inside ephemeral sandboxes (Docker, VMs); worth avoiding on a host machine with a populated Portuni mirror root.
 
-## Claude Code jako runner
+## Claude Code as a runner
 
 Everything above is about a hand-opened terminal. A **task** started from a
-node's "Nový úkol" button (or `POST /sessions`) runs Claude Code the same
+node's "New task" button (or `POST /sessions`) runs Claude Code the same
 way, but Portuni drives it directly over
 [`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
 instead of spawning a terminal:
@@ -121,12 +121,12 @@ instead of spawning a terminal:
   task's chat instead of a terminal prompt.
 - **Login stays entirely in the CLI.** The task runner uses whatever
   account `claude` is already logged into on this machine (`CLAUDE_CONFIG_DIR`,
-  set per Runnery instance in Settings → Runnery, selects which one) — Portuni
+  set per runner instance in Settings → Runners, selects which one) — Portuni
   never asks for or stores Anthropic credentials of its own.
 - If nothing is logged in, the task's chat shows an error saying so instead
   of quietly failing.
 
-Nastavení → Runnery shows whether `claude` is installed and logged in on
+Settings → Runners shows whether `claude` is installed and logged in on
 this device (`claude --version` / `claude auth status`), and lets you
 manage the provider instances (name, environment, default per organization)
 a task's runner picks from when more than one exists.

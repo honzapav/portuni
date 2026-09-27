@@ -15,7 +15,7 @@ import { createSessionsWsServer, type SessionsWsServer } from "../api/sessions-w
 import { webviewMutationAllowed } from "../api/write-gate.js";
 import { minScopeForRoute } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
-import { applyGates, checkUpgradeAuth, respondError } from "./middleware.js";
+import { applyGates, checkUpgradeAuth, respondApiError, respondError } from "./middleware.js";
 import { assertAuthConfig, authSummary } from "../infra/auth-config.js";
 import { getOrCreateLimiter, rateLimitKey } from "./rate-limit.js";
 
@@ -100,11 +100,10 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       );
       const result = limiter.check(key);
       if (!result.allowed) {
-        res.writeHead(429, {
-          "Content-Type": "application/json",
-          "Retry-After": String(result.retryAfterSeconds),
+        res.setHeader("Retry-After", String(result.retryAfterSeconds));
+        respondApiError(res, 429, "RATE_LIMITED", "rate limited", {
+          retryAfterSeconds: result.retryAfterSeconds,
         });
-        res.end(JSON.stringify({ error: "rate limited" }));
         return;
       }
     }
@@ -154,15 +153,14 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
     // event below -- reject it explicitly rather than 404ing or falling
     // into the REST router, which has no handler for this path.
     if (url.pathname === "/sessions/ws") {
-      res.writeHead(426, { "Content-Type": "application/json", Upgrade: "websocket" });
-      res.end(JSON.stringify({ error: "this endpoint is a WebSocket upgrade" }));
+      res.setHeader("Upgrade", "websocket");
+      respondApiError(res, 426, "WEBSOCKET_UPGRADE_REQUIRED", "this endpoint is a WebSocket upgrade");
       return;
     }
 
     const handled = await route(req, res, url, identity);
     if (!handled) {
-      res.writeHead(404);
-      res.end("Not found");
+      respondApiError(res, 404, "ROUTE_NOT_FOUND", "Not found");
     }
   }
 

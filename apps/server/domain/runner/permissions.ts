@@ -5,6 +5,7 @@
 // -- no SDK type appears here.
 
 import { classifyWrite } from "../write-scope.js";
+import type { ChatEventParams, DenyCode, QuestionCode } from "../../shared/chat-event-codes.js";
 import type { PermissionPolicy } from "./types.js";
 
 export interface DecidePermissionInput {
@@ -27,7 +28,9 @@ export interface AskPrompt {
 
 export interface AskQuestion {
   type: "approval" | "input";
+  // English fallback; the web renders `code` (#532).
   title: string;
+  code: QuestionCode;
   detail: string;
   options: string[] | null;
   // AskUserQuestion only (#492): every dotaz with its own options, so a
@@ -37,7 +40,9 @@ export interface AskQuestion {
 
 export type PermissionDecision =
   | { kind: "allow" }
-  | { kind: "deny"; message: string }
+  // `message` is English and goes to the agent as the tool result; the chat
+  // shows the failed call from `code` and `params` (#532).
+  | { kind: "deny"; message: string; code: DenyCode; params: ChatEventParams }
   | { kind: "ask"; question: AskQuestion };
 
 // file_path for Edit/Write/MultiEdit, notebook_path for NotebookEdit --
@@ -124,7 +129,12 @@ export function decidePermission(input: DecidePermissionInput): PermissionDecisi
   if (pathKey !== undefined) {
     const target = stringField(input.input, pathKey);
     if (target === null) {
-      return { kind: "deny", message: `${input.tool} call has no ${pathKey} to classify` };
+      return {
+        kind: "deny",
+        message: `${input.tool} call has no ${pathKey} to classify`,
+        code: "write_no_path",
+        params: { tool: input.tool, field: pathKey },
+      };
     }
     const classification = classifyWrite({
       cwd: input.cwd,
@@ -133,7 +143,12 @@ export function decidePermission(input: DecidePermissionInput): PermissionDecisi
       mirrors: input.mirrors,
     });
     if (classification.tier === "tier1_current") return { kind: "allow" };
-    return { kind: "deny", message: classification.reason };
+    return {
+      kind: "deny",
+      message: classification.reason,
+      code: classification.tier === "tier2_sibling" ? "write_outside_mirror" : "write_outside_root",
+      params: { path: target },
+    };
   }
 
   // Bash: allow, parity with today -- the guard hook (portuni-guard.sh)
@@ -147,8 +162,9 @@ export function decidePermission(input: DecidePermissionInput): PermissionDecisi
       kind: "ask",
       question: {
         type: "approval",
-        title: "Rozšířit rozsah relace?",
-        detail: "Agent chce přečíst uzel mimo aktuální rozsah této relace.",
+        title: "Expand the thread's scope?",
+        code: "scope_expand",
+        detail: "The agent wants to read a node outside this thread's current scope.",
         options: null,
       },
     };
@@ -160,7 +176,8 @@ export function decidePermission(input: DecidePermissionInput): PermissionDecisi
       kind: "ask",
       question: {
         type: "input",
-        title: "Otázka od agenta",
+        title: "Question from the agent",
+        code: "agent_question",
         detail: asked.detail,
         options: asked.options,
         questions: asked.questions,
@@ -173,7 +190,8 @@ export function decidePermission(input: DecidePermissionInput): PermissionDecisi
       kind: "ask",
       question: {
         type: "approval",
-        title: "Schválit plán?",
+        title: "Approve the plan?",
+        code: "plan_approval",
         detail: stringField(input.input, "plan") ?? "",
         options: null,
       },

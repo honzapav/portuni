@@ -151,7 +151,10 @@ Which routes stay central on purpose: graph reads and writes, the session
 record half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`,
 `/runs…`, `/sessions/record`; the live half of a model change is
 `POST /sessions/:id/model`, device-local), `GET /nodes/:id/sessions`, `/overview`,
-`/sync/watch`, `/nodes/:id/file-url`, `/nodes/:id/folder-url`. Per-route
+`/sync/watch`, `/nodes/:id/file-url`, `/nodes/:id/folder-url`, and `GET`/`PATCH /me`
+(the user's UI language, `users.locale`, lives in the central server's db, so
+every device of the user reads the same value on its next `/me`; the device
+needs no `CentralClient` method for it). Per-route
 detail: [`desktop-shell.md`](./desktop-shell.md) (routing, write gate),
 [`file-state-and-sync-runs.md`](./file-state-and-sync-runs.md) (file
 lifecycle routes and their device half), [`sessions-and-runner.md`](./sessions-and-runner.md)
@@ -183,7 +186,17 @@ record REST routes, `provision-central.ts` (`createMirrorForNodeCentral`,
 `CentralClient.orientation`), the `scope`/`suspendRecord`/`trackHandoff`
 seams of `createSuspendServerSide` (#458), and
 `CentralClient.nodeOrganizationId` for the organization's default runner
-instance. Access checks run exactly once, on the central server. Detail:
+instance. Access checks run exactly once, on the central server. The
+language of text the device writes for a person (the handoff file, the
+default thread name) comes with the request that causes it: `POST
+/sessions`, a message, Předat and Pokračovat v nové session carry an
+optional `locale` (REST body or live-channel frame payload) that the router
+hands to the runtime; nothing on the device reads it from process state or
+from the central server. The one place it crosses to the central server is
+a draft's record: the sync agent sends the request's `locale` with `POST
+/sessions/record` and the central server writes the default name in it
+(#539). The OAuth consent and sign-in error pages exist only on the central
+server; they use `users.locale`, else `Accept-Language`, else English. Detail:
 [`sessions-and-runner.md`](./sessions-and-runner.md).
 
 ## Editing files
@@ -195,6 +208,31 @@ node, and a remote MCP client session (OAuth grant), go through the central serv
 bytes **Drive-direct** (`file-content-remote.ts`) and refreshes the canonical
 hash on write. Optimistic concurrency is the same everywhere: a stale base
 version is a conflict, never a silent overwrite.
+
+## Error responses
+
+Every error a client can receive has the same shape on the central server, a
+sync agent and a personal workspace's server (#531):
+
+- REST and the agent router: `{ error, code, params?, request_id? }`, written
+  by `respondApiError` or, for a thrown error, `respondError`
+  (`http/middleware.ts`). A handler that knows the answer throws `ApiError`.
+- The live channel: `{ id, type: "error", payload: { code, message, params? } }`.
+
+`code` is a member of `apps/server/shared/error-codes.ts`, the one list a new
+code is added to first; `params` holds data only (a device label, a file
+name, a count). `error`/`message` is English and meant for logs; the web never
+shows it but renders `errors:<code>` with `params` (`displayError`,
+`apps/web/src/lib/api-error.ts`), an unknown code as `errors:UNKNOWN` with the
+request id. A trigger's rejection gets its code from `TRIGGER_ERROR_CODES`
+(`infra/sql.ts`), the same text in both dialects. `test/error-codes.test.ts`
+holds the list, the two catalogs and the server sources to each other.
+
+In a team workspace the sync agent relays an error from the central server
+unchanged: `CentralHttpError` carries the central server's `code` and
+`params`, and `respondError` (REST) and `errorFrameFor` (live channel) answer
+a coded 4xx with the same status, code and params. Codes are stable: a
+desktop of another version may branch on one, so a code is never renamed.
 
 ## Workspace checklist for a change
 
@@ -215,6 +253,8 @@ version is a conflict, never a silent overwrite.
   [`database-and-dialects.md`](./database-and-dialects.md).
 - **Web**: a feature that has nothing to do on a personal workspace is hidden
   there (`useDataMode()`), not disabled.
+- **New error**: a code in `shared/error-codes.ts` and a message in both
+  `errors.json` catalogs; never an error body without a code.
 - **Verification**: name in the PR what changed in `agent-router.ts`,
   `is_device_local_path`, `CentralClient` and `agent-tools.ts`, or why none of
   them is affected.

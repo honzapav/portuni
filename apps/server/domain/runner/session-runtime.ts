@@ -40,6 +40,8 @@ import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
 import { isRunEndedError } from "./types.js";
 import type { ProvisionRunInput, ProvisionRunResult } from "./provision.js";
+import type { ErrorParams } from "../../shared/error-codes.js";
+import type { Locale } from "../../shared/i18n/config.js";
 import type {
   CanonicalEvent,
   DeltaFrame,
@@ -59,9 +61,21 @@ import type {
 // instance for it, if one is set.
 export class NoRunnerAvailableError extends Error {}
 
+// #530: the session has no live run to take a message or an answer right
+// now. The REST, agent-router and live-channel layers answer 409 with
+// NO_LIVE_RUN (api/session-refusals.ts); the code comes from this type,
+// never from the message text.
+export class NoLiveRunError extends Error {
+  constructor(op: string, readonly sessionId: string) {
+    super(`${op}: session ${sessionId} has no live run`);
+    this.name = "NoLiveRunError";
+  }
+}
+
 // #459 (Předat): the thread cannot be handed to another machine right now.
-// `code` is what the REST/live-channel layer answers with (409); `message`
-// is Czech, because it is shown to the user as-is.
+// `code` (+ `params`) is what the REST/live-channel layer answers with
+// (409) and what the web renders from its catalog (#531); `message` is
+// English and meant for logs.
 export class SessionHandoffError extends Error {
   constructor(
     readonly code:
@@ -69,12 +83,15 @@ export class SessionHandoffError extends Error {
       | "HANDOFF_NO_MIRROR"
       | "HANDOFF_RUN_ELSEWHERE"
       | "HANDOFF_TRANSCRIPT_ELSEWHERE"
+      | "SESSION_TRANSCRIPT_ELSEWHERE"
       | "HANDOFF_NO_CONTENT"
       | "HANDOFF_FILE_NOT_HERE"
       | "HANDOFF_PATH_INVALID",
     message: string,
+    readonly params?: ErrorParams,
   ) {
     super(message);
+    this.name = "SessionHandoffError";
   }
 }
 
@@ -213,7 +230,16 @@ export interface CreateSessionRuntimeDeps {
   resolveNodeOrgId?: ResolveNodeOrgId;
 }
 
-export interface StartTaskInput {
+// #538: the language of the request that causes text the device writes for
+// a person (the handoff file, the default thread name). The web sends it
+// with POST /sessions, a message, Předat and Pokračovat v nové session;
+// nothing on the device reads it from process state or from the central
+// server (spec 2026-09-25-localization-design.md, "Server").
+export interface SessionRequestOptions {
+  locale?: Locale;
+}
+
+export interface StartTaskInput extends SessionRequestOptions {
   userId: string;
   nodeId: string;
   brief: string;
@@ -234,7 +260,7 @@ export interface SetModelAndEffortInput {
   effort?: string | null;
 }
 
-export interface CreateDraftInput {
+export interface CreateDraftInput extends SessionRequestOptions {
   userId: string;
   nodeId: string;
   model?: string | null;
@@ -246,7 +272,7 @@ export interface CreateDraftInput {
 // is the whole point. Only the node and the file's node-relative path: the
 // runner/instance are resolved here the way a draft's are, and the name
 // comes out of the summary's own title.
-export interface StartFromHandoffInput {
+export interface StartFromHandoffInput extends SessionRequestOptions {
   userId: string;
   nodeId: string;
   handoffPath: string;
@@ -285,7 +311,7 @@ export interface SessionRuntime {
   // summary) -- there is no separate resume verb to call first. #498: a
   // closed thread reopens the same way. Throws "has no live run" only for
   // an archived session, same wording as before.
-  sendMessage(sessionId: string, text: string): Promise<void>;
+  sendMessage(sessionId: string, text: string, opts?: SessionRequestOptions): Promise<void>;
   answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void>;
   // Cancels the CURRENT TURN only (Query.interrupt()) -- the process, the
   // prompt queue and the run all stay alive; a message right after is
@@ -313,7 +339,7 @@ export interface SessionRuntime {
   // has its file, a no-op answering the same path. A draft, a closed
   // thread, or a node with no mirror on this device throws
   // SessionHandoffError -- there is no file to hand over.
-  handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }>;
+  handoff(sessionId: string, opts?: SessionRequestOptions): Promise<{ session: SessionRow; handoff_path: string }>;
   // #459/#460 "Navázat na handoff": the other end of Předat. Creates a new
   // thread on this device from a handoff file of the node -- a new record
   // (runner/instance resolved as for a draft, name from the summary's
@@ -329,7 +355,7 @@ export interface SessionRuntime {
   // one, running, on the same node -- "Pokračovat v nové session" (offered
   // any time) and "Navázat" (a closed thread, same call minus the prior
   // close) both call this.
-  continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }>;
+  continueSession(sessionId: string, opts?: SessionRequestOptions): Promise<{ session: SessionRow; run: SessionRunRow }>;
   subscribe(target: string, listener: RuntimeListener): () => void;
   sessionSignals(sessionId: string): Promise<SessionSignals>;
   // The session's currently open question, or null -- lets a caller (the
@@ -367,7 +393,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     ((sessionId: string, reason: ServerHandoffReason, opts?: SuspendServerSideOptions) =>
       localHandoffs().suspend(sessionId, reason, opts));
   const handoffs: Pick<SessionHandoffs, "summarize" | "writeFile"> = deps.handoffs ?? {
-    summarize: (session, reason) => localHandoffs().summarize(session, reason),
+    summarize: (session, reason, locale) => localHandoffs().summarize(session, reason, locale),
     writeFile: (session, summary) => localHandoffs().writeFile(session, summary),
   };
   const resolveNodeOrgId = deps.resolveNodeOrgId ?? resolveNodeOrgIdLocal;
@@ -405,6 +431,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // rather than the generic "run_ended" catch-all handleAdapterEvent falls
   // back to. Set by endIdleRun just before closing, consumed once.
   const pendingEndReason = new Map<string, ServerHandoffReason>();
+  // #539: the language of the request that ended the run on purpose (only
+  // Předat writes a summary there), read by the same run_ended handler.
+  const pendingEndLocale = new Map<string, Locale>();
   // #378: last time ANY activity was observed for a session's live run
   // (started, a message sent, an adapter event, a question answered) --
   // the idle sweep's own cutoff. Cleared once the run ends.
@@ -718,7 +747,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     } else {
       const reason = pendingEndReason.get(sessionId) ?? "run_ended";
       pendingEndReason.delete(sessionId);
-      const suspended = await suspendFallback(sessionId, reason);
+      const locale = pendingEndLocale.get(sessionId);
+      pendingEndLocale.delete(sessionId);
+      const suspended = await (locale ? suspendFallback(sessionId, reason, { locale }) : suspendFallback(sessionId, reason));
       if (suspended) {
         // #494: the run_ended above already fanned a session_state out
         // (api/sessions-ws.ts reads the row the moment it sees one) --
@@ -887,6 +918,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       effort: input.effort ?? null,
       runner: defaults.runner,
       instance_id: defaults.instanceId,
+      locale: input.locale,
     });
   }
 
@@ -948,6 +980,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // after the run it was written for refused it).
     logged = false,
     attempt = 0,
+    // #539: the language of the summary a resume by writing may build.
+    locale?: Locale,
   ): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (live) {
@@ -972,7 +1006,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         // end and for the suspend that follows, then deliver it the way a
         // message into a suspended thread is delivered -- as the next
         // run's first message, written once.
-        await deliverAfterRunEnd(sessionId, text, attempt, true);
+        await deliverAfterRunEnd(sessionId, text, attempt, true, locale);
       }
       return;
     }
@@ -982,7 +1016,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // message is not refused -- it waits for the state that suspend leaves
     // behind and goes to the run it starts.
     if (runSettling.has(sessionId)) {
-      await deliverAfterRunEnd(sessionId, text, attempt, logged);
+      await deliverAfterRunEnd(sessionId, text, attempt, logged, locale);
       return;
     }
 
@@ -995,10 +1029,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // #498: Uzavřít is "done, off the active lists", not "never again" --
     // writing into a closed thread reopens it exactly like a suspended one.
     if (session.state === "suspended" || session.state === "closed") {
-      await resumeByWriting(sessionId, session, text, logged);
+      await resumeByWriting(sessionId, session, text, logged, locale);
       return;
     }
-    throw new Error(`sendMessage: session ${sessionId} has no live run`);
+    throw new NoLiveRunError("sendMessage", sessionId);
   }
 
   // #489: waits for the run that is ending (never a clock -- the run's own
@@ -1009,12 +1043,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     text: string,
     attempt: number,
     logged: boolean,
+    locale?: Locale,
   ): Promise<void> {
     if (attempt + 1 >= MAX_DELIVERY_ATTEMPTS) {
       throw new Error(`sendMessage: session ${sessionId} keeps ending runs before the message can be delivered`);
     }
     await waitForRunToSettle(sessionId);
-    await sendMessageLocked(sessionId, text, logged, attempt + 1);
+    await sendMessageLocked(sessionId, text, logged, attempt + 1, locale);
   }
 
   // A thread is a session row from the moment it opens (#374, "the session
@@ -1026,7 +1061,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   async function promoteDraftAndStart(sessionId: string, text: string): Promise<void> {
     const session = await store.getSession(sessionId);
     if (!session) throw new Error(`sendMessage: session ${sessionId} not found`);
-    if (session.state !== "draft") throw new Error(`sendMessage: session ${sessionId} has no live run`);
+    if (session.state !== "draft") throw new NoLiveRunError("sendMessage", sessionId);
     if (!session.node_id) throw new Error(`sendMessage: draft session ${sessionId} has no anchor node`);
 
     const { runner, instanceId } = session.runner
@@ -1093,6 +1128,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // #489: true when `text` is already in the transcript -- a message the
     // previous run refused while it was ending.
     logged = false,
+    locale?: Locale,
   ): Promise<void> {
     if (!session.node_id) throw new Error(`sendMessage: session ${sessionId} has no anchor node`);
     const runner = session.runner;
@@ -1132,7 +1168,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     if (canResumeConversation && lastRun?.agent_session_id) {
       runStartResume = { agentSessionId: lastRun.agent_session_id };
     } else {
-      const summary = await resumeSummary(session, provisioned.cwd);
+      const summary = await resumeSummary(session, provisioned.cwd, locale);
       // #497: nothing to continue from here -- no conversation, no Předat
       // file, no transcript and no content at all on this device. The same
       // refusals Předat gives: the transcript is on the device the thread
@@ -1142,7 +1178,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       if (summary) {
         runProvisioned = {
           ...provisioned,
-          orientation: `${provisioned.orientation}\n\n## Předání (obnovení ze shrnutí)\n\nKonverzace se neobnovuje přímo; pokračuješ z tohoto shrnutí:\n\n${summary}`,
+          orientation: `${provisioned.orientation}\n\n## Handoff (resumed from a summary)\n\nThe conversation is not restored directly; you continue from this summary:\n\n${summary}`,
         };
       }
     }
@@ -1179,13 +1215,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // handoff uses. With no transcript here either, an inline summary an
   // older sidecar left behind is the last resort, and with none of the
   // three the thread resumes on its orientation alone, as before.
-  async function resumeSummary(session: SessionRow, cwd: string): Promise<string | null> {
+  async function resumeSummary(session: SessionRow, cwd: string, locale?: Locale): Promise<string | null> {
     if (session.handoff_path) {
       const file = await readFile(join(cwd, session.handoff_path), "utf8").catch(() => null);
       if (file) return file;
     }
     if ((await content.listEvents(session.id, { limit: 1 })).length > 0) {
-      return handoffs.summarize(session, "run_ended");
+      return handoffs.summarize(session, "run_ended", locale);
     }
     return (await content.getContent(session.id))?.handoff_inline ?? null;
   }
@@ -1194,7 +1230,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // state) is recorded before the adapter learns the decision.
   async function answerLocked(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
     const live = liveRuns.get(sessionId);
-    if (!live) throw new Error(`answer: session ${sessionId} has no live run`);
+    if (!live) throw new NoLiveRunError("answer", sessionId);
     touchActivity(sessionId);
 
     const pending = pendingQuestions.get(sessionId);
@@ -1287,10 +1323,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // -- the resulting run_ended is meant to fall through to the auto-
   // summary/suspend path in handleAdapterEvent, tagged "idle" specifically
   // (via pendingEndReason) rather than the generic "run_ended".
-  async function endRunWithReason(sessionId: string, reason: ServerHandoffReason): Promise<boolean> {
+  async function endRunWithReason(
+    sessionId: string,
+    reason: ServerHandoffReason,
+    locale?: Locale,
+  ): Promise<boolean> {
     const live = liveRuns.get(sessionId);
     if (!live) return false;
     pendingEndReason.set(sessionId, reason);
+    if (locale) pendingEndLocale.set(sessionId, locale);
     await live.handle.close();
     await drain(sessionId);
     return true;
@@ -1318,7 +1359,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // this device but has no live handle any more (the device restarted
   // under it) still gets its summary: the suspend path needs no adapter.
   // Suspended with no file: the same summary path writes the file now.
-  async function handoffLocked(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
+  async function handoffLocked(
+    sessionId: string,
+    locale?: Locale,
+  ): Promise<{ session: SessionRow; handoff_path: string }> {
     const session = await mustGetSession(sessionId);
     if (session.state === "suspended" && session.handoff_path) {
       return { session, handoff_path: session.handoff_path };
@@ -1326,7 +1370,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     if (session.state !== "running" && session.state !== "suspended") {
       throw new SessionHandoffError(
         "HANDOFF_NOT_ALLOWED",
-        "Předat lze jen běžící nebo pozastavené vlákno.",
+        `only a running or suspended thread can be handed off (state: ${session.state})`,
+        { state: session.state },
       );
     }
     if (!session.node_id || !(await getMirrorPath(session.user_id, session.node_id))) {
@@ -1337,21 +1382,23 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       if (!liveRuns.has(sessionId)) {
         const host = await runHostOf(session);
         if (host && host !== localHostId()) {
+          const label = resolveHostLabel(host) ?? host;
           throw new SessionHandoffError(
             "HANDOFF_RUN_ELSEWHERE",
-            `Vlákno právě běží na zařízení ${resolveHostLabel(host) ?? host}; předat ho lze jen tam.`,
+            `the thread is running on device ${label}; it can only be handed off there`,
+            { host: label },
           );
         }
       }
       await interruptLocked(sessionId);
-      if (!(await endRunWithReason(sessionId, "handoff"))) {
-        await suspendFallback(sessionId, "handoff");
+      if (!(await endRunWithReason(sessionId, "handoff", locale))) {
+        await suspendFallback(sessionId, "handoff", { locale });
       }
     } else {
       if (!(await contentIsHere(sessionId))) {
-        await refuseForMissingContent(session, "předat ho lze jen tam");
+        await refuseForMissingContent(session, "handoff");
       }
-      await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true });
+      await suspendFallback(sessionId, "handoff", { writeFileIfSuspended: true, locale });
     }
     const after = await mustGetSession(sessionId);
     if (!after.handoff_path) throw noMirrorHandoffError();
@@ -1364,20 +1411,31 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // has not finished or failed. A summary built now would be empty and
   // would stand in for the real one, so nothing proceeds until the content
   // arrives.
+  // `context` picks the code of the "elsewhere" refusal: Předat
+  // (HANDOFF_TRANSCRIPT_ELSEWHERE) or a resume by writing
+  // (SESSION_TRANSCRIPT_ELSEWHERE) -- the user is told different things.
   async function refuseForMissingContent(
     session: SessionRow,
-    elsewhereTail = "pokračovat v něm lze jen tam",
+    context: "handoff" | "resume" = "resume",
   ): Promise<never> {
     const host = await runHostOf(session);
     if (host && host !== localHostId()) {
-      throw new SessionHandoffError(
-        "HANDOFF_TRANSCRIPT_ELSEWHERE",
-        `Transkript vlákna je na zařízení ${resolveHostLabel(host) ?? host}; ${elsewhereTail}.`,
-      );
+      const label = resolveHostLabel(host) ?? host;
+      throw context === "handoff"
+        ? new SessionHandoffError(
+            "HANDOFF_TRANSCRIPT_ELSEWHERE",
+            `the thread's transcript is on device ${label}; it can only be handed off there`,
+            { host: label },
+          )
+        : new SessionHandoffError(
+            "SESSION_TRANSCRIPT_ELSEWHERE",
+            `the thread's transcript is on device ${label}; it can only be continued there`,
+            { host: label },
+          );
     }
     throw new SessionHandoffError(
       "HANDOFF_NO_CONTENT",
-      "Obsah vlákna na tomto zařízení zatím není; zkus to znovu, až se stáhne.",
+      "the thread's content is not on this device yet; retry once it has downloaded",
     );
   }
 
@@ -1411,11 +1469,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     run: SessionRunRow;
   }> {
     if (!isHandoffRelativePath(input.handoffPath)) {
-      throw new SessionHandoffError("HANDOFF_PATH_INVALID", "Cesta k souboru handoffu není platná.");
+      throw new SessionHandoffError("HANDOFF_PATH_INVALID", "the handoff file path is not valid");
     }
     const summary = await readNodeHandoffFile(input.userId, input.nodeId, input.handoffPath);
     if (summary === null) {
-      throw new SessionHandoffError("HANDOFF_FILE_NOT_HERE", "Soubor handoffu ještě není na tomto zařízení.");
+      throw new SessionHandoffError(
+        "HANDOFF_FILE_NOT_HERE",
+        "the handoff file is not on this device yet",
+        { path: input.handoffPath },
+      );
     }
 
     const { runner, instanceId } = await resolveTaskDefaults(input.nodeId, resolveNodeOrgId);
@@ -1442,9 +1504,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const seededProvisioned = {
       ...provisioned,
       orientation:
-        `${provisioned.orientation}\n\n## Navázání na handoff\n\n` +
-        `Navazuješ na vlákno z jiného zařízení; konverzace se nepřenáší, ` +
-        `pokračuješ z tohoto shrnutí (\`${input.handoffPath}\`):\n\n${summary}`,
+        `${provisioned.orientation}\n\n## Continuing from a handoff\n\n` +
+        `You are picking up a thread from another device; the conversation does not carry over, ` +
+        `you continue from this summary (\`${input.handoffPath}\`):\n\n${summary}`,
     };
 
     const run = await store.createRun({
@@ -1468,7 +1530,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   function noMirrorHandoffError(): SessionHandoffError {
     return new SessionHandoffError(
       "HANDOFF_NO_MIRROR",
-      "Uzel nemá na tomto zařízení zrcadlo, soubor s předáním nelze zapsat.",
+      "the node has no mirror on this device; the handoff file cannot be written",
     );
   }
 
@@ -1507,7 +1569,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // is written as the old thread's handoff file (when this device has a
   // mirror of the node) and the new thread's orientation points at it, the
   // way Navázat na handoff's does.
-  async function continueSessionLocked(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
+  async function continueSessionLocked(
+    sessionId: string,
+    locale?: Locale,
+  ): Promise<{ session: SessionRow; run: SessionRunRow }> {
     const oldSession = await mustGetSession(sessionId);
     if (!oldSession.node_id) throw new Error(`continueSession: session ${sessionId} has no anchor node`);
     const runner = oldSession.runner;
@@ -1529,7 +1594,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await drain(sessionId);
     }
 
-    const summary = await handoffs.summarize(oldSession, "continue");
+    const summary = await handoffs.summarize(oldSession, "continue", locale);
     // The old run is already ended: a file that cannot be written (a full
     // disk, a mirror gone read-only) must not strand the old thread running
     // with no live run. The summary still seeds the new thread inline, the
@@ -1561,10 +1626,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const seededProvisioned = {
       ...provisioned,
       orientation: written
-        ? `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n` +
-          `Navazuješ na předchozí vlákno; konverzace se nepřenáší, ` +
-          `pokračuješ z tohoto shrnutí (\`${written.handoffPath}\`):\n\n${summary}`
-        : `${provisioned.orientation}\n\n## Pokračování z předchozí session\n\n${summary}`,
+        ? `${provisioned.orientation}\n\n## Continuing from the previous session\n\n` +
+          `You are picking up the previous thread; the conversation does not carry over, ` +
+          `you continue from this summary (\`${written.handoffPath}\`):\n\n${summary}`
+        : `${provisioned.orientation}\n\n## Continuing from the previous session\n\n${summary}`,
     };
 
     const run = await store.createRun({
@@ -1615,8 +1680,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // arriving during a start therefore finds the run that start produced and
   // goes to it as an ordinary message; Uzavřít and Předat wait for the
   // start and then end that run.
-  function sendMessage(sessionId: string, text: string): Promise<void> {
-    return withLifecycleLock(sessionId, () => sendMessageLocked(sessionId, text));
+  function sendMessage(sessionId: string, text: string, opts?: SessionRequestOptions): Promise<void> {
+    return withLifecycleLock(sessionId, () => sendMessageLocked(sessionId, text, false, 0, opts?.locale));
   }
 
   // Stop and an answer act on the live run too: during a start they wait
@@ -1634,12 +1699,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return withLifecycleLock(sessionId, () => closeSessionLocked(sessionId));
   }
 
-  function handoff(sessionId: string): Promise<{ session: SessionRow; handoff_path: string }> {
-    return withLifecycleLock(sessionId, () => handoffLocked(sessionId));
+  function handoff(sessionId: string, opts?: SessionRequestOptions): Promise<{ session: SessionRow; handoff_path: string }> {
+    return withLifecycleLock(sessionId, () => handoffLocked(sessionId, opts?.locale));
   }
 
-  function continueSession(sessionId: string): Promise<{ session: SessionRow; run: SessionRunRow }> {
-    return withLifecycleLock(sessionId, () => continueSessionLocked(sessionId));
+  function continueSession(
+    sessionId: string,
+    opts?: SessionRequestOptions,
+  ): Promise<{ session: SessionRow; run: SessionRunRow }> {
+    return withLifecycleLock(sessionId, () => continueSessionLocked(sessionId, opts?.locale));
   }
 
   function subscriberCount(target: string): number {

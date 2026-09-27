@@ -1,68 +1,44 @@
-// Nastavení > Uživatelé -- admin-only tab: full account list (GET
+// Settings > Users -- admin-only tab: full account list (GET
 // /auth/users/admin) plus an invite form (POST /auth/users/invite). Visible
 // gating (global_scope === "admin") happens in SettingsPage.tsx; this
 // component assumes it's only ever rendered for an admin.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { displayError } from "../errors";
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fetchUsersAdmin, inviteUser, UserExistsError } from "../api";
-import type { UserAdmin } from "../types";
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
+import { useListLoad } from "../lib/use-list-load";
+import { ErrorActionAlert } from "./ErrorActionAlert";
 
-type UsersState =
-  | { kind: "loading" }
-  | { kind: "error"; reason: string }
-  | { kind: "ok"; users: UserAdmin[] };
+const fetchUsers = async () => ({ users: await fetchUsersAdmin() });
 
 // Simple format check, mirrors the server's zod z.string().email() closely
 // enough to catch typos before a round-trip -- not a full RFC validator.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function SettingsUsersPanel() {
-  const [state, setState] = useState<UsersState>({ kind: "loading" });
+  const locale = useLocale();
+  const { t } = useTranslation("settings");
+  // mountedRef guards setState calls that resolve after the panel has
+  // unmounted (tab switch mid-fetch, admin bounced back to "general", etc.),
+  // shared across load() and handleInvite() since both call async work
+  // outside a single effect body.
+  const { state, load, mountedRef } = useListLoad(fetchUsers);
   const [email, setEmail] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
-
-  // Guards setState calls that resolve after the panel has unmounted
-  // (tab switch mid-fetch, admin bounced back to "general", etc.) --
-  // same cancelled-flag intent as the fetchMe effect in SettingsPage.tsx,
-  // shared across load() and handleInvite() via a ref since both call
-  // async work outside a single effect body.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const load = useCallback(async () => {
-    if (!mountedRef.current) return;
-    setState({ kind: "loading" });
-    try {
-      const users = await fetchUsersAdmin();
-      if (mountedRef.current) setState({ kind: "ok", users });
-    } catch (e) {
-      if (mountedRef.current) {
-        setState({
-          kind: "error",
-          reason: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   async function handleInvite() {
     const trimmed = email.trim();
     if (!trimmed) return;
     if (!EMAIL_RE.test(trimmed)) {
-      setInviteError("Zadej platný e-mail.");
+      setInviteError(t(($) => $.users.invite.invalid_email));
       return;
     }
     setInviteBusy(true);
@@ -76,10 +52,8 @@ export default function SettingsUsersPanel() {
       if (mountedRef.current) {
         setInviteError(
           e instanceof UserExistsError
-            ? "Uživatel už existuje"
-            : e instanceof Error
-              ? e.message
-              : String(e),
+            ? t(($) => $.users.invite.user_exists)
+            : displayError(e),
         );
       }
     } finally {
@@ -90,12 +64,10 @@ export default function SettingsUsersPanel() {
   return (
     <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
       <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        Uživatelé
+        {t(($) => $.users.title)}
       </div>
       <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-        Účty s přístupem k tomuto Portuni serveru. Pozvaní uživatelé ještě
-        nikdy nepřihlásili -- placeholder účet jde sdílet a přiřazovat
-        rovnou.
+        {t(($) => $.users.description)}
       </p>
 
       <div className="mb-4 flex items-center gap-2">
@@ -109,7 +81,7 @@ export default function SettingsUsersPanel() {
           onKeyDown={(e) => {
             if (e.key === "Enter") void handleInvite();
           }}
-          placeholder="email@example.com"
+          placeholder={t(($) => $.users.invite.placeholder)}
           disabled={inviteBusy}
           className="flex-1"
         />
@@ -119,7 +91,7 @@ export default function SettingsUsersPanel() {
           onClick={() => void handleInvite()}
           className="shrink-0"
         >
-          {inviteBusy ? "Zvu…" : "Pozvat"}
+          {inviteBusy ? t(($) => $.users.invite.submitting) : t(($) => $.users.invite.submit)}
         </Button>
       </div>
 
@@ -131,30 +103,21 @@ export default function SettingsUsersPanel() {
 
       {state.kind === "loading" && (
         <div className="text-[13px] text-[var(--color-text-dim)]">
-          Načítám uživatele…
+          {t(($) => $.users.loading)}
         </div>
       )}
 
       {state.kind === "error" && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex items-start justify-between gap-3">
-            <span className="min-w-0 break-words">{state.reason}</span>
-            <Button
-              type="button"
-              variant="link"
-              size="sm"
-              onClick={() => void load()}
-              className="shrink-0 text-destructive"
-            >
-              Zkusit znovu
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <ErrorActionAlert
+          message={state.reason}
+          actionLabel={t(($) => $.users.retry)}
+          onAction={() => void load()}
+        />
       )}
 
       {state.kind === "ok" && state.users.length === 0 && (
         <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
-          Zatím žádní uživatelé.
+          {t(($) => $.users.empty)}
         </div>
       )}
 
@@ -163,10 +126,10 @@ export default function SettingsUsersPanel() {
           <table className="w-full border-collapse text-[12.5px]">
             <thead>
               <tr className="border-b border-[var(--color-border)] text-left text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
-                <th className="pb-2 pr-4 font-semibold">Jméno</th>
-                <th className="pb-2 pr-4 font-semibold">E-mail</th>
-                <th className="pb-2 pr-4 font-semibold">Role</th>
-                <th className="pb-2 font-semibold">Poslední přihlášení</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.users.columns.name)}</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.users.columns.email)}</th>
+                <th className="pb-2 pr-4 font-semibold">{t(($) => $.users.columns.role)}</th>
+                <th className="pb-2 font-semibold">{t(($) => $.users.columns.last_sign_in)}</th>
               </tr>
             </thead>
             <tbody>
@@ -196,7 +159,7 @@ export default function SettingsUsersPanel() {
                           variant="outline"
                           className="bg-[var(--color-bg)] font-mono uppercase tracking-wide text-[var(--color-text-dim)]"
                         >
-                          Pozvaný
+                          {t(($) => $.users.invited_badge)}
                         </Badge>
                       )}
                     </div>
@@ -205,10 +168,10 @@ export default function SettingsUsersPanel() {
                     {u.email}
                   </td>
                   <td className="py-2 pr-4 font-mono text-[var(--color-text-muted)]">
-                    {u.global_scope ?? "—"}
+                    {u.global_scope ?? t(($) => $.users.none)}
                   </td>
                   <td className="py-2 text-[var(--color-text-muted)]">
-                    {u.last_login_at ? fmtDateTime(u.last_login_at) : "—"}
+                    {u.last_login_at ? formatDateTime(locale, u.last_login_at) : t(($) => $.users.none)}
                   </td>
                 </tr>
               ))}
@@ -228,18 +191,4 @@ function initials(name: string): string {
     .join("")
     .toUpperCase()
     .slice(0, 2);
-}
-
-function fmtDateTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString("cs-CZ", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
 }

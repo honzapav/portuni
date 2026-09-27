@@ -14,16 +14,18 @@
 //
 // Adapted from AI Elements (https://elements.ai-sdk.dev) `loader`, pulled
 // via `npx ai-elements@latest add loader` (ai-elements@1.9.0). Changed:
-// nothing but this header.
+// the icon's <title> comes from the `chat` catalog.
 
 import { cn } from "@/lib/utils";
 import type { HTMLAttributes } from "react";
+import { useTranslation } from "react-i18next";
 
 type LoaderIconProps = {
   size?: number;
+  title: string;
 };
 
-const LoaderIcon = ({ size = 16 }: LoaderIconProps) => (
+const LoaderIcon = ({ size = 16, title }: LoaderIconProps) => (
   <svg
     height={size}
     strokeLinejoin="round"
@@ -31,7 +33,7 @@ const LoaderIcon = ({ size = 16 }: LoaderIconProps) => (
     viewBox="0 0 16 16"
     width={size}
   >
-    <title>Loader</title>
+    <title>{title}</title>
     <g clipPath="url(#clip0_2393_1490)">
       <path d="M8 0V4" stroke="currentColor" strokeWidth="1.5" />
       <path
@@ -101,14 +103,17 @@ export type LoaderProps = HTMLAttributes<HTMLDivElement> & {
   size?: number;
 };
 
-export const Loader = ({ className, size = 16, ...props }: LoaderProps) => (
-  <div
-    className={cn(
-      "inline-flex animate-spin items-center justify-center",
-      className
-    )}
-    {...props}
-  >
-    <LoaderIcon size={size} />
-  </div>
-);
+export const Loader = ({ className, size = 16, ...props }: LoaderProps) => {
+  const { t } = useTranslation("chat");
+  return (
+    <div
+      className={cn(
+        "inline-flex animate-spin items-center justify-center",
+        className
+      )}
+      {...props}
+    >
+      <LoaderIcon size={size} title={t(($) => $.loader.title)} />
+    </div>
+  );
+};

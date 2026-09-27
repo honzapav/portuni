@@ -6,6 +6,7 @@
 // doesn't re-fetch (and re-verify) latest.json; a later check_update (manual
 // "Zkontrolovat nyní" or the 6h poll) replaces or clears the cached entry.
 
+use crate::errors::CmdError;
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -33,7 +34,7 @@ struct UpdateProgress {
 /// installer to install, and hitting the real endpoint from a dev build
 /// would offer an update dev builds can't apply.
 #[tauri::command]
-pub(crate) async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+pub(crate) async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, CmdError> {
     if cfg!(debug_assertions) {
         return Ok(None);
     }
@@ -60,7 +61,7 @@ pub(crate) async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, S
 /// mismatch) leave the currently-running app untouched — nothing is applied
 /// until this returns Ok.
 #[tauri::command]
-pub(crate) async fn install_update(app: AppHandle) -> Result<(), String> {
+pub(crate) async fn install_update(app: AppHandle) -> Result<(), CmdError> {
     let update = app
         .state::<PendingUpdate>()
         .0
@@ -68,7 +69,9 @@ pub(crate) async fn install_update(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .clone();
     let Some(update) = update else {
-        return Err("no update to install — call check_update first".to_string());
+        return Err(CmdError::Failed(
+            "no update to install, call check_update first".to_string(),
+        ));
     };
     let progress_handle = app.clone();
     update
@@ -85,7 +88,7 @@ pub(crate) async fn install_update(app: AppHandle) -> Result<(), String> {
             || {},
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| CmdError::Failed(e.to_string()))
 }
 
 /// Restart onto the version installed by `install_update`, through the same

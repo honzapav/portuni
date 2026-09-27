@@ -389,7 +389,9 @@ describe("byte-plane read/write (binary-safe sync transfer)", () => {
       () => writeFileBytesRemote(db, {
         userId: "U1", nodeId, relPath: "wip/new.txt", bytes: Buffer.from("second"), ifAbsent: true,
       }),
-      (e: unknown) => e instanceof FileContentError && e.code === "EXISTS",
+      // #531: the catalog message interpolates {{filename}}.
+      (e: unknown) =>
+        e instanceof FileContentError && e.code === "EXISTS" && e.params?.filename === "new.txt",
     );
   });
 

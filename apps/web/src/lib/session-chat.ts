@@ -5,167 +5,37 @@
 // test/session-chat-helpers.test.ts can exercise it directly against
 // fixture event arrays, same convention as lib/sessions.ts.
 //
-// CanonicalEvent mirrors apps/server/domain/runner/types.ts's own union
-// exactly. domain/runner/types.ts is server-only (not under shared/, which
-// exists precisely so the web can type REST responses without importing
-// server domain code) -- this is a deliberate parallel definition of the
-// wire shape, not an import across that boundary.
+// CanonicalEvent is the server's own union, defined once in
+// apps/server/shared/session-events.ts (type-only, like the rest of
+// shared/) and re-exported here for the web's imports.
 
+import type {
+  ChatEventParams,
+  QuestionCode,
+  RunErrorCode,
+} from "../../../server/shared/chat-event-codes";
+import type {
+  AskPrompt,
+  CanonicalEvent,
+  FileChangeOp,
+  QuestionEvent,
+  ToolCallEvent,
+} from "../../../server/shared/session-events";
+import type { TFunction } from "i18next";
 import type { SessionState } from "../types";
+
+type ChatT = TFunction<"chat">;
 import { sessionRowChip } from "./session-views";
 
-export type RunEndReason = "completed" | "interrupted" | "suspended" | "error" | "limit" | "host_lost";
-export type ToolCallCategory = "command" | "file_read" | "file_change" | "mcp" | "other";
-export type ToolCallStatus = "started" | "completed" | "failed";
-export type FileChangeOp = "create" | "edit" | "delete" | "rename";
-export type QuestionType = "approval" | "input";
-export type ErrorClass = "provider" | "transport" | "permission" | "unknown";
-
-// Mirrors the server's QuestionAnswer: a map answers an AskUserQuestion ask
-// question by question, keyed by the question text (#492).
-export type QuestionAnswer = string | boolean | Record<string, string>;
-
-export interface QuestionDecision {
-  by: string;
-  value: QuestionAnswer;
-  at: string;
-}
-
-export interface RunStartedEvent {
-  kind: "run_started";
-  payload: {
-    run_id: string;
-    runner: string;
-    instance_id: string | null;
-    resume: null | "conversation" | "handoff";
-    // A redelivered message (#489) is logged before this event; the run
-    // starts with it as its first turn.
-    carried_messages?: number;
-  };
-}
-export interface RunEndedEvent {
-  kind: "run_ended";
-  payload: { run_id: string; reason: RunEndReason; usage: unknown };
-}
-export interface UserMessageEvent {
-  kind: "user_message";
-  payload: { text: string; source: "chat" | "system" };
-}
-export interface AssistantMessageEvent {
-  kind: "assistant_message";
-  payload: { text: string };
-}
-export interface ReasoningEvent {
-  kind: "reasoning";
-  payload: { summary: string; duration_ms?: number };
-}
-export interface ToolCallEvent {
-  kind: "tool_call";
-  payload: {
-    tool_use_id: string;
-    tool: string;
-    category: ToolCallCategory;
-    title: string;
-    input_summary: string;
-    status: ToolCallStatus;
-    output_excerpt: string | null;
-    truncated: boolean;
-  };
-}
-export interface FileChangeEvent {
-  kind: "file_change";
-  payload: { path: string; op: FileChangeOp };
-}
-export interface QuestionEvent {
-  kind: "question";
-  payload: {
-    request_id: string;
-    type: QuestionType;
-    tool: string;
-    title: string;
-    detail: string;
-    options: string[] | null;
-    questions?: AskPrompt[];
-    decision: QuestionDecision | null;
-  };
-}
-export interface AskPrompt {
-  question: string;
-  options: string[];
-  multi_select: boolean;
-}
-export interface CompactionEvent {
-  kind: "compaction";
-  payload: { trigger: "auto" | "manual" };
-}
-// #378: always server-written now -- no more generated_by to distinguish.
-export interface HandoffEvent {
-  kind: "handoff";
-  payload: { path: string | null; hash: string | null };
-}
-export interface StateChangedEvent {
-  kind: "state_changed";
-  payload: { from: string; to: string; waiting: boolean; by?: string };
-}
-export interface ErrorEvent {
-  kind: "error";
-  payload: { class: ErrorClass; message: string };
-}
-
-// v2 task surface (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md,
-// "The context ring"): emitted by the adapter after every provider
-// assistant message and every result. used_tokens is what the model's
-// context currently holds (input + cache creation + cache read of the
-// latest assistant usage); max_tokens is the model's window from the
-// latest result, null until one arrived. Persisted like every event, so a
-// replay rebuilds the ring; the runtime also folds the latest one onto
-// sessions.context_used_tokens / context_max_tokens.
-export interface ContextUsageEvent {
-  kind: "context_usage";
-  payload: {
-    run_id: string;
-    model: string | null;
-    used_tokens: number;
-    max_tokens: number | null;
-    input_tokens: number;
-    cached_tokens: number;
-    output_tokens: number;
-  };
-}
-
-// The turn-complete signal (server: TurnEndedEvent). A live run is not a
-// working agent: between turns the process only waits for the next
-// message, and this is the event that says the last turn is over.
-export interface TurnEndedEvent {
-  kind: "turn_ended";
-  payload: {
-    run_id: string;
-    // #490: how many sent messages this turn answered (server:
-    // TurnEndedEvent). One turn can answer several messages -- the runner
-    // folds sends that land while it works into the running turn -- so the
-    // chat subtracts this, not one, per turn. Absent on an older event and
-    // from a runner that cannot tell: one message then.
-    consumed_messages?: number;
-  };
-}
-
-export type CanonicalEvent =
-  | RunStartedEvent
-  | RunEndedEvent
-  | TurnEndedEvent
-  | UserMessageEvent
-  | AssistantMessageEvent
-  | ReasoningEvent
-  | ToolCallEvent
-  | FileChangeEvent
-  | QuestionEvent
-  | CompactionEvent
-  | HandoffEvent
-  | StateChangedEvent
-  | ErrorEvent
-  | ContextUsageEvent;
-
-export type CanonicalEventKind = CanonicalEvent["kind"];
+export type {
+  ToolCallStatus,
+  FileChangeOp,
+  QuestionAnswer,
+  ToolCallEvent,
+  QuestionEvent,
+  AskPrompt,
+  CanonicalEvent,
+} from "../../../server/shared/session-events";
 
 export interface ChatEvent {
   seq: number;
@@ -210,8 +80,12 @@ export interface StatusChip {
 
 // The header chip: the row chip's wording variant (lib/session-views.ts
 // owns the table).
-export function sessionStatusChip(state: SessionState, waitingSince: string | null): StatusChip {
-  return sessionRowChip(state, waitingSince, "header");
+export function sessionStatusChip(
+  state: SessionState,
+  waitingSince: string | null,
+  t: TFunction<"common">,
+): StatusChip {
+  return sessionRowChip(state, waitingSince, t, "header");
 }
 
 // --- Open question panel ----------------------------------------------------
@@ -233,16 +107,25 @@ export function latestQuestionEvent(events: readonly ChatEvent[]): QuestionEvent
 // The buttons of an approval question. Without explicit options it is a
 // yes/no decision: the runner reads true as allow and false as a refusal,
 // while any string is an answer and therefore allows.
-export function approvalChoices(
-  options: readonly string[] | null,
-): { label: string; value: string | boolean }[] {
+// The default pair's labels come from the catalog; the value sent to the
+// runner is the boolean either way. Explicit options are the agent's own
+// text: never translated (`content`), sent back exactly as they came. The
+// `key` never carries translated text.
+export interface ApprovalChoice {
+  key: string;
+  label: string;
+  value: string | boolean;
+  content: boolean;
+}
+
+export function approvalChoices(options: readonly string[] | null, t: ChatT): ApprovalChoice[] {
   if (options === null) {
     return [
-      { label: "Ano", value: true },
-      { label: "Ne", value: false },
+      { key: "yes", label: t(($) => $.approval.yes, { ns: "chat" }), value: true, content: false },
+      { key: "no", label: t(($) => $.approval.no, { ns: "chat" }), value: false, content: false },
     ];
   }
-  return options.map((label) => ({ label, value: label }));
+  return options.map((label, i) => ({ key: `option-${i}`, label, value: label, content: true }));
 }
 
 // --- Input questions (AskUserQuestion, #492) ---------------------------------
@@ -419,22 +302,30 @@ export type TranscriptRow =
   | { kind: "prompt"; key: string; text: string }
   | { kind: "answer"; key: string; text: string }
   | ActivityRow
-  | { kind: "question"; key: string; title: string }
+  | { kind: "question"; key: string; title: string; code?: QuestionCode; params?: ChatEventParams }
   | { kind: "compaction"; key: string }
   | { kind: "summary"; key: string }
-  | { kind: "note"; key: string; text: string }
-  | { kind: "error"; key: string; message: string };
+  | { kind: "interrupted"; key: string }
+  // A run that ended other than completed, suspended or interrupted; the
+  // renderer words it from the catalog (runEndedText).
+  | { kind: "run_ended"; key: string; reason: string }
+  // `content`: the provider's own text (never translated); a row with a
+  // `code` is rendered from the catalog.
+  | { kind: "error"; key: string; message: string; code?: RunErrorCode; params?: ChatEventParams; content: boolean };
 
-export function runEndReasonLabel(reason: string): string {
-  const labels: Record<string, string> = {
-    completed: "dokončeno",
-    interrupted: "přerušeno",
-    suspended: "pozastaveno",
-    error: "chyba",
-    limit: "limit",
-    host_lost: "proces osiřel",
-  };
-  return labels[reason] ?? reason;
+// The sentence for a run_ended row. Every reason that yields a row has its
+// own message; a reason this build does not know is shown as its code.
+export function runEndedText(reason: string, t: ChatT): string {
+  switch (reason) {
+    case "error":
+      return t(($) => $.transcript.run_ended.error, { ns: "chat" });
+    case "limit":
+      return t(($) => $.transcript.run_ended.limit, { ns: "chat" });
+    case "host_lost":
+      return t(($) => $.transcript.run_ended.host_lost, { ns: "chat" });
+    default:
+      return t(($) => $.transcript.run_ended.other, { ns: "chat", reason });
+  }
 }
 
 // `liveRunId` says which run is live: its trailing activity group (after
@@ -443,9 +334,9 @@ export function runEndReasonLabel(reason: string): string {
 // turn_ended (a Stop mid-tool or mid-reasoning included) the run is still
 // open and waiting for the next message, and nothing in it is working. run_started and state_changed yield nothing. A
 // run_ended yields nothing for `completed` and `suspended` (the ordinary
-// ends -- the notice bar already says the process is gone), a neutral
-// note for `interrupted`, and an error row for `error`, `limit` and
-// `host_lost`.
+// ends -- the notice bar already says the process is gone), an
+// `interrupted` row for `interrupted`, and a `run_ended` row for `error`,
+// `limit` and `host_lost`.
 export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: string | null): TranscriptRow[] {
   const rows: TranscriptRow[] = [];
   // Held in an object so the closures below can reset it -- a plain `let`
@@ -488,15 +379,20 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
       case "run_ended":
         close();
         if (event.payload.reason === "interrupted") {
-          rows.push({ kind: "note", key: `e${seq}`, text: "Přerušeno" });
+          rows.push({ kind: "interrupted", key: `e${seq}` });
         } else if (event.payload.reason !== "completed" && event.payload.reason !== "suspended") {
-          rows.push({ kind: "error", key: `e${seq}`, message: `Běh skončil: ${runEndReasonLabel(event.payload.reason)}` });
+          rows.push({ kind: "run_ended", key: `e${seq}`, reason: event.payload.reason });
         }
         currentRun = null;
         break;
       case "question":
         close();
-        rows.push({ kind: "question", key: `e${seq}`, title: event.payload.title });
+        rows.push({
+          kind: "question",
+          key: `e${seq}`,
+          title: event.payload.title,
+          ...(event.payload.code ? { code: event.payload.code, params: event.payload.params } : {}),
+        });
         break;
       case "compaction":
         close();
@@ -508,7 +404,13 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
         break;
       case "error":
         close();
-        rows.push({ kind: "error", key: `e${seq}`, message: event.payload.message });
+        rows.push({
+          kind: "error",
+          key: `e${seq}`,
+          message: event.payload.message,
+          ...(event.payload.code ? { code: event.payload.code, params: event.payload.params } : {}),
+          content: event.payload.code === undefined,
+        });
         break;
       default:
         break;
@@ -520,7 +422,9 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
 }
 
 // --- The activity sentence ---------------------------------------------------
-// "Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval 12 s". The verb
+// "Read 3 files · edited 1 · 2 commands · thought for 12 s". Each part is a
+// whole phrase of its own with its plural forms; the parts are a list of
+// separate facts joined by " · ", not pieces of one sentence. The verb
 // table covers Claude's tool names; another runner's tools fall back to
 // their own names (spec, known gaps). The seconds are the group's
 // reasoning blocks' `duration_ms` added up; a block without one (no
@@ -551,44 +455,57 @@ export function toolVerbCounts(items: readonly ActivityItem[]): Map<string, numb
   return counts;
 }
 
-function czechCount(n: number, one: string, few: string, many: string): string {
-  if (n === 1) return one;
-  if (n >= 2 && n <= 4) return few;
-  return many;
-}
-
 export function reasoningSeconds(items: readonly ActivityItem[]): number {
   let ms = 0;
   for (const item of items) if (item.kind === "reasoning" && item.durationMs !== null) ms += item.durationMs;
   return ms > 0 ? Math.max(1, Math.round(ms / 1000)) : 0;
 }
 
-export function activitySummary(items: readonly ActivityItem[]): { text: string; failed: number } {
+export function activitySummary(items: readonly ActivityItem[], t: ChatT): { text: string; failed: number } {
   const seconds = reasoningSeconds(items);
   const tools = items.filter((i): i is Extract<ActivityItem, { kind: "tool" }> => i.kind === "tool");
-  const failed = tools.filter((t) => t.call.status === "failed").length;
+  const failed = tools.filter((tool) => tool.call.status === "failed").length;
   // A group with a single call shows that call's title instead of a sentence.
   if (tools.length === 1 && !seconds) {
-    const t = tools[0];
-    const title = t.call.title || t.call.tool;
-    return { text: failed ? `${title} · selhal` : title, failed };
+    const only = tools[0];
+    const title = only.call.title || only.call.tool;
+    return { text: failed ? t(($) => $.activity.single_failed, { ns: "chat", title }) : title, failed };
   }
+  // A fragment that can open the sentence has its own sentence-initial
+  // message (activity.start.*); the case is never changed at runtime. "read"
+  // always comes first and "thought" stands alone, so theirs are
+  // sentence-initial already.
   const parts: string[] = [];
   const counts = toolVerbCounts(items);
   const read = counts.get("read");
-  if (read) parts.push(`přečteno ${read} ${czechCount(read, "soubor", "soubory", "souborů")}`);
+  if (read) parts.push(t(($) => $.activity.read, { ns: "chat", count: read }));
   const edited = counts.get("edited");
-  if (edited) parts.push(`upraveno ${edited}`);
+  if (edited)
+    parts.push(
+      parts.length === 0
+        ? t(($) => $.activity.start.edited, { ns: "chat", count: edited })
+        : t(($) => $.activity.edited, { ns: "chat", count: edited }),
+    );
   const created = counts.get("created");
-  if (created) parts.push(`vytvořeno ${created}`);
+  if (created)
+    parts.push(
+      parts.length === 0
+        ? t(($) => $.activity.start.created, { ns: "chat", count: created })
+        : t(($) => $.activity.created, { ns: "chat", count: created }),
+    );
   const cmd = counts.get("command");
-  if (cmd) parts.push(`${cmd} ${czechCount(cmd, "příkaz", "příkazy", "příkazů")}`);
-  for (const [key, n] of counts) if (key.startsWith("tool:")) parts.push(`${n} × ${key.slice(5)}`);
-  if (seconds) parts.push(`uvažoval ${seconds} s`);
-  if (failed) parts.push(`${failed} ${czechCount(failed, "selhal", "selhaly", "selhalo")}`);
-  if (parts.length === 0 && items.some((i) => i.kind === "reasoning")) parts.push("uvažoval");
-  const text = parts.join(" · ");
-  return { text: text.charAt(0).toUpperCase() + text.slice(1), failed };
+  if (cmd) parts.push(t(($) => $.activity.command, { ns: "chat", count: cmd }));
+  for (const [key, n] of counts)
+    if (key.startsWith("tool:")) parts.push(t(($) => $.activity.other_tool, { ns: "chat", count: n, tool: key.slice(5) }));
+  if (seconds)
+    parts.push(
+      parts.length === 0
+        ? t(($) => $.activity.start.thought_seconds, { ns: "chat", count: seconds })
+        : t(($) => $.activity.thought_seconds, { ns: "chat", count: seconds }),
+    );
+  if (failed) parts.push(t(($) => $.activity.failed, { ns: "chat", count: failed }));
+  if (parts.length === 0 && items.some((i) => i.kind === "reasoning")) parts.push(t(($) => $.activity.thought, { ns: "chat" }));
+  return { text: parts.join(" · "), failed };
 }
 
 // Whether the thread has a live run for the UI's purposes (working row,
@@ -643,11 +560,15 @@ export function turnInFlight(events: readonly ChatEvent[], liveRunId: string | n
 // the last thing that happened. Between turns (turn_ended) nothing is.
 
 export type WorkingPhase = "starting" | "thinking" | "continuing";
-export const WORKING_LABEL: Record<WorkingPhase, string> = {
-  starting: "Spouštím…",
-  thinking: "Přemýšlím…",
-  continuing: "Pokračuji…",
+const WORKING_LABEL: Record<WorkingPhase, (t: ChatT) => string> = {
+  starting: (t) => t(($) => $.working.starting, { ns: "chat" }),
+  thinking: (t) => t(($) => $.working.thinking, { ns: "chat" }),
+  continuing: (t) => t(($) => $.working.continuing, { ns: "chat" }),
 };
+
+export function workingLabel(phase: WorkingPhase, t: ChatT): string {
+  return WORKING_LABEL[phase](t);
+}
 
 // null = nothing to show: no run and no send in flight, or the run's last
 // event is a still-running tool (the live activity row shows that one).
@@ -784,13 +705,11 @@ export interface TranscriptElsewhere {
   hint: string;
 }
 
-export function transcriptElsewhere(host: string | null, eventCount: number): TranscriptElsewhere | null {
+export function transcriptElsewhere(host: string | null, eventCount: number, t: ChatT): TranscriptElsewhere | null {
   if (!host || eventCount > 0) return null;
   return {
     host,
-    title: `Transkript je na zařízení ${host}`,
-    hint:
-      `Vlákno běželo na zařízení ${host} a jeho obsah zůstává tam — Portuni konverzace nikam nekopíruje. ` +
-      `Chceš-li v něm pokračovat tady, použij tam akci Předat a na vzniklý soubor handoffu navaž v záložce Relace.`,
+    title: t(($) => $.elsewhere.title, { ns: "chat", host }),
+    hint: t(($) => $.elsewhere.hint, { ns: "chat", host }),
   };
 }

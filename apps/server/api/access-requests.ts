@@ -25,6 +25,7 @@ import { insertIgnore, nowExpr } from "../infra/sql.js";
 import { logAudit } from "../infra/audit.js";
 import {
   parseJsonBody,
+  respondApiError,
   respondError,
   respondJson,
   type RequestIdentity,
@@ -105,11 +106,11 @@ export async function handleRequestNodeAccess(
       ? "hidden"
       : (await classifyNodeVisibility(db, identity, [nodeId])).get(nodeId) ?? "hidden";
     if (cls === "hidden") {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     if (cls === "visible") {
-      respondJson(res, 409, { error: "already_visible" });
+      respondApiError(res, 409, "ACCESS_ALREADY_VISIBLE", "already_visible", { nodeId });
       return;
     }
 
@@ -121,7 +122,9 @@ export async function handleRequestNodeAccess(
       args: [nodeId, identity.userId],
     });
     if (pending.rows.length > 0) {
-      respondJson(res, 409, { error: "already_pending", id: String(pending.rows[0].id) });
+      respondApiError(res, 409, "ACCESS_REQUEST_PENDING", "already_pending", { nodeId }, {
+        id: String(pending.rows[0].id),
+      });
       return;
     }
 
@@ -150,7 +153,7 @@ export async function handleListNodeAccessRequests(
   try {
     const db = getDb();
     if (!(await nodeExistsAndVisible(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found", { nodeId });
       return;
     }
     const r = await db.execute({
@@ -193,7 +196,7 @@ export async function handleListAccessRequests(
   try {
     const raw = url.searchParams.get("status") ?? "pending";
     if (!STATUSES.has(raw as AccessRequestStatus)) {
-      respondJson(res, 400, { error: "invalid status" });
+      respondApiError(res, 400, "INVALID_REQUEST", "invalid status");
       return;
     }
     const requests = await listVisibleRequests(getDb(), identity, raw as AccessRequestStatus);
@@ -229,11 +232,18 @@ export async function handleResolveAccessRequest(
     // A request on a node hidden from the caller is indistinguishable from
     // a missing one -- same 404 either way.
     if (!request || !(await nodeVisibleTo(db, identity, request.node_id))) {
-      respondJson(res, 404, { error: "request not found" });
+      respondApiError(res, 404, "ACCESS_REQUEST_NOT_FOUND", "request not found", { requestId });
       return;
     }
     if (request.status !== "pending") {
-      respondJson(res, 409, { error: "already_resolved", status: request.status });
+      respondApiError(
+        res,
+        409,
+        "ACCESS_REQUEST_RESOLVED",
+        "already_resolved",
+        { status: request.status },
+        { status: request.status },
+      );
       return;
     }
 

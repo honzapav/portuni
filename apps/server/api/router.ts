@@ -8,12 +8,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { minScopeForRoute } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
-import { respondJson } from "../http/middleware.js";
+import { respondApiError } from "../http/middleware.js";
 import { getDb } from "../infra/db.js";
 import {
   handleLogin,
   handleDesktopConfig,
   handleMe,
+  handlePatchMe,
   handleMintDeviceToken,
   handleListDeviceTokens,
   handleRevokeDeviceToken,
@@ -188,7 +189,7 @@ export async function routeApiRequest(
   // placeholder identity has, so login remains reachable.
   const required = minScopeForRoute(method, url.pathname);
   if (!scopeAtLeast(identity.globalScope, required)) {
-    respondJson(res, 403, { error: "forbidden", required_scope: required });
+    respondApiError(res, 403, "FORBIDDEN", "forbidden", { requiredScope: required }, { required_scope: required });
     return true;
   }
 
@@ -237,6 +238,10 @@ export async function routeApiRequest(
   }
   if (url.pathname === "/me" && req.method === "GET") {
     await handleMe(req, res, identity);
+    return true;
+  }
+  if (url.pathname === "/me" && req.method === "PATCH") {
+    await handlePatchMe(req, res, identity);
     return true;
   }
   if (url.pathname === "/device-tokens" && req.method === "POST") {

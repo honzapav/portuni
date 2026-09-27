@@ -10,6 +10,7 @@
 // handlers and the frontend consumers must be updated.
 
 import type { NodeType, EdgeRelation } from "./popp.js";
+import type { ModelDescriptionCode } from "./chat-event-codes.js";
 import type { GlobalScope } from "../auth/roles.js";
 
 // -- Graph (list) endpoint --------------------------------------------
@@ -808,7 +809,9 @@ export type RunnerInfo = {
 export type RunnerModel = {
   id: string;
   displayName: string;
+  // The provider's own text; empty when description_code is set (#532).
   description: string;
+  description_code?: ModelDescriptionCode;
   supportsEffort: boolean;
   effortLevels: readonly string[];
 };

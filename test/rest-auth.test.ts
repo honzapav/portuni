@@ -58,6 +58,47 @@ describe("GET /me", () => {
     const body = await res.json() as Record<string, unknown>;
     assert.equal(body.global_scope, "admin");
     assert.equal(body.via, "env");
+    assert.equal(body.locale, null, "no language chosen yet");
+  });
+});
+
+// #538: the UI language is the user's own setting, read by every device of
+// the user on its next /me.
+describe("PATCH /me", () => {
+  async function patchMe(body: unknown): Promise<Response> {
+    return authFetch(`${base}/me`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("stores the locale on the caller's row and GET /me returns it", async () => {
+    const res = await patchMe({ locale: "cs" });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { locale: unknown }).locale, "cs");
+    const me = (await (await authFetch(`${base}/me`)).json()) as { id: string; locale: unknown };
+    assert.equal(me.locale, "cs");
+    const row = await db.execute({ sql: "SELECT locale FROM users WHERE id = ?", args: [me.id] });
+    assert.equal(row.rows[0].locale, "cs");
+  });
+
+  it("clears the locale with null", async () => {
+    await patchMe({ locale: "en" });
+    const res = await patchMe({ locale: null });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { locale: unknown }).locale, null);
+  });
+
+  it("refuses any other value with INVALID_LOCALE and leaves the row alone", async () => {
+    await patchMe({ locale: "en" });
+    for (const body of [{ locale: "de" }, { locale: "cs-CZ" }, { locale: 1 }, {}]) {
+      const res = await patchMe(body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.equal(((await res.json()) as { code: string }).code, "INVALID_LOCALE");
+    }
+    const me = (await (await authFetch(`${base}/me`)).json()) as { locale: unknown };
+    assert.equal(me.locale, "en");
   });
 });
 

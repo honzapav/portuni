@@ -65,7 +65,9 @@ export const PG_BASELINE_DDL: string[] = [
     -- Migration 016 on the libsql side (per-user identity, Google auth).
     google_sub TEXT,
     avatar_url TEXT,
-    last_login_at TIMESTAMPTZ
+    last_login_at TIMESTAMPTZ,
+    -- Migration 041 on the libsql side (#538, the user's UI language).
+    locale TEXT CHECK (locale IN ('en','cs'))
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL`,
 

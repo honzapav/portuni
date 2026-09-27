@@ -28,7 +28,7 @@ api_key_format = "Bearer {token}"
 
 The bearer token is read from an environment variable (`api_key_env`), never written to the file. The example above is the standalone-server shape, with plain `PORTUNI_MCP_TOKEN`; configs written by a desktop workspace point at that workspace's sidecar port (allocated from `47011` up) and reference the workspace-suffixed `PORTUNI_MCP_TOKEN_<WORKSPACE_ID>` instead. Export the token once in the shell you run Vibe from (Settings → MCP server → Copy token). An unset or empty variable means an empty bearer, and the server answers 401.
 
-In the desktop app, **Settings → MCP server → "Přidat do Vibu (~/.vibe/config.toml)"** writes this for you — one entry per enabled workspace, named `portuni-<workspace-id>` (a workspace migrated from a single-workspace install keeps the historical name `portuni`) — merging the Portuni servers into your existing config without disturbing your models or providers.
+In the desktop app, **Settings → MCP server → "Add to Vibe (~/.vibe/config.toml)"** writes this for you — one entry per enabled workspace, named `portuni-<workspace-id>` (a workspace migrated from a single-workspace install keeps the historical name `portuni`) — merging the Portuni servers into your existing config without disturbing your models or providers.
 
 ## Auto-seed, if you want it: a hand-written project config
 

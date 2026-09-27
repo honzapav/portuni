@@ -7,8 +7,14 @@ import { ulid } from "ulid";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
 import { EDGE_RELATIONS } from "../infra/schema.js";
-import { disconnectEdgeById } from "../domain/edges.js";
-import { parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import { disconnectEdgeById, EdgeError, EDGE_ERROR_STATUS } from "../domain/edges.js";
+import {
+  parseJsonBody,
+  respondApiError,
+  respondError,
+  respondJson,
+  type RequestIdentity,
+} from "../http/middleware.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
 import { guardRestNodeWrite } from "./write-gate.js";
 
@@ -37,7 +43,7 @@ export async function handleCreateEdge(
       args: [body.source_id, body.target_id],
     });
     if (check.rows.length < 2) {
-      respondJson(res, 404, { error: "one or both nodes not found" });
+      respondApiError(res, 404, "EDGE_ENDPOINT_NOT_FOUND", "one or both nodes not found");
       return;
     }
     // Group-visibility: both endpoints must be visible to caller.
@@ -45,7 +51,7 @@ export async function handleCreateEdge(
       !(await nodeVisibleTo(db, identity, body.source_id)) ||
       !(await nodeVisibleTo(db, identity, body.target_id))
     ) {
-      respondJson(res, 404, { error: "one or both nodes not found" });
+      respondApiError(res, 404, "EDGE_ENDPOINT_NOT_FOUND", "one or both nodes not found");
       return;
     }
     const dup = await db.execute({
@@ -99,7 +105,7 @@ export async function handleDeleteEdge(
         !(await nodeVisibleTo(db, identity, src)) ||
         !(await nodeVisibleTo(db, identity, tgt))
       ) {
-        respondJson(res, 404, { error: "edge not found" });
+        respondApiError(res, 404, "EDGE_NOT_FOUND", "edge not found", { edgeId });
         return;
       }
       if (!(await guardRestNodeWrite(req, res, identity, src))) return;
@@ -107,13 +113,8 @@ export async function handleDeleteEdge(
     const result = await disconnectEdgeById(db, identity.userId, edgeId);
     respondJson(res, 200, result);
   } catch (err) {
-    const code = (err as Error & { code?: string }).code;
-    if (code === "EDGE_NOT_FOUND") {
-      respondJson(res, 404, { error: (err as Error).message });
-      return;
-    }
-    if (code === "ORG_INVARIANT") {
-      respondJson(res, 409, { error: (err as Error).message });
+    if (err instanceof EdgeError) {
+      respondApiError(res, EDGE_ERROR_STATUS[err.code], err.code, err.message, err.params);
       return;
     }
     respondError(res, `${req.method} /edges/${edgeId}`, err);

@@ -5,8 +5,11 @@
 // header), live-state overlay, and Přehled's inbox ordering. Dependency-
 // free so test/session-views-helpers.test.ts can exercise it directly.
 
+import type { TFunction } from "i18next";
 import type { SessionState, OverviewSessionRow } from "../types";
 import type { SessionStateMessage } from "./sessions-client";
+
+type CommonT = TFunction<"common">;
 
 export type SessionRowChip = { label: string; color: string; pulsing: boolean };
 
@@ -14,14 +17,22 @@ export type SessionRowChip = { label: string; color: string; pulsing: boolean };
 // sub-rows, the full one for SessionChat's own header.
 export type SessionChipVariant = "row" | "header";
 
-const STATE_LABEL: Record<SessionChipVariant, Record<SessionState, string>> = {
-  row: { running: "Běží", suspended: "Pozastaveno", closed: "Hotovo", archived: "Archiv", draft: "Nový" },
+// Complete Records of literal selectors, so a state added to SessionState
+// fails the typecheck until it has a label in both variants.
+const STATE_LABEL: Record<SessionChipVariant, Record<SessionState, (t: CommonT) => string>> = {
+  row: {
+    running: (t) => t(($) => $.thread.state.row.running, { ns: "common" }),
+    suspended: (t) => t(($) => $.thread.state.row.suspended, { ns: "common" }),
+    closed: (t) => t(($) => $.thread.state.row.closed, { ns: "common" }),
+    archived: (t) => t(($) => $.thread.state.row.archived, { ns: "common" }),
+    draft: (t) => t(($) => $.thread.state.row.draft, { ns: "common" }),
+  },
   header: {
-    running: "Běží",
-    suspended: "Pozastaveno",
-    closed: "Uzavřeno",
-    archived: "Archivováno",
-    draft: "Nový",
+    running: (t) => t(($) => $.thread.state.header.running, { ns: "common" }),
+    suspended: (t) => t(($) => $.thread.state.header.suspended, { ns: "common" }),
+    closed: (t) => t(($) => $.thread.state.header.closed, { ns: "common" }),
+    archived: (t) => t(($) => $.thread.state.header.archived, { ns: "common" }),
+    draft: (t) => t(($) => $.thread.state.header.draft, { ns: "common" }),
   },
 };
 
@@ -38,12 +49,13 @@ const ROW_STATE_COLOR: Record<SessionState, string> = {
 export function sessionRowChip(
   state: SessionState,
   waitingSince: string | null,
+  t: CommonT,
   variant: SessionChipVariant = "row",
 ): SessionRowChip {
   if (state === "running" && waitingSince !== null) {
-    return { label: "Čeká na mě", color: "var(--color-node-process)", pulsing: true };
+    return { label: t(($) => $.thread.state.waiting, { ns: "common" }), color: "var(--color-node-process)", pulsing: true };
   }
-  return { label: STATE_LABEL[variant][state], color: ROW_STATE_COLOR[state], pulsing: state === "running" };
+  return { label: STATE_LABEL[variant][state](t), color: ROW_STATE_COLOR[state], pulsing: state === "running" };
 }
 
 // Overlays a live `session_state` frame onto a REST-fetched summary --
@@ -182,9 +194,18 @@ export function threadAcceptsMessages(state: SessionState): boolean {
 }
 
 // The composer's placeholder for the thread's own state (a question
-// waiting or a transcript elsewhere say their own thing first).
-export function composerStatePlaceholder(state: SessionState): string {
-  return threadAcceptsMessages(state) ? "Napiš zprávu…" : "Relace je uzavřená.";
+// waiting or a transcript elsewhere say their own thing first): every
+// state that takes a message (threadAcceptsMessages) invites one.
+const COMPOSER_PLACEHOLDER: Record<SessionState, (t: CommonT) => string> = {
+  draft: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  running: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  suspended: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  closed: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  archived: (t) => t(($) => $.thread.composer.placeholder.archived, { ns: "common" }),
+};
+
+export function composerStatePlaceholder(state: SessionState, t: CommonT): string {
+  return COMPOSER_PLACEHOLDER[state](t);
 }
 
 // #498: Relace's Otevřít chat, the same for a closed thread as for a

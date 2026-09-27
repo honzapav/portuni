@@ -53,7 +53,7 @@ cargo install tauri-cli --version "^2.0" --locked
 npm install -g bun
 ```
 
-Existing Node 20 + npm are still required for the React build.
+Existing Node 24 + npm are still required for the React build.
 
 ## Building the DMG
 

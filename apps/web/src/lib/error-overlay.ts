@@ -12,6 +12,8 @@
 // to the Rust log via the existing log plumbing is not available from JS,
 // so the on-screen overlay is the primary channel.
 
+import { i18n } from "../i18n";
+
 let installed = false;
 let overlayEl: HTMLDivElement | null = null;
 let listEl: HTMLDivElement | null = null;
@@ -34,8 +36,7 @@ function ensureOverlay(): HTMLDivElement {
   } as Partial<CSSStyleDeclaration>);
 
   const header = document.createElement("div");
-  header.textContent =
-    "Portuni narazil na chybu (tento panel nahrazuje bílou obrazovku). Zkopíruj text níže.";
+  header.textContent = i18n.t(($) => $.error_overlay.title, { ns: "common" });
   Object.assign(header.style, {
     color: "#ffe08a",
     marginBottom: "12px",
@@ -43,7 +44,7 @@ function ensureOverlay(): HTMLDivElement {
   } as Partial<CSSStyleDeclaration>);
 
   const dismiss = document.createElement("button");
-  dismiss.textContent = "Skrýt";
+  dismiss.textContent = i18n.t(($) => $.error_overlay.dismiss, { ns: "common" });
   Object.assign(dismiss.style, {
     marginLeft: "12px",
     padding: "2px 10px",

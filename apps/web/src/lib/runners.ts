@@ -6,6 +6,7 @@
 // registry now lives on the sidecar, reachable the same way from any
 // client -- not just the desktop shell.
 
+import type { TFunction } from "i18next";
 import { jsonRequest } from "../api";
 import type { RunnerInfo, RunnerInstanceSummary, RunnerModel } from "../../../server/shared/api-types";
 import { isPortuniEnvKey, isSecretShapedEnvKey } from "../../../server/shared/runner-env";
@@ -68,13 +69,13 @@ export function clearRunnerOrgDefault(orgId: string): Promise<{ ok: true }> {
 
 // Returns a human message for the first refused key found, or null when
 // every key is fine to submit.
-export function validateEnvKeys(env: Record<string, string>): string | null {
+export function validateEnvKeys(env: Record<string, string>, t: TFunction<"settings">): string | null {
   for (const key of Object.keys(env)) {
     if (isSecretShapedEnvKey(key)) {
-      return `'${key}' vypadá jako secret (*_TOKEN/*_KEY/*_SECRET/*PASSWORD*) — ulož ho do OS klíčenky, ne sem.`;
+      return t(($) => $.runners.env_keys.secret_shaped, { ns: "settings", key });
     }
     if (isPortuniEnvKey(key)) {
-      return `'${key}': proměnné PORTUNI_* nelze nastavit z registru instancí.`;
+      return t(($) => $.runners.env_keys.portuni_key, { ns: "settings", key });
     }
   }
   return null;
@@ -97,7 +98,7 @@ export function parseEnvText(text: string): Record<string, string> {
 // The server (updateInstance's mergeEnvUpdate) treats an empty value for a
 // key that already exists as "leave unchanged"; typing a new value there is
 // what actually changes it; the form lists the existing keys as
-// "(nastaveno)" next to the textarea.
+// "(set)" next to the textarea.
 export function envKeysToText(keys: readonly string[]): string {
   return keys.map((k) => `${k}=`).join("\n");
 }

@@ -6,7 +6,10 @@
 // it, #498), archived (browse, behind a filter). Self-fetches on mount and whenever nodeId changes, same
 // pattern as DetailPane.access.tsx's AccessSection.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, X } from "lucide-react";
 import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
 import {
@@ -30,38 +33,33 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
-// #329: labels for a session the server suspended (dropped connection,
+// #329: the note for a session the server suspended (dropped connection,
 // idle GC, terminal exit, boot sweep) rather than the agent's own
 // portuni_session_suspend -- see SessionResumeInfo's generated_by/reason.
-const SERVER_SUSPEND_REASON_LABEL: Record<string, string> = {
-  disconnect: "odpojení",
-  idle: "nečinnost 30 min",
-  terminal_exit: "ukončení terminálu",
-  boot_sweep: "restart serveru",
-  suspend_timeout: "agent nestihl předání",
-  host_lost: "proces osiřel po restartu",
+// A complete Record over the reason (spec: Catalog, rule 7): a reason added
+// to shared/api-types.ts fails the typecheck until it has a note. Reasons
+// with no specific wording ("run_ended", "continue") say only that the
+// server suspended it.
+type NodeT = TFunction<"node">;
+type ServerSuspendReason = NonNullable<SessionResumeInfo["reason"]>;
+const SERVER_SUSPEND_REASON_LABEL: Record<ServerSuspendReason, (t: NodeT) => string> = {
+  disconnect: (t) => t(($) => $.sessions.resume.server_suspended.disconnect, { ns: "node" }),
+  idle: (t) => t(($) => $.sessions.resume.server_suspended.idle, { ns: "node" }),
+  terminal_exit: (t) => t(($) => $.sessions.resume.server_suspended.terminal_exit, { ns: "node" }),
+  boot_sweep: (t) => t(($) => $.sessions.resume.server_suspended.boot_sweep, { ns: "node" }),
+  suspend_timeout: (t) => t(($) => $.sessions.resume.server_suspended.suspend_timeout, { ns: "node" }),
+  host_lost: (t) => t(($) => $.sessions.resume.server_suspended.host_lost, { ns: "node" }),
   // #459: the owner asked for it -- Předat wrote this summary on purpose.
-  handoff: "předání na jiné zařízení",
+  handoff: (t) => t(($) => $.sessions.resume.server_suspended.handoff, { ns: "node" }),
+  run_ended: (t) => t(($) => $.sessions.resume.server_suspended.no_reason, { ns: "node" }),
+  continue: (t) => t(($) => $.sessions.resume.server_suspended.no_reason, { ns: "node" }),
 };
 
-export function fmtDateTime(value: string): string {
-  // SQLite datetime('now') yields "YYYY-MM-DD HH:MM:SS" in UTC without a
-  // zone marker; normalise so Date parses it as UTC, not local time.
-  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
-    ? value.replace(" ", "T") + "Z"
-    : value;
-  try {
-    return new Date(iso).toLocaleString("cs-CZ", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return value;
-  }
+function serverSuspendNote(reason: SessionResumeInfo["reason"], t: NodeT): string {
+  return reason ? SERVER_SUSPEND_REASON_LABEL[reason](t) : t(($) => $.sessions.resume.server_suspended.no_reason, { ns: "node" });
 }
 
 type Props = {
@@ -98,6 +96,8 @@ export function SessionsSection({
   onSessionStarted,
   liveStates,
 }: Props) {
+  const { t } = useTranslation("node");
+  const locale = useLocale();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -109,7 +109,7 @@ export function SessionsSection({
       const res = await fetchNodePersistentSessions(nodeId, includeArchived);
       setSessions(res.sessions);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setLoading(false);
     }
@@ -145,7 +145,7 @@ export function SessionsSection({
       const updated = await closePersistentSession(id);
       updateOne(updated);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     }
   };
 
@@ -162,7 +162,7 @@ export function SessionsSection({
       onSessionStarted?.({ session, run });
       onOpenChat?.(session.id);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setStartingHandoff(null);
       await load();
@@ -172,7 +172,7 @@ export function SessionsSection({
   if (loading && sessions.length === 0) {
     return (
       <div className="px-5 py-4 text-[14px] text-[var(--color-text-dim)]">
-        Načítám relace...
+        {t(($) => $.sessions.list.loading)}
       </div>
     );
   }
@@ -185,7 +185,7 @@ export function SessionsSection({
             checked={includeArchived}
             onCheckedChange={(checked) => setIncludeArchived(checked === true)}
           />
-          Zobrazit archivované
+          {t(($) => $.sessions.list.show_archived)}
         </Label>
       </div>
 
@@ -197,7 +197,7 @@ export function SessionsSection({
 
       {handoffs.length > 0 && (
         <div className="mb-4">
-          <div className="mb-2 text-[12.5px] text-[var(--color-text-dim)]">Předání k navázání</div>
+          <div className="mb-2 text-[12.5px] text-[var(--color-text-dim)]">{t(($) => $.sessions.handoffs.heading)}</div>
           <div className="space-y-2">
             {handoffs.map((entry) => (
               <div
@@ -207,13 +207,13 @@ export function SessionsSection({
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[13.5px] text-[var(--color-text)]">{entry.title}</div>
                   <div className="truncate text-[12px] text-[var(--color-text-dim)]">
-                    {[entry.host, entry.last_active_at ? fmtDateTime(entry.last_active_at) : null]
+                    {[entry.host, entry.last_active_at ? formatDateTime(locale, entry.last_active_at) : null]
                       .filter(Boolean)
                       .join(" · ") || entry.relative_path}
                   </div>
                 </div>
                 {onOpenFile && (
-                  <RowIcon onClick={() => onOpenFile(nodeId, entry.relative_path)} title="Zobrazit handoff">
+                  <RowIcon onClick={() => onOpenFile(nodeId, entry.relative_path)} title={t(($) => $.sessions.handoffs.view)}>
                     <FileText />
                   </RowIcon>
                 )}
@@ -224,7 +224,7 @@ export function SessionsSection({
                   onClick={() => void handleStartFromHandoff(entry)}
                 >
                   <GitPullRequestArrow />
-                  {startingHandoff === entry.relative_path ? "Navazuji..." : "Navázat na handoff"}
+                  {startingHandoff === entry.relative_path ? t(($) => $.sessions.handoffs.continuing) : t(($) => $.sessions.handoffs.continue)}
                 </Button>
               </div>
             ))}
@@ -233,7 +233,7 @@ export function SessionsSection({
       )}
 
       {sessions.length === 0 ? (
-        <div className="text-[14px] text-[var(--color-text-dim)]">Zatím žádné relace.</div>
+        <div className="text-[14px] text-[var(--color-text-dim)]">{t(($) => $.sessions.list.empty)}</div>
       ) : (
         <div className="space-y-2">
           {liveSessions.map((s) => (
@@ -280,6 +280,9 @@ function SessionRow({
   onOpenChat?: (sessionId: string) => void;
   onOpenHandoff?: () => void;
 }) {
+  const { t } = useTranslation("node");
+  const { t: tCommon } = useTranslation("common");
+  const locale = useLocale();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name);
   const [saving, setSaving] = useState(false);
@@ -322,7 +325,7 @@ function SessionRow({
     }
   };
 
-  const chip = sessionRowChip(session.state, session.waiting_since);
+  const chip = sessionRowChip(session.state, session.waiting_since, tCommon);
   const host = hostDisplayName(session);
 
   // Row actions are icon buttons on the right of the title line, shown on
@@ -365,7 +368,7 @@ function SessionRow({
             <RowIcon
               onClick={() => void save()}
               disabled={saving}
-              title="Uložit název"
+              title={t(($) => $.sessions.row.save_name)}
               className="text-[var(--color-accent)]"
             >
               <Check />
@@ -376,7 +379,7 @@ function SessionRow({
                 setEditing(false);
               }}
               disabled={saving}
-              title="Zrušit"
+              title={t(($) => $.sessions.row.cancel_rename)}
             >
               <X />
             </RowIcon>
@@ -388,23 +391,23 @@ function SessionRow({
             </span>
             <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
               {showChat && (
-                <RowIcon onClick={() => onOpenChat!(session.id)} title="Otevřít chat">
+                <RowIcon onClick={() => onOpenChat!(session.id)} title={t(($) => $.sessions.row.open_chat)}>
                   <MessageSquare />
                 </RowIcon>
               )}
               {onOpenHandoff && (
-                <RowIcon onClick={onOpenHandoff} title="Zobrazit handoff">
+                <RowIcon onClick={onOpenHandoff} title={t(($) => $.sessions.row.view_handoff)}>
                   <FileText />
                 </RowIcon>
               )}
-              <RowIcon onClick={() => setEditing(true)} title="Přejmenovat">
+              <RowIcon onClick={() => setEditing(true)} title={t(($) => $.sessions.row.rename)}>
                 <Pencil />
               </RowIcon>
               {showClose && <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />}
               {showClose && (
                 <RowIcon
                   onClick={onClose}
-                  title="Uzavřít"
+                  title={t(($) => $.sessions.row.close)}
                   className="hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
                 >
                   <CircleX />
@@ -417,27 +420,27 @@ function SessionRow({
 
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--color-text-dim)]">
         <span>{chip.label}</span>
-        <span>{fmtDateTime(session.last_active_at)}</span>
+        <span>{formatDateTime(locale, session.last_active_at)}</span>
         <span>
-          {session.runner ?? session.cli ?? "neznámý"}
+          {session.runner ?? session.cli ?? t(($) => $.sessions.row.runner_unknown)}
           {session.instance_id ? ` · ${session.instance_id}` : ""}
           {/* #428: which host ran it -- the label when central knows one,
               otherwise the host id. Hidden when neither exists. */}
           {host ? ` · ${host}` : ""}
         </span>
-        <span title="Počet uzlů v zápisovém rozsahu této relace">
-          Zápis: {session.write_count}
+        <span title={t(($) => $.sessions.row.write_scope_title)}>
+          {t(($) => $.sessions.row.write_scope, { writeCount: session.write_count })}
         </span>
         {session.state === "suspended" && resumeInfo && (
           // #378: resuming is no longer a picked action -- the next message
           // just does one or the other. This is purely informational now.
           <span>
             {resumeInfo.conversation_resumable
-              ? "další zpráva naváže na konverzaci"
-              : "další zpráva ji spustí ze shrnutí"}
-            {resumeInfo.handoff_changed ? " (handoff upraven od pozastavení)" : ""}
-            {!resumeInfo.handoff_checkable ? " (nelze ověřit handoff na tomto zařízení)" : ""}
-            {resumeInfo.generated_by === "server" ? ` (pozastaveno serverem${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""] ? `, ${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""]}` : ""})` : ""}
+              ? t(($) => $.sessions.resume.continues_conversation)
+              : t(($) => $.sessions.resume.starts_from_summary)}
+            {resumeInfo.handoff_changed ? ` ${t(($) => $.sessions.resume.handoff_changed)}` : ""}
+            {!resumeInfo.handoff_checkable ? ` ${t(($) => $.sessions.resume.handoff_uncheckable)}` : ""}
+            {resumeInfo.generated_by === "server" ? ` ${serverSuspendNote(resumeInfo.reason, t)}` : ""}
           </span>
         )}
       </div>

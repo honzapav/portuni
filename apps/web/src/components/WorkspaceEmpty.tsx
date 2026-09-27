@@ -4,8 +4,10 @@
 // transfers.
 import { useState } from "react";
 import { Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { GraphNode, GraphPayload } from "../types";
 import { foldForSearch } from "../lib/normalize";
+import { nodeTypeLabel } from "../lib/node-type-labels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -20,6 +22,7 @@ function nodeTypeVar(type: string): string {
 }
 
 export default function WorkspaceEmpty({ graph, onPick }: Props) {
+  const { t } = useTranslation("common");
   const [query, setQuery] = useState("");
   const q = foldForSearch(query.trim());
   const all = graph?.nodes ?? [];
@@ -44,11 +47,10 @@ export default function WorkspaceEmpty({ graph, onPick }: Props) {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8">
       <div className="text-[15px] font-medium text-[var(--color-text)]">
-        Otevři uzel v Práci
+        {t(($) => $.workspace.empty.title)}
       </div>
       <p className="max-w-[420px] text-center text-[13px] text-[var(--color-text-dim)]">
-        Otevři libovolný uzel a pracuj na něm. Můžeš mít otevřených víc uzlů
-        a přeskakovat mezi nimi.
+        {t(($) => $.workspace.empty.description)}
       </p>
       <div className="relative w-full max-w-[480px]">
         <Search
@@ -59,7 +61,7 @@ export default function WorkspaceEmpty({ graph, onPick }: Props) {
           autoFocus
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Hledat uzel…"
+          placeholder={t(($) => $.workspace.empty.search_placeholder)}
           className="bg-[var(--color-surface)] pl-8"
         />
       </div>
@@ -78,7 +80,7 @@ export default function WorkspaceEmpty({ graph, onPick }: Props) {
                 aria-hidden
               />
               <span className="flex-1 truncate text-left">{n.name}</span>
-              <span className="font-mono text-[11px] text-[var(--color-text-dim)]">{n.type}</span>
+              <span className="font-mono text-[11px] text-[var(--color-text-dim)]">{nodeTypeLabel(n.type, t)}</span>
             </Button>
           </li>
         ))}

@@ -5,7 +5,7 @@
 
 import { ArrowDown } from "lucide-react";
 import { useMcpStatus } from "../lib/use-mcp-status";
-import { pluralFiles, pluralNodes } from "../lib/plural";
+import { useTranslation } from "react-i18next";
 import type { AppUpdate } from "../lib/updater";
 import { Button } from "@/components/ui/button";
 
@@ -38,6 +38,7 @@ export default function StatusFooter({
   onOpenSyncOverview,
   appUpdate,
 }: Props) {
+  const { t } = useTranslation("common");
   const status = useMcpStatus();
   const updateState = appUpdate.state;
 
@@ -50,17 +51,17 @@ export default function StatusFooter({
 
   const label =
     status.state === "running"
-      ? "mcp"
+      ? t(($) => $.footer.mcp.label_running)
       : status.state === "loading"
-        ? "mcp…"
-        : "mcp ×";
+        ? t(($) => $.footer.mcp.label_loading)
+        : t(($) => $.footer.mcp.label_down);
 
   const title =
     status.state === "running"
-      ? `MCP server běží: ${status.url}`
+      ? t(($) => $.footer.mcp.title_running, { url: status.url })
       : status.state === "loading"
-        ? "Zjišťuji stav MCP serveru…"
-        : `MCP server nedostupný: ${status.reason}`;
+        ? t(($) => $.footer.mcp.title_loading)
+        : t(($) => $.footer.mcp.title_down, { reason: status.reason });
 
   return (
     <footer className="flex h-7 shrink-0 items-center border-t border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-[12px] text-[var(--color-text-dim)]">
@@ -73,11 +74,11 @@ export default function StatusFooter({
           variant="ghost"
           size="xs"
           className={`ml-3 ${PILL}`}
-          title={`Aktivní sessions: ${sessionCount}`}
+          title={t(($) => $.footer.threads.title, { runningCount: sessionCount })}
           onClick={onOpenWorkspace}
         >
           <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-          <span className="font-mono">{sessionCount} sess</span>
+          <span className="font-mono">{t(($) => $.footer.threads.label, { count: sessionCount })}</span>
         </Button>
       )}
       {pendingCount > 0 && (
@@ -85,11 +86,11 @@ export default function StatusFooter({
           variant="ghost"
           size="xs"
           className={`ml-3 ${PILL}`}
-          title={`Nesynchronizováno: ${pendingCount} ${pluralFiles(pendingCount)}`}
+          title={t(($) => $.footer.unsynced.title, { count: pendingCount })}
           onClick={onOpenSyncOverview}
         >
           <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-amber-500" />
-          <span className="font-mono">↑ {pendingCount} nesynced</span>
+          <span className="font-mono">{t(($) => $.footer.unsynced.label, { pendingCount })}</span>
         </Button>
       )}
       {pullNodeCount > 0 && (
@@ -97,11 +98,11 @@ export default function StatusFooter({
           variant="ghost"
           size="xs"
           className={`ml-3 ${PILL}`}
-          title="Remote watcher našel novější verze souborů. Otevřít přehled synchronizace."
+          title={t(($) => $.footer.pull.title)}
           onClick={onOpenSyncOverview}
         >
           <ArrowDown size={12} aria-hidden="true" />
-          <span className="font-mono">{pullNodeCount} {pluralNodes(pullNodeCount)} na remote</span>
+          <span className="font-mono">{t(($) => $.footer.pull.label, { count: pullNodeCount })}</span>
         </Button>
       )}
       {updateState.kind === "available" && (
@@ -109,10 +110,10 @@ export default function StatusFooter({
           variant="ghost"
           size="xs"
           className={`ml-auto ${PILL}`}
-          title="Nová verze Portuni – klikni pro aktualizaci"
+          title={t(($) => $.footer.update.available_title)}
           onClick={onOpenSettings}
         >
-          <span className="font-mono">↑ {updateState.info.version}</span>
+          <span className="font-mono">{t(($) => $.footer.update.available_label, { version: updateState.info.version })}</span>
         </Button>
       )}
       {updateState.kind === "ready" && (
@@ -120,10 +121,10 @@ export default function StatusFooter({
           variant="ghost"
           size="xs"
           className={`ml-auto ${PILL}`}
-          title="Restartovat pro dokončení aktualizace"
+          title={t(($) => $.footer.update.ready_title)}
           onClick={() => void appUpdate.restart()}
         >
-          <span className="font-mono">Restartovat</span>
+          <span className="font-mono">{t(($) => $.footer.update.ready_label)}</span>
         </Button>
       )}
     </footer>

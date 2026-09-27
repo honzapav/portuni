@@ -13,7 +13,9 @@ import {
 } from "../infra/auth-config.js";
 import { LocalModeNoRemoteError } from "../domain/sync/types.js";
 import { getDb } from "../infra/db.js";
-import { constraintViolationMessage } from "../infra/sql.js";
+import { constraintViolation } from "../infra/sql.js";
+import { CentralHttpError } from "../domain/sync/central/client.js";
+import { isErrorCode, type ErrorCode, type ErrorParams } from "../shared/error-codes.js";
 import { SOLO_USER } from "../infra/schema.js";
 import { EnvAdapter } from "../auth/env-adapter.js";
 import { createGoogleAdapter } from "../auth/google-adapter.js";
@@ -164,6 +166,39 @@ export function respondJson(res: ServerResponse, status: number, body: unknown):
   res.end(JSON.stringify(body));
 }
 
+// An error a handler or domain function throws when it already knows what
+// the client should get: status, code and params. respondError answers it
+// as-is instead of a 500.
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: ErrorCode,
+    message: string,
+    readonly params?: ErrorParams,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+// The one shape of an error response (REST and agent router):
+// `{ error, code, params?, request_id? }`. `error` is English and meant for
+// logs; the web renders `errors:<code>` with `params`. `extra` carries the
+// few machine-readable fields a client branches on (currentVersion,
+// required_scope, repair_hint...).
+export function respondApiError(
+  res: ServerResponse,
+  status: number,
+  code: ErrorCode,
+  error: string,
+  params?: ErrorParams,
+  extra?: Record<string, unknown>,
+): void {
+  const body: Record<string, unknown> = { ...extra, error, code };
+  if (params && Object.keys(params).length > 0) body.params = params;
+  respondJson(res, status, body);
+}
+
 // Read JSON body and validate against a Zod schema. On parse, body-size
 // or schema errors writes the appropriate 4xx response and returns null;
 // the caller bails early without touching `res`. On success returns the
@@ -180,12 +215,10 @@ export async function parseJsonBody<T>(
     raw = await parseBody(req, maxBytes);
   } catch (err) {
     if (err instanceof RequestBodyTooLargeError) {
-      res.writeHead(413, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
+      respondApiError(res, 413, "BODY_TOO_LARGE", err.message, { limit: err.limit });
       return null;
     }
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Invalid JSON body" }));
+    respondApiError(res, 400, "INVALID_JSON", "Invalid JSON body");
     return null;
   }
   const parsed = schema.safeParse(raw ?? {});
@@ -196,8 +229,7 @@ export async function parseJsonBody<T>(
         return `${path}${i.message}`;
       })
       .join("; ");
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: message }));
+    respondApiError(res, 400, "INVALID_REQUEST", message);
     return null;
   }
   return parsed.data;
@@ -232,41 +264,47 @@ export function parseBody(
 }
 
 // Centralised error responder. Logs the full error server-side with a short
-// request id; sends a generic message + that id to the client. ZodError
-// messages are surfaced as 400 because they describe input shape, not
-// internals. SQLITE_CONSTRAINT errors carry trigger/CHECK messages that are
-// load-bearing for the UI (e.g. "cannot remove the only belongs_to..."),
-// so they get a 409 with the friendly text. Anything else is a 500 with a
-// generic body so we don't leak DB errors, file paths, or stack traces.
+// request id; sends a code + English message + that id to the client.
+// ZodError messages are surfaced as 400 because they describe input shape,
+// not internals. A DB constraint/trigger rejection is a 409 with the
+// trigger's code (infra/sql.ts constraintViolation). An error from the
+// central server that carries a code is relayed with its status, code and
+// params, so the web renders the central server's refusal the same way on a
+// team-workspace device. Anything else is a 500 INTERNAL_ERROR with a generic
+// body so we don't leak DB errors, file paths, or stack traces.
 export function respondError(res: ServerResponse, ctx: string, err: unknown): void {
   const id = randomUUID().slice(0, 8);
   const detail =
     err instanceof Error ? (err.stack ?? `${err.name}: ${err.message}`) : String(err);
   console.error(`[req:${id}] ${ctx} -> ${detail}`);
   if (res.headersSent) return;
+  const withId = { request_id: id };
+  if (err instanceof ApiError) {
+    respondApiError(res, err.status, err.code, err.message, err.params, withId);
+    return;
+  }
   if (err instanceof RequestBodyTooLargeError) {
-    res.writeHead(413, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: err.message, request_id: id }));
+    respondApiError(res, 413, "BODY_TOO_LARGE", err.message, { limit: err.limit }, withId);
     return;
   }
   if (err instanceof Error && err.name === "ZodError") {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: err.message, request_id: id }));
+    respondApiError(res, 400, "INVALID_REQUEST", err.message, undefined, withId);
     return;
   }
   if (err instanceof LocalModeNoRemoteError) {
-    res.writeHead(409, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: err.message, code: err.code, request_id: id }));
+    respondApiError(res, 409, err.code, err.message, undefined, withId);
     return;
   }
-  const friendly = err instanceof Error ? constraintViolationMessage(err) : null;
-  if (friendly !== null) {
-    res.writeHead(409, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: friendly, request_id: id }));
+  if (err instanceof CentralHttpError && isErrorCode(err.code) && err.status >= 400 && err.status < 500) {
+    respondApiError(res, err.status, err.code, err.message, err.params, withId);
     return;
   }
-  res.writeHead(500, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: "Internal server error", request_id: id }));
+  const violation = err instanceof Error ? constraintViolation(err) : null;
+  if (violation !== null) {
+    respondApiError(res, 409, violation.code, violation.message, undefined, withId);
+    return;
+  }
+  respondApiError(res, 500, "INTERNAL_ERROR", "Internal server error", undefined, withId);
 }
 
 function bearer(req: IncomingMessage): string {
@@ -296,12 +334,12 @@ function respondUnauthorized(
     "Content-Type": "application/json",
     "WWW-Authenticate": wwwAuthenticate,
   });
-  const body: Record<string, string> = { error: "Unauthorized" };
+  const body: Record<string, string> = { error: "Unauthorized", code: "UNAUTHORIZED" };
   if (reason === "missing") {
-    body.code = "BEARER_MISSING";
+    body.code = "BEARER_MISSING" satisfies ErrorCode;
     body.detail = "No Authorization: Bearer header was presented.";
   } else if (reason === "mismatch") {
-    body.code = "BEARER_MISMATCH";
+    body.code = "BEARER_MISMATCH" satisfies ErrorCode;
     body.detail = "The presented bearer does not match this server's token.";
   }
   res.end(JSON.stringify(body));
@@ -354,8 +392,7 @@ export async function applyGates(
   // makes `new URL()` throw, which used to escape the async handler as an
   // unhandled rejection and kill the process.
   if (!getAllowedHosts().has(hostHeader)) {
-    res.writeHead(403, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Host header not allowed" }));
+    respondApiError(res, 403, "HOST_NOT_ALLOWED", "Host header not allowed");
     return "handled";
   }
 
@@ -363,14 +400,12 @@ export async function applyGates(
   try {
     url = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`);
   } catch {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Malformed request target" }));
+    respondApiError(res, 400, "MALFORMED_REQUEST_TARGET", "Malformed request target");
     return "handled";
   }
 
   if (origin !== null && !getAllowedOrigins().has(origin)) {
-    res.writeHead(403, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Origin not allowed" }));
+    respondApiError(res, 403, "ORIGIN_NOT_ALLOWED", "Origin not allowed");
     return "handled";
   }
 

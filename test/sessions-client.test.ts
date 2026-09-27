@@ -13,6 +13,7 @@ import {
   type Transport,
   type WebSocketInstance,
 } from "../apps/web/src/lib/sessions-client.js";
+import { ApiError, errorCode } from "../apps/web/src/lib/api-error.js";
 import { createSessionStore } from "../apps/web/src/lib/session-store.js";
 import { selectMountedThreads, selectNodeRecordIds } from "../apps/web/src/lib/session-selectors.js";
 import type { SessionState, SessionSummary } from "../apps/web/src/types.js";
@@ -477,6 +478,7 @@ describe("sessions-client: a timed-out or dropped request is never delivered lat
       await flush();
       assert.equal(first.done, true);
       assert.match(String(first.error), /request_timeout/);
+      assert.equal(errorCode(first.error), "REQUEST_TIMEOUT");
 
       reconnecting.open();
       assert.deepEqual(FakeSocket.allSent("message"), []);
@@ -506,6 +508,7 @@ describe("sessions-client: a timed-out or dropped request is never delivered lat
       await flush();
       assert.equal(inFlight.done, true);
       assert.match(String(inFlight.error), /disconnected/);
+      assert.equal(errorCode(inFlight.error), "DISCONNECTED");
 
       mock.timers.tick(10);
       FakeSocket.last().open();
@@ -600,6 +603,27 @@ describe("sessions-client: a timed-out or dropped request is never delivered lat
     }
   });
 
+  it("an error frame rejects its request with the server's code and params", async () => {
+    const client = fakeClient();
+    const socket = FakeSocket.last();
+    socket.open();
+    const req = settle(client.message("S1", "ahoj"));
+    const id = FakeSocket.allSent("message")[0]?.id;
+    socket.onmessage?.({
+      data: JSON.stringify({
+        id,
+        type: "error",
+        payload: { code: "SESSION_NOT_FOUND", message: "session not found", params: { sessionId: "S1" } },
+      }),
+    });
+    await flush();
+    assert.ok(req.error instanceof ApiError);
+    assert.equal(errorCode(req.error), "SESSION_NOT_FOUND");
+    assert.deepEqual((req.error as ApiError).params, { sessionId: "S1" });
+    assert.equal(req.error?.message, "SESSION_NOT_FOUND: session not found");
+    client.disconnect();
+  });
+
   it("a timed-out request cancels its own frame on the transport (the Tauri outbox's cancel path)", async () => {
     mock.timers.enable({ apis: ["setTimeout"] });
     try {
@@ -625,6 +649,7 @@ describe("sessions-client: a timed-out or dropped request is never delivered lat
       mock.timers.tick(30_000);
       await flush();
       assert.match(String(req.error), /request_timeout/);
+      assert.equal(errorCode(req.error), "REQUEST_TIMEOUT");
       assert.deepEqual(cancelled, sent);
       client.disconnect();
     } finally {

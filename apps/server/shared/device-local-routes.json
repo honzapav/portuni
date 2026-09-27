@@ -41,6 +41,8 @@
   ],
   "central": [
     { "method": "GET", "pattern": "/graph", "example": "/graph?filter=all" },
+    { "method": "GET", "pattern": "/me", "example": "/me" },
+    { "method": "PATCH", "pattern": "/me", "example": "/me" },
     { "method": "GET", "pattern": "/actors", "example": "/actors" },
     { "method": "GET", "pattern": "/overview", "example": "/overview" },
     { "method": "GET", "pattern": "/sync/watch", "example": "/sync/watch" },
