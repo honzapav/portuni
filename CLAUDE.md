@@ -128,7 +128,7 @@ placeholder so `cargo test`/`clippy` work without building the sidecar.
 `.sandcastle/` is the RALPH harness: an autonomous Claude Code agent in a
 Docker container working through GitHub issues labelled `ready-for-agent`
 on a batch branch, PR only (never merges). It runs on the old Mac (ssh host
-`honzas-macbook-pro`, clone `~/Dev/projekty/portuni`), started over
+`wintermute-mac`, clone `~/Dev/projekty/portuni`), started over
 `ssh -t … ./.sandcastle/node_modules/.bin/sandcastle-loop start` (tmux
 session `sandcastle-portuni` on its own socket; `watch`/`stop`/`status` are
 the other subcommands). Launcher, supervisor and prompt core come from the
