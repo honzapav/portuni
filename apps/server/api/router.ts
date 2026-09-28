@@ -8,12 +8,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { minScopeForRoute } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
-import { respondJson } from "../http/middleware.js";
+import { respondApiError } from "../http/middleware.js";
 import { getDb } from "../infra/db.js";
 import {
   handleLogin,
   handleDesktopConfig,
   handleMe,
+  handlePatchMe,
   handleMintDeviceToken,
   handleListDeviceTokens,
   handleRevokeDeviceToken,
@@ -109,9 +110,9 @@ import {
 } from "./events.js";
 import {
   handleAnswerSessionQuestion,
-  handleAppendSessionEvents,
   handleCloseSession,
   handleContinueSession,
+  handleHandoffSession,
   handleCreateSessionRecord,
   handleCreateSessionRun,
   handleDeleteSession,
@@ -188,7 +189,7 @@ export async function routeApiRequest(
   // placeholder identity has, so login remains reachable.
   const required = minScopeForRoute(method, url.pathname);
   if (!scopeAtLeast(identity.globalScope, required)) {
-    respondJson(res, 403, { error: "forbidden", required_scope: required });
+    respondApiError(res, 403, "FORBIDDEN", "forbidden", { requiredScope: required }, { required_scope: required });
     return true;
   }
 
@@ -237,6 +238,10 @@ export async function routeApiRequest(
   }
   if (url.pathname === "/me" && req.method === "GET") {
     await handleMe(req, res, identity);
+    return true;
+  }
+  if (url.pathname === "/me" && req.method === "PATCH") {
+    await handlePatchMe(req, res, identity);
     return true;
   }
   if (url.pathname === "/device-tokens" && req.method === "POST") {
@@ -786,7 +791,7 @@ async function routeSessions(
     return true;
   }
   // Central record half (#427): the session's read/write set, read by the
-  // sync agent's suspend fallback -- a central route, never device-local
+  // sync agent's server-side suspend -- a central route, never device-local
   // (the device is exactly the side that has no session_scope table).
   const scopeMatch = pathname.match(/^\/sessions\/([^/]+)\/scope$/);
   if (scopeMatch && method === "GET") {
@@ -841,14 +846,15 @@ async function routeSessions(
     await handleCloseSession(req, res, identity, decodeURIComponent(closeMatch[1]));
     return true;
   }
+  // #459: "Předat" -- ends the turn and the run, writes the handoff file.
+  const handoffMatch = pathname.match(/^\/sessions\/([^/]+)\/handoff$/);
+  if (handoffMatch && method === "POST") {
+    await handleHandoffSession(req, res, identity, decodeURIComponent(handoffMatch[1]));
+    return true;
+  }
   const eventsMatch = pathname.match(/^\/sessions\/([^/]+)\/events$/);
   if (eventsMatch && method === "GET") {
     await handleListSessionEvents(req, res, identity, decodeURIComponent(eventsMatch[1]), url);
-    return true;
-  }
-  // Central record half (#323): batch event append, alongside the GET above.
-  if (eventsMatch && method === "POST") {
-    await handleAppendSessionEvents(req, res, identity, decodeURIComponent(eventsMatch[1]));
     return true;
   }
   // Central record half (#323): run records. /runs/:run_id MUST match

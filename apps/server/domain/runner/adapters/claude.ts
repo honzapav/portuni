@@ -10,12 +10,15 @@
 // string, even for a brief-only fresh run.
 
 import { execFile as nodeExecFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
 import { access, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
+  ElicitationRequest,
+  ElicitationResult,
   HookInput,
   HookJSONOutput,
   Options,
@@ -27,8 +30,10 @@ import type {
   SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import { isPortuniEnvKey } from "../../../shared/runner-env.js";
-import { decidePermission } from "../permissions.js";
+import type { ChatEventParams, DenyCode, RunErrorCode } from "../../../shared/chat-event-codes.js";
+import { askUserQuestionAnswers, decidePermission } from "../permissions.js";
 import { isProcessAlive } from "../process-liveness.js";
+import { RunEndedError } from "../types.js";
 import type {
   CanonicalEvent,
   EventSink,
@@ -49,11 +54,24 @@ import type {
 // everyday default. Effort support is left false/[] here (deliberately
 // conservative -- the real per-model answer only exists once
 // supportedModels() has actually answered).
+// #532: the description is a code the web renders; a list the provider
+// answered carries the provider's own text instead.
 const CLAUDE_ALIAS_MODELS: readonly RunnerModel[] = [
-  { id: "sonnet", displayName: "Sonnet", description: "Vyvážený model pro každodenní práci.", supportsEffort: false, effortLevels: [] },
-  { id: "opus", displayName: "Opus", description: "Nejschopnější model, pomalejší a dražší.", supportsEffort: false, effortLevels: [] },
-  { id: "haiku", displayName: "Haiku", description: "Nejrychlejší a nejlevnější model.", supportsEffort: false, effortLevels: [] },
+  { id: "sonnet", displayName: "Sonnet", description: "", description_code: "balanced", supportsEffort: false, effortLevels: [] },
+  { id: "opus", displayName: "Opus", description: "", description_code: "most_capable", supportsEffort: false, effortLevels: [] },
+  { id: "haiku", displayName: "Haiku", description: "", description_code: "fastest", supportsEffort: false, effortLevels: [] },
 ];
+
+// #532: what the agent reads as the tool result of a call the runner denied
+// on its own (always English); the chat renders the code instead.
+const DENY_MESSAGES = {
+  connector_disabled: "This connector is disabled for the run: use the portuni server (mcp__portuni__*).",
+  run_ended: "The run ended before an answer arrived.",
+  turn_stopped: "The turn was stopped before an answer arrived.",
+  denied_by_user: "Denied by the user.",
+  not_answered: "The user did not answer the question.",
+} as const satisfies Partial<Record<DenyCode, string>>;
+type RunnerDenyCode = keyof typeof DENY_MESSAGES;
 
 const DETECT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLOSE_POLL_INTERVAL_MS = 500;
@@ -80,6 +98,9 @@ export interface CreateClaudeAdapterDeps {
   closeTermMs?: number;
   // Clock for the reasoning duration; tests inject a fake.
   now?: () => number;
+  // Origins of this Portuni, for switching off inherited claude.ai
+  // connectors to it; defaults to PORTUNI_CENTRAL_URL / PORTUNI_PUBLIC_URL.
+  portuniOrigins?: () => string[];
 }
 
 // `signal` lets a caller cancel a still-pending sleep the instant it no
@@ -136,6 +157,9 @@ export async function waitForPidDeadOrTimeout(
 interface PushQueue<T> {
   push(item: T): void;
   end(): void;
+  // #489: a push after this is a message nobody will ever read -- send()
+  // asks before pushing so it can refuse instead of dropping it.
+  isEnded(): boolean;
   [Symbol.asyncIterator](): AsyncIterator<T>;
 }
 
@@ -152,6 +176,9 @@ function createPushQueue<T>(): PushQueue<T> {
       } else {
         buffer.push(item);
       }
+    },
+    isEnded(): boolean {
+      return ended;
     },
     end(): void {
       if (ended) return;
@@ -176,12 +203,62 @@ function createPushQueue<T>(): PushQueue<T> {
   };
 }
 
-function userMessage(text: string): SDKUserMessage {
+// #490: every message pushed into the prompt stream carries a uuid of our
+// own, so the result that answers it can be tied back to it -- the SDK
+// echoes the uuids a turn consumed in `user_message_uuids`. Without it a
+// turn that folded two sends into one is indistinguishable from a turn that
+// answered one and left the other queued.
+function userMessage(text: string, uuid: string): SDKUserMessage {
   return {
     type: "user",
     message: { role: "user", content: text },
     parent_tool_use_id: null,
+    uuid: uuid as SDKUserMessage["uuid"],
   };
+}
+
+// #490: how many of the messages we sent this turn answered, taken off
+// `pending` (the uuids of sends no turn has accounted for yet, in push
+// order). The SDK's own contract, @anthropic-ai/claude-agent-sdk 0.3.270:
+//   - "The CLI emits exactly one result message per turn."
+//   - `user_message_uuids`: "Client uuids of every user message whose
+//     prompt this turn consumed, in consumption order -- all members of a
+//     prompt batch the host merged into this one turn (several messages
+//     sent close together run as one turn whose user_message_uuid is the
+//     LAST member's), then any queued user message folded into the running
+//     turn between tool rounds".
+//   - `queued_turn_count`: "User-initiated sends still waiting in the
+//     command queue when this result was produced ... Queued sends may
+//     coalesce into fewer turns, so this counts pending sends, not
+//     remaining results."
+// So: the uuid echo is exact and is used first; the queue count is the
+// resync for anything it did not report (an interrupt that discarded the
+// backlog, a producer too old to echo); one message is the last-resort
+// default, which is what one result per turn means.
+export function consumeSendUuids(
+  pending: string[],
+  msg: { user_message_uuid?: unknown; user_message_uuids?: unknown; queued_turn_count?: unknown },
+): number {
+  const before = pending.length;
+  if (before === 0) return 0;
+  const list = Array.isArray(msg.user_message_uuids)
+    ? msg.user_message_uuids.filter((u): u is string => typeof u === "string")
+    : null;
+  const last = typeof msg.user_message_uuid === "string" ? msg.user_message_uuid : null;
+  if (list?.some((u) => pending.includes(u))) {
+    for (let i = pending.length - 1; i >= 0; i--) {
+      if (list.includes(pending[i])) pending.splice(i, 1);
+    }
+  } else if (last !== null && pending.includes(last)) {
+    // A coalesced turn echoes the LAST message it folded in, so everything
+    // queued before it went into the same turn.
+    pending.splice(0, pending.indexOf(last) + 1);
+  } else if (list === null && last === null) {
+    pending.shift();
+  }
+  const queued = typeof msg.queued_turn_count === "number" ? msg.queued_turn_count : null;
+  if (queued !== null && pending.length > queued) pending.splice(0, pending.length - queued);
+  return before - pending.length;
 }
 
 // --- executable resolution ---------------------------------------------
@@ -325,6 +402,73 @@ interface PendingToolCall {
 interface PendingPermission {
   resolve: (result: PermissionResult) => void;
   input: Record<string, unknown>;
+  // The tool call asked about, so a denial can be named in the chat (#532).
+  toolUseId: string | undefined;
+  // What the chat was asked: an approval allows only on `true`; an input
+  // question (AskUserQuestion) carries the typed answer back as input.
+  type: "approval" | "input";
+}
+
+// A connector dialog (MCP elicitation) waiting on the chat's answer.
+type PendingElicitation = (result: ElicitationResult) => void;
+
+// The chat renders a dialog as one yes/no question showing only the
+// dialog's message, so it can answer a form only when the form is exactly
+// one boolean field (Portuni's scope and write confirmations are one
+// `confirm: boolean`). A second field would be granted unseen; any other
+// form, or a URL dialog, needs input the chat cannot collect. null means
+// the dialog is declined without asking.
+export function confirmationField(request: ElicitationRequest): string | null {
+  if (request.mode === "url") return null;
+  const properties = (request.requestedSchema?.properties ?? {}) as Record<string, { type?: unknown }>;
+  const names = Object.keys(properties);
+  if (names.length !== 1) return null;
+  return properties[names[0]]?.type === "boolean" ? names[0] : null;
+}
+
+// The tool-name prefix Claude Code gives an MCP server's tools:
+// `mcp__<server>__<tool>`, the server name with every character outside
+// [A-Za-z0-9] replaced by an underscore ("claude.ai Portuni Tempo" ->
+// "mcp__claude_ai_Portuni_Tempo__").
+export function mcpToolPrefix(serverName: string): string {
+  return `mcp__${serverName.replace(/[^A-Za-z0-9]/g, "_")}__`;
+}
+
+// A run inherits the claude.ai connectors of its profile's account. One
+// pointing at this Portuni is a second Portuni: a connector session whose
+// confirmation dialogs go to claude.ai, where nobody sees them. The run has
+// its own Portuni connection, so those are switched off. Recognised by the
+// upstream URL the SDK reports, never by the name the user gave it.
+export function inheritedPortuniConnectors(
+  statuses: readonly { name: string; scope?: string; config?: { type?: string; url?: string } }[],
+  portuniOrigins: readonly string[],
+): string[] {
+  const origins = new Set(portuniOrigins);
+  return statuses
+    .filter((s) => s.scope === "claudeai" || s.config?.type === "claudeai-proxy")
+    .filter((s) => {
+      try {
+        return s.config?.url !== undefined && origins.has(new URL(s.config.url).origin);
+      } catch {
+        return false;
+      }
+    })
+    .map((s) => s.name);
+}
+
+// The origins this Portuni is reachable at from outside: the central
+// server a team workspace's sync agent talks to, and the public URL the
+// central server itself serves connectors on.
+function defaultPortuniOrigins(): string[] {
+  const origins: string[] = [];
+  for (const raw of [process.env.PORTUNI_CENTRAL_URL, process.env.PORTUNI_PUBLIC_URL]) {
+    try {
+      if (raw?.trim()) origins.push(new URL(raw.trim()).origin);
+    } catch {
+      // Not a URL: nothing to match against.
+    }
+  }
+  return origins;
 }
 
 interface RunTranslationState {
@@ -334,11 +478,37 @@ interface RunTranslationState {
   // context window from the latest result's modelUsage (null until one).
   model: string | null;
   contextMaxTokens: number | null;
+  // What the latest assistant message's prompt held, so the result that
+  // ends the turn can report the window's content without its own usage.
+  promptTokens: { input: number; cached: number } | null;
+  // #501: the trigger the PreCompact hook reported for the compaction in
+  // progress. The hook only records it; compact_boundary, which arrives
+  // once the compaction is done, emits the single marker.
+  compactionTrigger: "manual" | "auto" | null;
   // When the first thinking delta of the current block arrived; the
-  // batched thinking block reads it as duration_ms and clears it.
+  // batched thinking block reads it as duration_ms and clears it. #502:
+  // every result and every interrupt() clears it too, so a thinking block
+  // a Stop cut off never dates the next turn's reasoning.
   reasoningStartedAt: number | null;
   pendingToolCalls: Map<string, PendingToolCall>;
+  // #532: calls the runner denied, by tool_use id -- their tool_result
+  // becomes a failed tool_call that carries the denial's code.
+  deniedToolUses: Map<string, { code: DenyCode; params: ChatEventParams }>;
   pendingPermissions: Map<string, PendingPermission>;
+  pendingElicitations: Map<string, PendingElicitation>;
+  // #509: one stop per dialog still open or waiting in line. interrupt()
+  // calls them, because the SDK does not abort a dialog's signal when the
+  // turn is interrupted (scripts/probe-sdk-elicitation.mjs, PROBE_ANSWER=
+  // interrupt) and the server would otherwise wait for its own timeout.
+  elicitationStops: Set<() => void>;
+  // The chat shows one open question at a time (the runtime keeps a single
+  // pending question per session): a permission ask or a dialog raised
+  // while another is open waits in line for its turn.
+  questionOpen: boolean;
+  questionQueue: (() => void)[];
+  // Inherited claude.ai connectors switched off at init, by tool prefix:
+  // the backstop for a call the model issues before the toggle lands.
+  disabledToolPrefixes: string[];
   ended: boolean;
   endedResolve: () => void;
   endedPromise: Promise<void>;
@@ -351,6 +521,19 @@ interface RunTranslationState {
   // first -- the translate loop's own completion, its catch branch, or the
   // provider-failure teardown below.
   runEndedEmitted: boolean;
+  // Set by interrupt(): the SDK closes a stopped turn with an
+  // `error_during_execution` result, which is the user's Stop, not a
+  // provider failure. Taken by the next result.
+  interruptRequested: boolean;
+  // The last result was that Stop. The SDK then throws on a later end of
+  // the prompt stream ("Claude Code returned an error result"), which is
+  // still a graceful close.
+  lastResultWasInterrupt: boolean;
+  // #490: uuids of the messages pushed into the prompt stream that no turn
+  // has answered yet, in push order. Each result takes the ones its turn
+  // consumed off the front (consumeSendUuids), and what it took is what
+  // turn_ended reports.
+  pendingSends: string[];
 }
 
 function createState(): RunTranslationState {
@@ -363,15 +546,26 @@ function createState(): RunTranslationState {
     latestUsage: null,
     model: null,
     contextMaxTokens: null,
+    promptTokens: null,
+    compactionTrigger: null,
     reasoningStartedAt: null,
     pendingToolCalls: new Map(),
+    deniedToolUses: new Map(),
     pendingPermissions: new Map(),
+    pendingElicitations: new Map(),
+    elicitationStops: new Set(),
+    questionOpen: false,
+    questionQueue: [],
+    disabledToolPrefixes: [],
     ended: false,
     endedResolve,
     endedPromise,
     capturedPid: null,
     providerEndReason: null,
     runEndedEmitted: false,
+    interruptRequested: false,
+    lastResultWasInterrupt: false,
+    pendingSends: [],
   };
 }
 
@@ -388,7 +582,7 @@ function notLoggedInMessage(message: string): boolean {
 // ordinary successful turn.
 export function providerResultFailure(
   msg: Extract<SDKMessage, { type: "result" }>,
-): { reason: RunEndReason; message: string } | null {
+): { reason: RunEndReason; message: string; code?: RunErrorCode; params?: ChatEventParams } | null {
   const subtype = typeof msg.subtype === "string" ? msg.subtype : "success";
   const isError = (msg as { is_error?: unknown }).is_error === true;
   if (!isError && subtype === "success") return null;
@@ -401,14 +595,20 @@ export function providerResultFailure(
   } else if (Array.isArray(errors)) {
     message = errors.filter((e): e is string => typeof e === "string" && e.trim() !== "").join("\n");
   }
-  if (message.trim() === "") message = `Běh skončil chybou poskytovatele (${subtype}).`;
+  // #532: with no text of the provider's own, the runner's sentence is a
+  // code the web renders.
+  let own: { code: RunErrorCode; params: ChatEventParams } | null = null;
+  if (message.trim() === "") {
+    message = `The run ended with a provider error (${subtype}).`;
+    own = { code: "provider_failed", params: { subtype } };
+  }
 
   const terminalReason = (msg as { terminal_reason?: unknown }).terminal_reason;
   const limitByMetadata =
     /budget|limit/i.test(subtype) ||
     (typeof terminalReason === "string" && /budget|limit|exhaust/i.test(terminalReason));
-  const reason: RunEndReason = limitByMetadata || /limit/i.test(message) ? "limit" : "error";
-  return { reason, message };
+  const reason: RunEndReason = limitByMetadata || (own === null && /limit/i.test(message)) ? "limit" : "error";
+  return { reason, message, ...(own ?? {}) };
 }
 
 // --- message translation --------------------------------------------------
@@ -419,7 +619,9 @@ function usageNumber(usage: Record<string, unknown> | undefined, key: string): n
 }
 
 // The context ring's event (v2 spec): what the model's context holds
-// after this message -- input plus both cache buckets of its usage.
+// after this message -- input plus both cache buckets of its usage. The
+// prompt's two numbers stay on the state for the turn's end, which has no
+// honest reading of its own.
 function contextUsageFrom(
   runId: string,
   state: RunTranslationState,
@@ -427,6 +629,7 @@ function contextUsageFrom(
 ): CanonicalEvent {
   const input = usageNumber(usage, "input_tokens");
   const cached = usageNumber(usage, "cache_creation_input_tokens") + usageNumber(usage, "cache_read_input_tokens");
+  state.promptTokens = { input, cached };
   return {
     kind: "context_usage",
     payload: {
@@ -439,6 +642,94 @@ function contextUsageFrom(
       output_tokens: usageNumber(usage, "output_tokens"),
     },
   };
+}
+
+// The same ring once the turn is over, where the window's size is the only
+// new fact (it comes with the result's modelUsage). A result's own usage is
+// the turn's SUM over every request it made, counting each request's cache
+// read again, so a turn with many tool calls adds up far past the window --
+// reported as the context's content it drove the ring to 103 %. The content
+// is still the last message's prompt; only the output count is read here,
+// where it covers the whole turn instead of one message. Null before the
+// turn's first assistant message: nothing was ever in the context.
+function contextUsageAtTurnEnd(
+  runId: string,
+  state: RunTranslationState,
+  usage: Record<string, unknown> | undefined,
+): CanonicalEvent | null {
+  const prompt = state.promptTokens;
+  if (prompt === null) return null;
+  return {
+    kind: "context_usage",
+    payload: {
+      run_id: runId,
+      model: state.model,
+      used_tokens: prompt.input + prompt.cached,
+      max_tokens: state.contextMaxTokens,
+      input_tokens: prompt.input,
+      cached_tokens: prompt.cached,
+      output_tokens: usageNumber(usage, "output_tokens"),
+    },
+  };
+}
+
+// #501: one compaction, one marker. The boundary's own metadata names the
+// trigger; the PreCompact hook's record is the fallback. The ring then
+// shows the context's size after compaction (post_tokens) at once, and the
+// prompt kept for the turn's end is replaced, so the result that closes a
+// `/compact` turn never reports the size from before. Without post_tokens
+// there is no honest reading: the kept prompt is dropped and the next
+// assistant message sets the ring.
+function translateCompactBoundary(
+  msg: SDKMessage,
+  state: RunTranslationState,
+  runId: string,
+): CanonicalEvent[] {
+  const meta = (msg as { compact_metadata?: { trigger?: unknown; post_tokens?: unknown } }).compact_metadata;
+  const trigger =
+    meta?.trigger === "manual" || meta?.trigger === "auto" ? meta.trigger : (state.compactionTrigger ?? "auto");
+  state.compactionTrigger = null;
+  const events: CanonicalEvent[] = [{ kind: "compaction", payload: { trigger } }];
+  const post = meta?.post_tokens;
+  if (typeof post === "number" && Number.isFinite(post)) {
+    state.promptTokens = { input: post, cached: 0 };
+    events.push({
+      kind: "context_usage",
+      payload: {
+        run_id: runId,
+        model: state.model,
+        used_tokens: post,
+        max_tokens: state.contextMaxTokens,
+        input_tokens: post,
+        cached_tokens: 0,
+        output_tokens: 0,
+      },
+    });
+  } else {
+    state.promptTokens = null;
+  }
+  return events;
+}
+
+// A frame produced inside a subagent started by a tool_use of the main
+// agent (sdk.d.ts: "parent_tool_use_id is non-null when the message was
+// produced inside a subagent started by that tool_use").
+function isSubagentFrame(msg: SDKMessage): boolean {
+  if (msg.type !== "assistant" && msg.type !== "user" && msg.type !== "stream_event") return false;
+  const parent = (msg as { parent_tool_use_id?: unknown }).parent_tool_use_id;
+  return typeof parent === "string" && parent !== "";
+}
+
+// #500: an API failure (model unavailable, overloaded after retries, prompt
+// too long, a limit) arrives as a synthetic assistant message -- `error`
+// set, `model: "<synthetic>"`, zero usage -- and then as a `result` with the
+// same text. The result is the one that reports it (#411); translating the
+// synthetic message too showed the error twice, as a reply and as an
+// error, and its zero usage dropped the context ring to nothing.
+function isSyntheticErrorMessage(msg: Extract<SDKMessage, { type: "assistant" }>): boolean {
+  const error = (msg as { error?: unknown }).error;
+  if (typeof error === "string" && error !== "") return true;
+  return (msg.message as { model?: unknown }).model === "<synthetic>";
 }
 
 async function translateAssistantMessage(
@@ -525,6 +816,8 @@ function translateUserMessage(
     if (!pending) continue;
     state.pendingToolCalls.delete(result.tool_use_id);
     const isError = result.is_error === true;
+    const denied = state.deniedToolUses.get(result.tool_use_id);
+    state.deniedToolUses.delete(result.tool_use_id);
     sink({
       kind: "tool_call",
       payload: {
@@ -536,6 +829,7 @@ function translateUserMessage(
         status: isError ? "failed" : "completed",
         output_excerpt: excerptFromToolResultContent(result.content),
         truncated: false,
+        ...(isError && denied ? { output_code: denied.code, output_params: denied.params } : {}),
       },
     });
     if (!isError && pending.category === "file_change" && pending.writeOp && pending.path) {
@@ -593,6 +887,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
   const closeTermMs = deps.closeTermMs ?? DEFAULT_CLOSE_TERM_MS;
   const now = deps.now ?? Date.now;
+  const portuniOrigins = deps.portuniOrigins ?? defaultPortuniOrigins;
   // #376: filled from the first live run's own Query.supportedModels() --
   // null until then (and re-attempted on the next run if that call itself
   // failed), never re-fetched once it holds a real list.
@@ -630,13 +925,31 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   async function start(run: RunStart, sink: EventSink): Promise<import("../types.js").RunHandle> {
     const state = createState();
     const promptQueue = createPushQueue<SDKUserMessage>();
-    if (run.brief !== null) promptQueue.push(userMessage(run.brief));
+    // #490: the brief is the run's first message and is counted like any
+    // other -- the turn that answers it echoes this uuid back.
+    const pushPrompt = (text: string): void => {
+      const uuid = randomUUID();
+      state.pendingSends.push(uuid);
+      promptQueue.push(userMessage(text, uuid));
+    };
+    if (run.brief !== null) pushPrompt(run.brief);
+
+    // A denial of the runner's own: the agent reads the English message, the
+    // chat shows the failed call from the code (#532).
+    function deny(toolUseId: string | undefined, code: RunnerDenyCode): PermissionResult {
+      if (toolUseId !== undefined) state.deniedToolUses.set(toolUseId, { code, params: {} });
+      return { behavior: "deny", message: DENY_MESSAGES[code] };
+    }
 
     async function canUseTool(
       toolName: string,
       input: Record<string, unknown>,
-      options: { requestId: string },
+      options: { requestId: string; signal: AbortSignal; toolUseID?: string },
     ): Promise<PermissionResult> {
+      const toolUseId = options.toolUseID;
+      if (state.disabledToolPrefixes.some((prefix) => toolName.startsWith(prefix))) {
+        return deny(toolUseId, "connector_disabled");
+      }
       const decision = decidePermission({
         tool: toolName,
         input,
@@ -646,33 +959,190 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         policy: run.policy,
       });
       if (decision.kind === "allow") return { behavior: "allow", updatedInput: input };
-      if (decision.kind === "deny") return { behavior: "deny", message: decision.message };
+      if (decision.kind === "deny") {
+        if (toolUseId !== undefined) state.deniedToolUses.set(toolUseId, { code: decision.code, params: decision.params });
+        return { behavior: "deny", message: decision.message };
+      }
 
+      const ended = (): PermissionResult => deny(toolUseId, "run_ended");
       // The run is already over (the SDK can still call this from a turn
       // that was in flight when the iterator finished): nobody is left to
       // answer, so deny instead of parking a promise nothing will resolve.
-      if (state.ended) return { behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." };
+      if (state.ended) return ended();
+      // #493: the SDK aborts the signal when the turn is cancelled (Stop,
+      // Esc): the tool call is gone, so nobody will use an answer.
+      const cancelled = (): PermissionResult => deny(toolUseId, "turn_stopped");
+      if (options.signal.aborted) return cancelled();
       const requestId = options.requestId;
-      sink({
-        kind: "question",
-        payload: {
-          request_id: requestId,
-          type: decision.question.type,
-          tool: toolName,
-          title: decision.question.title,
-          detail: decision.question.detail,
-          options: decision.question.options,
-          decision: null,
+      const payload = {
+        request_id: requestId,
+        type: decision.question.type,
+        tool: toolName,
+        title: decision.question.title,
+        code: decision.question.code,
+        params: {},
+        detail: decision.question.detail,
+        options: decision.question.options,
+        ...(decision.question.questions ? { questions: decision.question.questions } : {}),
+      };
+      return askInTurn(
+        () => {
+          // Cancelled while waiting in line behind another question: never
+          // shown, so there is nothing to close in the chat either.
+          if (options.signal.aborted) return Promise.resolve(cancelled());
+          sink({ kind: "question", payload: { ...payload, decision: null } });
+          // Settling the ask frees the question line (askInTurn), and the
+          // question event carrying a decision tells the runtime the
+          // question closed without the user, the way an abandoned dialog
+          // does in onElicitation.
+          const onAbort = () => {
+            const pending = state.pendingPermissions.get(requestId);
+            if (!pending) return;
+            state.pendingPermissions.delete(requestId);
+            pending.resolve(cancelled());
+            sink({
+              kind: "question",
+              payload: { ...payload, decision: { by: "system", value: false, at: new Date(now()).toISOString() } },
+            });
+          };
+          options.signal.addEventListener("abort", onAbort, { once: true });
+          return new Promise<PermissionResult>((resolve) => {
+            state.pendingPermissions.set(requestId, { resolve, input, toolUseId, type: decision.question.type });
+          }).finally(() => {
+            // Answered, ended or aborted: the listener has nothing left to
+            // settle, and the signal may outlive the ask by a whole turn.
+            options.signal.removeEventListener("abort", onAbort);
+          });
         },
+        ended,
+        { signal: options.signal, result: cancelled },
+      );
+    }
+
+    // Runs `ask` once no other question is open in the chat, so two asks
+    // never race for the runtime's single pending question. With no
+    // question open it asks synchronously, so the pending entry exists
+    // before the caller's promise is even returned (an answer can arrive
+    // right away). A run that ends while an ask waits in line answers with
+    // `ifEnded` instead of asking. An ask whose `cancel.signal` aborts
+    // while it waits in line leaves the line at once and answers with
+    // `cancel.result` -- it was never shown, and the SDK is waiting on it.
+    function askInTurn<T>(
+      ask: () => Promise<T>,
+      ifEnded: () => T,
+      cancel?: { signal: AbortSignal; result: () => T },
+    ): Promise<T> {
+      const run = (): Promise<T> => {
+        state.questionOpen = true;
+        const settled = state.ended ? Promise.resolve(ifEnded()) : ask();
+        return settled.finally(() => {
+          state.questionOpen = false;
+          state.questionQueue.shift()?.();
+        });
+      };
+      if (!state.questionOpen) return run();
+      return new Promise<T>((resolve, reject) => {
+        const onAbort = () => {
+          const index = state.questionQueue.indexOf(entry);
+          if (index === -1) return;
+          state.questionQueue.splice(index, 1);
+          resolve(cancel!.result());
+        };
+        const entry = () => {
+          cancel?.signal.removeEventListener("abort", onAbort);
+          void run().then(resolve, reject);
+        };
+        state.questionQueue.push(entry);
+        cancel?.signal.addEventListener("abort", onAbort, { once: true });
       });
-      return new Promise<PermissionResult>((resolve) => {
-        state.pendingPermissions.set(requestId, { resolve, input });
+    }
+
+    // An MCP server's confirmation dialog (Portuni's scope expansion and
+    // write access) is asked in the chat like any other question; the
+    // answer comes back through handle.answer().
+    async function onElicitation(
+      request: ElicitationRequest,
+      options: { signal: AbortSignal; requestId: string },
+    ): Promise<ElicitationResult> {
+      // A URL dialog (a sign-in the server wants opened in a browser) is
+      // never granted from the chat: it is declined, and the transcript
+      // says which server asked, so the refusal the agent reports has a
+      // cause the user can see.
+      if (request.mode === "url") {
+        sink({
+          kind: "error",
+          payload: {
+            class: "permission",
+            message: `Server ${request.displayName ?? request.serverName} asked for a sign-in in a browser; the chat cannot open one, so the request was declined.`,
+            code: "browser_sign_in_declined",
+            params: { server: request.displayName ?? request.serverName },
+          },
+        });
+        return { action: "decline" };
+      }
+      const field = confirmationField(request);
+      if (field === null) return { action: "decline" };
+      if (state.ended || options.signal.aborted) return { action: "cancel" };
+      const requestId = options.requestId;
+      const payload = {
+        request_id: requestId,
+        type: "approval" as const,
+        tool: `mcp__${request.serverName}`,
+        // The dialog's own title is the MCP server's text (English, shown as
+        // stored); without one the runner names the server (#532).
+        title: request.title ?? `Confirm: ${request.displayName ?? request.serverName}`,
+        ...(request.title ? {} : { code: "mcp_confirmation" as const, params: { server: request.displayName ?? request.serverName } }),
+        detail: request.message,
+        options: null,
+      };
+      // Aborted by the SDK giving up on the dialog (its own timeout) or by
+      // interrupt() (Stop): either way the tool call waiting on it is gone.
+      const stop = new AbortController();
+      const stopDialog = () => stop.abort();
+      options.signal.addEventListener("abort", stopDialog, { once: true });
+      state.elicitationStops.add(stopDialog);
+      return askInTurn<ElicitationResult>(
+        () => {
+          // Stopped while waiting in line behind another question: never
+          // shown, so there is nothing to close in the chat either.
+          if (stop.signal.aborted) return Promise.resolve<ElicitationResult>({ action: "cancel" });
+          sink({ kind: "question", payload: { ...payload, decision: null } });
+          return new Promise<ElicitationResult>((resolve) => {
+            const settle = (result: ElicitationResult) => {
+              if (!state.pendingElicitations.delete(requestId)) return;
+              resolve(result);
+            };
+            state.pendingElicitations.set(requestId, (result) =>
+              settle(result.action === "accept" ? { action: "accept", content: { [field]: true } } : result),
+            );
+            // The chat must stop waiting for an answer nobody will use. A
+            // question event carrying a decision is how the runtime learns
+            // a question closed without the user.
+            stop.signal.addEventListener(
+              "abort",
+              () => {
+                if (!state.pendingElicitations.has(requestId)) return;
+                settle({ action: "cancel" });
+                sink({
+                  kind: "question",
+                  payload: { ...payload, decision: { by: "system", value: false, at: new Date(now()).toISOString() } },
+                });
+              },
+              { once: true },
+            );
+          });
+        },
+        () => ({ action: "cancel" }),
+        { signal: stop.signal, result: () => ({ action: "cancel" }) },
+      ).finally(() => {
+        state.elicitationStops.delete(stopDialog);
+        options.signal.removeEventListener("abort", stopDialog);
       });
     }
 
     async function preCompactHook(input: HookInput): Promise<HookJSONOutput> {
       if (input.hook_event_name === "PreCompact") {
-        sink({ kind: "compaction", payload: { trigger: input.trigger === "manual" ? "manual" : "auto" } });
+        state.compactionTrigger = input.trigger === "manual" ? "manual" : "auto";
       }
       return {};
     }
@@ -709,6 +1179,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       includePartialMessages: true,
       permissionMode: "default",
       canUseTool,
+      onElicitation,
       env: buildEnv(run.instance.env),
       hooks: { PreCompact: [{ hooks: [preCompactHook] }] },
       spawnClaudeCodeProcess,
@@ -749,12 +1220,31 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     async function translateMessage(msg: SDKMessage): Promise<void> {
       if (msg.type === "system" && msg.subtype === "init") {
         state.agentSessionId = msg.session_id;
+        const origins = portuniOrigins();
+        if (origins.length > 0) {
+          void Promise.resolve()
+            .then(() => q.mcpServerStatus())
+            .then((statuses) => {
+              const names = inheritedPortuniConnectors(statuses, origins);
+              state.disabledToolPrefixes = names.map(mcpToolPrefix);
+              return Promise.all(names.map((name) => q.toggleMcpServer(name, false)));
+            })
+            .catch(() => undefined);
+        }
         return;
       }
       if (msg.type === "system" && msg.subtype === "compact_boundary") {
-        sink({ kind: "compaction", payload: { trigger: "auto" } });
+        for (const e of translateCompactBoundary(msg, state, run.runId)) sink(e);
         return;
       }
+      // #499: a subagent's own frames (Agent/Task tool; parent_tool_use_id
+      // set) are not the main agent's: its text is no reply, its tools no
+      // activity of this thread, and its model and usage describe another
+      // context -- translating them overwrote state.model and drove the
+      // ring to the subagent's window. The main agent's Task tool_use and
+      // its tool_result are top-level frames and still translate.
+      if (isSubagentFrame(msg)) return;
+      if (msg.type === "assistant" && isSyntheticErrorMessage(msg)) return;
       if (msg.type === "assistant") {
         await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);
         return;
@@ -774,21 +1264,38 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         const modelUsage = (msg as { modelUsage?: Record<string, { contextWindow?: unknown }> }).modelUsage ?? {};
         const entry = state.model ? modelUsage[state.model] : Object.values(modelUsage)[0];
         if (entry && typeof entry.contextWindow === "number") state.contextMaxTokens = entry.contextWindow;
-        sink(contextUsageFrom(run.runId, state, msg.usage as unknown as Record<string, unknown> | undefined));
+        const atTurnEnd = contextUsageAtTurnEnd(run.runId, state, msg.usage as unknown as Record<string, unknown> | undefined);
+        if (atTurnEnd) sink(atTurnEnd);
         // #411: a provider limit/error ends the run. The provider's own text
         // goes into the transcript once, then the prompt stream is ended so
         // the CLI exits and the translate loop below reports the run_ended
         // this reason belongs to; endAfterProviderFailure is the bound on a
         // child that ignores the end of its stdin.
-        const failure = providerResultFailure(msg);
+        const interrupted = state.interruptRequested && msg.subtype === "error_during_execution";
+        state.interruptRequested = false;
+        // #502: the turn is over; the next turn's reasoning times itself.
+        state.reasoningStartedAt = null;
+        state.lastResultWasInterrupt = interrupted;
+        // #490: which of our sends this turn answered -- taken here, before
+        // the failure branch, so a result that ends the run leaves no
+        // message counted as still unanswered either.
+        const consumed = consumeSendUuids(state.pendingSends, msg as Record<string, unknown>);
+        const failure = interrupted ? null : providerResultFailure(msg);
         if (failure !== null && state.providerEndReason === null) {
           state.providerEndReason = failure.reason;
-          sink({ kind: "error", payload: { class: "provider", message: failure.message } });
+          sink({
+            kind: "error",
+            payload: {
+              class: "provider",
+              message: failure.message,
+              ...(failure.code ? { code: failure.code, params: failure.params ?? {} } : {}),
+            },
+          });
           void endAfterProviderFailure(failure.reason);
         } else if (failure === null) {
           // The turn is over and the process waits for the next prompt: say
           // so, or the surface keeps showing the run as working.
-          sink({ kind: "turn_ended", payload: { run_id: run.runId } });
+          sink({ kind: "turn_ended", payload: { run_id: run.runId, consumed_messages: consumed } });
         }
       }
     }
@@ -808,8 +1315,12 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       state.ended = true;
       for (const [requestId, pending] of state.pendingPermissions) {
         state.pendingPermissions.delete(requestId);
-        pending.resolve({ behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." });
+        pending.resolve(deny(pending.toolUseId, "run_ended"));
       }
+      for (const settle of [...state.pendingElicitations.values()]) settle({ action: "cancel" });
+      // Asks still waiting in line: each runs, sees the run ended and
+      // answers with its own refusal without asking.
+      for (const next of state.questionQueue.splice(0)) next();
       state.endedResolve();
     }
 
@@ -844,6 +1355,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         emitRunEnded(state.providerEndReason ?? "completed");
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        if (state.lastResultWasInterrupt && state.providerEndReason === null && /returned an error result/i.test(message)) {
+          emitRunEnded("completed");
+          return;
+        }
         // #411: on a provider failure the provider's own message is already
         // in the transcript and this throw is a consequence of the teardown
         // it triggered -- exactly one error event per run.
@@ -851,7 +1366,12 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           if (notLoggedInMessage(message)) {
             sink({
               kind: "error",
-              payload: { class: "provider", message: "Claude Code není přihlášený na tomto zařízení." },
+              payload: {
+                class: "provider",
+                message: "Claude Code is not signed in on this device.",
+                code: "provider_not_logged_in",
+                params: {},
+              },
             });
           } else {
             sink({ kind: "error", payload: { class: "unknown", message } });
@@ -901,20 +1421,45 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
     const handle: RunHandle = {
       async send(text: string): Promise<void> {
-        promptQueue.push(userMessage(text));
+        // #489: the run is over, or a close()/provider-failure teardown has
+        // already ended the prompt stream (providerEndReason is set one
+        // microtask before endAfterProviderFailure gets to end it, so it
+        // counts as ending too). Pushing here would buffer the message into
+        // a stream the CLI no longer reads; the runtime instead waits for
+        // the run to end and delivers it to the next one.
+        if (state.ended || state.providerEndReason !== null || promptQueue.isEnded()) {
+          throw new RunEndedError("send: the run has ended, the message was not delivered");
+        }
+        pushPrompt(text);
       },
       async answer(requestId: string, decision: QuestionDecision): Promise<void> {
+        const elicitation = state.pendingElicitations.get(requestId);
+        if (elicitation) {
+          elicitation(decision.value === true ? { action: "accept" } : { action: "decline" });
+          return;
+        }
         const pending = state.pendingPermissions.get(requestId);
         if (!pending) return;
         state.pendingPermissions.delete(requestId);
-        if (decision.value === false) {
-          pending.resolve({ behavior: "deny", message: "Zamítnuto uživatelem." });
+        if (pending.type === "input") {
+          // AskUserQuestion (input-type ask, #492): the tool reads the
+          // user's reply from `answers`, keyed by question text. `false` is
+          // the user's refusal; a bare `true` carries no answer, and the
+          // model is told so plainly instead of being handed an allow with
+          // nothing answered.
+          if (typeof decision.value === "string" || (typeof decision.value === "object" && decision.value !== null)) {
+            const answers = askUserQuestionAnswers(pending.input, decision.value);
+            pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answers } });
+          } else if (decision.value === false) {
+            pending.resolve(deny(pending.toolUseId, "denied_by_user"));
+          } else {
+            pending.resolve(deny(pending.toolUseId, "not_answered"));
+          }
         } else if (decision.value === true) {
           pending.resolve({ behavior: "allow", updatedInput: pending.input });
         } else {
-          // AskUserQuestion (input-type ask): the typed answer becomes part
-          // of the tool's own input rather than a plain allow/deny.
-          pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answer: decision.value } });
+          // `false`, or text where an approval was asked: never an allow.
+          pending.resolve(deny(pending.toolUseId, "denied_by_user"));
         }
       },
       // #378 ("Stop, not Přerušit"): cancels the CURRENT TURN only
@@ -923,6 +1468,13 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       // Ending the queue (and therefore the run) belongs to close() alone.
       async interrupt(): Promise<void> {
         if (state.ended) return;
+        state.interruptRequested = true;
+        // #509: Stop closes an open connector dialog (and drops the ones
+        // waiting in line) with `cancel`; the SDK leaves them open.
+        for (const stopDialog of [...state.elicitationStops]) stopDialog();
+        // #502: the stopped turn's thinking never completes; its start must
+        // not carry over into the next turn's duration.
+        state.reasoningStartedAt = null;
         try {
           await q.interrupt();
         } catch {

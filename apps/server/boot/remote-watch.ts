@@ -17,7 +17,7 @@
 import type { DbClient } from "../infra/db.js";
 import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
-import { authMode } from "../infra/server-config.js";
+import { authMode } from "../infra/auth-config.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
 import { listRemotes } from "../domain/sync/routing.js";
 import { awaitSyncJob, startSyncJob } from "../domain/sync/sync-jobs.js";

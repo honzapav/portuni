@@ -24,9 +24,10 @@ cd "$(dirname "$0")/.."
 # The backup below needs TURSO_URL/TURSO_AUTH_TOKEN in the environment, and
 # the operator's only source for them is the VPS's own portuni.env -- so a
 # laptop deploy exports them for the whole run. The test suite inherits
-# that, and every test that starts a server then dies on
-# assertAuthRequiredIfNotLoopback ("TURSO_URL is set (shared team
-# database)" with no PORTUNI_AUTH_TOKEN). The gate must not see them.
+# that, and a test that opens the default db could then reach the
+# production Turso database instead of its own local file. (The boot auth
+# check no longer looks at TURSO_URL at all: an env-mode server needs
+# PORTUNI_AUTH_TOKEN on any host, #521.) The gate must not see them.
 if [[ "${PORTUNI_SKIP_QA:-}" == "1" ]]; then
   echo "==> qa skipped (PORTUNI_SKIP_QA=1) -- build only"
   env -u TURSO_URL -u TURSO_AUTH_TOKEN npm run build

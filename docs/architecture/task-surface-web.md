@@ -102,10 +102,10 @@ session `continueSession` answers with). A runner/instance or model/effort
 change is the optimistic form of principle 2: `const before =
 session; store.put({...before, patch})`, the API call folds the server's
 answer in, and a refusal puts `before` back whole and writes the reason
-into the composer's error line ("Runner a instanci se nepodařilo uložit:
-…"). Scenario 2 in `test/session-store-scenarios.test.ts` holds that.
+into the composer's error line ("Could not save the runner and instance:
+…", `chat` `error.save_runner`). Scenario 2 in `test/session-store-scenarios.test.ts` holds that.
 
-**The send clock.** `sentAt` is what the working row shows as "Spouštím…"
+**The send clock.** `sentAt` is what the working row shows as "Starting…"
 between the send and its `run_started`. Its rule is the pure `nextSentAt`
 (`lib/session-chat.ts`): the composer sets it **before** the send is
 awaited -- `run_started`, and a `run_ended` right behind it, can arrive
@@ -127,13 +127,14 @@ composer share one centred column, `THREAD_COLUMN = "mx-auto
 w-[min(80%,768px)]"`: 10 % gutters each side, 768 px at most. The scroll
 container stays full-width so the scrollbar keeps the pane's edge.
 
-**The context ring.** `contextRingState(used, max)` (`lib/context-ring.ts`)
+**The context ring.** `contextRingState(used, max, locale, t)` (`lib/context-ring.ts`)
 takes the transcript's latest `context_usage` event when the log is here,
 else the summary's `context_used_tokens` / `context_max_tokens` (a reload
 before the replay). Null means no ring (a draft, a session that never
 reported). Under 80 % the trigger is `text-dim`, from 80 % it is
-`--color-node-process` and "Pokračovat v nové session" becomes the filled
-button. With `max` null the label is a bare count ("12,3 k tokenů"). The
+`--color-node-process` and "Continue in a new thread" becomes the filled
+button. The label is `chat` `context.percent` ("79%", "79 %" in Czech);
+with `max` null it is a bare count, a plural key ("12.3 k tokens"). The
 ring is AI Elements' `context` with the `ai`/`tokenlens` cost estimate
 stripped (`ContextTrigger` shows the `label` prop; `maxTokens` may be null).
 
@@ -143,18 +144,50 @@ otherwise `host_id`, and nothing at all when the summary carries neither.
 The summary is the only source; neither surface fetches a session's runs.
 See `sessions-and-runner.md`, "Runs, events, pid files and the boot sweep".
 
+**The two cross-device actions** (#459, #460). **Předat** is a header icon
+(`Share2`) on a running or suspended thread: `handoffSession` ->
+`POST /sessions/:id/handoff`, whose answered `handoff_path` stays on screen
+in the notice bar (it is what the other machine opens). `api.ts` puts the
+suspended record into the store, so the header, the sidebar and Relace
+follow without a refetch. A refusal (409) rejects with
+`HandoffRefusedError` (`lib/handoff-refusal.ts`, its own module so the main
+chunk does not pull in the chat's helpers); the chat and the sidebar show
+its code from the `errors` catalog through `displayError`, never the status line, and
+after a refusal that does not depend on the thread's state (no mirror, the
+run or the transcript on another device) the chat stops offering Předat
+for that view. **Navázat na handoff** is the Relace tab's, not
+the chat's: `startSessionFromHandoff(nodeId, relPath)`.
+
+**The transcript is on another machine** (#461). A thread's content lives
+in the `content.db` of the device that ran it, so a second device of the
+same person has the record and no conversation. On mount the chat asks
+`fetchTranscriptHost(sessionId)` -- `GET /sessions/:id/events?limit=1`, the
+device-local route, read for its `transcript_host` header alone (the
+replay itself comes over the live channel). `transcriptElsewhere(host,
+events.length, t)` (`lib/session-chat.ts`, tested in
+`test/session-chat-helpers.test.ts`) turns that into the state: the
+`ConversationEmptyState` reads "The transcript is on the device X" with the way
+across as its description, the composer is disabled with a matching
+placeholder, and Předat is hidden -- the summary is written from the
+transcript, which this device does not have. A non-empty log wins over the
+header, so a run that starts writing here clears the state on its own.
+
 ### Relace tab (`DetailPane.sessions.tsx`)
 
 REST-only list of the node's persistent sessions
 (`fetchNodePersistentSessions`), archived rows behind a filter. Each row
-shows `sessionRowChip`, the brief's first line, runner, instance and host,
-the owner's name when the row is not the caller's own (`fetchUsers()`, which returns `[]` below manage
-scope, so a plain teammate sees no name), and `resumeInfo` as information
-only. Actions: "Otevřít chat" (`onOpenChat`), "Uzavřít" behind a confirm
-`Dialog` (`closeConfirm`), and on a closed row "Navázat" (`continueSession`
-from `api.ts`, then `onSessionStarted` and `onOpenChat` with the new
-session). There is no live subscription in this tab; it reloads its list
-after an action.
+shows `sessionRowChip`, runner, instance and host, and `resumeInfo` as
+information only. It quotes nothing: the thread's first message is content
+and lives in the device's `content.db`, so `SessionSummary` has no `brief`
+to show (#461) and the row names the thread instead. There is no owner
+column either -- every row is the caller's own (#457). Actions: "Otevřít
+chat" (`onOpenChat`) on a running, suspended or closed row
+(`sessionRowOpensChat`, #498 -- a closed thread has a composer, so there is
+no Navázat), and "Uzavřít" without a dialog. Above the rows
+the tab lists the node's handoff files (`lib/handoff-files.ts`), each with
+**Navázat na handoff** (#460): `startSessionFromHandoff`, which is
+`POST /sessions` with the file's node-relative path. There is no live
+subscription in this tab; it reloads its list after an action.
 
 ### Přehled (`OverviewView.tsx`)
 
@@ -169,9 +202,9 @@ The Relace card is the caller's own inbox: `sortInboxSessions(running,
 suspended, meId)` orders waiting first, then running, then suspended, and
 keeps only rows with `user_id === meId`; `splitThreadsAndCli` then keeps
 threads (`isThreadSession`) as rows and puts hand-opened CLI sessions into
-the footer line "K tomu N relací z CLI (N běží)". `GET /overview` itself
-returns every session on a node the caller can see; the restriction is
-the client's. Rows are overlaid with live state (`mergeLiveSessionStates`)
+the footer line "K tomu N relací z CLI (N běží)". `GET /overview` returns the caller's own
+threads only (#457), and its rows are record only -- no `brief` since
+#461, so a row shows `name`. Rows are overlaid with live state (`mergeLiveSessionStates`)
 and the card reloads whenever the live-state stamp changes. The unsynced
 counter is `useSyncPending().pending.total` passed down from `App.tsx`.
 
@@ -232,12 +265,28 @@ principles hold it together:
    (`test/session-store-scenarios.test.ts`), not by helper tests alone.
 
 The store itself is a plain module, no React and no library:
-`get`/`put`/`putMany`/`remove`/`applyFrame`/`subscribe`/`snapshot`. `put`
-keeps the existing reference when every field is equal and the map is
+`get`/`put`/`putMany`/`remove`/`removeMany`/`applyFrame`/`applyFrames`/`subscribe`/`snapshot`.
+`put` keeps the existing reference when every field is equal and the map is
 copied on write, so "the snapshot reference changed" means exactly
 "something changed". A frame for an id this window never fetched creates a
-record marked `partial` (unknown name and runner); the next `put` -- the
-refetch that frame triggers -- replaces it whole.
+record marked `partial` (no name -- absent, not `""`, so a frame from a
+server older than that field never blanks a name a list already shows --
+and no runner); the next `put`, the refetch that frame triggers, replaces
+it whole.
+
+**A partial record is not a thread.** `selectNodeThreads`,
+`selectShownThread` and `selectMountedThreads` skip it: the snapshot on
+connect carries every running or suspended session the caller can see,
+hand-opened CLI sessions included, and one of those is neither a sidebar
+sub-row nor a node's shown thread nor a mounted chat. `selectRunningCount`
+does count it -- the footer says how many runs are going, wherever they
+are. `SessionChat` renders nothing for one, and `api.ts`'s partial folds
+(`foldIntoSession`) leave it alone.
+
+**A closed node's records leave the store.** `closeNode` in `App.tsx`
+drops every record anchored on the node it closes -- `selectNodeRecordIds`
+picks them, `removeMany` drops them in one copy-on-write -- except the
+thread currently shown, which closing its node does not close.
 
 **Writing is the API's job, not the caller's** (`apps/web/src/api.ts`).
 `bindSessionStore(store)` is called once, in `App.tsx`; after that
@@ -262,6 +311,18 @@ selector building a fresh object or array loops until React throws
 "Maximum update depth exceeded". A new selector goes through `cached()` and
 gets a reference-stability test in `test/session-store.test.ts`.
 
+`cached()` is bounded: **one entry per selector key**, whatever the
+arguments. Arguments that vary at runtime -- the open-node set, the shown
+thread -- live in the entry's `variant`, not in the key, so switching
+threads all day replaces one entry instead of leaving one behind per
+switch; a variant miss recomputes and still hands back the previous array
+when it holds the same rows, so a switch between two threads of one node
+costs no remount. The one key that carries an argument is
+`nodeThreads:<node>`, which the per-node map and the mount set read side by
+side. An empty open-node set answers with the shared empty value and takes
+no entry at all. `selectorCacheSize(store)` exists for the tests that hold
+this bound.
+
 ## What `App.tsx` still owns
 
 - **One `SessionsClient` for the app's lifetime.** `useState(() =>
@@ -271,12 +332,18 @@ gets a reference-stability test in `test/session-store.test.ts`.
   transport opened there has no cleanup, so the discarded client keeps a
   live socket delivering every frame twice.
 - **The store itself**, created once next to the client and bound to it
-  with `sessionsClient.onSessionState(store.applyFrame)` -- the only place
-  a frame is folded.
+  with `sessionsClient.onSessionStates(store.applyFrames)` -- the only
+  place a frame is folded. A batch is one store write: the snapshot on
+  connect arrives as one `session_states` frame and is folded in one
+  notification, never session by session (every store write re-renders
+  the app synchronously; one write per session made React throw #185
+  after 50).
 - **Selection**, not facts: `openNodeIds` and
   `requestedChatSessionByNode`. `openSessionChat(nodeId, sessionId?)`
   records the requested id and opens the node; `selectShownThread` picks
-  the thread (requested id first, else the newest live one).
+  the thread (requested id first, else the newest row of the first
+  non-empty bucket `selectNodeThreads` orders). `closeNode` drops the
+  closed node's records from the store, keeping the shown thread's.
 - **`refreshNodeSessions(nodeId)`**, coalesced per node: a request while
   one is in flight sets a trailing flag instead of racing a second fetch.
   It runs whenever `openNodeIds` changes and on every `session_state` frame
@@ -287,7 +354,7 @@ gets a reference-stability test in `test/session-store.test.ts`.
   lands on the node surface as `workspaceDetailError`.
 - **`registerSessionStarted`**, the single entry point for every
   `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's
-  `DetailPane`, the sidebar `+`, the Relace tab's "Navázat"):
+  `DetailPane`, the sidebar `+`, the Relace tab's "Navázat na handoff"):
   `store.put(session)` plus `requestChatSession`. Requesting it is what
   makes it stick -- the pick re-runs the moment the new record lands, so
   without the requested id a node that already had a thread open snapped
@@ -320,33 +387,59 @@ One typed client, two transports behind one `Transport` interface:
 Client rules:
 
 - Every request frame carries an id the server echoes; the caller awaits
-  the reply, and an unanswered request rejects on `REQUEST_TIMEOUT_MS`.
-  `disconnect()` rejects every pending request at once.
+  the reply. A request is delivered once, or reported as failed and never
+  sent afterwards (#496):
+  - an unanswered request rejects on `REQUEST_TIMEOUT_MS` (30 s) and its
+    frame is cancelled out of the transport's queue (`Transport.cancel`,
+    in Tauri `sessions_cancel` on the Rust outbox), so a message that
+    waited out a reconnect never reaches the agent after the chat showed
+    the error, and sending it again delivers it once;
+  - a `message` or `continue` on the wire (sent on an open connection, or
+    flushed by the open that followed) has no timeout: the server may take
+    longer than 30 s (a start waiting for the lifecycle lock, a
+    redelivery waiting for a run to end), and reporting it failed while it
+    is still delivered is what made a resend reach the agent twice. Its
+    reply or a drop settles it;
+  - when an open connection drops, every request already sent rejects at
+    once (`disconnected: ...`), since its reply cannot come on the next
+    connection; a request sent while the connection is down stays queued
+    until the next open or its timeout. A request that was on the wire at
+    the drop may or may not have reached the server; it is never resent;
+  - a subscribe never goes out while the connection is down, has no
+    timeout while it waits for it and survives a drop: each open sends one
+    subscribe per wanted session and settles every caller waiting on it,
+    so a first load that completes after a reconnect shows no load error;
+  - `disconnect()` rejects everything still outstanding.
 - The client tracks the highest `seq` seen **per session** from `event`
   frames only. `delta` frames carry no `seq` and are never persisted, so
   they never move it.
-- When the transport reports `open` after having been open before, the
-  client resubscribes every still-wanted session with `after: <last seq>`.
+- Every time the transport reports `open`, the client subscribes every
+  still-wanted session once, after a drop with `after: <last seq>`.
   The server's replay fills exactly that gap: nothing lost, nothing
   re-delivered.
-- `session_state` frames go to one global listener set (`onSessionState`,
-  `Set`-backed so several listeners coexist); the server fans them to every
+- `session_state` frames and the one `session_states` snapshot frame on
+  connect go to one global listener set (`onSessionStates`, `Set`-backed so
+  several listeners coexist), always as a batch: the snapshot is one call,
+  a later change a call with one entry. The server fans them to every
   connection that can see the session, subscription or not.
 - Surface: `subscribe` / `unsubscribe` / `message` / `answer` / `interrupt`
-  / `continueSession` / `close`, plus `onEvent` / `onDelta` /
-  `onSessionState` / `onConnectionStatus`.
+  / `continueSession` / `close`, plus `onEvents` / `onDelta` /
+  `onSessionStates` / `onConnectionStatus`.
 
 `test/sessions-client.test.ts` drives the direct transport against a fake
 `ws` server (reply correlation, ordering, resubscribe-with-`after` across a
-forced drop, deltas not moving the seq). The Tauri transport has no runtime
+forced drop, deltas not moving the seq), and over an in-memory socket with
+mocked timers the #496 rules (timeout during an outage, drop in flight,
+subscribe across a long outage, a message on the wire past the timeout). The Tauri transport has no runtime
 to test against here.
 
 ## Event rendering
 
 `SessionChat` gets the whole log over the socket: `subscribe(id, 0)` makes
 the server replay the persisted events and then stream. There is no REST
-backfill. Events are inserted by `seq` (`insertBySeq`), which also
-deduplicates a replay against a frame that raced it.
+backfill. `onEvents` hands over a batch (a replay page, or one live
+event) and the chat merges it by `seq` in one pass (`insertManyBySeq`),
+which also deduplicates a replay against a frame that raced it.
 
 - `lib/session-chat.ts` mirrors the server's `CanonicalEvent` union by hand.
   `domain/runner/types.ts` is server-only on purpose, the same boundary
@@ -359,15 +452,18 @@ deduplicates a replay against a frame that raced it.
   `prompt` and `answer` render at full weight (`Message`); every
   `reasoning`, `tool_call` and `file_change` between two answers of one run
   folds into one `activity` row; `question`, `compaction` (`Checkpoint`),
-  `handoff` ("Shrnutí uloženo") and `error` keep a small marker; a
+  `handoff` ("Summary saved") and `error` keep a small marker; a
   `run_ended` is nothing for `completed` and `suspended` (the ordinary
-  ends), a neutral "Přerušeno" note for `interrupted`, and an error row in
-  the danger colour for `error`, `limit` and `host_lost`; `run_started`,
+  ends), a neutral `interrupted` row for `interrupted`, and a `run_ended`
+  row (`runEndedText(reason, t)`, one message per reason) in the danger
+  colour for `error`, `limit` and `host_lost`. Rows carry codes, never
+  text; `run_started`,
   `state_changed` and `context_usage` render nothing. `collapseToolCalls` runs inside, so a
   `started` and its `completed`/`failed` are one item.
 - **The activity group** (`ActivityGroupRow`) is a `ChainOfThought` whose
-  header is `activitySummary(items)`: a sentence from verb counts
-  ("Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval 12 s"; the
+  header is `activitySummary(items, t)`: a list of counts, each a plural
+  key of `chat` `activity.*` ("Read 3 files · edited 1 · 2 commands ·
+  thought for 12 s"; the
   seconds are `reasoningSeconds(items)`, the reasoning blocks' `duration_ms`
   added up and rounded, at least 1 s when there is any), a single call's own
   title, the danger colour with the failed count when a call failed. The
@@ -375,26 +471,33 @@ deduplicates a replay against a frame that raced it.
   as "N × <tool>". Expanded, one `ChainOfThoughtStep` per item with the
   `Tool` card inside; a historical group expands by hand, per mount; the
   live run's trailing group (`live: true`) stays open on the tool that is
-  running.
+  running. `live` needs a turn in flight (`turnInFlight`), not just the
+  live run: after `turn_ended` (a Stop mid-tool or mid-reasoning
+  included) the run is idle and no group looks live.
 - **The working row** (`WorkingRow`, `workingPhase`): while a turn is in
-  flight (`turnInFlight`: a `user_message` on the live run with no
-  `turn_ended` after it; the run start alone opens no turn, so a thread
-  started by Navázat or a resume waits idle for its first message) or a
-  send is in flight (`sentAt`), and
+  flight (`turnInFlight`: the live run's `user_message`s, counted from its
+  `run_started` plus the `carried_messages` that event names, outnumber
+  what its `turn_ended`s answered (`consumed_messages`); the run start
+  alone opens no turn, so a thread started by Navázat or a resume waits
+  idle for its first message) or a send is in flight (`sentAt`), and
   neither streaming text nor a running tool is on screen, a `Loader` with
-  "Spouštím…" (until `run_started`), "Přemýšlím…" (until the first delta
-  or tool) or "Pokračuji…" (after a tool finished) and a seconds counter.
+  `workingLabel(phase, t)`: "Starting…" (until `run_started`), "Thinking…"
+  (until the first delta or tool) or "Continuing…" (after a tool finished)
+  and a seconds counter.
   Rule 2 of the v2 spec: a turn in flight with an empty transcript end is
   a bug. Between turns nothing shows: the run is alive only to take the
   next message, and the composer's stop button and Escape apply to a turn
   in flight only (`turnActive`), never to the idle run.
 - **Deltas**: two `DeltaBuffers` keyed by `run_id`, one for `channel:
   "text"`, one for `channel: "reasoning"`. Each is cleared by its own
-  persisted event (`assistant_message` / `reasoning`) and on `run_ended`.
-  The persisted event is the record; the delta is only its live preview.
-  Frames are coalesced first (`createDeltaCoalescer`): buffered per
-  (run, channel) and flushed once per `requestAnimationFrame`, so a burst
-  costs one render; `run_ended` flushes, unmount clears. The desktop
+  persisted event (`assistant_message` / `reasoning`) and both on
+  `turn_ended` and `run_ended` (`deltaBuffersAfter`): text streamed and
+  never finalized (a Stop mid-answer) ends with its turn and never
+  prefixes the next answer. The persisted event is the record; the delta
+  is only its live preview. Frames are coalesced first
+  (`createDeltaCoalescer`): buffered per (run, channel) and flushed once
+  per `requestAnimationFrame`, so a burst costs one render; `run_ended`
+  flushes, `turn_ended` drops the run's pending frames, unmount clears. The desktop
   bridge forwards frames unchanged.
 - **AI Elements** supply the transcript chrome under
   `src/components/ai-elements/` (`conversation`, `message`, `reasoning`,
@@ -429,8 +532,15 @@ deduplicates a replay against a frame that raced it.
   swapping the plugin.
 - Reasoning uses the kit's `Reasoning` with `isStreaming`; a historical
   block passes its `duration_ms` as the kit's `duration` (seconds). The
-  trigger text is Czech (`reasoningTriggerMessage`: "Přemýšlím…" /
-  "Uvažoval N s" / "Uvažoval několik sekund" without a duration).
+  kit's default trigger text comes from `chat` `reasoning.*` ("Thinking…" /
+  "Thought for N s" / "Thought for a few seconds" without a duration).
+- **Kit texts are the catalog's.** Every default text of the copied AI
+  Elements (empty state, tool status badge and headings, submit/stop,
+  branch buttons, loader title, context usage rows) reads `chat`, and
+  every Streamdown gets `translations` from `useStreamdownTranslations`
+  (`lib/streamdown-translations.ts`, `chat` `streamdown.*`). The agent's
+  output (answers, reasoning, tool input and output, its question
+  options) carries `translate="no"`.
 - `react-markdown` / `remark-gfm` stay for `MarkdownPreview` (file
   preview), unrelated to the chat.
 - Bundle rule: the whole kit (radix, shiki, motion, streamdown) must stay
@@ -440,36 +550,60 @@ deduplicates a replay against a frame that raced it.
 ## Thread actions
 
 - **New thread**: `NewTaskButton` (`DetailPane.files.tsx`) and the sidebar
-  `+` call `startDraftThread(nodeId)` (`POST /sessions` with no `brief`),
+  `+` call `startDraftThread(nodeId)` (`POST /sessions` with the node id and nothing else),
   which returns a draft. One click, no dialog, no required field. The
   draft's composer has focus; its first message is what starts a run.
 - **First message** names the thread server-side from its first line;
   `lib/session-chat.ts`'s `threadNameFromFirstMessage` is the web's copy of
-  the same function for optimistic display. Renaming a local draft is
-  in-memory only (`workspaceRenameTask`); anything else is `PATCH
-  /sessions/:id`.
+  the same function for optimistic display. A rename always goes to the
+  server (`workspaceRenameTask` in the sidebar, `saveRename` in the chat
+  header, both `POST /sessions/:id/rename`), a draft included: since #463
+  the node's session list carries the caller's drafts, so an in-memory
+  rename would be undone by the next refetch. The sidebar's rename writes
+  the new name optimistically and puts the previous record back when the
+  call is refused, with the reason on the node surface
+  (`workspaceDetailError`).
 - **Composer text** belongs to the session, not the component:
   `lib/session-drafts.ts`'s `sessionDrafts` keeps it per session id, in
   memory, for the life of the window.
 - **Stop**: while a run is live the composer's `PromptInputSubmit` is the
   stop control (`status="streaming"`, `onStop` → `interrupt`), and Esc in
   the textarea does the same. Both are no-ops when nothing is live.
-- **Composer state**: disabled when the thread is closed or archived,
-  while a question is open (`isWaiting`), or for a non-owner. A suspended
-  thread keeps the composer enabled, because sending is what resumes it,
+- **Composer state**: disabled when the thread is archived
+  (`threadAcceptsMessages`), while a question is open (`isWaiting`), or
+  when the transcript is on another device. A suspended or closed thread
+  keeps the composer enabled (#498), because sending is what resumes it;
+  the placeholder is `composerStatePlaceholder` ("Relace je uzavřená." only
+  for archived). A suspended thread
   and shows a dismissible notice bar instead (`noticeDismissed`, reset
   whenever a new run starts).
 - **Question**: the latest `question` event renders as
   `QuestionConfirmation` above the composer while `isWaiting`; answers go
-  through `sessionsClient.answer`.
-- **Close**: "Uzavřít" always asks first through a real `Dialog`
-  (`closeConfirmOpen` in `SessionChat`, `closeTaskConfirm` in `App.tsx` for
-  the sidebar `×`, `closeConfirm` in the Relace tab). `window.confirm` is a
-  no-op in the Tauri webview; never use it. A draft's `×` deletes outright
-  and is forgotten locally.
-- **Continue**: "Pokračovat v nové session" (open thread) and "Navázat"
-  (closed row) both call `continueSession`; the caller switches to the
-  returned session.
+  through `sessionsClient.answer`. `approvalChoices(options, t)`: the
+  default pair's labels are `chat` `approval.yes`/`no`, its values stay
+  `true`/`false`; the agent's own options are shown and sent unchanged,
+  and no React `key` carries translated text.
+- **Close**: every surface that closes a thread -- the sidebar's `×` in
+  Uzly (`TaskRow`) and in Stav (`TaskList`), Uzavřít in the chat header
+  (`SessionChat`) and on the Relace row (`DetailPane.sessions.tsx`) -- asks
+  `lib/session-views.ts`'s `threadCloseAction(state)` what it does (#506):
+  `delete` for a draft, `close` for running and suspended, nothing (no
+  control) for closed and archived. `close` is Uzavřít with no dialog
+  (#498): a closed thread reopens by writing into it, so only an unfinished
+  turn can be lost, the same as with Stop. `delete`
+  has one implementation, `api.ts`'s `deleteDraftSession`: no dialog, the
+  record leaves the store at once (so the row leaves every selector and a
+  chat showing the draft closes), then `DELETE /sessions/:id`. The Relace
+  tab also drops the row from its own fetched list.
+- **Continue**: "Pokračovat v nové session" (running or suspended thread)
+  calls `continueSession`; the caller switches to the returned session.
+- **A closed thread** (#498) is not in the Práce sidebar
+  (`isChatSessionState`), but Relace's Otevřít chat shows it: `App.tsx`
+  records it in `openedClosedChatByNode` when the record is closed at the
+  click, and `selectShownThread`/`selectMountedThreads` show a closed
+  thread only when it is that one. Writing into it reopens it; once it is
+  live the entry is dropped, so a later Uzavřít takes it off the surface
+  the way closing any thread does.
 
 ## The composer's rows
 
@@ -499,20 +633,139 @@ calls `patchSessionRunnerInstance` (`PATCH /sessions/:id`, central in a
 team workspace; 409 `SESSION_NOT_DRAFT` once promoted). The host is
 `hostDisplayName(session)`, a label, hidden when unknown.
 
-## Access echo
+## No access echo
 
-`sessionRowAccess(ownerId, meId, canManage)` (`lib/session-views.ts`)
-mirrors the server's access table: `canResume` (message, answer, continue,
-picker) is owner-only; `canPauseOrClose` is owner or manage scope. It only
-decides which controls to offer, so a button that would always 403 is not
-shown. The server remains the gate; a refused action surfaces its own
-error. `meId` comes from `useMe()` (`fetchMe()` returns `id` and
-`global_scope`).
+There is none, since #457: a thread is its owner's, so every thread the app
+can list is the caller's own and the state alone decides which control is
+offered. `sessionRowAccess` and the `canManage`/`meId` props that fed it are
+gone from `lib/session-views.ts`, `SessionChat`, `DetailPane.sessions` and
+`OverviewView`; `sortInboxSessions(running, suspended)` and
+`overviewCounters(running, suspended, attention, unsynced)` take no identity
+either, because `GET /overview` already filtered by owner. `useMe()` is left
+for the node sharing UI. The server remains the gate; a refused action
+surfaces its own error.
 
 Two chip wordings exist on purpose: `sessionRowChip` (compact rows:
 Hotovo / Archiv) and `sessionStatusChip` (chat header: Uzavřeno /
 Archivováno). "Čeká na mě" overrides "Běží" in both whenever
 `waiting_since` is set.
+
+## Language: boot and namespaces
+
+The UI's text comes from one catalog shared with the server,
+`apps/server/shared/i18n/` (spec:
+`docs/superpowers/specs/2026-09-25-localization-design.md`). The terms a
+message may use are fixed in its `glossary.md`; translator notes are in
+`locales/_notes.json`.
+
+- **One instance, one config.** `createI18n()` (`shared/i18n/create.ts`)
+  builds every instance. The web's (`apps/web/src/i18n.ts`) bundles
+  English `common` into the main chunk and loads every other language and
+  namespace through `i18next-resources-to-backend` over an
+  `import.meta.glob` of `locales/*/*.json` (one small chunk per file;
+  `server` and `desktop` are excluded). `react.useSuspense` is off and
+  `bindI18nStore: "added"` re-renders when a bundle arrives. The server's
+  instance (`shared/i18n/server.ts`) bundles everything, inits
+  synchronously, escapes values and is only ever read through
+  `getFixedT(locale, ns)`; it never changes language, so concurrent
+  requests in different languages cannot leak into each other.
+- **Boot.** `main.tsx` awaits `bootI18n()` before `createRoot`: the
+  language is this window's cache `portuni:<ws_id>:locale`, else the first
+  supported primary subtag of `navigator.languages`, else `en`
+  (`lib/locale.ts`, `resolveBootLocale`); `common` and `errors` of that
+  language (and of English, the fallback) are loaded and
+  `<html lang>` is set before anything renders. A failed catalog load
+  still renders, falling back to the bundled English `common`.
+- **The account's language (#538).** `users.locale` (`"en" | "cs" |
+  NULL`) is the source of truth. After `/me` answers, `syncAccountLocale`
+  (`i18n.ts`, decision in `lib/locale.ts` `accountLocaleSwitch`) writes the
+  window cache and calls `changeLanguage` when the account's value differs;
+  `NULL` keeps the resolved language and is never written back. Settings ›
+  Účet has the picker: `PATCH /me` with `{ locale }`, then `applyUiLocale`
+  (cache, `changeLanguage`, `<html lang>`); the dev-only pseudo-locale
+  applies to the window alone and is never sent. Session requests that
+  cause text for a person (`POST /sessions`, the `message` and `continue`
+  frames, Předat) carry `locale: requestLocale()` -- the UI language, or
+  `en` under pseudo.
+- **Namespaces follow the lazy chunks.** A lazy component that needs its
+  own namespace is created with `lazyWithNamespaces(() => import("./X"),
+  ["x"])`, which loads the chunk and the namespace together
+  (`GraphView` → `graph`, `SessionChat` → `chat` -- the AI Elements kit
+  lives only in that chunk, so its texts load with it -- `DetailPane` → `node`
+  and `files`, in both `App.tsx` and `WorkspaceView.tsx`; `SyncOverview`
+  in `App.tsx` and Settings › Sync (`SyncSection`) → `files`;
+  `SettingsPage` → `settings`, and `DetailPane` loads `settings` too, since
+  its access request control and list come from `AccessRequests.tsx`,
+  which reads `settings`). A `Record` of
+  selectors at module level passes `{ ns: "<namespace>" }` on each call:
+  the extractor cannot infer the namespace from a `t` parameter.
+- **Refusals are codes.** The Files tab's plan, drag and folder-action
+  helpers (`lib/file-plan.ts`, `lib/file-drag.ts`, `lib/new-file-menu.ts`)
+  return a `PlanReason` (`{ code, name? }`), never text;
+  `planReasonText(reason, t)` renders it from `files` `plan_reason.*`.
+  A folder's sync dot carries a `FolderSyncState` (`folderSyncTitle`), the
+  sync-run line and the remote watcher line take `t` (`summarizeSyncRun`,
+  `remoteWatchLine`), and a watcher's `last_error` is a placeholder value.
+- **Shared labels and enums.** A label shown on several surfaces lives
+  in the catalog once: the POPP node types in `common` `node_type.*`
+  through `lib/node-type-labels.ts` (`nodeTypeLabel(type, t)`), the
+  thread states in `common` `thread.state.*` through
+  `lib/session-views.ts`. An enum reaches its keys through a complete
+  `Record<Enum, (t) => string>` of literal selectors, never a key built
+  from the value. A pure helper in `lib/` that returns text takes `t` as a
+  parameter, so the server's `node:test` runner tests it with the English
+  catalog. Counts are plural keys; no hand-written Czech plural remains.
+- **Typed keys.** Call sites use the selector form
+  `t(($) => $.composer.send)`. `shared/i18n/types/resources.d.ts` is
+  generated from the English catalog by `npm run i18n:types`;
+  `types/i18next.d.ts` sets `enableSelector: "optimize"` and is included
+  by both the root and the web `tsconfig.json`.
+- **Pseudo-locale.** A dev build accepts `pseudo` in the window cache: the
+  English catalog through a postProcessor that wraps each message in
+  `⟦…⟧`, adds diacritics and pads it by 35 %, leaving `{{placeholders}}`
+  and `<Trans>` tags intact.
+- **Catalog HMR.** Vite answers an edited JSON module with a full page
+  reload. The `portuni-i18n-hmr` plugin (`vite.config.ts`) sends the new
+  file on a `portuni:i18n-update` event instead, and `i18n.ts` swaps the
+  bundle in place.
+- **Gate.** `npm run i18n:check` (`scripts/i18n-check.sh`, in
+  `scripts/agent-gate.sh` and `ci.yml`) fails on stale key types, a
+  missing or empty Czech value (plural forms included), an unused key,
+  source keys that differ from the English catalog (`extract --ci
+  --dry-run`), a hardcoded string in JSX text or a `title`/`placeholder`/
+  `aria-label`/`alt`/`label` attribute on any element or component
+  (`lint`, `acceptedTags: "all"`) or a concatenated translation, and Czech diacritics in `apps/web/src`, `apps/desktop/src` or
+  `apps/server` outside comments, `locales/`, the glossary, the generated
+  key types and the pseudo-locale's accent map
+  (`scripts/check-ui-text.mjs`). `test/i18n-catalog.test.ts` checks that placeholders and
+  tags match between `en` and `cs` and that every Czech plural renders its
+  own form for 1, 2, 5 and 1.5.
+- **Formatting.** A date, time, number, token count or sort order that
+  stands alone (a table cell, a chip, the date picker) goes through
+  `lib/format.ts` (`formatDate`, `formatDateTime`, `formatRelative`,
+  `formatNumber`, `formatTokens`, `compareText`, `weekInfo`, plus the
+  date picker's `formatMonthYear` and `weekdayNames`) with the UI
+  language from `useLocale()` (`lib/use-locale.ts`); each caches its
+  `Intl` instance per locale and options. A server timestamp
+  (`YYYY-MM-DD HH:MM:SS`, UTC) is parsed by `parseServerTimestamp` and
+  nowhere else. No component formats with a hardcoded `"cs-CZ"` or sorts
+  with `localeCompare(..., "cs")`. The date picker's first weekday comes
+  from `Intl.Locale#getWeekInfo`, falling back to Monday for `cs` and
+  Sunday for `en`.
+- **Errors.** A caught error is shown through `displayError(e)`
+  (`src/errors.ts`), never `String(e)` or `e.message`: the server's
+  `{ error, code, params? }` becomes an `ApiError` (`parseApiError`, used by
+  `throwForStatus`, `lib/central.ts` and the live channel's error frames),
+  and `errorText` (`lib/api-error.ts`, pure, takes `t`) renders
+  `errors:<code>` through a complete `Record` over the server's
+  `ERROR_CODES` plus the web's own (`SYNC_AGENT_DOWN`, `REQUEST_TIMEOUT`,
+  `DISCONNECTED`). A code this build does not know shows `errors:UNKNOWN`
+  with the request id; an error with no code (a network failure, a Tauri
+  command's string) `errors:UNKNOWN_DETAIL` with its raw text.
+- **One copy of i18next.** It is installed in the root `node_modules`
+  only; `apps/web/.npmrc` (`legacy-peer-deps`) keeps npm from adding a
+  second one for `react-i18next`'s peer, so the root is installed before
+  `apps/web`.
 
 ## Helpers and tests
 
@@ -521,9 +774,9 @@ buffers and the coalescer, `collapseToolCalls`, `deriveTranscriptRows`,
 `activitySummary`, `workingPhase`,
 `threadNameFromFirstMessage`), `lib/session-views.ts` (row chip, access
 echo, live overlay, inbox ordering, `pickOpenChatSession`,
-`requestChatSession`, `mountedChatSessions`, `isThreadSession`,
-`nodeRowActive`), `lib/session-store.ts` and `lib/session-selectors.ts`
-(the store and its selectors), `lib/workspace-list.ts` (the node dot, the Stav
+`requestChatSession`, `isThreadSession`, `nodeRowActive`),
+`lib/session-store.ts` and `lib/session-selectors.ts` (the store and its
+selectors), `lib/workspace-list.ts` (the node dot, the Stav
 grouping), `lib/runner-picker.ts` (composer row 2) and
 `lib/context-ring.ts` (the ring). All are dependency-free and run under
 the server's `node:test` runner (`test/session-chat-helpers.test.ts`,

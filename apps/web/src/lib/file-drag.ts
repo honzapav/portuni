@@ -15,16 +15,17 @@ import {
   type FilePlan,
   type MoveTarget,
   type PlanFile,
+  type PlanReason,
 } from "./file-plan";
 
-// Reasons a row cannot be dragged, shown as the row's title (spec, Errors).
-export const NO_MIRROR_REASON = "Nejdřív vytvoř mirror uzlu";
-export const UNTRACKED_REASON = "Soubor ještě není zaregistrovaný";
-export const OUTSIDE_SECTIONS_REASON =
-  "Přesouvat lze jen soubory ve složkách wip, outputs a resources";
-export const NOT_A_FOLDER_REASON = "Tuhle složku přesunout nelze";
+// Reasons a row cannot be dragged, shown as the row's title (spec, Errors)
+// through planReasonText.
+export const NO_MIRROR_REASON: PlanReason = { code: "no_mirror" };
+export const UNTRACKED_REASON: PlanReason = { code: "untracked" };
+export const OUTSIDE_SECTIONS_REASON: PlanReason = { code: "drag_outside_sections" };
+export const NOT_A_FOLDER_REASON: PlanReason = { code: "not_a_folder" };
 
-export type DragCheck = { draggable: boolean; reason: string | null };
+export type DragCheck = { draggable: boolean; reason: PlanReason | null };
 
 // Rule 5 (only a registered file moves, and only within the three sections)
 // and rule 9 (no mirror on this device, no plan). `file` carries the path the
@@ -56,7 +57,7 @@ export function folderDragCheck(
   if (untracked) {
     return {
       draggable: false,
-      reason: `Ve složce je neregistrovaný soubor ${basenameOf(untracked.relative_path)}`,
+      reason: { code: "folder_has_untracked", name: basenameOf(untracked.relative_path) },
     };
   }
   return { draggable: true, reason: null };
@@ -71,7 +72,7 @@ export function dropTargetFolder(row: { path: string; isFile: boolean }): string
 
 // --- folder actions (#448) ------------------------------------------------
 
-export type ActionCheck = { enabled: boolean; reason: string | null };
+export type ActionCheck = { enabled: boolean; reason: PlanReason | null };
 
 // What the hover strip on a folder row offers: "Přejmenovat" and "Nová
 // podsložka". A section root is a group heading, not a folder -- it has no
@@ -121,7 +122,9 @@ export type ApplyOutcome = {
   // and everything after it on a failure (rule 7).
   plan: FilePlan;
   done: number;
-  failure: { fileId: string; message: string } | null;
+  // `error` is what the move threw; the component renders it (displayError),
+  // `message` is its raw text for logs and tests.
+  failure: { fileId: string; message: string; error: unknown } | null;
 };
 
 // "Použít": the existing move route once per planned file, in orderMoves
@@ -147,7 +150,7 @@ export async function applyMoves(
       await move(entry.fileId, entry.target);
       done += 1;
     } catch (e) {
-      failure = { fileId: entry.fileId, message: e instanceof Error ? e.message : String(e) };
+      failure = { fileId: entry.fileId, message: e instanceof Error ? e.message : String(e), error: e };
       remaining[entry.fileId] = entry.target;
     }
   }

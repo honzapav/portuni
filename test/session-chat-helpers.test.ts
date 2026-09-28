@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   toCanonicalEvent,
   sessionStatusChip,
-  insertBySeq,
+  insertManyBySeq,
   latestQuestionEvent,
+  approvalChoices,
   appendDelta,
   clearDeltaBuffer,
+  deltaBuffersAfter,
   collapseToolCalls,
   deriveTranscriptRows,
   activitySummary,
@@ -14,36 +16,60 @@ import {
   turnInFlight,
   runIsLiveFor,
   createDeltaCoalescer,
+  transcriptElsewhere,
+  runEndedText,
+  workingLabel,
   type ActivityItem,
   type ActivityRow,
   type ChatEvent,
+  askPrompts,
+  togglePick,
+  picksComplete,
+  askAnswer,
+  createAnswerGate,
 } from "../apps/web/src/lib/session-chat.js";
+import { createI18n } from "../apps/server/shared/i18n/create.js";
+import { RESOURCES } from "../apps/server/shared/i18n/resources.js";
+
+const { i18n } = createI18n({
+  lng: "en",
+  resources: { en: RESOURCES.en, cs: RESOURCES.cs },
+  escapeValue: false,
+  initAsync: false,
+});
+const tCommon = i18n.getFixedT("en", "common");
+const tChat = i18n.getFixedT("en", "chat");
+const tChatCs = i18n.getFixedT("cs", "chat");
 
 function ev(seq: number, kind: string, payload: unknown): ChatEvent {
   return { seq, event: toCanonicalEvent(kind, payload) };
 }
 
 describe("sessionStatusChip", () => {
-  it("running with no open question is 'Běží', pulsing", () => {
-    const chip = sessionStatusChip("running", null);
-    assert.equal(chip.label, "Běží");
+  it("running with no open question is 'Running', pulsing", () => {
+    const chip = sessionStatusChip("running", null, tCommon);
+    assert.equal(chip.label, "Running");
     assert.equal(chip.pulsing, true);
   });
 
-  it("running WITH waiting_since is 'Čeká na mě', overriding the plain running label", () => {
-    const chip = sessionStatusChip("running", "2026-09-13 10:00:00");
-    assert.equal(chip.label, "Čeká na mě");
+  it("running WITH waiting_since is 'Waiting on me', overriding the plain running label", () => {
+    const chip = sessionStatusChip("running", "2026-09-13 10:00:00", tCommon);
+    assert.equal(chip.label, "Waiting on me");
   });
 
-  it("suspended is never 'Čeká na mě' even if waiting_since is stale/set", () => {
-    const chip = sessionStatusChip("suspended", "2026-09-13 10:00:00");
-    assert.equal(chip.label, "Pozastaveno");
+  it("suspended is never 'Waiting on me' even if waiting_since is stale/set", () => {
+    const chip = sessionStatusChip("suspended", "2026-09-13 10:00:00", tCommon);
+    assert.equal(chip.label, "Suspended");
     assert.equal(chip.pulsing, false);
   });
 
+  it("the header wording differs from the row wording for a closed thread", () => {
+    assert.equal(sessionStatusChip("closed", null, tCommon).label, "Closed");
+  });
+
   it("closed and archived are not pulsing", () => {
-    assert.equal(sessionStatusChip("closed", null).pulsing, false);
-    assert.equal(sessionStatusChip("archived", null).pulsing, false);
+    assert.equal(sessionStatusChip("closed", null, tCommon).pulsing, false);
+    assert.equal(sessionStatusChip("archived", null, tCommon).pulsing, false);
   });
 });
 
@@ -65,6 +91,37 @@ describe("latestQuestionEvent", () => {
   });
 });
 
+describe("approvalChoices", () => {
+  it("the default Yes/No pair answers with booleans, so No is a refusal, not a text answer", () => {
+    assert.deepEqual(approvalChoices(null, tChat), [
+      { key: "yes", label: "Yes", value: true, content: false },
+      { key: "no", label: "No", value: false, content: false },
+    ]);
+  });
+
+  it("the default pair's labels follow the UI language; the values sent to the runner do not", () => {
+    const en = approvalChoices(null, tChat);
+    const cs = approvalChoices(null, tChatCs);
+    assert.deepEqual(
+      cs.map((c) => c.label),
+      ["Ano", "Ne"],
+    );
+    assert.deepEqual(
+      cs.map((c) => [c.key, c.value]),
+      en.map((c) => [c.key, c.value]),
+    );
+  });
+
+  it("explicit options are the agent's content: never translated, sent back exactly, keyed without their text", () => {
+    for (const t of [tChat, tChatCs]) {
+      assert.deepEqual(approvalChoices(["Once", "Always"], t), [
+        { key: "option-0", label: "Once", value: "Once", content: true },
+        { key: "option-1", label: "Always", value: "Always", content: true },
+      ]);
+    }
+  });
+});
+
 describe("delta buffers", () => {
   it("appendDelta accumulates text per run_id without touching other runs", () => {
     let buffers = appendDelta({}, "R1", "Hello");
@@ -79,6 +136,32 @@ describe("delta buffers", () => {
     const cleared = clearDeltaBuffer(buffers, "R1");
     assert.equal("R1" in cleared, false);
     assert.equal(cleared.R2, "other");
+  });
+
+  // #495: a Stop mid-answer ends the turn with text streamed and never
+  // finalized; the next turn's answer starts from an empty buffer.
+  it("turn_ended clears the run's buffers on both channels, so the next turn's delta starts clean", () => {
+    const turnEnded = toCanonicalEvent("turn_ended", { run_id: "R1" });
+    let text = appendDelta({}, "R1", "rozepsaná odpověď");
+    let reasoning = appendDelta({}, "R1", "rozepsaná úvaha");
+    text = deltaBuffersAfter(text, "text", turnEnded, "R1");
+    reasoning = deltaBuffersAfter(reasoning, "reasoning", turnEnded, "R1");
+    assert.deepEqual(text, {});
+    assert.deepEqual(reasoning, {});
+    text = appendDelta(text, "R1", "nová odpověď");
+    assert.deepEqual(text, { R1: "nová odpověď" });
+  });
+
+  it("deltaBuffersAfter clears on the finalized block of its own channel and on run_ended, nothing else", () => {
+    const buffers = { R1: "x", R2: "y" };
+    assert.deepEqual(deltaBuffersAfter(buffers, "text", toCanonicalEvent("assistant_message", { text: "x" }), "R1"), { R2: "y" });
+    assert.equal(deltaBuffersAfter(buffers, "reasoning", toCanonicalEvent("assistant_message", { text: "x" }), "R1"), buffers);
+    assert.deepEqual(deltaBuffersAfter(buffers, "reasoning", toCanonicalEvent("reasoning", { summary: "s" }), "R1"), { R2: "y" });
+    assert.deepEqual(
+      deltaBuffersAfter(buffers, "text", toCanonicalEvent("run_ended", { run_id: "R2", reason: "completed", usage: null }), null),
+      { R1: "x" },
+    );
+    assert.equal(deltaBuffersAfter(buffers, "text", toCanonicalEvent("user_message", { text: "hi", source: "chat" }), "R1"), buffers);
   });
 
   it("clearDeltaBuffer is a no-op (same reference-safe shape) for an unknown run_id", () => {
@@ -125,14 +208,24 @@ describe("collapseToolCalls", () => {
   });
 });
 
-describe("insertBySeq", () => {
+describe("insertManyBySeq", () => {
   const ev = (seq: number) => ({ seq, event: { kind: "run_started", payload: { run_id: `r${seq}`, runner: "fake", instance_id: null, resume: null } } }) as ChatEvent;
   it("appends in order, ignores a duplicate seq, and slots a late-arriving lower seq into place", () => {
-    let list = insertBySeq([], ev(1));
-    list = insertBySeq(list, ev(3));
-    list = insertBySeq(list, ev(3));
-    list = insertBySeq(list, ev(2));
+    let list = insertManyBySeq([], [ev(1)]);
+    list = insertManyBySeq(list, [ev(3)]);
+    list = insertManyBySeq(list, [ev(3)]);
+    list = insertManyBySeq(list, [ev(2)]);
     assert.deepEqual(list.map((e) => e.seq), [1, 2, 3]);
+  });
+  it("merges a page in one pass, dropping seqs already present or repeated in the page", () => {
+    const before = insertManyBySeq([], [ev(1), ev(4)]);
+    const after = insertManyBySeq(before, [ev(2), ev(4), ev(3), ev(3), ev(5)]);
+    assert.deepEqual(after.map((e) => e.seq), [1, 2, 3, 4, 5]);
+  });
+  it("returns the same list when a page brings nothing new", () => {
+    const list = insertManyBySeq([], [ev(1), ev(2)]);
+    assert.equal(insertManyBySeq(list, [ev(2), ev(1)]), list);
+    assert.equal(insertManyBySeq(list, []), list);
   });
 });
 
@@ -187,7 +280,7 @@ describe("deriveTranscriptRows", () => {
 
   it("the trailing group of the live run is live; a non-completed run end is an error row", () => {
     const rows = deriveTranscriptRows(
-      [ev(1, "user_message", { text: "hi", source: "chat" }), runStarted(2), toolEv(3, "t1", "Read", "started")],
+      [runStarted(1), ev(2, "user_message", { text: "hi", source: "chat" }), toolEv(3, "t1", "Read", "started")],
       "R1",
     );
     assert.deepEqual(
@@ -202,9 +295,9 @@ describe("deriveTranscriptRows", () => {
     const ended = deriveTranscriptRows([runStarted(1), ev(2, "run_ended", { run_id: "R1", reason: "error", usage: null })], null);
     assert.deepEqual(
       ended.map((r) => r.kind),
-      ["error"],
+      ["run_ended"],
     );
-    assert.match((ended[0] as { message: string }).message, /chyba/);
+    assert.equal((ended[0] as { reason: string }).reason, "error");
     // The ordinary ends are not errors: suspended is every idle/natural end
     // in this runtime, so it yields no row; an interrupt is a neutral note.
     const suspended = deriveTranscriptRows([runStarted(1), ev(2, "run_ended", { run_id: "R1", reason: "suspended", usage: null })], null);
@@ -212,8 +305,31 @@ describe("deriveTranscriptRows", () => {
     const interrupted = deriveTranscriptRows([runStarted(1), ev(2, "run_ended", { run_id: "R1", reason: "interrupted", usage: null })], null);
     assert.deepEqual(
       interrupted.map((r) => r.kind),
-      ["note"],
+      ["interrupted"],
     );
+  });
+
+  // #495: after a Stop mid-tool the run stays open, waiting for the next
+  // message; nothing in it is working, so its trailing group is not live.
+  it("after turn_ended the live run's trailing group is not live", () => {
+    const events = [
+      runStarted(1),
+      ev(2, "user_message", { text: "hi", source: "chat" }),
+      toolEv(3, "t1", "Bash", "started"),
+      ev(4, "turn_ended", { run_id: "R1" }),
+    ];
+    const rows = deriveTranscriptRows(events, "R1");
+    assert.deepEqual(
+      rows.map((r) => r.kind),
+      ["prompt", "activity"],
+    );
+    assert.equal((rows[1] as ActivityRow).live, false);
+    // The next message opens a new turn: its trailing group is live again.
+    const next = deriveTranscriptRows(
+      [...events, ev(5, "user_message", { text: "dál", source: "chat" }), toolEv(6, "t2", "Read", "started")],
+      "R1",
+    );
+    assert.equal((next[next.length - 1] as ActivityRow).live, true);
   });
 
   it("question, compaction and handoff keep their markers", () => {
@@ -247,31 +363,61 @@ describe("activitySummary", () => {
       reasoning(100, 7_400),
       ...items([["Read", "completed"], ["Grep", "completed"], ["Glob", "completed"], ["Edit", "completed"], ["Bash", "completed"], ["Bash", "completed"]]),
       reasoning(101, 4_900),
-    ]);
-    assert.equal(r.text, "Přečteno 3 soubory · upraveno 1 · 2 příkazy · uvažoval 12 s");
+    ], tChat);
+    assert.equal(r.text, "Read 3 files · edited 1 · 2 commands · thought for 12 s");
     assert.equal(r.failed, 0);
   });
 
   it("a reasoning block without a duration adds no seconds; a sub-second one rounds up to 1 s", () => {
-    assert.equal(activitySummary([reasoning(1, null), ...items([["Read", "completed"], ["Read", "completed"]])]).text, "Přečteno 2 soubory");
-    assert.equal(activitySummary([reasoning(1, 300), ...items([["Bash", "completed"]])]).text, "1 příkaz · uvažoval 1 s");
+    assert.equal(activitySummary([reasoning(1, null), ...items([["Read", "completed"], ["Read", "completed"]])], tChat).text, "Read 2 files");
+    assert.equal(activitySummary([reasoning(1, 300), ...items([["Bash", "completed"]])], tChat).text, "1 command · thought for 1 s");
   });
 
   it("a single call shows its title; failures are counted", () => {
-    assert.equal(activitySummary(items([["Bash", "completed"]])).text, "Bash");
-    assert.equal(activitySummary(items([["Bash", "failed"]])).text, "Bash · selhal");
-    const r = activitySummary(items([["Bash", "failed"], ["Read", "completed"]]));
+    assert.equal(activitySummary(items([["Bash", "completed"]]), tChat).text, "Bash");
+    assert.equal(activitySummary(items([["Bash", "failed"]]), tChat).text, "Bash · failed");
+    const r = activitySummary(items([["Bash", "failed"], ["Read", "completed"]]), tChat);
     assert.equal(r.failed, 1);
-    assert.match(r.text, /1 selhal/);
+    assert.match(r.text, /1 failed/);
   });
 
   it("an unknown tool falls back to its own name; a reasoning-only group says so", () => {
     assert.equal(
-      activitySummary(items([["mcp__portuni__portuni_get_node", "completed"], ["mcp__portuni__portuni_get_node", "completed"]])).text,
+      activitySummary(items([["mcp__portuni__portuni_get_node", "completed"], ["mcp__portuni__portuni_get_node", "completed"]]), tChat).text,
       "2 × mcp__portuni__portuni_get_node",
     );
-    assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x", durationMs: null }]).text, "Uvažoval");
-    assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x", durationMs: 2_000 }]).text, "Uvažoval 2 s");
+    assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x", durationMs: null }], tChat).text, "Thought");
+    assert.equal(activitySummary([{ kind: "reasoning", seq: 1, summary: "x", durationMs: 2_000 }], tChat).text, "Thought for 2 s");
+  });
+
+  it("a fragment opening the sentence reads its sentence-initial message, the same fragment later the running one", () => {
+    assert.equal(activitySummary(items([["Edit", "completed"], ["Write", "completed"]]), tChat).text, "Edited 1 · created 1");
+    assert.equal(activitySummary(items([["Read", "completed"], ["Edit", "completed"]]), tChat).text, "Read 1 file · edited 1");
+    assert.equal(activitySummary(items([["Write", "completed"], ["Write", "completed"]]), tChat).text, "Created 2");
+  });
+
+  it("Czech takes every plural form of each count", () => {
+    const read = (n: number) => items(Array.from({ length: n }, () => ["Read", "completed"] as ["Read", "completed"]));
+    assert.equal(activitySummary(read(2), tChatCs).text, "Přečteno 2 soubory");
+    assert.equal(activitySummary(read(5), tChatCs).text, "Přečteno 5 souborů");
+    const bash = (n: number, status: "completed" | "failed") =>
+      items(Array.from({ length: n }, () => ["Bash", status] as ["Bash", "completed" | "failed"]));
+    assert.equal(activitySummary([...bash(2, "failed"), ...bash(3, "completed")], tChatCs).text, "5 příkazů · 2 selhaly");
+    assert.equal(activitySummary([reasoning(1, 300), ...bash(1, "completed")], tChatCs).text, "1 příkaz · uvažoval 1 s");
+  });
+});
+
+describe("runEndedText and workingLabel", () => {
+  it("every run end that yields a row has its own sentence; an unknown reason shows its code", () => {
+    assert.equal(runEndedText("error", tChat), "The run ended with an error.");
+    assert.equal(runEndedText("host_lost", tChatCs), "Běh skončil: proces osiřel");
+    assert.equal(runEndedText("something_new", tChat), "The run ended: something_new");
+  });
+
+  it("the working row's label per phase, in the UI language", () => {
+    assert.equal(workingLabel("starting", tChat), "Starting…");
+    assert.equal(workingLabel("thinking", tChatCs), "Přemýšlím…");
+    assert.equal(workingLabel("continuing", tChat), "Continuing…");
   });
 });
 
@@ -323,6 +469,34 @@ describe("createDeltaCoalescer", () => {
       [
         { run_id: "R1", channel: "text", text: "abcd" },
         { run_id: "R1", channel: "reasoning", text: "th" },
+      ],
+    ]);
+  });
+
+  it("drop discards one run+channel's pending frames, leaving the rest to deliver", () => {
+    // The finalized assistant_message/reasoning event carries the whole
+    // block: whatever of it is still buffered is a stale preview and must
+    // never land in a buffer the event just cleared.
+    let tick: (() => void) | null = null;
+    const delivered: unknown[] = [];
+    const c = createDeltaCoalescer(
+      (b) => delivered.push(b),
+      (cb) => {
+        tick = cb;
+        return () => {
+          tick = null;
+        };
+      },
+    );
+    c.push({ run_id: "R1", channel: "text", text: "?" });
+    c.push({ run_id: "R1", channel: "reasoning", text: "th" });
+    c.push({ run_id: "R2", channel: "text", text: "keep" });
+    c.drop("R1", "text");
+    (tick as unknown as () => void)();
+    assert.deepEqual(delivered, [
+      [
+        { run_id: "R1", channel: "reasoning", text: "th" },
+        { run_id: "R2", channel: "text", text: "keep" },
       ],
     ]);
   });
@@ -383,8 +557,144 @@ describe("turnInFlight", () => {
   it("no live run is never in flight", () => {
     assert.equal(turnInFlight([started, asked, said], null), false);
   });
+  // #489: a message the ending run r0 refused is logged before r1 starts
+  // and redelivered as r1's first message; r1's run_started says it carries
+  // one, so the chat shows the turn working (Stop, Esc, the working row).
+  it("a redelivered message counts from the run that carries it", () => {
+    const r0 = ev(1, { kind: "run_started", payload: { run_id: "r0", runner: "claude", instance_id: null, resume: null } });
+    const refused = ev(2, { kind: "user_message", payload: { text: "tak co teď?", source: "chat" } });
+    const r0End = ev(3, { kind: "run_ended", payload: { run_id: "r0", reason: "limit", usage: null } });
+    const r1 = ev(4, {
+      kind: "run_started",
+      payload: { run_id: "r1", runner: "claude", instance_id: null, resume: "conversation", carried_messages: 1 },
+    });
+    const r1Said = ev(5, { kind: "assistant_message", payload: { text: "hned" } });
+    const r1Ended = ev(6, { kind: "turn_ended", payload: { run_id: "r1" } });
+    assert.equal(turnInFlight([r0, refused, r0End, r1], "r1"), true);
+    assert.equal(workingPhase([r0, refused, r0End, r1], "r1", null), "thinking");
+    assert.equal(turnInFlight([r0, refused, r0End, r1, r1Said], "r1"), true);
+    assert.equal(turnInFlight([r0, refused, r0End, r1, r1Said, r1Ended], "r1"), false);
+  });
   it("workingPhase shows nothing once the turn ended", () => {
     assert.equal(workingPhase([started, said, ended], "r1", null), null);
     assert.equal(workingPhase([started, said, ended, asked], "r1", null), "thinking");
+  });
+
+  // #490: a message written while the agent works queues behind the turn in
+  // flight. The turn_ended that lands next ends the FIRST message's turn,
+  // not the second's -- the chat keeps showing work and the Stop button
+  // until every message sent has been answered.
+  it("a message queued mid-turn keeps the turn in flight past the first turn_ended", () => {
+    const second = ev(5, { kind: "user_message", payload: { text: "ještě", source: "chat" } });
+    const endedAgain = ev(6, { kind: "turn_ended", payload: { run_id: "r1" } });
+    assert.equal(turnInFlight([started, asked, second], "r1"), true);
+    assert.equal(turnInFlight([started, asked, second, ended], "r1"), true);
+    assert.equal(turnInFlight([started, asked, second, ended, endedAgain], "r1"), false);
+  });
+
+  it("the working row stays up while the queued message waits", () => {
+    const second = ev(5, { kind: "user_message", payload: { text: "ještě", source: "chat" } });
+    assert.equal(workingPhase([started, asked, second, ended], "r1", null), "thinking");
+  });
+
+  // One turn can answer both messages (the runner folds a send that lands
+  // mid-turn into the running turn): the turn_ended says how many it took.
+  it("a turn_ended that answered both messages ends the turn at once", () => {
+    const second = ev(5, { kind: "user_message", payload: { text: "ještě", source: "chat" } });
+    const endedBoth = ev(6, { kind: "turn_ended", payload: { run_id: "r1", consumed_messages: 2 } });
+    assert.equal(turnInFlight([started, asked, second, endedBoth], "r1"), false);
+  });
+
+  // Nothing before the live run's start belongs to it: a message answered
+  // by the previous run never keeps this one working.
+  it("counts only what happened after the live run started", () => {
+    const olderMessage = ev(0, { kind: "user_message", payload: { text: "staré", source: "chat" } });
+    assert.equal(turnInFlight([olderMessage, started], "r1"), false);
+    assert.equal(turnInFlight([olderMessage, started, asked], "r1"), true);
+  });
+});
+
+// #461: the conversation lives on the device that ran it, so a second
+// device holds the record and nothing else. `transcriptElsewhere` is what
+// the chat asks before it decides to show an empty transcript.
+describe("transcriptElsewhere", () => {
+  it("is nothing when the events route named no other host", () => {
+    assert.equal(transcriptElsewhere(null, 0, tChat), null);
+    assert.equal(transcriptElsewhere(null, 12, tChat), null);
+  });
+
+  it("names the machine holding the transcript when this one has none of it", () => {
+    const state = transcriptElsewhere("MacBook Pro", 0, tChat);
+    assert.ok(state);
+    assert.equal(state.host, "MacBook Pro");
+    assert.equal(state.title, "The transcript is on the device MacBook Pro");
+    assert.match(state.hint, /Hand off/);
+    assert.match(state.hint, /MacBook Pro/);
+  });
+
+  it("stands down as soon as the transcript is here after all", () => {
+    // A run that started writing on this device between the header call
+    // and the replay: the log wins, the notice goes.
+    assert.equal(transcriptElsewhere("MacBook Pro", 1, tChat), null);
+  });
+});
+
+describe("input questions (#492)", () => {
+  const env = { question: "Which environment?", options: ["staging", "production"], multi_select: false };
+  const dry = { question: "Dry run first?", options: ["yes", "no"], multi_select: false };
+  const base = { request_id: "q", type: "input" as const, tool: "AskUserQuestion", title: "t", decision: null };
+
+  it("askPrompts reads questions, and falls back to the flat detail/options of an older row", () => {
+    assert.deepEqual(askPrompts({ ...base, detail: "x", options: null, questions: [env, dry] }), [env, dry]);
+    assert.deepEqual(askPrompts({ ...base, detail: "Which environment?", options: ["staging", "production"] }), [env]);
+    assert.deepEqual(askPrompts({ ...base, detail: "Free text?", options: null }), []);
+  });
+
+  it("Enter in an empty field sends nothing", () => {
+    assert.equal(askAnswer([], {}, ""), null);
+    assert.equal(askAnswer([], {}, "   "), null);
+    assert.equal(askAnswer([env], {}, ""), null);
+    assert.equal(askAnswer([env, dry], {}, " "), null);
+    assert.equal(askAnswer([env], {}, " moje "), "moje");
+  });
+
+  it("one single-choice question answers on the click; several wait for every pick", () => {
+    const one = togglePick({}, env, "production");
+    assert.equal(picksComplete([env], one), true);
+    assert.equal(askAnswer([env], one, ""), "production");
+
+    const first = togglePick({}, env, "staging");
+    assert.equal(picksComplete([env, dry], first), false);
+    const both = togglePick(first, dry, "no");
+    assert.equal(picksComplete([env, dry], both), true);
+    assert.deepEqual(askAnswer([env, dry], both, ""), { "Which environment?": "staging", "Dry run first?": "no" });
+  });
+
+  it("typed text fills the questions left without a pick; a multi-select joins its picks", () => {
+    const multi = { question: "Which features?", options: ["a", "b", "c"], multi_select: true };
+    let picks = togglePick({}, multi, "a");
+    picks = togglePick(picks, multi, "c");
+    picks = togglePick(picks, multi, "a");
+    picks = togglePick(picks, multi, "b");
+    assert.equal(picksComplete([multi], picks), false, "a multi-select is finished with Odeslat");
+    assert.deepEqual(askAnswer([multi, dry], picks, "nevím"), { "Which features?": "c, b", "Dry run first?": "nevím" });
+  });
+
+  it("a single multi-select question keeps its picks when a note is typed too", () => {
+    const multi = { question: "Which features?", options: ["a", "b", "c"], multi_select: true };
+    let picks = togglePick({}, multi, "a");
+    picks = togglePick(picks, multi, "c");
+    assert.equal(askAnswer([multi], picks, "a ještě d"), "a, c, a ještě d");
+    assert.equal(askAnswer([multi], picks, ""), "a, c");
+    assert.equal(askAnswer([multi], {}, "jen text"), "jen text");
+  });
+
+  it("a second submit of the same question is dropped; a failed one can be retried", () => {
+    const gate = createAnswerGate();
+    assert.equal(gate.claim("q1"), true);
+    assert.equal(gate.claim("q1"), false);
+    gate.release("q1");
+    assert.equal(gate.claim("q1"), true);
+    assert.equal(gate.claim("q2"), true);
   });
 });

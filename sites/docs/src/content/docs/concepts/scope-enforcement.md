@@ -55,7 +55,7 @@ Writes divide into three concentric zones, each with different default behavior:
 
 The primary mechanism is declarative: when a mirror is created or renamed, Portuni writes per-harness configuration into `local_path`, layering on top of user-owned files (never replacing them). Portuni does not try to intercept individual filesystem calls from arbitrary harnesses – cross-harness interception is fragile and easy to bypass.
 
-There is one runtime layer on top: a **task** started from the desktop app ("Nový úkol") runs through Portuni's runner, which decides each write itself by the same write-scope rules the guard hook applies (`apps/server/domain/runner/permissions.ts`): editing inside the current mirror is allowed, editing another node's mirror is refused, and a scope-expanding or plan-approval request shows up as a question in the task's chat. Hand-opened shells rely on the declarative configs alone.
+There is one runtime layer on top: a **task** started from the desktop app ("New task") runs through Portuni's runner, which decides each write itself by the same write-scope rules the guard hook applies (`apps/server/domain/runner/permissions.ts`): editing inside the current mirror is allowed, editing another node's mirror is refused, and a scope-expanding or plan-approval request shows up as a question in the task's chat. Hand-opened shells rely on the declarative configs alone.
 
 The generated files:
 
@@ -103,6 +103,7 @@ Behaviour at the edges is deliberate:
 - A non-write tool always allows.
 - A malformed JSON payload allows (we cannot tell what the harness wanted).
 - An unreachable Portuni server allows. The guard is a soft fallback, not the primary defense; the harness's own permission system is.
+- A server that refuses the token (401/403 from `/scope`) blocks the write, with a message saying the token is missing or does not match and naming the variable to export (`PORTUNI_MCP_TOKEN` or the workspace's `PORTUNI_MCP_TOKEN_<ID>`). A token mismatch never silently turns the guard off.
 
 This catches drift in the declarative config, harness bugs, and cases where the config was never written.
 
@@ -194,6 +195,53 @@ Actors (`portuni_create_actor`/`update`/`delete`) and sync-remote administration
 The same domain-layer gate also covers the REST API's graph-plane mutations (nodes, edges, events, responsibilities, data sources, tools, mirror creation) for any caller that isn't the desktop UI (`env`/`session_jwt` identity) — a `device_token` or `oauth_grant` identity hitting these routes directly gets the same `write_refused`/`write_expansion_required` shape. REST has no per-request session or elicitation channel, so an out-of-scope REST write is always refused outright, never deferred. The file-content/sync-plane REST endpoints (`PUT` file content, register/register-batch, move, delete, sync, remote-sweep) are unaffected for a plain (non-headless) `device_token` — that identity is the sync agent's own channel, gated once already at the MCP tool call that triggered the sync. A **headless** device token is the one exception: those same file-plane routes refuse it outright unless the request names (via `X-Portuni-Spawn-Id`) the running headless session it's bound to, scoped to that session's home node — a headless credential cannot use the sync channel's blanket exemption to write outside its own session.
 
 **The `env` identity's REST blanket exemption can be hardened to be proxy-proven instead of self-declared (#213).** `env` auth mode resolves every request to the same unscoped solo identity, so a spawned agent process holds the exact same loopback bearer token as the desktop webview and could otherwise claim the same exemption by simply omitting `X-Portuni-Spawn-Id`. Setting `PORTUNI_WEBVIEW_PROXY_SECRET` closes this: once configured, an `env`-mode request gets the blanket exemption only when it carries a valid `X-Portuni-Webview-Proxy` header matching that secret (`apps/server/api/write-gate.ts`) — a request with neither that header nor a resolvable `X-Portuni-Spawn-Id` session is refused entirely, and a spawn id that fails to resolve (unknown, foreign, stale) fails closed instead of falling back to the blanket exemption. Leaving the variable unset keeps the historical behavior (every `env`-mode REST write allowed) — the packaged desktop app's Tauri host always sets its own per-launch value, so the hardened posture is always active there regardless of this default; the standalone/Vite dev flow opts in the same way `PORTUNI_AUTH_TOKEN` itself does, by setting matching values on both the server and `apps/web/vite.config.ts`'s dev proxy (which injects the header the same way the Tauri host's `api_request` proxy does, generated fresh per launch and never written to disk or exported into a spawned agent's own env). `X-Portuni-Spawn-Id` scoping itself is unconditional and available to every identity shape, not just `env`. `session_jwt` (team-workspace desktop webview, authenticated by a real per-user login JWT that never leaves the Keychain/webview boundary) is unaffected either way — it keeps the unconditional exemption, since team-workspace graph writes never reach this local, env-mode auth path.
+
+## A session belongs to its owner
+
+Scope bounds what a session may reach. Who may reach the **session** is a
+separate, much simpler rule: a thread is its owner's. Every action on it —
+reading its record and transcript, sending a message, stopping it, resuming
+it — is the owner's alone. Seeing the node a session is anchored to grants
+nothing about the sessions on it, and neither does `manage` or `admin`
+scope: a request from anyone but the owner answers `SESSION_NOT_FOUND`
+(404), so a teammate is never even told the thread exists
+(`apps/server/auth/session-access.ts`).
+
+The list routes follow the same rule: `GET /sessions`, a node's
+`GET /nodes/:id/sessions` and the sessions part of `GET /overview` return
+the caller's own threads only. So a node's Threads tab, the Work sidebar,
+the Overview inbox and the running count show each person their own work,
+even on a node the whole organisation can see. What people share on a node
+is its **files** — including the handoff file Hand off writes —
+not the conversations that produced them.
+
+### The record is central, the content is the device's
+
+Owner-only is the access half. The storage half is the same principle made
+physical: a thread has a **record** — that it exists, on which node, whose
+it is, its state, runner, model, its runs and its scope — and **content** —
+the first message, every event of the transcript, the inline handoff
+summary. The central server holds the record, because the MCP handshake,
+scope enforcement and the write gate key on it. The content is written to
+the **device that ran the thread**, in the sidecar's own database, and is
+never sent to the central server. The central database has no place for it
+either: no transcript table, no first-message or summary column. Content
+an older desktop version had sent there was copied back to the device that
+wrote it, and then dropped.
+
+So `GET /sessions/:id/events` is a device-local route: it answers from the
+machine you are asking, which is the machine that has the log. Asked on a
+device that did not run the thread it answers 200 with an empty list and
+`transcript_host` — the label of the machine that does — which the app
+shows as "The transcript is on the device X" instead of an empty chat. The way
+across is the handoff file, not a copy of the conversation (see
+[Hand off / Continue from handoff](/guides/working-in-the-app/#task-chat)).
+
+There is **no backup of transcripts**. Losing a device's database loses the
+conversations it ran; the records on the central server and the handoff
+files tracked in the nodes are what survive. Portuni owns no content — what
+a team shares on a node is its files, including a handed-over thread's
+handoff summary, never the conversation that produced them.
 
 ## Why this is its own page (and not a permission system)
 

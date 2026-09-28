@@ -2,7 +2,8 @@
 # Covers every package ecosystem in the repo so version + security updates
 # are no longer limited to whatever GitHub auto-detects. Minor/patch bumps are
 # grouped per ecosystem to cut PR noise; majors and security fixes still open
-# individual PRs.
+# individual PRs. Version updates wait 7 days after a release (cooldown);
+# security updates are not delayed.
 version: 2
 updates:
   # Backend Node server (root package.json / package-lock.json).
@@ -11,6 +12,8 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       root-minor-patch:
         update-types:
@@ -23,6 +26,8 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       web-minor-patch:
         update-types:
@@ -35,6 +40,8 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       marketing-minor-patch:
         update-types:
@@ -47,6 +54,8 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       docs-minor-patch:
         update-types:
@@ -59,6 +68,8 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       cargo-minor-patch:
         update-types:
@@ -71,6 +82,8 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         update-types:

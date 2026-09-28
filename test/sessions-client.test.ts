@@ -3,13 +3,20 @@
 // the direct-WS transport (the dev-mode path -- there is no Tauri runtime
 // in this test environment) against a small fake `ws` server standing in
 // for apps/server/api/sessions-ws.ts.
-import { describe, it, after } from "node:test";
+import { describe, it, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from "ws";
 import type { AddressInfo } from "node:net";
-import { createSessionsClient, createDirectWsTransport } from "../apps/web/src/lib/sessions-client.js";
-import { mountedChatSessions } from "../apps/web/src/lib/session-views.js";
-import type { SessionState } from "../apps/web/src/types.js";
+import {
+  createSessionsClient,
+  createDirectWsTransport,
+  type Transport,
+  type WebSocketInstance,
+} from "../apps/web/src/lib/sessions-client.js";
+import { ApiError, errorCode } from "../apps/web/src/lib/api-error.js";
+import { createSessionStore } from "../apps/web/src/lib/session-store.js";
+import { selectMountedThreads, selectNodeRecordIds } from "../apps/web/src/lib/session-selectors.js";
+import type { SessionState, SessionSummary } from "../apps/web/src/types.js";
 
 interface SubscribeCall {
   session_id: string;
@@ -119,7 +126,7 @@ describe("sessions-client: direct-WS transport", () => {
     const client = createSessionsClient({ transport });
     clients.push(client);
     const received: number[] = [];
-    client.onEvent("S1", (event) => received.push(event.seq));
+    client.onEvents("S1", (batch) => received.push(...batch.map((e) => e.seq)));
 
     await client.subscribe("S1");
     await waitUntil(() => server.subscribeCalls.length === 1);
@@ -219,13 +226,40 @@ describe("sessions-client: direct-WS transport", () => {
     client.disconnect();
   });
 
+  it("hands a replay page to event listeners as one batch and resubscribes after its last seq", async () => {
+    const server = await fakeServer();
+    const transport = testTransport(server);
+    const client = createSessionsClient({ transport });
+    clients.push(client);
+    const batches: number[][] = [];
+    client.onEvents("S1", (batch) => batches.push(batch.map((e) => e.seq)));
+
+    await client.subscribe("S1");
+    await waitUntil(() => server.subscribeCalls.length === 1);
+    server.broadcast({
+      type: "events",
+      payload: {
+        session_id: "S1",
+        events: Array.from({ length: 150 }, (_, i) => ({ kind: "assistant_message", payload: { text: `m${i}` }, seq: i + 1 })),
+      },
+    });
+    await waitUntil(() => batches.length === 1);
+    assert.equal(batches[0].length, 150);
+
+    server.dropAllConnections();
+    await waitUntil(() => server.subscribeCalls.length === 2, 5000);
+    assert.deepEqual(server.subscribeCalls[1], { session_id: "S1", after: 150 });
+
+    client.disconnect();
+  });
+
   it("dispatches session_state frames globally, not scoped to a subscribed session", async () => {
     const server = await fakeServer();
     const transport = testTransport(server);
     const client = createSessionsClient({ transport });
     clients.push(client);
     const states: string[] = [];
-    client.onSessionState((s) => states.push(s.state));
+    client.onSessionStates((batch) => states.push(...batch.map((s) => s.state)));
     const statuses: string[] = [];
     client.onConnectionStatus((s) => statuses.push(s));
 
@@ -239,20 +273,75 @@ describe("sessions-client: direct-WS transport", () => {
 
     client.disconnect();
   });
+
+  it("hands the connect snapshot to listeners as one batch", async () => {
+    const server = await fakeServer();
+    const transport = testTransport(server);
+    const client = createSessionsClient({ transport });
+    clients.push(client);
+    const batches: string[][] = [];
+    client.onSessionStates((batch) => batches.push(batch.map((s) => s.session_id)));
+    const statuses: string[] = [];
+    client.onConnectionStatus((s) => statuses.push(s));
+
+    await waitUntil(() => statuses.includes("open"));
+    server.broadcast({
+      type: "session_states",
+      payload: {
+        sessions: Array.from({ length: 120 }, (_, i) => ({
+          session_id: `S${i}`,
+          state: "suspended",
+          waiting_since: null,
+          node_id: "N1",
+        })),
+      },
+    });
+    await waitUntil(() => batches.length === 1);
+    assert.equal(batches[0].length, 120);
+
+    client.disconnect();
+  });
 });
 
 // #429: Práce keeps one mounted SessionChat per open thread and only flips
 // which one is visible, so a switch must not re-subscribe. There is no DOM
 // here, so this drives the real client through the mount set the real
-// helper computes, reconciled the way React reconciles keyed children --
-// a key that appears mounts (subscribe), a key that disappears unmounts
-// (unsubscribe), a key that stays put does nothing.
+// selector computes off the real store, reconciled the way React reconciles
+// keyed children -- a key that appears mounts (subscribe), a key that
+// disappears unmounts (unsubscribe), a key that stays put does nothing.
 describe("sessions-client: the mounted-thread set (#429)", () => {
-  type Thread = { id: string; node_id: string | null; state: SessionState };
+  function row(id: string, node_id: string | null, state: SessionState): SessionSummary {
+    return {
+      id,
+      node_id,
+      user_id: "u1",
+      session_type: "interactive_task",
+      cli: null,
+      instance_id: null,
+      terminal_id: null,
+      brief: null,
+      runner: "claude",
+      host_id: null,
+      host_label: null,
+      waiting_since: null,
+      state,
+      name: id,
+      name_is_custom: false,
+      handoff_path: null,
+      write_count: 0,
+      model: null,
+      effort: null,
+      context_used_tokens: null,
+      context_max_tokens: null,
+      created_at: "2026-09-22 10:00:00",
+      last_active_at: "2026-09-22 10:00:00",
+      closed_at: null,
+    };
+  }
 
   function keyedReconciler(client: { subscribe(id: string): Promise<void>; unsubscribe(id: string): void }) {
     let mounted: string[] = [];
-    return async (next: readonly Thread[]) => {
+    return async (next: readonly { id: string }[]) => {
       const ids = next.map((s) => s.id);
       for (const id of mounted) if (!ids.includes(id)) client.unsubscribe(id);
       for (const id of ids) if (!mounted.includes(id)) await client.subscribe(id);
@@ -265,20 +354,18 @@ describe("sessions-client: the mounted-thread set (#429)", () => {
     const client = createSessionsClient({ transport: testTransport(server) });
     clients.push(client);
 
-    const a: Thread = { id: "A", node_id: "n1", state: "running" };
-    const b: Thread = { id: "B", node_id: "n1", state: "suspended" };
-    const c: Thread = { id: "C", node_id: "n2", state: "running" };
-    const byNode = { n1: [a, b], n2: [c] };
+    const store = createSessionStore();
+    store.putMany([row("A", "n1", "running"), row("B", "n1", "suspended"), row("C", "n2", "running")]);
     const render = keyedReconciler(client);
 
     // Two nodes open, A shown.
-    await render(mountedChatSessions(byNode, ["n1", "n2"], a));
+    await render(selectMountedThreads(store, ["n1", "n2"], "A"));
     await waitUntil(() => server.subscribeCalls.length === 3);
 
     // Switch to B, then to C, then back to A: the mounted set never changes.
-    await render(mountedChatSessions(byNode, ["n1", "n2"], b));
-    await render(mountedChatSessions(byNode, ["n1", "n2"], c));
-    await render(mountedChatSessions(byNode, ["n1", "n2"], a));
+    await render(selectMountedThreads(store, ["n1", "n2"], "B"));
+    await render(selectMountedThreads(store, ["n1", "n2"], "C"));
+    await render(selectMountedThreads(store, ["n1", "n2"], "A"));
 
     const subscribesFor = (id: string) => server.subscribeCalls.filter((call) => call.session_id === id).length;
     assert.equal(subscribesFor("A"), 1);
@@ -286,17 +373,287 @@ describe("sessions-client: the mounted-thread set (#429)", () => {
     assert.equal(subscribesFor("C"), 1);
     assert.deepEqual(server.unsubscribeCalls, []);
 
-    // Closing node n2 unmounts its thread and unsubscribes it, and only it.
-    await render(mountedChatSessions({ n1: [a, b] }, ["n1"], a));
+    // Closing node n2 drops its records and unsubscribes its thread, and
+    // only it.
+    store.removeMany(selectNodeRecordIds(store, "n2", "A"));
+    await render(selectMountedThreads(store, ["n1"], "A"));
     await waitUntil(() => server.unsubscribeCalls.length === 1);
     assert.deepEqual(server.unsubscribeCalls, ["C"]);
 
     // Closing thread B (the × on its sub-row) unsubscribes B alone.
-    await render(mountedChatSessions({ n1: [a] }, ["n1"], a));
+    store.put(row("B", "n1", "closed"));
+    await render(selectMountedThreads(store, ["n1"], "A"));
     await waitUntil(() => server.unsubscribeCalls.length === 2);
     assert.deepEqual(server.unsubscribeCalls, ["C", "B"]);
     assert.equal(subscribesFor("A"), 1);
 
     client.disconnect();
+  });
+});
+
+// #496: a request is delivered once, or reported as failed and never sent
+// afterwards. Driven over the real direct-WS transport with an in-memory
+// socket class and mocked timers, so a 30 s timeout and a reconnect happen
+// without waiting for either.
+describe("sessions-client: a timed-out or dropped request is never delivered later (#496)", () => {
+  class FakeSocket implements WebSocketInstance {
+    static readonly OPEN = 1;
+    static instances: FakeSocket[] = [];
+    readyState = 0;
+    readonly sent: Array<{ id?: string; type: string; payload: { session_id?: string; after?: number } }> = [];
+    onopen: ((ev: unknown) => void) | null = null;
+    onmessage: ((ev: { data: unknown }) => void) | null = null;
+    onclose: ((ev: unknown) => void) | null = null;
+    onerror: ((ev: unknown) => void) | null = null;
+    constructor(readonly url: string) {
+      FakeSocket.instances.push(this);
+    }
+    send(data: string): void {
+      if (this.readyState !== FakeSocket.OPEN) throw new Error("send on a socket that is not open");
+      this.sent.push(JSON.parse(data));
+    }
+    close(): void {
+      this.readyState = 3;
+    }
+    open(): void {
+      this.readyState = FakeSocket.OPEN;
+      this.onopen?.({});
+    }
+    drop(): void {
+      this.readyState = 3;
+      this.onclose?.({});
+    }
+    reply(id: string | undefined): void {
+      this.onmessage?.({ data: JSON.stringify({ id, type: "reply", payload: { ok: true } }) });
+    }
+    static last(): FakeSocket {
+      return FakeSocket.instances[FakeSocket.instances.length - 1];
+    }
+    static allSent(type: string) {
+      return FakeSocket.instances.flatMap((s) => s.sent.filter((f) => f.type === type));
+    }
+  }
+
+  // Settles pending promise callbacks; setImmediate is not mocked.
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  function settle<T>(p: Promise<T>) {
+    const state: { done: boolean; error: Error | null } = { done: false, error: null };
+    p.then(
+      () => (state.done = true),
+      (e: Error) => {
+        state.done = true;
+        state.error = e;
+      },
+    );
+    return state;
+  }
+
+  function fakeClient() {
+    FakeSocket.instances = [];
+    const transport = createDirectWsTransport("ws://fake/sessions/ws", {
+      WebSocket: FakeSocket,
+      minBackoffMs: 10,
+      maxBackoffMs: 10,
+      connectTimeoutMs: 600_000,
+    });
+    const client = createSessionsClient({ transport });
+    clients.push(client);
+    return client;
+  }
+
+  it("a message that times out during an outage is not sent after the reconnect; the resend arrives once", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      FakeSocket.last().drop();
+
+      const first = settle(client.message("S1", "ahoj"));
+      mock.timers.tick(10);
+      const reconnecting = FakeSocket.last();
+      assert.equal(FakeSocket.instances.length, 2);
+
+      mock.timers.tick(30_000);
+      await flush();
+      assert.equal(first.done, true);
+      assert.match(String(first.error), /request_timeout/);
+      assert.equal(errorCode(first.error), "REQUEST_TIMEOUT");
+
+      reconnecting.open();
+      assert.deepEqual(FakeSocket.allSent("message"), []);
+
+      const resend = settle(client.message("S1", "ahoj"));
+      const sent = FakeSocket.allSent("message");
+      assert.equal(sent.length, 1);
+      reconnecting.reply(sent[0].id);
+      await flush();
+      assert.deepEqual(resend, { done: true, error: null });
+      assert.equal(FakeSocket.allSent("message").length, 1);
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("a message in flight when the connection drops rejects at once and is not sent again", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      const inFlight = settle(client.message("S1", "ahoj"));
+      assert.equal(FakeSocket.allSent("message").length, 1);
+
+      FakeSocket.last().drop();
+      await flush();
+      assert.equal(inFlight.done, true);
+      assert.match(String(inFlight.error), /disconnected/);
+      assert.equal(errorCode(inFlight.error), "DISCONNECTED");
+
+      mock.timers.tick(10);
+      FakeSocket.last().open();
+      mock.timers.tick(60_000);
+      await flush();
+      assert.equal(FakeSocket.allSent("message").length, 1);
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("a subscribe that finishes after a long outage resolves without an error, subscribing once per connection", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      // Subscribed before the first open: nothing goes out until it opens.
+      const load = settle(client.subscribe("S1", 0));
+      assert.deepEqual(FakeSocket.allSent("subscribe"), []);
+      FakeSocket.last().open();
+      assert.equal(FakeSocket.allSent("subscribe").length, 1);
+
+      // The connection drops before the reply and stays down past the
+      // request timeout.
+      FakeSocket.last().drop();
+      mock.timers.tick(10);
+      mock.timers.tick(120_000);
+      await flush();
+      assert.equal(load.done, false);
+
+      const reopened = FakeSocket.last();
+      reopened.open();
+      assert.equal(reopened.sent.filter((f) => f.type === "subscribe").length, 1);
+      assert.equal(FakeSocket.allSent("subscribe").length, 2);
+      reopened.reply(reopened.sent[0].id);
+      await flush();
+      assert.deepEqual(load, { done: true, error: null });
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  // A message on the wire may take the server longer than the request
+  // timeout (a start waiting for the lifecycle lock, a redelivery waiting
+  // for a run to end). Reporting it failed while it is delivered is what
+  // made a resend reach the agent twice.
+  it("a message on the wire waits past the request timeout for its reply", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      const slow = settle(client.message("S1", "ahoj"));
+      const sent = FakeSocket.allSent("message");
+      assert.equal(sent.length, 1);
+
+      mock.timers.tick(45_000);
+      await flush();
+      assert.equal(slow.done, false, "not reported failed while the server works on it");
+
+      FakeSocket.last().reply(sent[0].id);
+      await flush();
+      assert.deepEqual(slow, { done: true, error: null });
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("a message queued during an outage and flushed by the reconnect waits for its reply", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = fakeClient();
+      FakeSocket.last().open();
+      FakeSocket.last().drop();
+      const queued = settle(client.message("S1", "ahoj"));
+      mock.timers.tick(10);
+      const reopened = FakeSocket.last();
+      reopened.open();
+      const sent = reopened.sent.filter((f) => f.type === "message");
+      assert.equal(sent.length, 1);
+
+      mock.timers.tick(45_000);
+      await flush();
+      assert.equal(queued.done, false);
+      reopened.reply(sent[0].id);
+      await flush();
+      assert.deepEqual(queued, { done: true, error: null });
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("an error frame rejects its request with the server's code and params", async () => {
+    const client = fakeClient();
+    const socket = FakeSocket.last();
+    socket.open();
+    const req = settle(client.message("S1", "ahoj"));
+    const id = FakeSocket.allSent("message")[0]?.id;
+    socket.onmessage?.({
+      data: JSON.stringify({
+        id,
+        type: "error",
+        payload: { code: "SESSION_NOT_FOUND", message: "session not found", params: { sessionId: "S1" } },
+      }),
+    });
+    await flush();
+    assert.ok(req.error instanceof ApiError);
+    assert.equal(errorCode(req.error), "SESSION_NOT_FOUND");
+    assert.deepEqual((req.error as ApiError).params, { sessionId: "S1" });
+    assert.equal(req.error?.message, "SESSION_NOT_FOUND: session not found");
+    client.disconnect();
+  });
+
+  it("a timed-out request cancels its own frame on the transport (the Tauri outbox's cancel path)", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const sent: string[] = [];
+      const cancelled: string[] = [];
+      let status: ((s: "open" | "reconnecting" | "closed") => void) | null = null;
+      const noop = () => undefined;
+      const transport: Transport = {
+        send: (frame) => sent.push(frame.id),
+        cancel: (id) => cancelled.push(id),
+        onFrame: () => noop,
+        onStatus: (cb) => {
+          status = cb;
+          return noop;
+        },
+        connect: noop,
+        disconnect: noop,
+      };
+      const client = createSessionsClient({ transport });
+      clients.push(client);
+      (status as unknown as (s: string) => void)("open");
+      const req = settle(client.interrupt("S1"));
+      mock.timers.tick(30_000);
+      await flush();
+      assert.match(String(req.error), /request_timeout/);
+      assert.equal(errorCode(req.error), "REQUEST_TIMEOUT");
+      assert.deepEqual(cancelled, sent);
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
   });
 });

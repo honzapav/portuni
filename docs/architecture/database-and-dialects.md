@@ -12,11 +12,11 @@ still the production driver everywhere.
 
 ## Which database runs where
 
-| Runtime | Graph db | Per-device sync db |
-|---|---|---|
-| Personal workspace (desktop sidecar without `TURSO_URL`, or a standalone server with a `file:` URL) | `file:<dataDir>/portuni.db` via libsql (`apps/server/desktop.ts` sets `TURSO_URL` to that path when unset); PGlite after B4 | `<workspace>/.portuni/sync.db` |
-| Central server (`PORTUNI_AUTH_MODE=google`) | Turso today; managed Postgres after B6 | none (no mirrors) |
-| Team-workspace sidecar (`PORTUNI_AGENT_MODE=1`) | **none** | `<workspace>/.portuni/sync.db` |
+| Runtime | Graph db | Per-device sync db | Device content db |
+|---|---|---|---|
+| Personal workspace (desktop sidecar without `TURSO_URL`, or a standalone server with a `file:` URL) | `file:<dataDir>/portuni.db` via libsql (`apps/server/desktop.ts` sets `TURSO_URL` to that path when unset); PGlite after B4 | `<workspace>/.portuni/sync.db` | `<dataDir>/content.db` |
+| Central server (`PORTUNI_AUTH_MODE=google`) | Turso today; managed Postgres after B6 | none (no mirrors) | **none** (the central server holds no content) |
+| Team-workspace sidecar (`PORTUNI_AGENT_MODE=1`) | **none** | `<workspace>/.portuni/sync.db` | `<dataDir>/content.db` |
 
 Rules that follow:
 
@@ -38,6 +38,74 @@ Rules that follow:
   the graph db in B4.
 - A personal workspace cannot register or route to a remote; that rule and its
   legacy-row handling live in [`data-modes.md`](./data-modes.md).
+
+## The device content db (`content.db`)
+
+A thread has two parts: the **record** (that it exists, on which node,
+whose it is, its state, runner, runs and scope) and the **content** (the
+first message, every transcript event, the inline handoff summary). The
+record is the graph db's -- the central server's in a team workspace. The
+content is the device's, and it lives in a second libsql file,
+`content.db`, next to `runners.json` in the runner data dir
+(`PORTUNI_DATA_DIR`, else `process.cwd()`). Spec:
+`docs/superpowers/specs/2026-09-22-local-sessions-design.md`.
+
+- `apps/server/infra/device-content-db.ts` opens it. It never goes through
+  `getDb()`, `schema.ts` or `MIGRATIONS`: `getDb()` is the graph db, which
+  a team-workspace device does not have, and `MIGRATIONS`/`PG_BASELINE_DDL`
+  are the two-dialect story for the graph db, while this file is libsql on
+  a device, always.
+- Three tables, no foreign keys, keyed by the central session id:
+  `session_content(session_id PRIMARY KEY, brief, handoff_inline)`,
+  `session_events(id, session_id, run_id, seq, kind, payload, created_at,
+  UNIQUE(session_id, seq))` in the shape the graph db's `session_events`
+  had before migration 040, and `device_schema(version)` with exactly one
+  row.
+- **A schema change here is never a `MIGRATIONS` entry.** It is a new
+  numbered step in the version history comment at the top of
+  `device-content-db.ts` plus a raised `DEVICE_CONTENT_SCHEMA_VERSION`;
+  every step must be safe to re-run, because `ensureDeviceContentSchema`
+  runs on every boot.
+- `apps/server/domain/runner/store-content.ts`'s `SessionContentStore` is
+  the only reader and writer: `appendEvents`, `listEvents`, `getContent`,
+  `setContent`, `deleteContent`. `desktop.ts` opens the db at boot in both
+  modes (before the central-mode branch), `index.ts` only in a personal
+  workspace; `getDeviceContentDb()` is a lazy, idempotent process singleton
+  for everything else and **refuses on the central server**, which never
+  opens a `content.db`. There, `CentralNoContentStore` answers every read
+  empty, treats a clear as a no-op and refuses a write: the central server
+  holds no content at all since migration 040.
+- Timestamps follow the rule below: the store writes `created_at` as
+  `YYYY-MM-DD HH:MM:SS` UTC (`infra/sql.ts` `dbTimestamp`); the DDL has no
+  `datetime('now')` default.
+- **The one-time import** (`boot/content-import.ts`, step 2 of the version
+  history, no DDL change). A personal workspace's older transcripts,
+  briefs and inline summaries are in its graph db until migration 040:
+  `ensurePersonalWorkspaceSchema`, run by both `index.ts` and
+  `desktop.ts`'s local branch, copies them **before** `ensureSchema`. It
+  checks each source table and column explicitly (none left is not an
+  error; a failing read is), copies each thread in one `batch`
+  transaction, skips a thread an earlier attempt copied (its first event
+  id is here), keeps events a thread got here before a retried import
+  after the imported ones, normalises imported timestamps, and raises
+  `device_schema.version` to 2 only when every thread went through --
+  otherwise the next boot tries again, and this boot's `ensureSchema`
+  holds migration 040 back (`holdSessionContentDrop`), so the graph db
+  keeps the content until `content.db` has it. The sync agent's download
+  of its threads' legacy content from the central server ran on every
+  device before 040 and is gone with it.
+- **Migration 040** (`040_sessions_drop_content`, #462) is the central
+  migration: one `executeMultiple` that drops the graph db's
+  `session_events` and rebuilds `sessions` without `brief` and
+  `handoff_inline`, keeping every other column and the four indexes.
+  `DDL_SESSIONS`, the 030 and 036 rebuilds and `PG_BASELINE_DDL` carry
+  the same shape; `db-export.ts`/`db-import.ts` have no `session_events`.
+  Its `isApplied` is false while a `sessions_new` exists
+  (`docs/lessons-learned.md` §7, point 4), so a rebuild that died midway
+  fails loudly on the next boot instead of reading as done.
+- There is no backup. Losing the device's `content.db` loses its
+  transcripts; the records on the central server and the handoff files in
+  the nodes remain.
 
 ## The `DbClient` interface and its drivers
 
@@ -119,10 +187,9 @@ libsql migration list. Translation rules, applied uniformly:
 | `WHEN <cond> BEGIN ... END` trigger guard | `IF <cond> THEN ... END IF;` in the function body |
 | `UPDATE OF col` trigger | unchanged |
 
-Two deliberate differences from the libsql shape:
+One deliberate difference from the libsql shape (a second, the
+`session_events` composite key, left with the table in #462):
 
-- `session_events`' primary key is `(session_id, seq)`; `id` stays a
-  `NOT NULL` ULID column without its own uniqueness constraint.
 - `nodes_owner_must_be_real_person` is ported (exported as
   `PG_TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON`) but not part of
   `PG_BASELINE_TRIGGERS`, matching a fresh libsql install where migration
@@ -218,8 +285,8 @@ Never match a driver's error text. `infra/sql.ts` provides:
 - `isUniqueViolation(err)`: libsql's `LibsqlError` code and message, or
   SQLSTATE `23505` from pg/PGlite. Used for the concurrent-invite race in
   `auth/users.ts` (`UserExistsError`).
-- `constraintViolationMessage(err)`: a trigger or constraint rejection to
-  surface as a friendly 409 (`http/middleware.ts`'s `respondError`).
+- `constraintViolation(err)`: a trigger or constraint rejection as the code
+  and message of a friendly 409 (`http/middleware.ts`'s `respondError`).
   Matches libsql's `SQLITE_CONSTRAINT` wrapping (still needing the regex
   extraction of the inner text) and Postgres's `P0001` (`RAISE EXCEPTION`)
   or any `23xxx` class, whose message is already the trigger's own text.
@@ -252,7 +319,7 @@ Conventions:
   applies the baseline and exercises the same trigger behaviors the libsql
   trigger tests cover (org invariant, attachment validation, lifecycle
   derivation, `sync_key` guards, `idx_files_unique_remote`, the generated
-  column, the `session_events` composite key, idempotency of a second
+  column, the absence of session content (#462), idempotency of a second
   `ensureSchemaOn`).
 - A test that introspects the schema uses `tableExistsSql(dialect)`; one
   that inserts fixtures uses `insertIgnore`/`nowExpr` and skips `PRAGMA` on

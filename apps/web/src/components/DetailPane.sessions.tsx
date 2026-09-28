@@ -2,75 +2,72 @@
 // of docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md):
 // the persistent sessions anchored to this node -- running (open the
 // chat), suspended (resume: continuation vs handoff, per the server's
-// conversation-existence check), closed/archived (browse; archived behind
-// a filter). Self-fetches on mount and whenever nodeId changes, same
+// conversation-existence check), closed (open the chat; writing reopens
+// it, #498), archived (browse, behind a filter). Self-fetches on mount and whenever nodeId changes, same
 // pattern as DetailPane.access.tsx's AccessSection.
 
+import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CircleX, FileText, MessageSquare, Pencil, Redo2, X } from "lucide-react";
-import type { SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
+import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, X } from "lucide-react";
+import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
 import {
-  continueSession,
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
-  fetchUsers,
   closePersistentSession,
+  deleteDraftSession,
   renamePersistentSession,
+  startSessionFromHandoff,
 } from "../api";
+import { handoffFileEntries, type HandoffFileEntry } from "../lib/handoff-files";
 import {
   hostDisplayName,
   mergeLiveSessionStates,
-  sessionRowAccess,
   sessionRowChip,
-  type SessionRowAccess,
+  sessionRowOpensChat,
+  threadCloseAction,
 } from "../lib/session-views";
 import type { SessionStateMessage } from "../lib/sessions-client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { formatDateTime } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
-// #329: labels for a session the server suspended (dropped connection,
+// #329: the note for a session the server suspended (dropped connection,
 // idle GC, terminal exit, boot sweep) rather than the agent's own
 // portuni_session_suspend -- see SessionResumeInfo's generated_by/reason.
-const SERVER_SUSPEND_REASON_LABEL: Record<string, string> = {
-  disconnect: "odpojení",
-  idle: "nečinnost 30 min",
-  terminal_exit: "ukončení terminálu",
-  boot_sweep: "restart serveru",
-  suspend_timeout: "agent nestihl předání",
-  host_lost: "proces osiřel po restartu",
+// A complete Record over the reason (spec: Catalog, rule 7): a reason added
+// to shared/api-types.ts fails the typecheck until it has a note. Reasons
+// with no specific wording ("run_ended", "continue") say only that the
+// server suspended it.
+type NodeT = TFunction<"node">;
+type ServerSuspendReason = NonNullable<SessionResumeInfo["reason"]>;
+const SERVER_SUSPEND_REASON_LABEL: Record<ServerSuspendReason, (t: NodeT) => string> = {
+  disconnect: (t) => t(($) => $.sessions.resume.server_suspended.disconnect, { ns: "node" }),
+  idle: (t) => t(($) => $.sessions.resume.server_suspended.idle, { ns: "node" }),
+  terminal_exit: (t) => t(($) => $.sessions.resume.server_suspended.terminal_exit, { ns: "node" }),
+  boot_sweep: (t) => t(($) => $.sessions.resume.server_suspended.boot_sweep, { ns: "node" }),
+  suspend_timeout: (t) => t(($) => $.sessions.resume.server_suspended.suspend_timeout, { ns: "node" }),
+  host_lost: (t) => t(($) => $.sessions.resume.server_suspended.host_lost, { ns: "node" }),
+  // #459: the owner asked for it -- Předat wrote this summary on purpose.
+  handoff: (t) => t(($) => $.sessions.resume.server_suspended.handoff, { ns: "node" }),
+  run_ended: (t) => t(($) => $.sessions.resume.server_suspended.no_reason, { ns: "node" }),
+  continue: (t) => t(($) => $.sessions.resume.server_suspended.no_reason, { ns: "node" }),
 };
 
-export function fmtDateTime(value: string): string {
-  // SQLite datetime('now') yields "YYYY-MM-DD HH:MM:SS" in UTC without a
-  // zone marker; normalise so Date parses it as UTC, not local time.
-  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
-    ? value.replace(" ", "T") + "Z"
-    : value;
-  try {
-    return new Date(iso).toLocaleString("cs-CZ", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return value;
-  }
+function serverSuspendNote(reason: SessionResumeInfo["reason"], t: NodeT): string {
+  return reason ? SERVER_SUSPEND_REASON_LABEL[reason](t) : t(($) => $.sessions.resume.server_suspended.no_reason, { ns: "node" });
 }
 
 type Props = {
   nodeId: string;
+  // #460 "Navázat na handoff": the node's tracked files, the records the
+  // handoff list is built from (the node detail already has them, so the
+  // tab needs no fetch of its own). Absent where the caller has none.
+  files?: readonly DetailFile[];
   onOpenFile?: (nodeId: string, relPath: string) => void;
   // "Otevřít chat" (#343) -- jumps to Práce with this section's node
   // selected, with THIS row's session as the one Práce shows -- a node
@@ -78,14 +75,11 @@ type Props = {
   // the selector (App.tsx's requestedChatSession). Absent in contexts
   // with no chat surface.
   onOpenChat?: (sessionId: string) => void;
-  // #412: "Navázat" starts a real, running thread -- handed to the app the
-  // same way "Nový úkol" hands over the draft it opens, so the Práce
-  // sidebar gets the row at once instead of waiting for something else to
-  // refetch the node.
+  // #412/#460: "Navázat na handoff" starts a real, running thread --
+  // handed to the app the same way "Nový úkol" hands over the draft it
+  // opens, so the Práce sidebar gets the row at once instead of waiting
+  // for something else to refetch the node.
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
-  // #321's access table, echoed client-side for sessionRowAccess (useMe).
-  canManage: boolean;
-  meId: string | null;
   // The window's live session_state map (App.tsx, from the socket) --
   // overlaid onto the REST rows so state and "Čeká na mě" update without
   // a reload, and a change on THIS node's sessions (one started, one
@@ -96,35 +90,18 @@ type Props = {
 
 export function SessionsSection({
   nodeId,
+  files,
   onOpenFile,
   onOpenChat,
   onSessionStarted,
-  canManage,
-  meId,
   liveStates,
 }: Props) {
+  const { t } = useTranslation("node");
+  const locale = useLocale();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
-  // "owner name when not the caller" -- fetchUsers is manage-scope-gated
-  // and degrades to [] for anyone below that (see its own doc comment), so
-  // a plain teammate viewing this tab just never resolves a name; that's
-  // fine, the row still works without one.
-  const [userNames, setUserNames] = useState<Record<string, string>>({});
-  useEffect(() => {
-    let cancelled = false;
-    void fetchUsers()
-      .then((users) => {
-        if (cancelled) return;
-        setUserNames(Object.fromEntries(users.map((u) => [u.id, u.name])));
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -132,7 +109,7 @@ export function SessionsSection({
       const res = await fetchNodePersistentSessions(nodeId, includeArchived);
       setSessions(res.sessions);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setLoading(false);
     }
@@ -162,33 +139,32 @@ export function SessionsSection({
     setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
   };
 
-  // Uzavřít is the one irreversible action here (#378) -- confirmed via
-  // closeConfirm below rather than window.confirm, which is a no-op in the
-  // Tauri webview (see App.tsx's editorGuard for the same reasoning).
-  const [closeConfirm, setCloseConfirm] = useState<SessionSummary | null>(null);
+  // Uzavřít asks nothing (#498): a closed thread reopens by writing into it.
   const handleClose = async (id: string) => {
     try {
       const updated = await closePersistentSession(id);
       updateOne(updated);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     }
   };
 
-  // "Navázat" (#378): the same POST /sessions/:id/continue as "Pokračovat v
-  // nové session" in the chat header, minus a prior close -- this session
-  // is already closed. Jumps straight to the new thread.
-  const handleContinue = async (id: string) => {
+  // #460 "Navázat na handoff": the handoff files of this node, whoever
+  // wrote them -- a file another machine's thread wrote arrives here as an
+  // ordinary tracked file, which is exactly the point.
+  const handoffs = useMemo(() => handoffFileEntries(files ?? [], sessions), [files, sessions]);
+  const [startingHandoff, setStartingHandoff] = useState<string | null>(null);
+  const handleStartFromHandoff = async (entry: HandoffFileEntry) => {
+    setStartingHandoff(entry.relative_path);
+    setError(null);
     try {
-      const { session, run } = await continueSession(id);
-      // Before opening the chat: the new thread has to be in the app's own
-      // per-node map, or the sidebar row it should be highlighting is not
-      // there yet (#412).
+      const { session, run } = await startSessionFromHandoff(nodeId, entry.relative_path);
       onSessionStarted?.({ session, run });
       onOpenChat?.(session.id);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
+      setStartingHandoff(null);
       await load();
     }
   };
@@ -196,7 +172,7 @@ export function SessionsSection({
   if (loading && sessions.length === 0) {
     return (
       <div className="px-5 py-4 text-[14px] text-[var(--color-text-dim)]">
-        Načítám relace...
+        {t(($) => $.sessions.list.loading)}
       </div>
     );
   }
@@ -209,7 +185,7 @@ export function SessionsSection({
             checked={includeArchived}
             onCheckedChange={(checked) => setIncludeArchived(checked === true)}
           />
-          Zobrazit archivované
+          {t(($) => $.sessions.list.show_archived)}
         </Label>
       </div>
 
@@ -219,20 +195,64 @@ export function SessionsSection({
         </div>
       )}
 
+      {handoffs.length > 0 && (
+        <div className="mb-4">
+          <div className="mb-2 text-[12.5px] text-[var(--color-text-dim)]">{t(($) => $.sessions.handoffs.heading)}</div>
+          <div className="space-y-2">
+            {handoffs.map((entry) => (
+              <div
+                key={entry.file_id}
+                className="flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13.5px] text-[var(--color-text)]">{entry.title}</div>
+                  <div className="truncate text-[12px] text-[var(--color-text-dim)]">
+                    {[entry.host, entry.last_active_at ? formatDateTime(locale, entry.last_active_at) : null]
+                      .filter(Boolean)
+                      .join(" · ") || entry.relative_path}
+                  </div>
+                </div>
+                {onOpenFile && (
+                  <RowIcon onClick={() => onOpenFile(nodeId, entry.relative_path)} title={t(($) => $.sessions.handoffs.view)}>
+                    <FileText />
+                  </RowIcon>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={startingHandoff !== null}
+                  onClick={() => void handleStartFromHandoff(entry)}
+                >
+                  <GitPullRequestArrow />
+                  {startingHandoff === entry.relative_path ? t(($) => $.sessions.handoffs.continuing) : t(($) => $.sessions.handoffs.continue)}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {sessions.length === 0 ? (
-        <div className="text-[14px] text-[var(--color-text-dim)]">Zatím žádné relace.</div>
+        <div className="text-[14px] text-[var(--color-text-dim)]">{t(($) => $.sessions.list.empty)}</div>
       ) : (
         <div className="space-y-2">
           {liveSessions.map((s) => (
             <SessionRow
               key={s.id}
               session={s}
-              access={sessionRowAccess(s.user_id, meId, canManage)}
-              ownerName={s.user_id !== meId ? (userNames[s.user_id] ?? null) : null}
               onRenamed={updateOne}
-              onClose={() => setCloseConfirm(s)}
+              onClose={() => {
+                // #506: a draft is deleted outright, the same deletion as
+                // the sidebar's ×; this list is its own copy, so the row
+                // leaves it here too.
+                if (threadCloseAction(s.state) === "delete") {
+                  deleteDraftSession(s.id);
+                  setSessions((prev) => prev.filter((x) => x.id !== s.id));
+                } else {
+                  void handleClose(s.id);
+                }
+              }}
               onOpenChat={onOpenChat}
-              onContinue={() => void handleContinue(s.id)}
               onOpenHandoff={
                 onOpenFile && s.handoff_path
                   ? () => onOpenFile(nodeId, s.handoff_path!)
@@ -243,59 +263,26 @@ export function SessionsSection({
         </div>
       )}
 
-      {closeConfirm && (
-        <Dialog open onOpenChange={(open) => !open && setCloseConfirm(null)}>
-          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
-            <DialogHeader>
-              <DialogTitle>Uzavřít relaci?</DialogTitle>
-              <DialogDescription>
-                Relace „{closeConfirm.name}“ se uzavře. Server napřed uloží shrnutí konverzace.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCloseConfirm(null)}>
-                Zpět
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  const id = closeConfirm.id;
-                  setCloseConfirm(null);
-                  void handleClose(id);
-                }}
-              >
-                Uzavřít
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
     </div>
   );
 }
 
 function SessionRow({
   session,
-  access,
-  ownerName,
   onRenamed,
   onClose,
   onOpenChat,
-  onContinue,
   onOpenHandoff,
 }: {
   session: SessionSummary;
-  access: SessionRowAccess;
-  // Resolved display name of the owner, only when it's NOT the caller
-  // (null either way otherwise) -- see SessionsSection's userNames map.
-  ownerName: string | null;
   onRenamed: (updated: SessionSummary) => void;
   onClose: () => void;
   onOpenChat?: (sessionId: string) => void;
-  // "Navázat" (#378): POST /sessions/:id/continue on a closed session.
-  onContinue: () => void;
   onOpenHandoff?: () => void;
 }) {
+  const { t } = useTranslation("node");
+  const { t: tCommon } = useTranslation("common");
+  const locale = useLocale();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name);
   const [saving, setSaving] = useState(false);
@@ -338,15 +325,19 @@ function SessionRow({
     }
   };
 
-  const chip = sessionRowChip(session.state, session.waiting_since);
+  const chip = sessionRowChip(session.state, session.waiting_since, tCommon);
   const host = hostDisplayName(session);
 
   // Row actions are icon buttons on the right of the title line, shown on
   // hover or keyboard focus (the list stays quiet); rename is one of them.
-  // Uzavřít, the one irreversible action, sits last behind a separator.
-  const showChat = (session.state === "running" || session.state === "suspended") && !!onOpenChat;
-  const showContinue = session.state === "closed" && access.canResume;
-  const showClose = (session.state === "running" || session.state === "suspended") && access.canPauseOrClose;
+  // Uzavřít sits last behind a separator. #498: a closed thread opens its
+  // chat like a suspended one -- writing into it reopens it, so there is no
+  // Navázat anymore.
+  // #457: the list carries the caller's own threads only, so every action
+  // here is the owner's and nothing is gated beyond the state.
+  const showChat = sessionRowOpensChat(session.state) && !!onOpenChat;
+  // #506: a draft gets the same Uzavřít, which deletes it without asking.
+  const showClose = threadCloseAction(session.state) !== null;
 
   return (
     <div className="group rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">
@@ -377,7 +368,7 @@ function SessionRow({
             <RowIcon
               onClick={() => void save()}
               disabled={saving}
-              title="Uložit název"
+              title={t(($) => $.sessions.row.save_name)}
               className="text-[var(--color-accent)]"
             >
               <Check />
@@ -388,7 +379,7 @@ function SessionRow({
                 setEditing(false);
               }}
               disabled={saving}
-              title="Zrušit"
+              title={t(($) => $.sessions.row.cancel_rename)}
             >
               <X />
             </RowIcon>
@@ -400,30 +391,23 @@ function SessionRow({
             </span>
             <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
               {showChat && (
-                <RowIcon onClick={() => onOpenChat!(session.id)} title="Otevřít chat">
+                <RowIcon onClick={() => onOpenChat!(session.id)} title={t(($) => $.sessions.row.open_chat)}>
                   <MessageSquare />
                 </RowIcon>
               )}
               {onOpenHandoff && (
-                <RowIcon onClick={onOpenHandoff} title="Zobrazit handoff">
+                <RowIcon onClick={onOpenHandoff} title={t(($) => $.sessions.row.view_handoff)}>
                   <FileText />
                 </RowIcon>
               )}
-              <RowIcon onClick={() => setEditing(true)} title="Přejmenovat">
+              <RowIcon onClick={() => setEditing(true)} title={t(($) => $.sessions.row.rename)}>
                 <Pencil />
               </RowIcon>
-              {(showContinue || showClose) && (
-                <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
-              )}
-              {showContinue && (
-                <RowIcon onClick={onContinue} title="Navázat" className="text-[var(--color-accent)]">
-                  <Redo2 />
-                </RowIcon>
-              )}
+              {showClose && <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />}
               {showClose && (
                 <RowIcon
                   onClick={onClose}
-                  title="Uzavřít"
+                  title={t(($) => $.sessions.row.close)}
                   className="hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
                 >
                   <CircleX />
@@ -434,36 +418,29 @@ function SessionRow({
         )}
       </div>
 
-      {session.brief && (
-        <div className="mt-1 truncate text-[12px] text-[var(--color-text-muted)]" title={session.brief}>
-          {session.brief.split("\n")[0]}
-        </div>
-      )}
-
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--color-text-dim)]">
         <span>{chip.label}</span>
-        <span>{fmtDateTime(session.last_active_at)}</span>
+        <span>{formatDateTime(locale, session.last_active_at)}</span>
         <span>
-          {session.runner ?? session.cli ?? "neznámý"}
+          {session.runner ?? session.cli ?? t(($) => $.sessions.row.runner_unknown)}
           {session.instance_id ? ` · ${session.instance_id}` : ""}
           {/* #428: which host ran it -- the label when central knows one,
               otherwise the host id. Hidden when neither exists. */}
           {host ? ` · ${host}` : ""}
         </span>
-        {ownerName && <span>Vlastník: {ownerName}</span>}
-        <span title="Počet uzlů v zápisovém rozsahu této relace">
-          Zápis: {session.write_count}
+        <span title={t(($) => $.sessions.row.write_scope_title)}>
+          {t(($) => $.sessions.row.write_scope, { writeCount: session.write_count })}
         </span>
         {session.state === "suspended" && resumeInfo && (
           // #378: resuming is no longer a picked action -- the next message
           // just does one or the other. This is purely informational now.
           <span>
             {resumeInfo.conversation_resumable
-              ? "další zpráva naváže na konverzaci"
-              : "další zpráva ji spustí ze shrnutí"}
-            {resumeInfo.handoff_changed ? " (handoff upraven od pozastavení)" : ""}
-            {!resumeInfo.handoff_checkable ? " (nelze ověřit handoff na tomto zařízení)" : ""}
-            {resumeInfo.generated_by === "server" ? ` (pozastaveno serverem${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""] ? `, ${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""]}` : ""})` : ""}
+              ? t(($) => $.sessions.resume.continues_conversation)
+              : t(($) => $.sessions.resume.starts_from_summary)}
+            {resumeInfo.handoff_changed ? ` ${t(($) => $.sessions.resume.handoff_changed)}` : ""}
+            {!resumeInfo.handoff_checkable ? ` ${t(($) => $.sessions.resume.handoff_uncheckable)}` : ""}
+            {resumeInfo.generated_by === "server" ? ` ${serverSuspendNote(resumeInfo.reason, t)}` : ""}
           </span>
         )}
       </div>

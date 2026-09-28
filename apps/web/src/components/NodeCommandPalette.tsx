@@ -4,9 +4,11 @@
 // so cmdk's own filter is off. What picking a node DOES is the caller's
 // business -- Graf selects it in the graph, Práce opens it.
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { GraphNode } from "../types";
 import { foldForSearch } from "../lib/normalize";
-import { groupNodesByType, nodeTypeLabel } from "../lib/node-search";
+import { groupNodesByType } from "../lib/node-search";
+import { nodeTypeLabel } from "../lib/node-type-labels";
 import {
   Command,
   CommandDialog,
@@ -18,6 +20,8 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { compareText } from "../lib/format";
+import { useLocale } from "../lib/use-locale";
 
 const MAX_RESULTS = 50;
 
@@ -26,7 +30,7 @@ function nodeTypeVar(type: string): string {
   return known.includes(type) ? `var(--color-node-${type})` : "var(--color-node-default)";
 }
 
-export function filterNodes(nodes: GraphNode[], query: string): GraphNode[] {
+export function filterNodes(nodes: GraphNode[], query: string, locale: string): GraphNode[] {
   const q = foldForSearch(query.trim());
   const pool = q
     ? nodes.filter(
@@ -35,7 +39,7 @@ export function filterNodes(nodes: GraphNode[], query: string): GraphNode[] {
           foldForSearch(n.description ?? "").includes(q) ||
           foldForSearch(n.type).includes(q),
       )
-    : [...nodes].sort((a, b) => a.name.localeCompare(b.name, "cs"));
+    : [...nodes].sort((a, b) => compareText(locale, a.name, b.name));
   return pool.slice(0, MAX_RESULTS);
 }
 
@@ -54,6 +58,8 @@ export default function NodeCommandPalette({
   // elsewhere while the palette is open (the graph). Cleared on close.
   onQueryChange?: (query: string) => void;
 }) {
+  const { t } = useTranslation("common");
+  const locale = useLocale();
   const [text, setText] = useState("");
   useEffect(() => {
     if (!open) {
@@ -62,10 +68,10 @@ export default function NodeCommandPalette({
     }
   }, [open, onQueryChange]);
 
-  const matches = useMemo(() => filterNodes(nodes, text), [nodes, text]);
+  const matches = useMemo(() => filterNodes(nodes, text, locale), [nodes, text, locale]);
   // Grouped by node type once the list is long enough to be worth scanning
   // in sections; a short one stays flat (lib/node-search.ts).
-  const groups = useMemo(() => groupNodesByType(matches), [matches]);
+  const groups = useMemo(() => groupNodesByType(matches, locale, t), [matches, locale, t]);
 
   // A row: the type dot in a 20 px icon slot, the name, and the type name
   // muted on the right -- empty under a group heading that already names it.
@@ -82,7 +88,7 @@ export default function NodeCommandPalette({
         <span className="inline-block size-2 rounded-full" style={{ background: nodeTypeVar(n.type) }} />
       </span>
       <span className="min-w-0 flex-1 truncate">{n.name}</span>
-      {!grouped && <span className="ml-auto shrink-0 text-muted-foreground">{nodeTypeLabel(n.type)}</span>}
+      {!grouped && <span className="ml-auto shrink-0 text-muted-foreground">{nodeTypeLabel(n.type, t)}</span>}
     </CommandItem>
   );
 
@@ -90,13 +96,13 @@ export default function NodeCommandPalette({
     <CommandDialog
       open={open}
       onOpenChange={onOpenChange}
-      title="Hledat uzel"
-      description="Napiš název uzlu a potvrď Enterem."
+      title={t(($) => $.palette.title)}
+      description={t(($) => $.palette.description)}
       className="sm:max-w-[640px]"
     >
       <Command shouldFilter={false}>
         <CommandInput
-          placeholder="Hledat uzel…"
+          placeholder={t(($) => $.palette.placeholder)}
           value={text}
           onValueChange={(v) => {
             setText(v);
@@ -104,7 +110,7 @@ export default function NodeCommandPalette({
           }}
         />
         <CommandList>
-          <CommandEmpty>Žádný uzel</CommandEmpty>
+          <CommandEmpty>{t(($) => $.palette.empty)}</CommandEmpty>
           {groups
             ? groups.map((g) => (
                 <CommandGroup key={g.type} heading={g.label}>
@@ -117,15 +123,15 @@ export default function NodeCommandPalette({
           <KbdGroup className="gap-1.5">
             <Kbd>↑</Kbd>
             <Kbd>↓</Kbd>
-            <span>Navigace</span>
+            <span>{t(($) => $.palette.footer.navigate)}</span>
           </KbdGroup>
           <KbdGroup className="gap-1.5">
-            <Kbd>Enter</Kbd>
-            <span>Otevřít</span>
+            <Kbd>{t(($) => $.palette.key.enter)}</Kbd>
+            <span>{t(($) => $.palette.footer.open)}</span>
           </KbdGroup>
           <KbdGroup className="gap-1.5">
-            <Kbd>Esc</Kbd>
-            <span>Zavřít</span>
+            <Kbd>{t(($) => $.palette.key.esc)}</Kbd>
+            <span>{t(($) => $.palette.footer.close)}</span>
           </KbdGroup>
         </CommandFooter>
       </Command>

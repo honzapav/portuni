@@ -10,10 +10,13 @@
 //   POST  /sessions/:id/rename             write   -> rename through the runtime (owner only);
 //                                                      publishes the change to the live channel
 //   GET   /sessions/:id/resume-info        read    -> conversation-resumable? handoff changed?
+//                                                      device-local (#456): both inputs -- the
+//                                                      mirror's handoff file and the content
+//                                                      store's inline summary -- are the device's
 //   GET   /sessions/:id/signals            read    -> restart indicator (run age, read/write set)
 //   GET   /sessions/:id/scope              read    -> central record half (#427): the session's
 //                                                      read/write set by node id, for the sync
-//                                                      agent's own suspend fallback
+//                                                      agent's own server-side suspend
 //   POST  /sessions                        write   -> start a task (session + first run)
 //   POST  /sessions/record                 write   -> central record half (#323): create the row
 //                                                      only, no run -- the agent-mode sidecar's own
@@ -29,9 +32,13 @@
 //                                                      the same node seeded with its summary
 //                                                      (owner only; #378)
 //   POST  /sessions/:id/close              write   -> close the session (owner or manage)
-//   GET   /sessions/:id/events             read    -> canonical event log
-//   POST  /sessions/:id/events             write   -> central record half (#323): batch-append
-//                                                      events, returns the assigned seqs
+//   POST  /sessions/:id/handoff            write   -> "Předat" (#459): ends the turn and the run,
+//                                                      writes the summary into the node's mirror
+//                                                      and suspends -- device-local, the file and
+//                                                      the transcript it is built from are here
+//   GET   /sessions/:id/events             read    -> canonical event log, from the device's
+//                                                      content.db (#456); empty on the central
+//                                                      server, which holds no content (#462)
 //   POST  /sessions/:id/runs               write   -> central record half (#323): create a run record
 //   PATCH /sessions/:id/runs/:run_id       write   -> central record half (#323): patch a run record
 //   GET   /sessions/:id/runs               read    -> central record half (#323): list a session's runs
@@ -42,27 +49,32 @@
 // (domain/runner/store-central.ts) over these REST endpoints -- "one
 // implementation" (spec rule 1): the session runtime itself never changes
 // between local and central/agent mode, only which SessionStore backs it.
-// They're served here unconditionally (also reachable in env/local mode,
-// harmless) rather than gated to google/central mode specifically.
+// That interface is the RECORD half only (#456): a thread's content -- the
+// first message, the transcript, the inline handoff summary -- is written
+// to the device's own content.db by SessionContentStore and never sent
+// here; since the central migration (#462) the record routes do not take
+// `brief` or `handoff_inline` at all. They're served here unconditionally
+// (also reachable in env/local mode, harmless) rather than gated to
+// google/central mode specifically.
 //
-// Who may do what beyond the list route is auth/session-access.ts's
-// sessionAccess table (docs/superpowers/specs/2026-09-12-remote-hosts-and-
-// task-queue-design.md, "Visibility and control"): read is anyone who can
-// see the anchor node, message/resume are owner-only, stop (interrupt/
-// suspend/close) is the owner or manage scope. The list route itself keeps
-// following the anchor node's own read gate (handleListNodeSessions).
+// Who may do what is auth/session-access.ts's sessionAccess table, one line
+// since #457 (docs/superpowers/specs/2026-09-22-local-sessions-design.md,
+// "Access"): a thread is its owner's, for every action, `manage` included.
+// The list routes below follow the same rule -- they return the caller's own
+// sessions only, so no thread of another user is ever named here.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DbClient } from "../infra/db.js";
-import { z } from "zod";
+import { z, type ZodType } from "zod";
 import { getDb } from "../infra/db.js";
 import {
   parseJsonBody,
+  respondApiError,
   respondError,
   respondJson,
   type RequestIdentity,
 } from "../http/middleware.js";
-import { nodeVisibleTo } from "../auth/node-access.js";
+import { findVisibleNodeRow } from "./node-route-helpers.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import {
   deleteDraftSession,
@@ -78,14 +90,20 @@ import { getResumeInfo } from "../domain/session-handoff.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { logAudit } from "../infra/audit.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
-import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
+import { respondSessionRefusal } from "./session-refusals.js";
 import { getAdapter } from "../domain/runner/registry.js";
-import { getInstanceEnv } from "../domain/runner/instances.js";
-import { resolveHostLabel } from "../domain/runner/hosts.js";
+import { getInstanceEnv, instanceClaudeConfigDir } from "../domain/runner/instances.js";
+import { resolveHostLabel, transcriptHostLabel } from "../domain/runner/hosts.js";
 import { DbSessionStore } from "../domain/runner/store.js";
-import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
+import { sessionContentStoreForProcess } from "../domain/runner/store-content.js";
+import { EFFORT_LEVELS, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
-import type { SessionResumeInfo, SessionScopeRecord, SessionSummary } from "../shared/api-types.js";
+import { LOCALES } from "../shared/i18n/config.js";
+import type {
+  SessionResumeInfo,
+  SessionScopeRecord,
+  SessionSummary,
+} from "../shared/api-types.js";
 
 export async function toSummary(row: SessionRow): Promise<SessionSummary> {
   // #428: the host is the latest run's, not the session row's -- the row's
@@ -102,7 +120,6 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
     cli: row.cli,
     instance_id: row.instance_id,
     terminal_id: row.terminal_id,
-    brief: row.brief,
     runner: row.runner,
     host_id: hostId,
     host_label: resolveHostLabel(hostId),
@@ -122,15 +139,14 @@ export async function toSummary(row: SessionRow): Promise<SessionSummary> {
   };
 }
 
-// GET /sessions?state=running,suspended&limit=500 -- every session the
-// caller can see in the given states, raw rows (the consumer is
+// GET /sessions?state=running,suspended&limit=500 -- the caller's OWN
+// sessions in the given states, raw rows (the consumer is
 // CentralClient.listSessionRecords feeding the agent-mode live channel's
 // initial session_state burst, which needs state/waiting_since/node_id and
-// nothing curated). Visibility is the same rule sessionAccess("read")
-// applies: a node-anchored session iff its node is visible, a node-less
-// one only to its owner. `state=draft` is accepted and answers with the
-// caller's own drafts only (#463); another user's draft is never listed,
-// however visible its node is.
+// nothing curated). Visibility is the same one-line rule sessionAccess
+// applies (#457): a thread is its owner's, so another user's row is never
+// listed however visible its anchor node is. `state=draft` is accepted and
+// answers with the caller's own drafts like any other state.
 const ListSessionsQuery = z.object({
   state: z
     .string()
@@ -151,34 +167,16 @@ export async function handleListSessions(
       limit: url.searchParams.get("limit") ?? undefined,
     });
     if (!parsed.success) {
-      respondJson(res, 400, { error: "invalid query", code: "INVALID_QUERY", issues: parsed.error.issues });
+      respondApiError(res, 400, "INVALID_REQUEST", "invalid query", undefined, { issues: parsed.error.issues });
       return;
     }
     const db = getDb();
     const rows: SessionRow[] = [];
-    for (const state of parsed.data.state) rows.push(...(await listSessions(db, { state })));
-    rows.sort((a, b) => (a.last_active_at < b.last_active_at ? 1 : a.last_active_at > b.last_active_at ? -1 : 0));
-    const sessions: SessionRow[] = [];
-    // One visibility answer per node, not per row.
-    const nodeVerdicts = new Map<string, Promise<boolean>>();
-    for (const row of rows) {
-      if (sessions.length >= parsed.data.limit) break;
-      if (row.user_id === identity.userId) {
-        sessions.push(row);
-        continue;
-      }
-      // #463: a draft belongs to its owner only. Node visibility opens
-      // every other state to a teammate, never an unsent draft.
-      if (row.state === "draft") continue;
-      if (row.node_id === null) continue;
-      let verdict = nodeVerdicts.get(row.node_id);
-      if (!verdict) {
-        verdict = nodeVisibleTo(db, identity, row.node_id);
-        nodeVerdicts.set(row.node_id, verdict);
-      }
-      if (await verdict) sessions.push(row);
+    for (const state of parsed.data.state) {
+      rows.push(...(await listSessions(db, { state, user_id: identity.userId })));
     }
-    respondJson(res, 200, { sessions });
+    rows.sort((a, b) => (a.last_active_at < b.last_active_at ? 1 : a.last_active_at > b.last_active_at ? -1 : 0));
+    respondJson(res, 200, { sessions: rows.slice(0, parsed.data.limit) });
   } catch (err) {
     respondError(res, `${req.method} /sessions`, err);
   }
@@ -193,23 +191,18 @@ export async function handleListNodeSessions(
 ): Promise<void> {
   try {
     const db = getDb();
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [nodeId] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
+    if (!(await requireSessionNode(res, db, identity, nodeId))) return;
 
     const includeArchived = url.searchParams.get("include_archived") === "1";
-    let rows = await listSessions(db, { node_id: nodeId });
+    // The node's own read gate above decides whether the tab exists at all;
+    // which threads it carries is the session rule (#457): the caller's own,
+    // of every state, drafts (#374) included. Another user's thread on this
+    // node is never returned, so the Relace tab of a shared node shows each
+    // member their own work only.
+    let rows = await listSessions(db, { node_id: nodeId, user_id: identity.userId });
     if (!includeArchived) {
       rows = rows.filter((r) => r.state !== "archived");
     }
-    // A draft (#374) is a thread of the node like any other, so the list
-    // carries the caller's own (#463): a reload, a second window or any
-    // other surface of the same user sees it without a client-side draft
-    // map. Someone else's draft is never returned -- it is theirs until
-    // the first message promotes it.
-    rows = rows.filter((r) => r.state !== "draft" || r.user_id === identity.userId);
     const sessions = await Promise.all(rows.map(toSummary));
     respondJson(res, 200, { sessions });
   } catch (err) {
@@ -218,8 +211,8 @@ export async function handleListNodeSessions(
 }
 
 // Shared guard for the single-session routes below: resolves sessionAccess
-// and, on denial, writes the response itself (404 for SESSION_NOT_FOUND, 403
-// for SESSION_FORBIDDEN) and returns null so the caller can just `return`.
+// and, on denial, writes the response itself (404, SESSION_NOT_FOUND) and
+// returns null so the caller can just `return`.
 async function guardSessionAccess(
   res: ServerResponse,
   db: DbClient,
@@ -231,27 +224,48 @@ async function guardSessionAccess(
     return await sessionAccess(db, identity, sessionId, action);
   } catch (err) {
     if (err instanceof SessionAccessError) {
-      respondJson(res, err.code === "SESSION_NOT_FOUND" ? 404 : 403, { error: err.message, code: err.code });
+      respondApiError(res, 404, err.code, err.message);
       return null;
     }
     throw err;
   }
 }
 
-// Access-table stop actions (interrupt/suspend/close) performed by someone
-// other than the session's owner append a state_changed event naming the
-// actor -- "the chat shows who stopped it" (remote-hosts-and-task-queue-
-// design spec, "Visibility and control").
-async function noteIfNotOwner(existing: SessionRow, identity: RequestIdentity, sessionId: string): Promise<void> {
-  if (existing.user_id !== identity.userId) {
-    await getSessionRuntime().recordStoppedBy(sessionId, identity.userId);
-  }
+// guardSessionAccess followed by the body parse of the mutating
+// single-session routes; null once either has answered.
+async function guardSessionBody<T>(
+  req: IncomingMessage,
+  res: ServerResponse,
+  db: DbClient,
+  identity: RequestIdentity,
+  sessionId: string,
+  action: SessionAccessAction,
+  schema: ZodType<T>,
+): Promise<{ existing: SessionRow; body: T } | null> {
+  const existing = await guardSessionAccess(res, db, identity, sessionId, action);
+  if (!existing) return null;
+  const body = await parseJsonBody(req, res, schema);
+  if (!body) return null;
+  return { existing, body };
+}
+
+// A thread's node must exist and be visible to the caller; answers 404
+// NODE_NOT_FOUND and returns false otherwise.
+async function requireSessionNode(
+  res: ServerResponse,
+  db: DbClient,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<boolean> {
+  if (await findVisibleNodeRow(db, identity, nodeId)) return true;
+  respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
+  return false;
 }
 
 // Raw SessionRow, not the curated SessionSummary other routes return: this
 // is a brand new route with no web consumer yet, and CentralSessionStore's
 // getSessionRecord needs every column (host_id, handoff_hash,
-// agent_session_id, handoff_inline) -- session-runtime.ts's own
+// agent_session_id) -- session-runtime.ts's own
 // suspend()/resume() read session.handoff_hash/host_id off exactly this
 // call, so a lossy summary would silently corrupt agent-mode's own
 // suspend/resume behaviour.
@@ -285,15 +299,10 @@ const PatchSessionBody = z
     waiting_since: z.string().nullable().optional(),
     handoff_path: z.string().nullable().optional(),
     handoff_hash: z.string().nullable().optional(),
-    // #434: the suspend fallback's summary when this device had no mirror
-    // to write a handoff file into -- the same column the local half
-    // (suspendSession) writes, so a team-workspace suspend without a
-    // mirror resumes from the summary exactly as a personal one does.
-    handoff_inline: z.string().nullable().optional(),
     // Set together with state: "running" when a draft is promoted by its
     // first message (#374's CentralSessionStore.patchSession, in agent
-    // mode, forwards these here).
-    brief: z.string().optional(),
+    // mode, forwards these here). The message itself is content and stays
+    // on the device (#456, #462).
     runner: z.string().optional(),
     instance_id: z.string().nullable().optional(),
     name_is_custom: z.boolean().optional(),
@@ -315,10 +324,9 @@ export async function handlePatchSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, PatchSessionBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", PatchSessionBody);
+    if (!guarded) return;
+    const { existing, body } = guarded;
 
     const isPlainRename = body.name !== undefined && Object.keys(body).length === 1;
     if (isPlainRename) {
@@ -332,7 +340,7 @@ export async function handlePatchSession(
     // "running" and passes; a bare change on any other state is refused.
     const touchesRunner = body.runner !== undefined || body.instance_id !== undefined;
     if (touchesRunner && existing.state !== "draft" && body.state === undefined) {
-      respondJson(res, 409, { error: "runner and instance can only change on a draft", code: "SESSION_NOT_DRAFT" });
+      respondApiError(res, 409, "SESSION_NOT_DRAFT", "runner and instance can only change on a draft");
       return;
     }
     // #426: the live half of a model change (session-runtime.ts's in-memory
@@ -349,8 +357,6 @@ export async function handlePatchSession(
       waiting_since: body.waiting_since,
       handoff_path: body.handoff_path,
       handoff_hash: body.handoff_hash,
-      handoff_inline: body.handoff_inline,
-      brief: body.brief,
       runner: body.runner,
       instance_id: body.instance_id,
       name_is_custom: body.name_is_custom,
@@ -388,10 +394,9 @@ export async function handleSetSessionModel(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, SetSessionModelBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", SetSessionModelBody);
+    if (!guarded) return;
+    const { body } = guarded;
     const updated = await getSessionRuntime().setModelAndEffort(sessionId, body);
     respondJson(res, 200, updated);
   } catch (err) {
@@ -415,10 +420,9 @@ export async function handleRenameSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, RenameSessionBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", RenameSessionBody);
+    if (!guarded) return;
+    const { existing, body } = guarded;
     const updated = await getSessionRuntime().renameSession(sessionId, body.name);
     await logAudit(identity.userId, "session_rename", "session", sessionId, { from: existing.name, to: updated.name });
     respondJson(res, 200, await toSummary(updated));
@@ -439,20 +443,53 @@ export async function handleTransitionSessionState(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, StateBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "stop", StateBody);
+    if (!guarded) return;
+    const { existing, body } = guarded;
     const target: SessionState = body.state;
     try {
       const updated = await transitionSessionState(db, identity.userId, sessionId, target);
       respondJson(res, 200, await toSummary(updated));
     } catch (transitionErr) {
-      respondJson(res, 409, { error: "invalid_transition", detail: String(transitionErr) });
+      respondApiError(
+        res,
+        409,
+        "INVALID_SESSION_TRANSITION",
+        `invalid session state transition from ${existing.state} to ${target}`,
+        { from: existing.state, to: target },
+        { detail: String(transitionErr) },
+      );
     }
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/state`, err);
   }
+}
+
+// The resume-info answer, built once for both routers: #456 made
+// GET /sessions/:id/resume-info device-local (the inline handoff summary is
+// content and lives in this device's content.db), so agent-router.ts serves
+// it in a team workspace from the very same code.
+export async function sessionResumeInfoPayload(
+  session: SessionRow,
+  mirrorRoot: string | null,
+  requestedConfigDir: string | null,
+): Promise<SessionResumeInfo> {
+  // The instance's CLAUDE_CONFIG_DIR unless the caller named one: the
+  // profile's CLI keeps its transcripts there (#469). The instance registry
+  // is this device's runners.json, which is why this route is device-local.
+  const instanceEnv = session.instance_id ? ((await getInstanceEnv(session.instance_id)) ?? {}) : {};
+  const configDir = requestedConfigDir || instanceClaudeConfigDir(instanceEnv);
+  const inline = (await sessionContentStoreForProcess().getContent(session.id))?.handoff_inline ?? null;
+  const info = await getResumeInfo(session, mirrorRoot, { configDir, handoffInline: inline });
+  return {
+    session_id: session.id,
+    handoff_path: info.handoffPath,
+    handoff_changed: info.handoffChanged,
+    handoff_checkable: info.handoffCheckable,
+    conversation_resumable: info.conversationResumable,
+    generated_by: info.generatedBy,
+    reason: info.reason,
+  };
 }
 
 export async function handleGetSessionResumeInfo(
@@ -467,23 +504,14 @@ export async function handleGetSessionResumeInfo(
     const existing = await guardSessionAccess(res, db, identity, sessionId, "read");
     if (!existing) return;
     const mirrorRoot = existing.node_id ? await getMirrorPath(identity.userId, existing.node_id) : null;
-    // config_dir (#204): the profiles registry lives in the desktop app's
-    // config.json (Rust), unreachable from this server process -- the
-    // caller resolves the session's instance_id to a CLAUDE_CONFIG_DIR (when
-    // one applies) and passes it through so checkConversationResumable
-    // checks the right transcript location instead of always the default.
+    // config_dir (#204): the CLI keeps its transcripts under
+    // CLAUDE_CONFIG_DIR, so checkConversationResumable needs the profile
+    // this session runs under instead of the default location. A caller may
+    // still pass one (a desktop profile this process knows nothing about);
+    // otherwise sessionResumeInfoPayload takes it from the session's own
+    // provider instance (domain/runner/instances.ts).
     const configDir = url.searchParams.get("config_dir") || null;
-    const info = await getResumeInfo(existing, mirrorRoot, undefined, configDir);
-    const payload: SessionResumeInfo = {
-      session_id: existing.id,
-      handoff_path: info.handoffPath,
-      handoff_changed: info.handoffChanged,
-      handoff_checkable: info.handoffCheckable,
-      conversation_resumable: info.conversationResumable,
-      generated_by: info.generatedBy,
-      reason: info.reason,
-    };
-    respondJson(res, 200, payload);
+    respondJson(res, 200, await sessionResumeInfoPayload(existing, mirrorRoot, configDir));
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/resume-info`, err);
   }
@@ -513,9 +541,9 @@ export async function handleGetSessionSignals(
 // #427: the session's persisted scope, by node id, plus the anchor node's
 // name -- everything domain/session-handoff.ts's local suspend path reads
 // off the graph db to fill a summary's "Zápisový rozsah" / "Čtecí rozsah"
-// sections. A sync agent has neither table, so its suspend fallback
-// (domain/runner/suspend-fallback-central.ts) reads them here instead of
-// writing an empty-scope summary. A pure read of the record half, so it
+// sections. A sync agent has neither table, so the same suspend reads them
+// here instead of writing an empty-scope summary (#458: one implementation,
+// this route is its `scope` seam in a team workspace). A pure read of the record half, so it
 // follows the same read-tier gate resume-info and signals do.
 export async function handleGetSessionScope(
   req: IncomingMessage,
@@ -547,21 +575,45 @@ async function sessionNodeName(db: DbClient, nodeId: string): Promise<string | n
 
 // --- Tasks (runner batch): starting a session's task and driving its run --
 
+// #538: the optional `locale` every session request that causes text for a
+// person carries -- POST /sessions, a message, Předat, Pokračovat v nové
+// session. Shared with api/agent-router.ts and api/sessions-ws.ts.
+export const RequestLocale = z.enum(LOCALES).optional();
+// The body of Předat and Pokračovat v nové session: nothing but the locale,
+// and an empty body is fine.
+export const SessionLocaleBody = z.object({ locale: RequestLocale });
+
 // Shared with api/agent-router.ts's POST /sessions: one schema, both routers.
 // brief/runner optional (#374): a thread opens empty (spec rule 5, "no
 // modal, no required field") -- omitting brief creates a draft instead of
 // starting a task; runner is validated as required only in that case
 // (a plain zod .optional() cannot express "required together").
-export const StartSessionBody = z.object({
-  node_id: z.string().min(1),
-  brief: z.string().trim().min(1).optional(),
-  runner: z.string().min(1).optional(),
-  instance_id: z.string().min(1).nullable().optional(),
-  policy: z.enum(["default", "auto"]).optional(),
-  // #375: the thread's own model/effort override.
-  model: z.string().nullable().optional(),
-  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
-});
+export const StartSessionBody = z
+  .object({
+    node_id: z.string().min(1),
+    brief: z.string().trim().min(1).optional(),
+    runner: z.string().min(1).optional(),
+    instance_id: z.string().min(1).nullable().optional(),
+    policy: z.enum(["default", "auto"]).optional(),
+    // #375: the thread's own model/effort override.
+    model: z.string().nullable().optional(),
+    effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+    // #460 "Navázat na handoff": a node-relative handoff path, i.e. exactly
+    // what domain/session-handoff.ts's handoffRelativePath writes. The new
+    // thread starts from that file's content -- no brief, and the runner is
+    // resolved here rather than sent, so neither is accepted alongside it.
+    handoff_path: z
+      .string()
+      .regex(/^wip\/sessions\/[A-Za-z0-9_-]+-handoff\.md$/, "handoff_path must be wip/sessions/<id>-handoff.md")
+      .optional(),
+    // #538: the language of text the device writes for this thread (see
+    // SessionRequestOptions in domain/runner/session-runtime.ts).
+    locale: RequestLocale,
+  })
+  .refine((b) => !(b.handoff_path && b.brief), {
+    message: "handoff_path cannot be combined with brief",
+    path: ["handoff_path"],
+  });
 
 export async function handleStartSession(
   req: IncomingMessage,
@@ -573,9 +625,31 @@ export async function handleStartSession(
     const body = await parseJsonBody(req, res, StartSessionBody);
     if (!body) return;
 
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
-      respondJson(res, 404, { error: "node not found" });
+    if (!(await requireSessionNode(res, db, identity, body.node_id))) return;
+
+    // #460 "Navázat na handoff": a new thread from a handoff file of this
+    // node -- the runtime reads the file off this device's mirror, resolves
+    // the runner the way a draft's is resolved, and starts the first run
+    // with the summary as orientation.
+    if (body.handoff_path) {
+      try {
+        const { session, run } = await getSessionRuntime().startFromHandoff({
+          userId: identity.userId,
+          nodeId: body.node_id,
+          handoffPath: body.handoff_path,
+          policy: body.policy,
+          locale: body.locale,
+        });
+        await logAudit(identity.userId, "session_start", "session", session.id, {
+          node_id: body.node_id,
+          handoff_path: body.handoff_path,
+        });
+        const updated = await getSession(db, session.id);
+        respondJson(res, 201, { session: await toSummary(updated ?? session), run });
+      } catch (err) {
+        if (respondSessionRefusal(res, err)) return;
+        throw err;
+      }
       return;
     }
 
@@ -591,6 +665,7 @@ export async function handleStartSession(
         nodeId: body.node_id,
         model: body.model,
         effort: body.effort,
+        locale: body.locale,
       });
       await logAudit(identity.userId, "session_start", "session", session.id, {
         node_id: body.node_id,
@@ -600,15 +675,17 @@ export async function handleStartSession(
       return;
     }
     if (!body.runner) {
-      respondJson(res, 400, { error: "runner is required when brief is given", code: "RUNNER_REQUIRED" });
+      respondApiError(res, 400, "RUNNER_REQUIRED", "runner is required when brief is given");
       return;
     }
     if (!getAdapter(body.runner)) {
-      respondJson(res, 400, { error: `unknown runner '${body.runner}'`, code: "UNKNOWN_RUNNER" });
+      respondApiError(res, 400, "UNKNOWN_RUNNER", `unknown runner '${body.runner}'`, { runner: body.runner });
       return;
     }
     if (body.instance_id != null && (await getInstanceEnv(body.instance_id)) === null) {
-      respondJson(res, 400, { error: `unknown instance '${body.instance_id}'`, code: "UNKNOWN_INSTANCE" });
+      respondApiError(res, 400, "UNKNOWN_INSTANCE", `unknown instance '${body.instance_id}'`, {
+        instanceId: body.instance_id,
+      });
       return;
     }
 
@@ -621,6 +698,7 @@ export async function handleStartSession(
       policy: body.policy,
       model: body.model,
       effort: body.effort,
+      locale: body.locale,
     });
     await logAudit(identity.userId, "session_start", "session", session.id, {
       node_id: body.node_id,
@@ -648,7 +726,7 @@ export async function handleDeleteSession(
     const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
     if (!existing) return;
     if (existing.state !== "draft") {
-      respondJson(res, 409, { error: "only a draft session can be deleted", code: "NOT_A_DRAFT" });
+      respondApiError(res, 409, "NOT_A_DRAFT", "only a draft session can be deleted");
       return;
     }
     await deleteDraftSession(db, identity.userId, sessionId);
@@ -658,8 +736,9 @@ export async function handleDeleteSession(
   }
 }
 
-const MessageBody = z.object({
+export const MessageBody = z.object({
   text: z.string().trim().min(1),
+  locale: RequestLocale,
 });
 
 export async function handleSendSessionMessage(
@@ -670,22 +749,16 @@ export async function handleSendSessionMessage(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, MessageBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", MessageBody);
+    if (!guarded) return;
+    const { body } = guarded;
 
     try {
-      await getSessionRuntime().sendMessage(sessionId, body.text);
+      await getSessionRuntime().sendMessage(sessionId, body.text, { locale: body.locale });
     } catch (err) {
-      if (err instanceof NoRunnerAvailableError) {
-        respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
-        return;
-      }
-      if (err instanceof Error && err.message.includes("has no live run")) {
-        respondJson(res, 409, { error: err.message, code: "NO_LIVE_RUN" });
-        return;
-      }
+      // #497: a resume with nothing to continue from on this device; #530:
+      // NO_LIVE_RUN from the error's type.
+      if (respondSessionRefusal(res, err)) return;
       throw err;
     }
     await logAudit(identity.userId, "session_message", "session", sessionId, {});
@@ -696,7 +769,7 @@ export async function handleSendSessionMessage(
 }
 
 const AnswerBody = z.object({
-  decision: z.object({ value: z.union([z.string(), z.boolean()]) }),
+  decision: z.object({ value: z.union([z.string(), z.boolean(), z.record(z.string(), z.string())]) }),
 });
 
 export async function handleAnswerSessionQuestion(
@@ -708,15 +781,14 @@ export async function handleAnswerSessionQuestion(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, AnswerBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", AnswerBody);
+    if (!guarded) return;
+    const { body } = guarded;
 
     const runtime = getSessionRuntime();
     const pending = runtime.pendingQuestion(sessionId);
     if (!pending || pending.request_id !== requestId) {
-      respondJson(res, 409, { error: "no pending question with this request_id", code: "NO_PENDING_QUESTION" });
+      respondApiError(res, 409, "NO_PENDING_QUESTION", "no pending question with this request_id");
       return;
     }
     const decision: QuestionDecision = { by: identity.userId, value: body.decision.value, at: new Date().toISOString() };
@@ -740,7 +812,6 @@ export async function handleInterruptSession(
     if (!existing) return;
     await getSessionRuntime().interrupt(sessionId);
     await logAudit(identity.userId, "session_interrupt", "session", sessionId, {});
-    await noteIfNotOwner(existing, identity, sessionId);
     const updated = await getSession(db, sessionId);
     respondJson(res, 200, { session: await toSummary(updated ?? existing) });
   } catch (err) {
@@ -762,13 +833,46 @@ export async function handleContinueSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "resume");
-    if (!existing) return;
-    const { session, run } = await getSessionRuntime().continueSession(sessionId);
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "resume", SessionLocaleBody);
+    if (!guarded) return;
+    const { body } = guarded;
+    const { session, run } = await getSessionRuntime().continueSession(sessionId, { locale: body.locale });
     await logAudit(identity.userId, "session_continue", "session", sessionId, { new_session_id: session.id });
     respondJson(res, 200, { session: await toSummary(session), run });
   } catch (err) {
+    // Same refusal mapping the agent router's continue route applies.
+    if (respondSessionRefusal(res, err)) return;
     respondError(res, `${req.method} /sessions/${sessionId}/continue`, err);
+  }
+}
+
+// #459 "Předat": hands the thread to another machine through its handoff
+// file. Device-local -- the run, the transcript the summary is built from
+// and the node's mirror are all on this device; only the record patch
+// reaches the central server, through the runtime's own store. The whole
+// operation is the runtime's (agent-router.ts serves the same verb in
+// sync-agent mode, sessions-ws.ts the same frame).
+export async function handleHandoffSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "stop", SessionLocaleBody);
+    if (!guarded) return;
+    const { body } = guarded;
+    try {
+      const { session, handoff_path } = await getSessionRuntime().handoff(sessionId, { locale: body.locale });
+      await logAudit(identity.userId, "session_handoff", "session", sessionId, { handoff_path });
+      respondJson(res, 200, { session: await toSummary(session), handoff_path });
+    } catch (err) {
+      if (respondSessionRefusal(res, err)) return;
+      throw err;
+    }
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}/handoff`, err);
   }
 }
 
@@ -784,7 +888,6 @@ export async function handleCloseSession(
     if (!existing) return;
     const updated = await getSessionRuntime().closeSession(sessionId);
     await logAudit(identity.userId, "session_close", "session", sessionId, {});
-    await noteIfNotOwner(existing, identity, sessionId);
     respondJson(res, 200, { session: await toSummary(updated) });
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/close`, err);
@@ -814,7 +917,15 @@ export async function handleListSessionEvents(
     const rows = await getSessionRuntime().listEvents(sessionId, { after, limit });
     const events = rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
     const nextAfter = rows.length === limit ? rows[rows.length - 1].seq : null;
-    respondJson(res, 200, { events, next_after: nextAfter });
+    // #458: the transcript lives on the device that ran the thread. A
+    // device that did not run it has no rows to answer with and says where
+    // they are instead of showing an empty chat.
+    const transcriptHost = transcriptHostLabel(existing.host_id, rows.length);
+    respondJson(res, 200, {
+      events,
+      next_after: nextAfter,
+      ...(transcriptHost ? { transcript_host: transcriptHost } : {}),
+    });
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/events`, err);
   }
@@ -839,11 +950,13 @@ const RecordSessionBody = z.union([
     // v2 rule 5: resolved on the device, recorded here.
     runner: z.string().nullable().optional(),
     instance_id: z.string().nullable().optional(),
+    // #539: the language of the device's POST /sessions; the default name
+    // is written in it (English when an older sidecar sends none).
+    locale: RequestLocale,
   }),
   z.object({
     draft: z.literal(false).optional(),
     node_id: z.string().min(1),
-    brief: z.string().nullable().optional(),
     runner: z.string().min(1),
     instance_id: z.string().nullable().optional(),
     host_id: z.string().nullable().optional(),
@@ -866,11 +979,7 @@ export async function handleCreateSessionRecord(
     const body = await parseJsonBody(req, res, RecordSessionBody);
     if (!body) return;
 
-    const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
-    if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
+    if (!(await requireSessionNode(res, db, identity, body.node_id))) return;
 
     const store = new DbSessionStore(db);
     const session =
@@ -882,11 +991,11 @@ export async function handleCreateSessionRecord(
             effort: body.effort,
             runner: body.runner ?? null,
             instance_id: body.instance_id ?? null,
+            locale: body.locale,
           })
         : await store.createSession({
             node_id: body.node_id,
             user_id: identity.userId,
-            brief: body.brief ?? null,
             runner: body.runner,
             instance_id: body.instance_id ?? null,
             host_id: body.host_id ?? null,
@@ -918,10 +1027,9 @@ export async function handleCreateSessionRun(
 ): Promise<void> {
   try {
     const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, CreateRunBody);
-    if (!body) return;
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "message", CreateRunBody);
+    if (!guarded) return;
+    const { body } = guarded;
 
     const run = await new DbSessionStore(db).createRun({
       session_id: sessionId,
@@ -959,7 +1067,7 @@ export async function handlePatchSessionRun(
     const store = new DbSessionStore(db);
     const runs = await store.listRuns(sessionId);
     if (!runs.some((r) => r.id === runId)) {
-      respondJson(res, 404, { error: "run not found" });
+      respondApiError(res, 404, "RUN_NOT_FOUND", "run not found");
       return;
     }
     const body = await parseJsonBody(req, res, PatchRunBody);
@@ -989,37 +1097,3 @@ export async function handleListSessionRuns(
   }
 }
 
-// The payload's per-event shape is intentionally loose (kind + arbitrary
-// payload): the wire format IS the CanonicalEvent union, but this route's
-// only caller is CentralSessionStore forwarding events the local session
-// runtime already constructed and validated against that union -- the
-// stricter per-kind shape checking (capEventPayload's caps, etc.) lives in
-// DbSessionStore.appendEvents itself, same as every other appendEvents call.
-const AppendEventsBody = z.object({
-  run_id: z.string().nullable(),
-  events: z.array(z.object({ kind: z.string(), payload: z.unknown() })).min(1),
-});
-
-export async function handleAppendSessionEvents(
-  req: IncomingMessage,
-  res: ServerResponse,
-  identity: RequestIdentity,
-  sessionId: string,
-): Promise<void> {
-  try {
-    const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
-    if (!existing) return;
-    const body = await parseJsonBody(req, res, AppendEventsBody);
-    if (!body) return;
-
-    const seqs = await new DbSessionStore(db).appendEvents(
-      sessionId,
-      body.run_id,
-      body.events as CanonicalEvent[],
-    );
-    respondJson(res, 200, { seqs });
-  } catch (err) {
-    respondError(res, `${req.method} /sessions/${sessionId}/events`, err);
-  }
-}

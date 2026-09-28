@@ -4,7 +4,7 @@
 // src/lib.rs). No-ops (or empty results) outside Tauri — a plain browser
 // build has no workspace concept.
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./tauri-invoke";
 import { isTauri } from "./backend-url";
 
 export interface WorkspaceInfo {

@@ -7,16 +7,16 @@
 import { getDb } from "../infra/db.js";
 import {
   autoArchiveClosedSessions,
-  closeStaleRunningSessionsOnBoot,
+  suspendStaleRunningSessionsOnBoot,
   pruneStaleDraftSessions,
 } from "../domain/sessions.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 
 export async function sweepStaleRunningSessionsOnBoot(): Promise<void> {
   try {
-    const closed = await closeStaleRunningSessionsOnBoot(getDb());
-    if (closed > 0) {
-      console.log(`[boot] session sweep closed ${closed} stale 'running' session(s)`);
+    const suspended = await suspendStaleRunningSessionsOnBoot(getDb());
+    if (suspended > 0) {
+      console.log(`[boot] session sweep suspended ${suspended} stale 'running' session(s)`);
     }
   } catch (e) {
     console.error("[boot] session sweep failed:", e);
@@ -38,9 +38,8 @@ export async function sweepStaleDraftSessionsOnBoot(): Promise<void> {
 }
 
 // Closed sessions older than 30 days move to 'archived' (a view filter the
-// Relace tab hides behind "Zobrazit archivované", never a delete), and an
-// archived session's event log is dropped after 90 days. Runs at boot of the
-// process that owns the graph db, like the two sweeps above.
+// Relace tab hides behind "Zobrazit archivované", never a delete). Runs at
+// boot of the process that owns the graph db, like the two sweeps above.
 export async function sweepArchivedSessionsOnBoot(): Promise<void> {
   try {
     const archived = await autoArchiveClosedSessions(getDb());

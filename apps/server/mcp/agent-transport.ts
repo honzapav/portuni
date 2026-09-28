@@ -45,7 +45,7 @@ import {
   isInitializeRequest,
   type ClientCapabilities,
 } from "@modelcontextprotocol/sdk/types.js";
-import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
+import { parseMcpBody, routeToExistingSession, writeInternalError } from "./http-session.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { McpTransport } from "./transport.js";
 import { INSTRUCTIONS } from "./server.js";
@@ -527,8 +527,6 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
     res: ServerResponse,
     identity: RequestIdentity,
   ): Promise<void> {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
     // Pre-registration leak guard: the upstream Client is opened BEFORE the
     // session entry exists (storage happens in onsessioninitialized during a
     // successful initialize). If the first request is not an initialize, or
@@ -539,45 +537,12 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
     let upstream: Client | null = null;
     let tracked = false;
 
-    let body: unknown;
-    try {
-      body = await parseBody(req);
-    } catch (err) {
-      if (err instanceof RequestBodyTooLargeError) {
-        res.writeHead(413, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Request body too large" }));
-        return;
-      }
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid JSON body" }));
-      return;
-    }
+    const parsed = await parseMcpBody(req, res);
+    if (!parsed.ok) return;
+    const body = parsed.body;
 
     try {
-      const existing = sessionId ? sessions.get(sessionId) : undefined;
-      if (existing) {
-        // Session pinning: reject cross-user session reuse.
-        if (existing.userId !== identity.userId) {
-          res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Session belongs to a different user" }));
-          return;
-        }
-        existing.lastUsedAt = Date.now();
-        await existing.transport.handleRequest(req, res, body);
-        return;
-      }
-
-      if (sessionId && !existing) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Session not found" }));
-        return;
-      }
-
-      if (sessions.size >= MAX_SESSIONS) {
-        res.writeHead(503, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Session capacity reached" }));
-        return;
-      }
+      if (await routeToExistingSession(sessions, MAX_SESSIONS, req, res, identity, body)) return;
 
       // #272: refuse a non-initialize first request BEFORE opening the
       // upstream connection. openUpstream()'s client.connect() always
@@ -621,7 +586,7 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         res.writeHead(503, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
-            error: "Central MCP server unreachable; refusing to start agent session",
+            error: "Central MCP server unreachable; refusing to start agent session", code: "CENTRAL_UNREACHABLE",
             reason,
           }),
         );
@@ -679,10 +644,7 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
     } catch (error) {
       console.error("Agent MCP error:", error);
       if (upstream && !tracked) upstream.close().catch(() => undefined);
-      if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Internal server error" }));
-      }
+      writeInternalError(res);
     }
   }
 

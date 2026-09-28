@@ -60,7 +60,7 @@ describe("the new-folder form", () => {
   it("refuses a path a real folder already holds", () => {
     const r = submitForm(EMPTY, "wip/navrhy", files);
     assert.equal(r.ok, false);
-    assert.match(r.ok === false ? r.reason : "", /už existuje/);
+    assert.deepEqual(r.ok === false ? r.reason : null, { code: "folder_exists", name: "wip/navrhy" });
   });
 
   it("refuses a path a virtual folder already holds", () => {
@@ -102,15 +102,15 @@ describe("folder row actions", () => {
     const actions = folderActionCheck("wip/hotovo", files, true);
     assert.equal(actions.visible, true);
     assert.equal(actions.rename.enabled, false);
-    assert.match(actions.rename.reason ?? "", /neregistrovaný soubor final\.png/);
+    assert.deepEqual(actions.rename.reason, { code: "folder_has_untracked", name: "final.png" });
   });
 
   it("disables both actions without a mirror on this device (rule 9)", () => {
     const actions = folderActionCheck("wip/navrhy", files, false);
     assert.equal(actions.rename.enabled, false);
     assert.equal(actions.subfolder.enabled, false);
-    assert.equal(actions.rename.reason, "Nejdřív vytvoř mirror uzlu");
-    assert.equal(actions.subfolder.reason, "Nejdřív vytvoř mirror uzlu");
+    assert.deepEqual(actions.rename.reason, { code: "no_mirror" });
+    assert.deepEqual(actions.subfolder.reason, { code: "no_mirror" });
   });
 });
 
@@ -161,7 +161,7 @@ describe("renaming a folder", () => {
       occupiedOf(withUntracked),
     );
     assert.equal(r.ok, false);
-    assert.match(r.ok === false ? r.reason : "", /neregistrovaný soubor scratch\.txt/);
+    assert.deepEqual(r.ok === false ? r.reason : null, { code: "folder_has_untracked", name: "scratch.txt" });
   });
 
   it("renames a virtual folder in the plan and retargets what points at it", () => {
@@ -258,7 +258,7 @@ describe("what the plan bar is gated on (#452)", () => {
     assert.equal(planChangeCount(both), 3);
   });
 
-  it("„Použít“ runs the moves only, so a folder-only plan leaves it disabled", () => {
+  it("Apply runs the moves only, so a folder-only plan leaves it disabled", () => {
     assert.equal(planApplyCount(onlyFolder), 0);
     assert.equal(planApplyCount(onlyMove), 1);
     assert.equal(planApplyCount(both), 1);

@@ -13,7 +13,6 @@ function row(id: string, over: Partial<OverviewSessionRow> = {}): OverviewSessio
     session_type: "interactive_task",
     cli: null,
     instance_id: null,
-    brief: null,
     runner: "claude",
     waiting_since: null,
     state: "running",
@@ -42,8 +41,8 @@ describe("splitThreadsAndCli", () => {
   it("keeps threads, counts CLI and chat sessions with how many run", () => {
     const r = splitThreadsAndCli([
       row("t1"),
-      row("c1", { cli: "claude" }),
-      row("c2", { cli: "claude", state: "suspended" }),
+      row("c1", { cli: "claude", runner: null }),
+      row("c2", { cli: "claude", runner: null, state: "suspended" }),
       row("ch", { session_type: "interactive_chat" }),
     ]);
     assert.deepEqual(
@@ -55,11 +54,12 @@ describe("splitThreadsAndCli", () => {
 });
 
 describe("overviewCounters", () => {
-  it("counts the caller's own threads by need, passes attention and unsynced through", () => {
+  // #457: the payload already carries the caller's own threads only, so the
+  // counter takes no identity -- a CLI session is still not a thread.
+  it("counts threads by need, passes attention and unsynced through", () => {
     const c = overviewCounters(
-      [row("w", { waiting_since: "x" }), row("r"), row("other", { user_id: "U2" }), row("cli", { cli: "claude" })],
+      [row("w", { waiting_since: "x" }), row("r"), row("cli", { cli: "claude", runner: null })],
       [row("s", { state: "suspended" })],
-      "U1",
       4,
       3,
     );

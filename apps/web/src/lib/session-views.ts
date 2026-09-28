@@ -2,12 +2,14 @@
 // Práce sidebar, Přehled reading live session state): the compact status
 // chip used in list/sub-row contexts (distinct wording from
 // lib/session-chat.ts's sessionStatusChip, which is SessionChat's own
-// header), client-side echoes of the #321 access table for gating action
-// buttons, live-state overlay, and Přehled's inbox ordering. Dependency-
+// header), live-state overlay, and Přehled's inbox ordering. Dependency-
 // free so test/session-views-helpers.test.ts can exercise it directly.
 
+import type { TFunction } from "i18next";
 import type { SessionState, OverviewSessionRow } from "../types";
 import type { SessionStateMessage } from "./sessions-client";
+
+type CommonT = TFunction<"common">;
 
 export type SessionRowChip = { label: string; color: string; pulsing: boolean };
 
@@ -15,14 +17,22 @@ export type SessionRowChip = { label: string; color: string; pulsing: boolean };
 // sub-rows, the full one for SessionChat's own header.
 export type SessionChipVariant = "row" | "header";
 
-const STATE_LABEL: Record<SessionChipVariant, Record<SessionState, string>> = {
-  row: { running: "Běží", suspended: "Pozastaveno", closed: "Hotovo", archived: "Archiv", draft: "Nový" },
+// Complete Records of literal selectors, so a state added to SessionState
+// fails the typecheck until it has a label in both variants.
+const STATE_LABEL: Record<SessionChipVariant, Record<SessionState, (t: CommonT) => string>> = {
+  row: {
+    running: (t) => t(($) => $.thread.state.row.running, { ns: "common" }),
+    suspended: (t) => t(($) => $.thread.state.row.suspended, { ns: "common" }),
+    closed: (t) => t(($) => $.thread.state.row.closed, { ns: "common" }),
+    archived: (t) => t(($) => $.thread.state.row.archived, { ns: "common" }),
+    draft: (t) => t(($) => $.thread.state.row.draft, { ns: "common" }),
+  },
   header: {
-    running: "Běží",
-    suspended: "Pozastaveno",
-    closed: "Uzavřeno",
-    archived: "Archivováno",
-    draft: "Nový",
+    running: (t) => t(($) => $.thread.state.header.running, { ns: "common" }),
+    suspended: (t) => t(($) => $.thread.state.header.suspended, { ns: "common" }),
+    closed: (t) => t(($) => $.thread.state.header.closed, { ns: "common" }),
+    archived: (t) => t(($) => $.thread.state.header.archived, { ns: "common" }),
+    draft: (t) => t(($) => $.thread.state.header.draft, { ns: "common" }),
   },
 };
 
@@ -39,26 +49,13 @@ const ROW_STATE_COLOR: Record<SessionState, string> = {
 export function sessionRowChip(
   state: SessionState,
   waitingSince: string | null,
+  t: CommonT,
   variant: SessionChipVariant = "row",
 ): SessionRowChip {
   if (state === "running" && waitingSince !== null) {
-    return { label: "Čeká na mě", color: "var(--color-node-process)", pulsing: true };
+    return { label: t(($) => $.thread.state.waiting, { ns: "common" }), color: "var(--color-node-process)", pulsing: true };
   }
-  return { label: STATE_LABEL[variant][state], color: ROW_STATE_COLOR[state], pulsing: state === "running" };
-}
-
-// Client-side echo of #321's access table, for deciding which action
-// buttons to offer -- the server is the real enforcement point (a refused
-// action just surfaces its own error), this only avoids showing a button
-// that would always 403. read (seeing the row at all, since every caller
-// here already fetched it via a node/list endpoint gated on node
-// visibility) is always true; message/resume are owner-only; stop
-// (interrupt/suspend/close) is the owner or anyone with manage scope.
-export type SessionRowAccess = { canResume: boolean; canPauseOrClose: boolean };
-
-export function sessionRowAccess(ownerId: string, meId: string | null, canManage: boolean): SessionRowAccess {
-  const isOwner = meId !== null && ownerId === meId;
-  return { canResume: isOwner, canPauseOrClose: isOwner || canManage };
+  return { label: STATE_LABEL[variant][state](t), color: ROW_STATE_COLOR[state], pulsing: state === "running" };
 }
 
 // Overlays a live `session_state` frame onto a REST-fetched summary --
@@ -86,36 +83,25 @@ export function mergeLiveSessionStates<T extends { id: string; state: SessionSta
   return sessions.map((s) => applyLiveSessionState(s, liveStates));
 }
 
-// Přehled's Relace card, restricted to the caller's own sessions (the
-// team-wide list is the hosts spec's job, not here): waiting ("Čeká na
-// mě") first, then running, then suspended -- each bucket keeps the
-// server's own last_active_at-descending order.
+// Přehled's Relace card: waiting ("Čeká na mě") first, then running, then
+// suspended -- each bucket keeps the server's own last_active_at-descending
+// order. Since #457 GET /overview carries the caller's own threads only, so
+// there is nothing left to filter out here.
 export function sortInboxSessions(
   running: readonly OverviewSessionRow[],
   suspended: readonly OverviewSessionRow[],
-  meId: string | null,
 ): OverviewSessionRow[] {
-  const mine = (s: OverviewSessionRow) => meId !== null && s.user_id === meId;
-  const waiting = running.filter((s) => mine(s) && s.waiting_since !== null);
-  const active = running.filter((s) => mine(s) && s.waiting_since === null);
-  const paused = suspended.filter(mine);
-  return [...waiting, ...active, ...paused];
+  const waiting = running.filter((s) => s.waiting_since !== null);
+  const active = running.filter((s) => s.waiting_since === null);
+  return [...waiting, ...active, ...suspended];
 }
 
-// SessionsSection's `sessions?.length` count of running rows, live
-// (StatusFooter's running count) -- counts distinct
-// session ids currently reporting `running` via session_state, regardless
-// of whether this device has ever fetched their full SessionSummary.
-export function countRunningSessions(liveStates: Readonly<Record<string, SessionStateMessage>>): number {
-  return Object.values(liveStates).filter((s) => s.state === "running").length;
-}
-
-// The persistent session Práce shows for a node: the requested one when
-// it is still live, else the newest live one, else nothing. "draft" counts
-// as live too (#374: "a thread opens empty") -- a draft is never in the
-// server-fetched list on its own (every list excludes it), so it only ever
-// surfaces here when the caller merges in the one it just created locally
-// and asks for it by id.
+// The persistent session Práce shows for a node: the requested one when it
+// is still live, else the newest row of the first non-empty bucket (what
+// selectNodeThreads orders), else nothing. "draft" counts as live too
+// (#374: "a thread opens empty") -- since #463 the node's session list
+// carries the caller's own drafts, so a draft reaches this pick like every
+// other thread, from the store.
 export function pickOpenChatSession<T extends { id: string; state: SessionState }>(
   sessions: readonly T[],
   requestedId: string | null,
@@ -143,22 +129,21 @@ export function requestChatSession(
   return { ...prev, [session.node_id]: session.id };
 }
 
-// ---------------------------------------------------------------- #412
-
-// The Práce sidebar's per-node thread map (App.tsx's openSessionsByNode).
-// A thread only ever reached it through the per-node refetch keyed on the
-// open-node set, so a thread started from the node detail (the Relace
-// tab's "Navázat", the detail's "Nový úkol") never showed up under its
-// node -- nothing changed that set. These are the three folds that keep
-// the map current without a refetch-everything pass.
-
 // ---------------------------------------------------------------- v2
 
 // v2 rule 7 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
 // a thread is a persistent task session the app opened; a hand-opened CLI
-// session (cli set) has no sub-row in Práce, Relace lists it.
-export function isThreadSession(s: { session_type: string; cli: string | null }): boolean {
-  return s.session_type === "interactive_task" && s.cli === null;
+// session has no sub-row in Práce, Relace lists it. The app opens a thread
+// through the runner, so `runner` is what tells them apart: `cli` does not,
+// because the thread's own agent fills it in when it connects to the MCP
+// server (bindExistingSessionHandshake), and the thread would drop out of
+// Práce on the next list refetch. A hand-opened session never has a runner.
+export function isThreadSession(s: {
+  session_type: string;
+  cli: string | null;
+  runner: string | null;
+}): boolean {
+  return s.session_type === "interactive_task" && (s.runner !== null || s.cli === null);
 }
 
 // v2 rule 6: the accent bar and the surface-2 fill mark exactly one row --
@@ -185,11 +170,49 @@ export function hostDisplayName(session: {
 // ---------------------------------------------------------------- #429
 
 // A thread renders as chat while it is steerable: running (waiting
-// included), suspended (the composer disables, Nahodit resumes) and draft
-// (#374, rule 5: a thread opens empty). closed and archived are history,
-// so their node falls back to the plain detail surface.
+// included), suspended (the next message resumes it) and draft (#374,
+// rule 5: a thread opens empty). These are the Práce sidebar's threads.
+// closed and archived are history, so their node falls back to the plain
+// detail surface -- except a closed thread the user opens on purpose
+// (#498: Relace's Otevřít chat), see isOpenableChatState.
 export function isChatSessionState(state: SessionState): boolean {
   return state === "running" || state === "suspended" || state === "draft";
+}
+
+// #498: Uzavřít is "done, off the active lists", not "never again". A
+// closed thread is not in the sidebar, but opening it from Relace shows its
+// chat, and writing into it reopens it (the server resumes it the way it
+// resumes a suspended one). An archived thread has no chat at all.
+export function isOpenableChatState(state: SessionState): boolean {
+  return isChatSessionState(state) || state === "closed";
+}
+
+// #498: the composer takes a message in every state but archived -- a
+// closed thread reopens on the message.
+export function threadAcceptsMessages(state: SessionState): boolean {
+  return state !== "archived";
+}
+
+// The composer's placeholder for the thread's own state (a question
+// waiting or a transcript elsewhere say their own thing first): every
+// state that takes a message (threadAcceptsMessages) invites one.
+const COMPOSER_PLACEHOLDER: Record<SessionState, (t: CommonT) => string> = {
+  draft: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  running: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  suspended: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  closed: (t) => t(($) => $.thread.composer.placeholder.open, { ns: "common" }),
+  archived: (t) => t(($) => $.thread.composer.placeholder.archived, { ns: "common" }),
+};
+
+export function composerStatePlaceholder(state: SessionState, t: CommonT): string {
+  return COMPOSER_PLACEHOLDER[state](t);
+}
+
+// #498: Relace's Otevřít chat, the same for a closed thread as for a
+// suspended one (there is no Navázat anymore -- the closed thread has a
+// composer).
+export function sessionRowOpensChat(state: SessionState): boolean {
+  return state === "running" || state === "suspended" || state === "closed";
 }
 
 // The pane Práce shows for the selected node: the open session, but only
@@ -204,47 +227,24 @@ export function shownChatSessionId(
   openSession: { id: string; node_id: string | null; state: SessionState } | null,
 ): string | null {
   if (!selectedNodeId || !openSession) return null;
-  if (!isChatSessionState(openSession.state)) return null;
+  if (!isOpenableChatState(openSession.state)) return null;
   if (openSession.node_id !== selectedNodeId) return null;
   return openSession.id;
 }
 
-// The threads that keep a mounted SessionChat in this window (#429, the
-// task-surface spec's "mounted for every open thread and toggled"): every
-// chat-eligible thread of an open node, plus the shown one, which the
-// per-node map can still be missing (its own fetch resolved first, or it
-// is a local draft of a node whose list has not come back yet).
-//
-// Order is the open-node order, then each node's own list order, so the
-// rendered keys are stable across a switch -- React keeps a keyed child
-// mounted when only its position or props change, and that is what makes
-// switching threads free of a re-subscribe. The shown thread's own object
-// wins over the map's copy of it: it carries whatever the chat has since
-// updated (model, effort, live state), the map's copy is whatever the
-// last refetch returned -- except the name, which the map's copy carries
-// from the live channel (a rename in the Relace tab or another window
-// reaches this window only that way), so it is overlaid onto the shown one.
-type NodeSession = { id: string; node_id: string | null; state: SessionState; name?: string };
+// ---------------------------------------------------------------- #506
 
-export function mountedChatSessions<T extends NodeSession>(
-  byNode: Readonly<Record<string, T[]>>,
-  openNodeIds: readonly string[],
-  shown: T | null,
-): T[] {
-  const mounted: T[] = [];
-  const seen = new Set<string>();
-  for (const nodeId of openNodeIds) {
-    for (const session of byNode[nodeId] ?? []) {
-      if (!isChatSessionState(session.state) || seen.has(session.id)) continue;
-      seen.add(session.id);
-      if (shown && shown.id === session.id) {
-        mounted.push(session.name !== undefined && session.name !== shown.name ? { ...shown, name: session.name } : shown);
-      } else {
-        mounted.push(session);
-      }
-    }
-  }
-  if (shown && isChatSessionState(shown.state) && !seen.has(shown.id)) mounted.push(shown);
-  return mounted;
+// What the close control on a thread does, the same on every surface that
+// offers it (the sidebar's Uzly and Stav rows, the chat header, the Relace
+// row): a draft is deleted outright (api.ts's deleteDraftSession), a
+// running or suspended thread is Uzavřít -- both without a dialog (#498: a
+// closed thread reopens by writing into it, so only an unfinished turn can
+// be lost, the same as with Stop) -- and a closed or archived one has no
+// close control at all.
+export type ThreadCloseAction = "delete" | "close" | null;
+
+export function threadCloseAction(state: SessionState): ThreadCloseAction {
+  if (state === "draft") return "delete";
+  if (state === "running" || state === "suspended") return "close";
+  return null;
 }
-

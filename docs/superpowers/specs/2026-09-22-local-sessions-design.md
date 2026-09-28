@@ -87,7 +87,19 @@ and stays so: only the owner sees the record.
   content; its `session_events` and the two columns in its graph db are
   dropped by the same migration as central's, after a one-time copy into
   `content.db` on first boot (personal workspaces are one user's own
-  machine; the copy keeps their history).
+  machine; the copy keeps their history). Both entry points that can be a
+  personal workspace (`desktop.ts`, the standalone `index.ts`) run the same
+  boot step. The central server never opens a `content.db`.
+- A team workspace's history is kept the same way: on its first boot a
+  sync agent downloads from the central server the legacy content (events,
+  `brief`, `handoff_inline`) of the threads its user owns that ran on this
+  device (the record's `host_id` or a run's), and writes it into
+  `content.db`. Two central routes serve it, owner-only
+  (`GET /sessions/legacy-content?host_id=…`, `GET
+  /sessions/:id/legacy-content`), through two `CentralClient` methods. The
+  central copy stays until the central migration. Both imports are
+  per thread and one transaction each, keyed on `device_schema.version`,
+  and a failure leaves the version unchanged so the next boot retries.
 - `SessionStore` splits: `appendEvents`, `listEvents`, `getContent`,
   `setContent` go to a `SessionContentStore` backed by `content.db` in
   both workspaces; every other method stays on the record store
@@ -105,6 +117,12 @@ and stays so: only the owner sees the record.
   central server when the device was gone is removed: the central
   server has no content to summarise. A thread whose device disappears
   mid-run stays `running` until the device's boot sweep (below) ends it.
+- Until the central migration, a sidecar released before this change
+  still sends content to the central server (`POST /sessions/:id/events`,
+  `brief`/`handoff_inline` on the record routes) and reads it back from
+  there (`GET /sessions/:id/events`, `resume-info`). On the central server
+  both sides use the same legacy graph-db rows, so such a sidecar reads
+  what it wrote.
 - `--resume` and `checkConversationResumable` are unchanged; they read
   the CLI's own transcript on the device.
 
@@ -132,18 +150,22 @@ gone from `OverviewSessionRow`, the row shows `name`.
 `content.db`; on a device that did not run the thread it answers 200
 with an empty list and `transcript_host: <host_id>` from the record,
 which the chat shows as "Transkript je na zařízení X". No route moves
-between the central and device lists; `device-local-routes.json` is
-unchanged.
+between the central and device lists. The two legacy-content routes
+are central and are listed in the `central` section of
+`device-local-routes.json`.
 
 ## Boot sweeps
 
 The central server's `sweepStaleRunningSessionsOnBoot`,
 `sweepStaleDraftSessionsOnBoot` and `sweepArchivedSessionsOnBoot` stay
-(they are record maintenance). The device's `sweepOrphanedRunsOnBoot`
-stays. With the central summary fallback gone, the device's sweep is
-what ends a run whose process died: it patches the run `host_lost` and
-the record `suspended` with no handoff, and appends the `run_ended`
-event locally.
+(they are record maintenance). On the central server the running sweep,
+like the MCP transport's close, suspends only a session whose only life
+was its MCP connection to that process (no runner, no open run), record
+only and with no summary. A thread a device drives is never suspended
+there. The device's `sweepOrphanedRunsOnBoot` stays. With the central
+summary fallback gone, the device's sweep is what ends a run whose
+process died: it patches the run `host_lost` and the record `suspended`
+with no handoff, and appends the `run_ended` event locally.
 
 ## The central migration
 
@@ -152,9 +174,12 @@ One `MIGRATIONS` entry and the matching `PG_BASELINE_DDL` change, per
 `handoff_inline` (one `executeMultiple`, `DDL_SESSIONS` and the 030/036
 rebuild history updated to the new shape), `DROP TABLE session_events`.
 The DDL replay in `schema.ts` and `db-export.ts`/import lose the table.
-The rows in Turso today are discarded. The personal-workspace copy into
-`content.db` runs in `desktop.ts` before this migration, keyed on
-`device_schema.version`.
+The rows in Turso are not discarded before every device has kept its
+share: each sync agent downloads the legacy content of its user's
+threads that ran on it on its first boot after the sidecar release (see
+"The content store on the device"), and the personal-workspace copy into
+`content.db` runs at boot as well, both keyed on
+`device_schema.version`. The migration drops the rows only after that.
 
 ## Handing work to another machine
 
@@ -167,7 +192,12 @@ sidebar row and the chat header:
   called deliberately: summary written to the handoff file in the node,
   file registered so the next sync carries it, record `suspended`. On
   an already suspended thread with a handoff file, a no-op that answers
-  the file's path. Not offered on drafts or closed threads.
+  the file's path. On a suspended thread without one, the same summary
+  path writes the file now, from the content on this device. Not
+  offered on drafts or closed threads. It refuses (409, Czech message)
+  before any side effect when the node has no mirror on this device,
+  when the run is live on another device, or when the thread's
+  transcript is on another device; the message names that device.
 - **Navázat na handoff** (`POST /sessions` with `handoff_path`, the
   node's Relace tab): the tab lists the node's `wip/sessions/*-handoff.md`
   files from the file records with the summary's title and date,
@@ -229,8 +259,9 @@ thread's visibility or the central server's role is described.
 
 The server deploys from CI on merge, the desktop on release; the two are
 not one step. Order: (1) sidecar release that writes content to
-`content.db` and stops sending events to the central server while the
-central server still accepts them; (2) after the desktop is updated on
-every device, the central migration in the next merge. Today that is
-one person's devices. Rollback of (2) is not offered: the dropped rows
-are content nobody wanted kept.
+`content.db`, stops sending events to the central server while the
+central server still accepts them, and on its first boot downloads its
+own threads' legacy content; (2) after the desktop is updated on every
+device and each has imported, the central migration in the next merge.
+Today that is one person's devices. Rollback of (2) is not offered: by
+then every device holds its own threads' content.

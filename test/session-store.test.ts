@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 import { createSessionStore } from "../apps/web/src/lib/session-store.js";
 import type { SessionStore } from "../apps/web/src/lib/session-store.js";
 import {
+  selectorCacheSize,
+  selectNodeRecordIds,
   selectSession,
   selectNodeThreads,
   selectShownThread,
@@ -182,13 +184,14 @@ describe("session store selectors", () => {
       row({ id: "suspended", state: "suspended", last_active_at: "2026-09-22 13:00:00" }),
       row({ id: "draft", state: "draft", last_active_at: "2026-09-22 14:00:00" }),
       row({ id: "closed", state: "closed" }),
-      row({ id: "cli", cli: "claude" }),
+      row({ id: "cli", cli: "claude", runner: null }),
+      row({ id: "runner-bound", cli: "claude", state: "suspended", last_active_at: "2026-09-22 10:00:00" }),
       row({ id: "chat", session_type: "interactive_chat" }),
       row({ id: "other-node", node_id: "node-b" }),
     ]);
     assert.deepEqual(
       selectNodeThreads(store, "node-a").map((s) => s.id),
-      ["waiting", "running-new", "running-old", "suspended", "draft"],
+      ["waiting", "running-new", "running-old", "suspended", "runner-bound", "draft"],
     );
     assert.deepEqual(selectNodeThreads(store, "node-z"), []);
     assert.deepEqual(selectNodeThreads(store, null), []);
@@ -227,6 +230,54 @@ describe("session store selectors", () => {
       selectMountedThreads(store, ["node-a"], "done").map((s) => s.id),
       ["a1"],
     );
+  });
+
+  it("a partial record is not in the node's threads until a put completes it", () => {
+    // The initial burst of frames carries every running session the caller
+    // can see, a hand-opened CLI session included; a stub from one of those
+    // is neither a sub-row nor the node's shown thread, and it never mounts
+    // a chat.
+    const store = createSessionStore();
+    store.applyFrame(frame({ session_id: "cli-1", state: "running" }));
+    assert.equal(store.get("cli-1")?.partial, true);
+    assert.deepEqual(selectNodeThreads(store, "node-a"), []);
+    assert.equal(selectShownThread(store, "node-a", "cli-1"), null);
+    assert.deepEqual(selectMountedThreads(store, ["node-a"], "cli-1"), []);
+    // ...and it is heard of, so the footer counts it.
+    assert.equal(selectRunningCount(store), 1);
+
+    // The refetch that frame triggered completes it; now it is a thread.
+    store.put(row({ id: "cli-1" }));
+    assert.deepEqual(selectNodeThreads(store, "node-a").map((t) => t.id), ["cli-1"]);
+    assert.equal(selectShownThread(store, "node-a", "cli-1")?.id, "cli-1");
+    assert.deepEqual(selectMountedThreads(store, ["node-a"], "cli-1").map((t) => t.id), ["cli-1"]);
+  });
+
+  it("a frame with no name leaves the name absent instead of blanking it", () => {
+    // Version skew: a server older than the frame's name field must not
+    // overlay `""` onto the name Přehled and the Relace tab already show.
+    const store = createSessionStore();
+    store.applyFrame(frame({ session_id: "s1", state: "running" }));
+    assert.equal("name" in (store.get("s1") ?? {}), false);
+    assert.equal(selectLiveStates(store).s1.name, undefined);
+    store.applyFrame(frame({ session_id: "s1", state: "running", name: "Vlákno" }));
+    assert.equal(selectLiveStates(store).s1.name, "Vlákno");
+  });
+
+  it("closing a node drops its threads from the store and keeps the shown one", () => {
+    const store = createSessionStore();
+    store.putMany([
+      row({ id: "a1" }),
+      row({ id: "a2" }),
+      row({ id: "b1", node_id: "node-b" }),
+    ]);
+    // What App.tsx's closeNode does: everything anchored on the node it
+    // drops, except the thread still on screen.
+    store.removeMany(selectNodeRecordIds(store, "node-a", "a2"));
+    assert.deepEqual([...store.snapshot().keys()], ["a2", "b1"]);
+    // With nothing to keep, the node leaves no record behind at all.
+    store.removeMany(selectNodeRecordIds(store, "node-a", null));
+    assert.deepEqual([...store.snapshot().keys()], ["b1"]);
   });
 
   it("selectRunningCount counts running records, a partial one included", () => {
@@ -325,5 +376,79 @@ describe("session store selector reference stability", () => {
     const s1Before = selectSession(store, "s1");
     store.applyFrame(frame({ session_id: "s2", state: "suspended" }));
     assert.equal(selectSession(store, "s1"), s1Before);
+  });
+});
+
+describe("session store selector cache", () => {
+  // The cache is bounded: one entry per selector key, whatever the
+  // arguments. A window left open for a day switches threads and nodes
+  // hundreds of times, and every one of those used to leave an entry
+  // (keyed on the open-node set and the shown thread) behind forever.
+  it("switching the shown thread N times leaves one cache entry per selector key", () => {
+    const store = createSessionStore();
+    const ids = Array.from({ length: 20 }, (_, i) => `s${i}`);
+    store.putMany(ids.map((id) => row({ id })));
+
+    for (const id of ids) {
+      selectMountedThreads(store, ["node-a"], id);
+      selectThreadsByNode(store, ["node-a"]);
+      selectShownThread(store, "node-a", id);
+    }
+    // nodeThreads:node-a, mounted, threadsByNode -- and nothing else.
+    assert.equal(selectorCacheSize(store), 3);
+  });
+
+  it("opening and closing nodes leaves one entry per open-node-set selector", () => {
+    const store = createSessionStore();
+    store.putMany([row({ id: "a1" }), row({ id: "b1", node_id: "node-b" })]);
+    const sets = [["node-a"], ["node-a", "node-b"], ["node-b"], ["node-a"]];
+    for (const open of sets) {
+      selectThreadsByNode(store, open);
+      selectMountedThreads(store, open, null);
+    }
+    // mounted, threadsByNode, plus the per-node list of each node opened --
+    // those are what the map and the mount set read side by side.
+    assert.equal(selectorCacheSize(store), 4);
+  });
+
+  it("an empty open-node set costs no cache entry and is one shared reference", () => {
+    const store = createSessionStore();
+    store.put(row({ id: "s1" }));
+    assert.equal(selectMountedThreads(store, [], null), selectMountedThreads(store, [], null));
+    assert.equal(selectThreadsByNode(store, []), selectThreadsByNode(store, []));
+    assert.equal(selectorCacheSize(store), 0);
+  });
+
+  it("switching the shown thread back and forth keeps the mounted array's reference", () => {
+    // The bound must not cost reference stability: the two threads of one
+    // node mount the same rows, so React keeps every chat mounted.
+    const store = createSessionStore();
+    store.putMany([row({ id: "s1" }), row({ id: "s2" })]);
+    const first = selectMountedThreads(store, ["node-a"], "s1");
+    assert.equal(selectMountedThreads(store, ["node-a"], "s2"), first);
+    assert.equal(selectMountedThreads(store, ["node-a"], "s1"), first);
+  });
+});
+
+// The snapshot a fresh connection receives carries every running or
+// suspended session. One store write per session re-rendered the app once
+// per session and React threw "Maximum update depth exceeded" after 50.
+describe("the connection burst", () => {
+  it("applyFrames folds a whole burst in one notification", () => {
+    const store = createSessionStore();
+    const calls = counted(store);
+    const burst = Array.from({ length: 200 }, (_, i) => frame({ session_id: `s${i}`, state: i % 2 ? "suspended" : "running" }));
+    store.applyFrames(burst);
+    assert.equal(calls(), 1);
+    assert.equal(store.snapshot().size, 200);
+    assert.equal(store.get("s1")?.state, "suspended");
+  });
+
+  it("applyFrames that changes nothing does not notify", () => {
+    const store = createSessionStore();
+    store.applyFrames([frame({ session_id: "s1" })]);
+    const calls = counted(store);
+    store.applyFrames([frame({ session_id: "s1" })]);
+    assert.equal(calls(), 0);
   });
 });

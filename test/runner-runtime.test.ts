@@ -4,22 +4,36 @@
 // setup (via test/helpers/shared-db.ts's makeSharedDb).
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
-import { createSessionRuntime, resolveModelAndEffort } from "../apps/server/domain/runner/session-runtime.js";
+import {
+  createSessionRuntime,
+  resolveModelAndEffort,
+} from "../apps/server/domain/runner/session-runtime.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
-import { createInstance, setOrgDefault } from "../apps/server/domain/runner/instances.js";
+import { createInstance, instanceClaudeConfigDir, setOrgDefault } from "../apps/server/domain/runner/instances.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
 import type { RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
+import type { SessionContentStore } from "../apps/server/domain/runner/store-content.js";
+import { claudeProjectSlug } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
+import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 
 afterEach(() => {
   setDbForTesting(null);
+  clearTestContentDb();
 });
+
+// #456: the transcript, the brief and the inline handoff summary are the
+// device's content, in content.db -- a separate store from the record.
+// sharedDb() installs a fresh in-memory one per test and leaves it here, so
+// every createSessionRuntime call below hands the runtime the same pair the
+// production composition roots do.
+let content: SessionContentStore;
 
 // getSessionScope/getMirrorPath/writeHandoffAndSuspend all reach through
 // the global getDb() singleton (like the rest of the domain layer), not
@@ -28,6 +42,7 @@ afterEach(() => {
 async function sharedDb(): Promise<SharedDb> {
   const shared = await makeSharedDb();
   setDbForTesting(shared.db);
+  content = (await installTestContentDb()).content;
   return shared;
 }
 
@@ -46,12 +61,16 @@ function registryOf(adapter: RunnerAdapter) {
   return { getAdapter: (id: string) => (id === adapter.id ? adapter : null) };
 }
 
+// The first turn is over and the run waits for the next message -- what a
+// real run looks like when nobody has written for a while.
+const TURN_DONE: FakeScriptStep = { kind: "turn_ended", payload: { run_id: "fake" } };
+
 describe("session runtime: startTask", () => {
   it("persists run_started, then the brief as user_message, with monotonic seq", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session, run } = await runtime.startTask({
       userId: "U1",
@@ -61,7 +80,7 @@ describe("session runtime: startTask", () => {
       policy: "default",
     });
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     assert.deepEqual(
       events.map((e) => [e.seq, e.kind]),
       [
@@ -69,8 +88,9 @@ describe("session runtime: startTask", () => {
         [2, "user_message"],
         [3, "run_ended"], // the fake's empty script auto-completes
         // #378: nobody closed this run explicitly, so it falls through to
-        // the auto-summary/suspend path and gets its handoff event too.
-        [4, "handoff"],
+        // the suspend path -- the transition the suspend made (#494), and
+        // no handoff event: only Předat writes a summary (#497).
+        [4, "state_changed"],
       ],
     );
     assert.equal(JSON.parse(events[0].payload).run_id, run.id);
@@ -82,6 +102,7 @@ describe("session runtime: startTask", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const runtime = createSessionRuntime({
+      content,
       store,
       registry: { getAdapter: () => null },
       provision: stubProvision(),
@@ -103,7 +124,7 @@ describe("session runtime: question / answer", () => {
           request_id: "req-1",
           type: "approval",
           tool: "mcp__portuni__portuni_expand_scope",
-          title: "Rozšířit rozsah?",
+          title: "Expand the scope?",
           detail: "detail",
           options: null,
           decision: null,
@@ -113,7 +134,7 @@ describe("session runtime: question / answer", () => {
       { kind: "assistant_message", payload: { text: "done" } },
     ];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
@@ -126,14 +147,18 @@ describe("session runtime: question / answer", () => {
     row = await store.getSession(session.id);
     assert.equal(row?.waiting_since, null, "waiting_since must be cleared after answer()");
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     const questionEvents = events.filter((e) => e.kind === "question");
     assert.equal(questionEvents.length, 2, "the question is re-appended with the decision filled in");
     const answered = JSON.parse(questionEvents[1].payload);
     assert.deepEqual(answered.decision, decision);
     assert.equal(answered.request_id, "req-1");
 
-    const stateChanged = events.filter((e) => e.kind === "state_changed").map((e) => JSON.parse(e.payload));
+    // The waiting transitions only; the run's end adds running -> suspended (#494).
+    const stateChanged = events
+      .filter((e) => e.kind === "state_changed")
+      .map((e) => JSON.parse(e.payload))
+      .filter((s) => s.to === "running");
     assert.deepEqual(
       stateChanged.map((s) => s.waiting),
       [true, false],
@@ -147,7 +172,7 @@ describe("session runtime: interrupt (#378)", () => {
     const store = new DbSessionStore(db);
     const script: FakeScriptStep[] = [{ wait: "message" }];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.interrupt(session.id);
@@ -163,27 +188,27 @@ describe("session runtime: interrupt (#378)", () => {
     // A message right after interrupt() is accepted as an ordinary one --
     // it does NOT throw "has no live run".
     await runtime.sendMessage(session.id, "still here?");
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     assert.ok(events.some((e) => e.kind === "user_message" && JSON.parse(e.payload).text === "still here?"));
   });
 });
 
 describe("session runtime: auto-summary on a non-close run end (#378)", () => {
-  it("a run that ends on its own (nobody closed it) writes a summary and suspends the session", async () => {
+  it("a run that ends on its own (nobody closed it) suspends the session and writes no summary (#497)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     // An empty script auto-completes right away -- nobody called close(),
     // so this is exactly "a run ended other than by Uzavřít".
     const adapter = new FakeRunnerAdapter({ script: [] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    assert.ok(row?.handoff_inline, "a summary must exist after a non-close run end");
-    assert.match(row!.handoff_inline!, /Poslední zprávy/);
-    assert.match(row!.handoff_inline!, /Fix the bug|x/); // the brief shows up as the first message
+    assert.equal(row?.handoff_path, null, "no handoff file is recorded");
+    assert.equal(row?.handoff_hash, null);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "no inline summary either");
 
     const runs = await store.listRuns(session.id);
     // The adapter itself reports "completed" (a graceful close it can't
@@ -191,16 +216,16 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
     // explicit close.
     assert.equal(runs[0].end_reason, "suspended");
 
-    const events = await store.listEvents(session.id);
-    const handoffEvent = events.find((e) => e.kind === "handoff");
-    assert.ok(handoffEvent, "a handoff/summary event must be appended");
+    const events = await content.listEvents(session.id);
+    assert.equal(events.some((e) => e.kind === "handoff"), false, "no handoff event: only Předat writes one");
+    assert.equal(events.at(-1)?.kind, "state_changed");
   });
 
   it("checkIdleRunsOnce ends a run idle for longer than idleMs, tagged 'idle'", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
-    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
@@ -213,9 +238,40 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    assert.ok(row?.handoff_inline);
-    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
-    assert.equal(parseServerHandoffReason(row!.handoff_inline), "idle");
+    // #497: the idle suspend is a record flip only.
+    assert.equal(row?.handoff_path, null);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+    assert.equal((await content.listEvents(session.id)).some((e) => e.kind === "handoff"), false);
+  });
+
+  it("checkIdleRunsOnce never ends a run mid-turn: the agent is working, not idle", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(60_000, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "running");
+  });
+
+  it("checkIdleRunsOnce ends a run whose open question has waited on the user past idleMs", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({
+      script: [
+        {
+          kind: "question",
+          payload: { request_id: "q1", type: "approval", tool: "Bash", title: "Smím?", detail: "", options: null, decision: null },
+        },
+        { wait: "answer" },
+      ],
+    });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.checkIdleRunsOnce(60_000, Date.now() + 61_000);
+    assert.equal((await store.getSession(session.id))?.state, "suspended");
   });
 
   it("a run ending on a provider limit suspends the thread with the provider message in its events (#411)", async () => {
@@ -229,51 +285,68 @@ describe("session runtime: auto-summary on a non-close run end (#378)", () => {
         { end: "limit" },
       ],
     });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "suspended");
-    assert.ok(row?.handoff_inline, "a server-written summary must exist");
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "no summary is written (#497)");
 
     const runs = await store.listRuns(session.id);
     // withSuspendReason leaves an adapter-reported limit alone -- that IS
     // the informative reason.
     assert.equal(runs[0].end_reason, "limit");
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     const error = events.find((e) => e.kind === "error");
     assert.ok(error, "the provider message must be in the transcript");
     assert.equal(JSON.parse(error!.payload).class, "provider");
     assert.match(JSON.parse(error!.payload).message, /spend limit/);
-    assert.ok(events.some((e) => e.kind === "handoff"), "a handoff event must be appended");
+    assert.equal(events.some((e) => e.kind === "handoff"), false, "no handoff event (#497)");
+  });
+
+  it("the run's conversation id is recorded while it runs, not only when it ends", async () => {
+    // A run the host loses (a crash, a restart) never reaches its own
+    // run_ended, where the id used to be read: such a run left no pointer
+    // to its conversation and could only be resumed from a summary.
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const script: FakeScriptStep[] = [{ kind: "reasoning", payload: { summary: "thinking" } }, { wait: "message" }];
+    const adapter = new FakeRunnerAdapter({ script, agentSessionId: "conv-live" });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[0].id, run.id);
+    assert.equal(runs[0].ended_at, null, "the run is still live");
+    assert.equal(runs[0].agent_session_id, "conv-live");
   });
 
   it("checkIdleRunsOnce is a no-op when nothing is live", async () => {
     const { db } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
     await runtime.checkIdleRunsOnce(1); // must not throw
   });
 });
 
 // checkConversationResumable (domain/session-handoff.ts) is cli === "claude"
-// only, and reads the real OS home directory when no configDir override is
-// given -- resumeByWriting doesn't thread one through, so "still resumable"
-// is not safely fabricatable at this level without touching the real
-// filesystem HOME. That branch is covered by session-handoff.test.ts's own
-// checkConversationResumable suite; here, the fake adapter's session never
-// has cli: "claude" set, so every one of these exercises the (also
-// real-world-common) "falls back to the summary" path.
+// only and reads the real OS home directory unless the session's instance
+// names a CLAUDE_CONFIG_DIR, which resumeByWriting now threads through: the
+// profile test below builds a transcript under a temp one and gets the
+// conversation-resume branch. The rest leave cli unset on the fake
+// adapter's session and so take the (also real-world-common) "falls back to
+// the summary" path.
 describe("session runtime: resume by writing (#378)", () => {
   it("sending into a suspended thread starts a new, linked run from the summary", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
-    const script: FakeScriptStep[] = [{ wait: "message" }];
+    const script: FakeScriptStep[] = [TURN_DONE, { wait: "message" }];
     const adapter = new FakeRunnerAdapter({ script, agentSessionId: "claude-conv-1" });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session, run: firstRun } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.checkIdleRunsOnce(0, Date.now() + 1); // ends the run -> suspended, summary written
@@ -286,12 +359,12 @@ describe("session runtime: resume by writing (#378)", () => {
     assert.equal(runs[1].resumed_from_run_id, firstRun.id);
     // No conversation-resume in this environment (see the block comment
     // above) -- a fresh run from the summary, not --resume.
-    assert.equal(runs[1].agent_session_id, null);
+    assert.equal(adapter.getLastRunStart()?.resume, null);
 
     const row = await store.getSession(session.id);
     assert.equal(row?.state, "running");
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     const secondRunStarted = events.find((e) => e.run_id === runs[1].id && e.kind === "run_started");
     assert.ok(secondRunStarted);
     assert.equal(JSON.parse(secondRunStarted!.payload).resume, "handoff");
@@ -300,19 +373,144 @@ describe("session runtime: resume by writing (#378)", () => {
     );
   });
 
-  it("the new run's orientation carries the previous summary", async () => {
+  it("a resume under a profile looks for that profile's transcript, not the default one", async () => {
+    // The CLI keeps its transcripts under CLAUDE_CONFIG_DIR, so a session
+    // run under a profile (a second account) has none where the default
+    // location is looked at: every resume fell back to the summary and the
+    // fresh agent never saw the start of the thread.
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const dir = await mkdtemp(join(tmpdir(), "portuni-profile-resume-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      const configDir = join(dir, "claude-profile");
+      const cwd = join(dir, "mirror");
+      const instance = await createInstance({ name: "JRD", runner: "fake", env: { CLAUDE_CONFIG_DIR: configDir } });
+      // The transcript that profile's CLI would have left behind.
+      await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+      await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-1.jsonl"), "{}\n", "utf8");
+
+      const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }], agentSessionId: "conv-1" });
+      const runtime = createSessionRuntime({
+        store,
+        content,
+        registry: registryOf(adapter),
+        provision: stubProvision({ cwd, mirrors: [cwd] }),
+      });
+      const { session } = await runtime.startTask({
+        userId: "U1",
+        nodeId,
+        brief: "x",
+        runner: "fake",
+        instanceId: instance.id,
+      });
+      await db.execute({ sql: "UPDATE sessions SET cli = 'claude' WHERE id = ?", args: [session.id] });
+      await runtime.checkIdleRunsOnce(0, Date.now() + 1); // idle -> run ends, session suspends
+
+      await runtime.sendMessage(session.id, "pokračuj");
+
+      const runs = await store.listRuns(session.id);
+      assert.equal(runs.length, 2);
+      assert.equal(runs[1].agent_session_id, "conv-1", "the new run continues the same conversation");
+      const events = await content.listEvents(session.id);
+      const started = events.find((e) => e.run_id === runs[1].id && e.kind === "run_started");
+      assert.equal(JSON.parse(started!.payload).resume, "conversation");
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #508: the resume under a profile when `sessions.cli` was never filled
+  // in -- the run's own MCP handshake is what writes it, and a run whose
+  // Portuni connection failed (#507) never did. The runner that wrote the
+  // transcript is the last run's, so a "claude" runner is enough.
+  async function profileResume(opts: { transcript: boolean }) {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const dir = await mkdtemp(join(tmpdir(), "portuni-profile-resume-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      // Outside ~/.claude on purpose: the default location has nothing.
+      const configDir = join(dir, "claude-tempo");
+      const cwd = join(dir, "mirror");
+      const instance = await createInstance({ name: "Tempo", runner: "claude", env: { CLAUDE_CONFIG_DIR: configDir } });
+      if (opts.transcript) {
+        await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+        await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-tempo.jsonl"), "{}\n", "utf8");
+      }
+      const fake = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }], agentSessionId: "conv-tempo" });
+      // The fake adapter under the claude runner's id.
+      const claude: RunnerAdapter = {
+        id: "claude",
+        detect: () => fake.detect(),
+        start: (run, sink) => fake.start(run, sink),
+        models: () => fake.models(),
+      };
+      const runtime = createSessionRuntime({
+        store,
+        content,
+        registry: registryOf(claude),
+        provision: stubProvision({ cwd, mirrors: [cwd] }),
+      });
+      const { session } = await runtime.startTask({
+        userId: "U1",
+        nodeId,
+        brief: "zadání",
+        runner: "claude",
+        instanceId: instance.id,
+      });
+      assert.equal((await store.getSession(session.id))?.cli ?? null, null, "no handshake ever named the CLI");
+      await runtime.checkIdleRunsOnce(0, Date.now() + 1);
+      assert.equal((await store.getSession(session.id))?.state, "suspended");
+
+      await runtime.sendMessage(session.id, "pokračuj");
+
+      const runs = await store.listRuns(session.id);
+      const events = await content.listEvents(session.id);
+      const started = events.find((e) => e.run_id === runs[1]?.id && e.kind === "run_started");
+      return { runs, lastStart: fake.getLastRunStart(), resumeMode: JSON.parse(started!.payload).resume };
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("a resume finds the transcript in the instance's CLAUDE_CONFIG_DIR with no cli on the record (#508)", async () => {
+    const { runs, lastStart, resumeMode } = await profileResume({ transcript: true });
+    assert.equal(runs.length, 2);
+    assert.deepEqual(lastStart?.resume, { agentSessionId: "conv-tempo" });
+    assert.equal(runs[1].agent_session_id, "conv-tempo", "the new run continues the same conversation");
+    assert.equal(resumeMode, "conversation");
+  });
+
+  it("a resume with no transcript anywhere starts from the summary (#508)", async () => {
+    const { runs, lastStart, resumeMode } = await profileResume({ transcript: false });
+    assert.equal(runs.length, 2);
+    assert.equal(lastStart?.resume, null);
+    assert.match(lastStart?.orientation ?? "", /Handoff \(resumed from a summary\)/);
+    assert.equal(resumeMode, "handoff");
+  });
+
+  it("a resume without the conversation gets a summary built from the transcript then (#497)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
 
     // First run: a real FakeRunnerAdapter so startTask/checkIdleRunsOnce
-    // can drive it through a normal suspend with a summary written.
-    const firstAdapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    // can drive it through a normal suspend -- which writes no summary.
+    const firstAdapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
     const registry = { getAdapter: (id: string) => (id === "fake" ? firstAdapter : null) };
-    const runtime = createSessionRuntime({ store, registry, provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry, provision: stubProvision() });
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.checkIdleRunsOnce(0, Date.now() + 1);
     const suspended = await store.getSession(session.id);
-    assert.ok(suspended?.handoff_inline);
+    assert.equal(suspended?.state, "suspended");
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null);
+    assert.equal(suspended?.handoff_path, null);
 
     // Swap in a capturing adapter for the resume run so the RunStart it
     // actually receives is observable.
@@ -353,12 +551,155 @@ describe("session runtime: resume by writing (#378)", () => {
     await runtime.sendMessage(session.id, "keep going");
 
     assert.ok(capturedOrientation);
-    assert.match(capturedOrientation!, /Předání \(obnovení ze shrnutí\)/);
-    assert.match(capturedOrientation!, /Poslední zprávy/); // the summary content itself
+    assert.match(capturedOrientation!, /Handoff \(resumed from a summary\)/);
+    assert.match(capturedOrientation!, /## Recent messages/); // the summary content itself
+    // Built from this device's transcript at resume: the first run's brief.
+    assert.match(capturedOrientation!, /\*\*User:\*\* x/);
+    assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "and nothing is stored");
+  });
+});
+
+// #498: Uzavřít is "done, off the active lists", not "never again" --
+// writing into a closed thread reopens it the way it reopens a suspended
+// one: the same history, the conversation when it still exists, else a
+// summary from this device's transcript.
+describe("session runtime: writing into a closed thread reopens it (#498)", () => {
+  it("resumes the conversation when its transcript still exists", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const dir = await mkdtemp(join(tmpdir(), "portuni-closed-resume-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = join(dir, "data");
+    try {
+      const configDir = join(dir, "claude-profile");
+      const cwd = join(dir, "mirror");
+      const instance = await createInstance({ name: "JRD", runner: "fake", env: { CLAUDE_CONFIG_DIR: configDir } });
+      await mkdir(join(configDir, "projects", claudeProjectSlug(cwd)), { recursive: true });
+      await writeFile(join(configDir, "projects", claudeProjectSlug(cwd), "conv-closed.jsonl"), "{}\n", "utf8");
+
+      const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }], agentSessionId: "conv-closed" });
+      const runtime = createSessionRuntime({
+        store,
+        content,
+        registry: registryOf(adapter),
+        provision: stubProvision({ cwd, mirrors: [cwd] }),
+      });
+      const { session, run: firstRun } = await runtime.startTask({
+        userId: "U1",
+        nodeId,
+        brief: "x",
+        runner: "fake",
+        instanceId: instance.id,
+      });
+      await db.execute({ sql: "UPDATE sessions SET cli = 'claude' WHERE id = ?", args: [session.id] });
+      await runtime.closeSession(session.id);
+      assert.equal((await store.getSession(session.id))?.state, "closed");
+
+      const frames: Array<{ from: unknown; to: unknown }> = [];
+      runtime.subscribe(session.id, (_id, event) => {
+        if ("kind" in event && event.kind === "state_changed") frames.push({ from: event.payload.from, to: event.payload.to });
+      });
+      await runtime.sendMessage(session.id, "ještě jedna věc");
+
+      const row = await store.getSession(session.id);
+      assert.equal(row?.state, "running");
+      assert.equal(row?.closed_at, null);
+      const runs = await store.listRuns(session.id);
+      assert.equal(runs.length, 2);
+      assert.equal(runs[1].resumed_from_run_id, firstRun.id);
+      assert.equal(runs[1].agent_session_id, "conv-closed", "the new run continues the same conversation");
+      assert.deepEqual(adapter.getLastRunStart()?.resume, { agentSessionId: "conv-closed" });
+      assert.deepEqual(frames, [{ from: "closed", to: "running" }]);
+      const events = await content.listEvents(session.id);
+      const started = events.find((e) => e.run_id === runs[1].id && e.kind === "run_started");
+      assert.equal(JSON.parse(started!.payload).resume, "conversation");
+      assert.ok(
+        events.some((e) => e.run_id === runs[1].id && e.kind === "user_message" && JSON.parse(e.payload).text === "ještě jedna věc"),
+      );
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("without the conversation starts from a summary of this device's transcript", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "první zadání", runner: "fake" });
+    await runtime.closeSession(session.id);
+
+    await runtime.sendMessage(session.id, "pokračuj");
+
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    assert.equal((await store.listRuns(session.id)).length, 2);
+    const start = adapter.getLastRunStart();
+    assert.equal(start?.resume, null);
+    assert.match(start?.orientation ?? "", /Handoff \(resumed from a summary\)/);
+    assert.match(start?.orientation ?? "", /\*\*User:\*\* první zadání/);
+    assert.equal(start?.brief, "pokračuj");
+  });
+
+  it("an archived thread still has no composer: the message is refused", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.closeSession(session.id);
+    await store.patchSession(session.id, { state: "archived" });
+
+    await assert.rejects(runtime.sendMessage(session.id, "haló"), /has no live run/);
+    assert.equal((await store.listRuns(session.id)).length, 1);
+  });
+});
+
+describe("instanceClaudeConfigDir (#508)", () => {
+  it("is the instance's CLAUDE_CONFIG_DIR, and null for none or a blank one", () => {
+    assert.equal(instanceClaudeConfigDir({ CLAUDE_CONFIG_DIR: "/Users/x/.claude-tempo" }), "/Users/x/.claude-tempo");
+    assert.equal(instanceClaudeConfigDir({}), null);
+    assert.equal(instanceClaudeConfigDir({ CLAUDE_CONFIG_DIR: "  " }), null);
   });
 });
 
 describe("session runtime: event ordering", () => {
+  it("a question the adapter closes itself (a decided question event) clears waiting_since", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const payload = {
+      request_id: "req-closed",
+      type: "approval" as const,
+      tool: "mcp__portuni",
+      title: "Confirm: portuni",
+      detail: "Allow writing?",
+      options: null,
+    };
+    const script: FakeScriptStep[] = [
+      { kind: "question", payload: { ...payload, decision: null } },
+      { kind: "question", payload: { ...payload, decision: { by: "system", value: false, at: new Date().toISOString() } } },
+      { wait: "message" },
+    ];
+    const adapter = new FakeRunnerAdapter({ script });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    const row = await store.getSession(session.id);
+    assert.equal(row?.waiting_since, null, "the closed question must not leave the session waiting");
+    const events = await content.listEvents(session.id);
+    // The waiting transitions only; the run's end adds running -> suspended (#494).
+    const stateChanged = events
+      .filter((e) => e.kind === "state_changed")
+      .map((e) => JSON.parse(e.payload))
+      .filter((s) => s.to === "running");
+    assert.deepEqual(
+      stateChanged.map((s) => s.waiting),
+      [true, false],
+    );
+    await runtime.closeSession(session.id);
+  });
+
   it("records the answered question before anything the adapter emits in reaction to the answer", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
@@ -379,12 +720,12 @@ describe("session runtime: event ordering", () => {
       { kind: "assistant_message", payload: { text: "ok, a" } },
     ];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.answer(session.id, "q1", { by: "U1", value: "a", at: new Date().toISOString() });
 
-    const kinds = (await store.listEvents(session.id)).map((e) => {
+    const kinds = (await content.listEvents(session.id)).map((e) => {
       const payload = JSON.parse(e.payload);
       if (e.kind === "question") return payload.decision ? "question:answered" : "question";
       if (e.kind === "state_changed") return `state_changed:${payload.waiting}`;
@@ -417,7 +758,7 @@ describe("session runtime: event ordering", () => {
         return inner.start(run, sink);
       },
     };
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     assert.deepEqual(seenHeaders, { "X-Portuni-Spawn-Id": session.id });
   });
@@ -428,7 +769,7 @@ describe("session runtime: close", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session, run } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const closed = await runtime.closeSession(session.id);
@@ -440,7 +781,7 @@ describe("session runtime: close", () => {
     // handleAdapterEvent from rewriting/auto-summarizing this one -- the
     // adapter's own "completed" (a graceful close) stands.
     assert.equal(runs[0].end_reason, "completed");
-    assert.ok(!(await store.getSession(session.id))?.handoff_inline, "Uzavřít does not write a summary");
+    assert.ok(!(await content.getContent(session.id))?.handoff_inline, "Uzavřít does not write a summary");
   });
 
   // The Relace row, the Práce sidebar and Přehled all learn a state change
@@ -451,8 +792,8 @@ describe("session runtime: close", () => {
   it("closeSession publishes state_changed to closed for a suspended session (no live run)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
-    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     await runtime.checkIdleRunsOnce(0, Date.now() + 1);
@@ -471,7 +812,7 @@ describe("session runtime: close", () => {
       transitions.map((e) => e.payload),
       [{ from: "suspended", to: "closed", waiting: false }],
     );
-    const persisted = (await store.listEvents(session.id)).filter((e) => e.kind === "state_changed");
+    const persisted = (await content.listEvents(session.id)).filter((e) => e.kind === "state_changed");
     assert.ok(
       persisted.some((e) => (JSON.parse(e.payload) as { to?: string }).to === "closed"),
       "the transition is in the event log too",
@@ -482,10 +823,10 @@ describe("session runtime: close", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
-    const before = (await store.listEvents(session.id)).length;
+    const before = (await content.listEvents(session.id)).length;
     const received: Array<{ type?: string; session_id?: string }> = [];
     const unsubscribe = runtime.subscribe("*", (_sessionId, event) => {
       received.push(event as { type?: string; session_id?: string });
@@ -499,7 +840,7 @@ describe("session runtime: close", () => {
       received.filter((e) => e.type === "session_changed"),
       [{ type: "session_changed", session_id: session.id }],
     );
-    assert.equal((await store.listEvents(session.id)).length, before, "a rename is not a conversation event");
+    assert.equal((await content.listEvents(session.id)).length, before, "a rename is not a conversation event");
     await assert.rejects(runtime.renameSession(session.id, "   "), /must not be empty/);
   });
 
@@ -507,7 +848,7 @@ describe("session runtime: close", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const received: Array<{ kind?: string; payload?: unknown }> = [];
@@ -525,14 +866,18 @@ describe("session runtime: close", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session: oldSession } = await runtime.startTask({ userId: "U1", nodeId, brief: "the old task", runner: "fake" });
     const { session: newSession, run: newRun } = await runtime.continueSession(oldSession.id);
 
     const oldRow = await store.getSession(oldSession.id);
     assert.equal(oldRow?.state, "closed");
-    assert.equal(oldRow?.handoff_inline, null, "continue does not write a summary onto the OLD session");
+    assert.equal(
+      (await content.getContent(oldSession.id))?.handoff_inline ?? null,
+      null,
+      "continue does not write a summary onto the OLD session",
+    );
 
     assert.notEqual(newSession.id, oldSession.id);
     assert.equal(newSession.node_id, oldSession.node_id);
@@ -540,9 +885,40 @@ describe("session runtime: close", () => {
     assert.equal(newSession.name, oldSession.name);
     assert.equal(newSession.state, "running");
 
-    const newEvents = await store.listEvents(newSession.id);
+    const newEvents = await content.listEvents(newSession.id);
     assert.ok(newEvents.some((e) => e.run_id === newRun.id && e.kind === "run_started"));
     assert.ok(!newEvents.some((e) => e.kind === "user_message"), "continue carries no brief of its own");
+  });
+});
+
+describe("session runtime: continueSession when the handoff file cannot be written", () => {
+  it("closes the old thread and seeds the new one with the summary inline", async (t) => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({
+      store,
+      content,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+      handoffs: {
+        summarize: async () => "# Shrnutí vlákna\n\nCo se udělalo.",
+        writeFile: async () => {
+          throw new Error("EROFS: read-only file system");
+        },
+      },
+    });
+    t.mock.method(console, "error", () => undefined);
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const { session: next } = await runtime.continueSession(session.id);
+
+    const old = await store.getSession(session.id);
+    assert.equal(old?.state, "closed");
+    assert.equal(old?.handoff_path, null);
+    assert.equal(next.state, "running");
+    assert.match(adapter.getLastRunStart()?.orientation ?? "", /Co se udělalo\./);
+    await runtime.closeSession(next.id);
   });
 });
 
@@ -555,7 +931,7 @@ describe("session runtime: subscribers vs. store", () => {
       { kind: "assistant_message", payload: { text: "final" } },
     ];
     const adapter = new FakeRunnerAdapter({ script });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const received: Array<{ kind?: string; type?: string }> = [];
     const unsubscribe = runtime.subscribe("*", (_sessionId, event) => {
@@ -568,7 +944,7 @@ describe("session runtime: subscribers vs. store", () => {
     assert.ok(received.some((e) => e.type === "delta"));
     assert.ok(received.some((e) => e.kind === "assistant_message"));
 
-    const events = await store.listEvents(session.id);
+    const events = await content.listEvents(session.id);
     assert.equal(
       events.some((e) => e.kind === ("delta" as unknown)),
       false,
@@ -585,7 +961,7 @@ describe("session runtime: sessionSignals", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const signals = await runtime.sessionSignals(session.id);
@@ -600,7 +976,7 @@ describe("session runtime: sessionSignals", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [] });
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const signals = await runtime.sessionSignals(session.id);
@@ -693,7 +1069,7 @@ describe("session runtime: model/effort resolution end-to-end (startTask)", () =
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const { adapter, getRunStart } = capturingAdapter();
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake", instanceId: instance.id });
 
@@ -713,7 +1089,7 @@ describe("session runtime: model/effort resolution end-to-end (startTask)", () =
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const { adapter, getRunStart } = capturingAdapter();
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     await runtime.startTask({
       userId: "U1",
@@ -736,7 +1112,7 @@ describe("session runtime: model/effort resolution end-to-end (startTask)", () =
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const { adapter, getRunStart } = capturingAdapter();
-    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision: stubProvision() });
 
     await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
 
@@ -778,6 +1154,7 @@ describe("session runtime: organization default instance on draft promotion", ()
     const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
     registerAdapter(adapter);
     const runtime = createSessionRuntime({
+      content,
       store: deps.store,
       registry: registryOf(adapter),
       provision: stubProvision(),

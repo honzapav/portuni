@@ -4,6 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
+import { isRunEndedError } from "../apps/server/domain/runner/types.js";
 import type { CanonicalEvent, DeltaFrame, RunStart } from "../apps/server/domain/runner/types.js";
 
 function noopSink(): void {
@@ -146,5 +147,29 @@ describe("FakeRunnerAdapter", () => {
 
     await handle.close();
     assert.equal(events.length, 2);
+  });
+});
+
+describe("FakeRunnerAdapter: send() into a run that has ended (#489)", () => {
+  it("throws instead of dropping the message once the script ran out", async () => {
+    const adapter = new FakeRunnerAdapter({ script: [userMsg] });
+    const handle = await adapter.start(run(), noopSink);
+
+    await assert.rejects(() => handle.send("too late"), (err: unknown) => {
+      assert.equal(isRunEndedError(err), true);
+      return true;
+    });
+  });
+
+  it("throws once close() ended the run, even while the script sits at a wait step", async () => {
+    const script: FakeScriptStep[] = [{ wait: "message" }, assistantMsg];
+    const adapter = new FakeRunnerAdapter({ script });
+    const handle = await adapter.start(run(), noopSink);
+
+    await handle.close();
+    await assert.rejects(() => handle.send("too late"), (err: unknown) => {
+      assert.equal(isRunEndedError(err), true);
+      return true;
+    });
   });
 });

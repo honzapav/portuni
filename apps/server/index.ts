@@ -1,9 +1,12 @@
-// Entry point. Loads varlock-managed env (TURSO_*, AUTH_TOKEN, ...),
+// Entry point. Loads varlock-managed env (TURSO_*, PORTUNI_AUTH_TOKEN, ...),
 // runs schema migrations, then starts the HTTP listener that mounts both
 // the REST API and the MCP transport.
 
 import "varlock/auto-load";
 import { ensureSchema } from "./infra/schema.js";
+import { isCentralServer } from "./infra/server-config.js";
+import { assertAuthConfig } from "./infra/auth-config.js";
+import { ensurePersonalWorkspaceSchema } from "./boot/content-import.js";
 import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { startRemoteWatcher } from "./boot/remote-watch.js";
@@ -20,7 +23,20 @@ import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
 import { getSessionRuntime } from "./boot/session-runtime.js";
 
 async function main() {
-  await ensureSchema();
+  // Refuse a server whose front door cannot authenticate before touching
+  // the db (#521); startHttpServer checks again.
+  assertAuthConfig();
+  // This entry point is either the central server or a personal workspace.
+  // A personal workspace keeps its threads' content in content.db
+  // (PORTUNI_DATA_DIR, else cwd, next to runners.json): opened here and
+  // filled once from the graph db -- the same boot step desktop.ts's local
+  // branch runs -- BEFORE ensureSchema, whose migration 040 drops that
+  // content from the graph db and waits while the copy is incomplete
+  // (#462). The central server never opens a content.db and holds no
+  // content at all.
+  const central = isCentralServer();
+  if (central) await ensureSchema();
+  else await ensurePersonalWorkspaceSchema();
   registerRunnerAdapters();
   startHttpServer();
   // Standalone server: opt in with PORTUNI_WATCH_MIRRORS=1. Default off so it
@@ -37,7 +53,10 @@ async function main() {
   // resolves any 'running' session a runner task was driving, so the other
   // sweep's own query for stale 'running' rows sees an already-correct
   // picture instead of racing it.
-  void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
+  // The central server runs no runner process, so it has no pid file to
+  // sweep; its running sweep is record maintenance only (#458).
+  if (central) void sweepStaleRunningSessionsOnBoot();
+  else void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
   void sweepStaleDraftSessionsOnBoot();
   void sweepArchivedSessionsOnBoot();
   // #406: no MCP transport survives a restart, so every read-file spill

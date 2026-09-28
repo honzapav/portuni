@@ -46,7 +46,15 @@ jobs:
   deploy:
     name: Deploy to api.portuni.com
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # workflow_run's `branches: [main]` also matches a fork PR whose head
+    # branch is named main, and head_sha would then check out the fork's
+    # code with the deploy secrets. Only CI of a push to this repo's own
+    # main may deploy.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@v7
         with:
@@ -78,7 +86,7 @@ jobs:
       - uses: actions/setup-node@v7
         if: steps.decide.outputs.deploy == 'true'
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
         if: steps.decide.outputs.deploy == 'true'
@@ -165,7 +173,7 @@ jobs:
       # a migration that then went wrong is exactly the one worth having.
       - name: Keep the pre-migration backup
         if: always() && steps.decide.outputs.deploy == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: turso-backup-${{ github.event.workflow_run.head_sha || github.sha }}
           path: backup-artifact/*.sql

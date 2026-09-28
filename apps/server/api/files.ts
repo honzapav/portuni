@@ -8,8 +8,14 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
-import { getDb } from "../infra/db.js";
-import { parseJsonBody, respondJson, respondError, type RequestIdentity } from "../http/middleware.js";
+import { getDb, type DbClient } from "../infra/db.js";
+import {
+  parseJsonBody,
+  respondApiError,
+  respondJson,
+  respondError,
+  type RequestIdentity,
+} from "../http/middleware.js";
 import {
   readFileContent,
   writeFileContent,
@@ -42,10 +48,19 @@ const FILE_BODY_MAX_BYTES = Number(
   process.env.PORTUNI_MAX_FILE_BODY_BYTES ?? 160 * 1024 * 1024,
 );
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
+import { NodeNotFoundError } from "../domain/sync/node-info.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
-import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
+import { filterVisibleNodeIds } from "../auth/node-access.js";
 import { guardRestNodeWrite, guardHeadlessFileWrite } from "./write-gate.js";
 import type { FileContentResponse } from "../shared/api-types.js";
+import {
+  fileCreateSchema,
+  fileMoveSchema,
+  fileRenameSchema,
+  openVisibleNode,
+  openWritableNode,
+  respondNodeNotFound,
+} from "./node-route-helpers.js";
 
 const CODE_STATUS: Record<FileContentErrorCode, number> = {
   NO_MIRROR: 409,
@@ -61,14 +76,36 @@ const CODE_STATUS: Record<FileContentErrorCode, number> = {
 function handleFileContentError(res: ServerResponse, err: unknown): boolean {
   if (err instanceof FileContentError) {
     const status = CODE_STATUS[err.code];
-    const body: Record<string, unknown> = { error: err.message, code: err.code };
-    if (err.code === "CONFLICT" && err.currentVersion) {
-      body.currentVersion = err.currentVersion;
-    }
-    respondJson(res, status, body);
+    const extra =
+      err.code === "CONFLICT" && err.currentVersion
+        ? { currentVersion: err.currentVersion }
+        : undefined;
+    respondApiError(res, status, err.code, err.message, err.params, extra);
     return true;
   }
   return false;
+}
+
+// The `path` query param every single-file route takes; answers 400 and
+// returns null when it is missing or empty.
+function requirePathParam(res: ServerResponse, url: URL): string | null {
+  const relPath = url.searchParams.get("path");
+  if (!relPath) {
+    respondApiError(res, 400, "INVALID_REQUEST", "path query param required");
+    return null;
+  }
+  return relPath;
+}
+
+// Mirror present -> the local operation. No mirror (central / VPS) -> the
+// remote-direct one against the routed remote.
+async function byMirror<L, R>(
+  identity: RequestIdentity,
+  nodeId: string,
+  local: () => Promise<L>,
+  remote: () => Promise<R>,
+): Promise<L | R> {
+  return (await getMirrorPath(identity.userId, nodeId)) ? local() : remote();
 }
 
 export async function handleGetFileContent(
@@ -78,19 +115,13 @@ export async function handleGetFileContent(
   nodeId: string,
   url: URL,
 ): Promise<void> {
-  const relPath = url.searchParams.get("path");
-  if (!relPath) {
-    respondJson(res, 400, { error: "path query param required" });
-    return;
-  }
+  const relPath = requirePathParam(res, url);
+  if (!relPath) return;
   try {
-    const db = getDb();
     // Same node-access enforcement as graph routes: a hidden node looks
     // not-found so its file content never leaks.
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
+    const db = await openVisibleNode(res, identity, nodeId);
+    if (!db) return;
     // Binary-safe byte read for the central-mode sync agent. Remote-only:
     // the central server has no mirrors, and the agent never talks to a
     // mirror-holding server.
@@ -122,10 +153,13 @@ export async function handleGetFileContent(
     }
     // Mirror present -> local read (unchanged). No mirror (central / VPS)
     // -> Drive-direct read against the routed remote.
-    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
-    const r = mirrorRoot
-      ? await readFileContent(db, { userId: identity.userId, nodeId, relPath })
-      : await readFileContentRemote(db, { userId: identity.userId, nodeId, relPath });
+    const readArgs = { userId: identity.userId, nodeId, relPath };
+    const r = await byMirror(
+      identity,
+      nodeId,
+      () => readFileContent(db, readArgs),
+      () => readFileContentRemote(db, readArgs),
+    );
     const payload: FileContentResponse = {
       content: r.content,
       version: r.version,
@@ -161,24 +195,17 @@ export async function handlePutFileContent(
   nodeId: string,
   url: URL,
 ): Promise<void> {
-  const relPath = url.searchParams.get("path");
-  if (!relPath) {
-    respondJson(res, 400, { error: "path query param required" });
-    return;
-  }
+  const relPath = requirePathParam(res, url);
+  if (!relPath) return;
   const body = await parseJsonBody(req, res, putSchema, FILE_BODY_MAX_BYTES);
   if (!body) return;
   if ((body.content === undefined) === (body.content_base64 === undefined)) {
-    respondJson(res, 400, { error: "exactly one of content / content_base64 required" });
+    respondApiError(res, 400, "INVALID_REQUEST", "exactly one of content / content_base64 required");
     return;
   }
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
-    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
+    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    if (!db) return;
     // Binary-safe byte write for the central-mode sync agent (remote-only,
     // see the GET handler). Response carries canonical_hash so the agent can
     // record its synced baseline in files.current_remote_hash terms.
@@ -199,33 +226,32 @@ export async function handlePutFileContent(
     // The text path never writes a .showtime bundle: what the editor holds
     // for one is the bundled preview, not the file (the byte path above may).
     if (isShowtimePath(relPath)) {
-      respondJson(res, 415, {
-        error: `a .showtime bundle is read-only here; edit it in Showtime: ${relPath}`,
-        code: "NOT_EDITABLE",
-      });
+      respondApiError(
+        res,
+        415,
+        "NOT_EDITABLE",
+        `a .showtime bundle is read-only here; edit it in Showtime: ${relPath}`,
+        { path: relPath },
+      );
       return;
     }
     // Mirror present -> local write (unchanged, push deferred to sync). No
     // mirror (central / VPS) -> Drive-direct write against the routed remote
     // with conflict-on-remote-hash; the Turso canonical hash is refreshed.
-    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
-    const r = mirrorRoot
-      ? await writeFileContent(db, {
-          userId: identity.userId,
-          nodeId,
-          relPath,
-          content: body.content as string,
-          baseVersion: body.baseVersion,
-          force: body.force,
-        })
-      : await writeFileContentRemote(db, {
-          userId: identity.userId,
-          nodeId,
-          relPath,
-          content: body.content as string,
-          baseVersion: body.baseVersion,
-          force: body.force,
-        });
+    const writeArgs = {
+      userId: identity.userId,
+      nodeId,
+      relPath,
+      content: body.content as string,
+      baseVersion: body.baseVersion,
+      force: body.force,
+    };
+    const r = await byMirror(
+      identity,
+      nodeId,
+      () => writeFileContent(db, writeArgs),
+      () => writeFileContentRemote(db, writeArgs),
+    );
     respondJson(res, 200, { version: r.version });
   } catch (err) {
     if (handleFileContentError(res, err)) return;
@@ -243,16 +269,13 @@ export async function handleGetSyncInfo(
   nodeId: string,
 ): Promise<void> {
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
+    const db = await openVisibleNode(res, identity, nodeId);
+    if (!db) return;
     const info = await getNodeSyncInfo(db, nodeId);
     respondJson(res, 200, info);
   } catch (err) {
-    if (err instanceof Error && /not found/i.test(err.message)) {
-      respondJson(res, 404, { error: "node not found" });
+    if (err instanceof NodeNotFoundError) {
+      respondNodeNotFound(res, nodeId);
       return;
     }
     respondError(res, `GET /nodes/${nodeId}/sync-info`, err);
@@ -267,6 +290,34 @@ const infoBatchSchema = z.object({
   node_ids: z.array(z.string().min(1)).min(1).max(500),
 });
 
+// The shared shape of the two record-only registration routes: parse the
+// body, gate the node (visible + headless write), run the registration and
+// answer 201 with its payload.
+async function handleRegisterRoute<T>(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+  schema: z.ZodType<T>,
+  route: string,
+  register: (db: DbClient, body: T) => Promise<unknown>,
+): Promise<void> {
+  const body = await parseJsonBody(req, res, schema);
+  if (!body) return;
+  try {
+    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    if (!db) return;
+    respondJson(res, 201, await register(db, body));
+  } catch (err) {
+    if (handleFileContentError(res, err)) return;
+    if (err instanceof NodeNotFoundError) {
+      respondNodeNotFound(res, nodeId);
+      return;
+    }
+    respondError(res, route, err);
+  }
+}
+
 // POST /nodes/:id/files/register -- record-only registration (no upload) for
 // a file the agent found in a local mirror. See sync-remote-api.ts.
 export async function handleRegisterFile(
@@ -275,29 +326,20 @@ export async function handleRegisterFile(
   identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
-  const body = await parseJsonBody(req, res, registerSchema);
-  if (!body) return;
-  try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
-    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
-    const r = await registerFileRecordRemote(db, {
-      userId: identity.userId,
-      nodeId,
-      relPath: body.relPath,
-    });
-    respondJson(res, 201, r);
-  } catch (err) {
-    if (handleFileContentError(res, err)) return;
-    if (err instanceof Error && /not found/i.test(err.message)) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
-    respondError(res, `POST /nodes/${nodeId}/files/register`, err);
-  }
+  await handleRegisterRoute(
+    req,
+    res,
+    identity,
+    nodeId,
+    registerSchema,
+    `POST /nodes/${nodeId}/files/register`,
+    (db, body) =>
+      registerFileRecordRemote(db, {
+        userId: identity.userId,
+        nodeId,
+        relPath: body.relPath,
+      }),
+  );
 }
 
 // POST /nodes/:id/files/register-batch -- bulk record-only registration
@@ -308,29 +350,21 @@ export async function handleRegisterFilesBatch(
   identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
-  const body = await parseJsonBody(req, res, registerBatchSchema);
-  if (!body) return;
-  try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
-    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
-    const results = await registerFileRecordsRemote(db, {
-      userId: identity.userId,
-      nodeId,
-      relPaths: body.relPaths,
-    });
-    respondJson(res, 201, { files: results });
-  } catch (err) {
-    if (handleFileContentError(res, err)) return;
-    if (err instanceof Error && /not found/i.test(err.message)) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
-    respondError(res, `POST /nodes/${nodeId}/files/register-batch`, err);
-  }
+  await handleRegisterRoute(
+    req,
+    res,
+    identity,
+    nodeId,
+    registerBatchSchema,
+    `POST /nodes/${nodeId}/files/register-batch`,
+    async (db, body) => ({
+      files: await registerFileRecordsRemote(db, {
+        userId: identity.userId,
+        nodeId,
+        relPaths: body.relPaths,
+      }),
+    }),
+  );
 }
 
 // POST /sync/info-batch -- sync-info for many nodes in one request (the
@@ -366,62 +400,39 @@ export async function handleSyncInfoBatch(
   }
 }
 
-const createSchema = z.object({
-  filename: z.string().min(1),
-  section: z.enum(["wip", "outputs", "resources"]).optional(),
-  subpath: z.string().nullish(),
-  content: z.string().optional(),
-});
-
 export async function handleCreateFile(
   req: IncomingMessage,
   res: ServerResponse,
   identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
-  const body = await parseJsonBody(req, res, createSchema);
+  const body = await parseJsonBody(req, res, fileCreateSchema);
   if (!body) return;
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
+    const db = await openWritableNode(req, res, identity, nodeId, guardRestNodeWrite);
+    if (!db) return;
     // Mirror present -> local create (registers + pushes). No mirror
     // (central / VPS) -> adapter-direct create against the routed remote.
-    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
-    const f = mirrorRoot
-      ? await createFile(db, {
-          userId: identity.userId,
-          nodeId,
-          filename: body.filename,
-          section: body.section,
-          subpath: body.subpath ?? null,
-          content: body.content,
-        })
-      : await createFileRemote(db, {
-          userId: identity.userId,
-          nodeId,
-          filename: body.filename,
-          section: body.section,
-          subpath: body.subpath ?? null,
-          content: body.content,
-        });
+    const createArgs = {
+      userId: identity.userId,
+      nodeId,
+      filename: body.filename,
+      section: body.section,
+      subpath: body.subpath ?? null,
+      content: body.content,
+    };
+    const f = await byMirror(
+      identity,
+      nodeId,
+      () => createFile(db, createArgs),
+      () => createFileRemote(db, createArgs),
+    );
     respondJson(res, 201, f);
   } catch (err) {
     if (handleFileContentError(res, err)) return;
     respondError(res, `POST /nodes/${nodeId}/files`, err);
   }
 }
-
-const moveSchema = z.object({
-  new_section: z.enum(["wip", "outputs", "resources"]).optional(),
-  new_subpath: z.string().nullable().optional(),
-  new_filename: z.string().min(1).optional(),
-  new_node_id: z.string().optional(),
-  confirmed: z.boolean().optional(),
-});
 
 // Record+remote move. On the central server getMirrorPath is null, so
 // moveFile's local disk step no-ops by design -- the device that owns the
@@ -433,15 +444,11 @@ export async function handleMoveFile(
   nodeId: string,
   fileId: string,
 ): Promise<void> {
-  const body = await parseJsonBody(req, res, moveSchema);
+  const body = await parseJsonBody(req, res, fileMoveSchema);
   if (!body) return;
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
-    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
+    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    if (!db) return;
     if (body.new_node_id && !(await guardHeadlessFileWrite(req, res, identity, body.new_node_id))) return;
     const r = await moveFile(db, {
       userId: identity.userId,
@@ -458,8 +465,6 @@ export async function handleMoveFile(
   }
 }
 
-const renameSchema = z.object({ new_filename: z.string().min(1) });
-
 export async function handleRenameFile(
   req: IncomingMessage,
   res: ServerResponse,
@@ -467,28 +472,28 @@ export async function handleRenameFile(
   nodeId: string,
   fileId: string,
 ): Promise<void> {
-  const body = await parseJsonBody(req, res, renameSchema);
+  const body = await parseJsonBody(req, res, fileRenameSchema);
   if (!body) return;
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
-    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
-    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
-    const r = mirrorRoot
-      ? await renameFile(db, {
+    const db = await openWritableNode(req, res, identity, nodeId, guardRestNodeWrite);
+    if (!db) return;
+    const r = await byMirror(
+      identity,
+      nodeId,
+      () =>
+        renameFile(db, {
           userId: identity.userId,
           fileId,
           newFilename: body.new_filename,
-        })
-      : await renameFileRemote(db, {
+        }),
+      () =>
+        renameFileRemote(db, {
           userId: identity.userId,
           nodeId,
           fileId,
           newFilename: body.new_filename,
-        });
+        }),
+    );
     respondJson(res, 200, r);
   } catch (err) {
     respondError(res, `POST /nodes/${nodeId}/files/${fileId}/rename`, err);
@@ -505,27 +510,27 @@ export async function handleDeleteFile(
 ): Promise<void> {
   const confirmed = url.searchParams.get("confirmed") === "true";
   try {
-    const db = getDb();
-    if (!(await nodeVisibleTo(db, identity, nodeId))) {
-      respondJson(res, 404, { error: "node not found" });
-      return;
-    }
-    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
-    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
-    const r = mirrorRoot
-      ? await deleteFile(db, {
+    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    if (!db) return;
+    const r = await byMirror(
+      identity,
+      nodeId,
+      () =>
+        deleteFile(db, {
           userId: identity.userId,
           fileId,
           mode: "complete",
           confirmed,
-        })
-      : await deleteFileRemote(db, {
+        }),
+      () =>
+        deleteFileRemote(db, {
           userId: identity.userId,
           nodeId,
           fileId,
           mode: "complete",
           confirmed,
-        });
+        }),
+    );
     respondJson(res, 200, r);
   } catch (err) {
     respondError(res, `DELETE /nodes/${nodeId}/files/${fileId}`, err);

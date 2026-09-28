@@ -3,8 +3,9 @@
 
 process.env.PORT = "14920";
 process.env.HOST = "127.0.0.1";
-process.env.PORTUNI_AUTH_TOKEN = "";
+useTestBearer();
 
+import { authFetch, useTestBearer } from "./helpers/auth.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -52,17 +53,58 @@ after(async () => {
 
 describe("GET /me", () => {
   it("returns the env-mode solo identity", async () => {
-    const res = await fetch(`${base}/me`);
+    const res = await authFetch(`${base}/me`);
     assert.equal(res.status, 200);
     const body = await res.json() as Record<string, unknown>;
     assert.equal(body.global_scope, "admin");
     assert.equal(body.via, "env");
+    assert.equal(body.locale, null, "no language chosen yet");
+  });
+});
+
+// #538: the UI language is the user's own setting, read by every device of
+// the user on its next /me.
+describe("PATCH /me", () => {
+  async function patchMe(body: unknown): Promise<Response> {
+    return authFetch(`${base}/me`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("stores the locale on the caller's row and GET /me returns it", async () => {
+    const res = await patchMe({ locale: "cs" });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { locale: unknown }).locale, "cs");
+    const me = (await (await authFetch(`${base}/me`)).json()) as { id: string; locale: unknown };
+    assert.equal(me.locale, "cs");
+    const row = await db.execute({ sql: "SELECT locale FROM users WHERE id = ?", args: [me.id] });
+    assert.equal(row.rows[0].locale, "cs");
+  });
+
+  it("clears the locale with null", async () => {
+    await patchMe({ locale: "en" });
+    const res = await patchMe({ locale: null });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { locale: unknown }).locale, null);
+  });
+
+  it("refuses any other value with INVALID_LOCALE and leaves the row alone", async () => {
+    await patchMe({ locale: "en" });
+    for (const body of [{ locale: "de" }, { locale: "cs-CZ" }, { locale: 1 }, {}]) {
+      const res = await patchMe(body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.equal(((await res.json()) as { code: string }).code, "INVALID_LOCALE");
+    }
+    const me = (await (await authFetch(`${base}/me`)).json()) as { locale: unknown };
+    assert.equal(me.locale, "en");
   });
 });
 
 describe("device token lifecycle over REST", () => {
   it("mint, list, delete cycle works", async () => {
-    const mint = await fetch(`${base}/device-tokens`, {
+    const mint = await authFetch(`${base}/device-tokens`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ label: "test-device" }),
@@ -71,15 +113,15 @@ describe("device token lifecycle over REST", () => {
     const minted = await mint.json() as { id: string; token: string };
     assert.ok(minted.token.startsWith("ptk_"));
 
-    const list = await fetch(`${base}/device-tokens`);
+    const list = await authFetch(`${base}/device-tokens`);
     const rows = await list.json() as Array<{ label: string; token?: string; revoked_at: string | null }>;
     assert.equal(rows.length, 1);
     assert.equal(rows[0].label, "test-device");
     assert.equal(rows[0].token, undefined, "plaintext never returned again");
 
-    const del = await fetch(`${base}/device-tokens/${minted.id}`, { method: "DELETE" });
+    const del = await authFetch(`${base}/device-tokens/${minted.id}`, { method: "DELETE" });
     assert.equal(del.status, 200);
-    const list2 = await (await fetch(`${base}/device-tokens`)).json() as Array<{ revoked_at: string | null }>;
+    const list2 = await (await authFetch(`${base}/device-tokens`)).json() as Array<{ revoked_at: string | null }>;
     assert.ok(list2[0].revoked_at);
   });
 });
@@ -94,7 +136,7 @@ describe("OAuth connector grants over REST", () => {
       scope: "portuni offline_access",
     });
 
-    const list = await fetch(`${base}/auth/oauth-grants`);
+    const list = await authFetch(`${base}/auth/oauth-grants`);
     assert.equal(list.status, 200);
     const rows = await list.json() as Array<{
       id: string;
@@ -105,24 +147,24 @@ describe("OAuth connector grants over REST", () => {
     assert.equal(rows[0].client_name, "Claude");
     assert.equal(rows[0].access_token, undefined, "plaintext token never returned");
 
-    const notOwned = await fetch(`${base}/auth/oauth-grants/does-not-exist`, {
+    const notOwned = await authFetch(`${base}/auth/oauth-grants/does-not-exist`, {
       method: "DELETE",
     });
     assert.equal(notOwned.status, 404);
 
-    const del = await fetch(`${base}/auth/oauth-grants/${minted.grantId}`, {
+    const del = await authFetch(`${base}/auth/oauth-grants/${minted.grantId}`, {
       method: "DELETE",
     });
     assert.equal(del.status, 200);
 
-    const list2 = await (await fetch(`${base}/auth/oauth-grants`)).json() as unknown[];
+    const list2 = await (await authFetch(`${base}/auth/oauth-grants`)).json() as unknown[];
     assert.equal(list2.length, 0, "revoked grants are excluded from the list");
   });
 });
 
 describe("POST /auth/login", () => {
   it("returns 404 in env mode", async () => {
-    const res = await fetch(`${base}/auth/login`, {
+    const res = await authFetch(`${base}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id_token: "x" }),
@@ -140,7 +182,7 @@ describe("REST write attribution", () => {
       args: [orgId, "organization", "Test Org", "test-org", "01SOLO0000000000000000000"],
     });
 
-    const res = await fetch(`${base}/nodes`, {
+    const res = await authFetch(`${base}/nodes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "project", name: "Test Project", organization_id: orgId }),

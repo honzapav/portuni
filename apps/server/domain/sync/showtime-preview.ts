@@ -103,7 +103,7 @@ export async function readShowtimePreview(
   local_path: string | null;
 }> {
   if (!isShowtimePath(a.relPath)) {
-    throw new FileContentError(`not a .showtime bundle: ${a.relPath}`, "INVALID_PATH");
+    throw new FileContentError(`not a .showtime bundle: ${a.relPath}`, "INVALID_PATH", undefined, { path: a.relPath });
   }
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
   let bytes: Buffer;
@@ -115,7 +115,7 @@ export async function readShowtimePreview(
       bytes = await readFile(abs);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND");
+        throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND", undefined, { path: a.relPath });
       }
       throw e;
     }
@@ -134,12 +134,16 @@ export async function readShowtimePreview(
     throw new FileContentError(
       `not a readable .showtime bundle (${(e as Error).message}): ${a.relPath}`,
       "NO_PREVIEW",
+      undefined,
+      { path: a.relPath },
     );
   }
   if (!entry) {
     throw new FileContentError(
       `bundle carries no ${SHOWTIME_PREVIEW_ENTRY}; save it with a newer Showtime: ${a.relPath}`,
       "NO_PREVIEW",
+      undefined,
+      { path: a.relPath },
     );
   }
   return {

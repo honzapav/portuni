@@ -15,7 +15,11 @@ import {
   type SessionState,
 } from "../shared/types.js";
 import { writeAudit } from "../infra/audit.js";
-import { suspendSessionServerSide, type ServerHandoffReason } from "./session-handoff.js";
+import { handoffEnrichedName, suspendSessionServerSide, type ServerHandoffReason } from "./session-handoff.js";
+import { sessionContentStoreForProcess } from "./runner/store-content.js";
+import { isCentralServer } from "../infra/server-config.js";
+import { DEFAULT_LOCALE, type Locale } from "../shared/i18n/config.js";
+import { getFixedT } from "../shared/i18n/server.js";
 
 const SESSION_TYPES = ["interactive_task", "interactive_chat", "headless", "env"] as const;
 
@@ -46,7 +50,6 @@ const CreateSessionInput = z.object({
   instance_id: z.string().nullable().optional().describe("Runner provider instance used (apps/server/domain/runner/instances.ts) -- renamed from profile_id."),
   agent_session_id: z.string().nullable().optional().describe("The underlying agent CLI's own conversation id, for --resume."),
   terminal_id: z.string().nullable().optional().describe("Historical: the desktop PTY that spawned this session's CLI, back when one existed (#218). Nothing writes a non-null value anymore since the embedded terminal was removed (#345/#346); the column stays for old rows until a later migration drops it."),
-  brief: z.string().nullable().optional().describe("The task as given (runner batch): the first user message on a fresh run."),
   runner: z.string().nullable().optional().describe("Runner adapter id (e.g. 'claude') this session's task runs under."),
   host_id: z.string().nullable().optional().describe("The device/workspace running this session's task."),
   // #375: the thread's own model/effort override. Resolution (session ->
@@ -138,8 +141,8 @@ export async function createSession(
   const name = computeDefaultSessionName(nodeName, now);
 
   await db.execute({
-    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner, host_id, model, effort, state, name, created_at, last_active_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, runner, host_id, model, effort, state, name, created_at, last_active_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     args: [
       id,
       parsed.node_id,
@@ -149,7 +152,6 @@ export async function createSession(
       parsed.instance_id ?? null,
       parsed.agent_session_id ?? null,
       parsed.terminal_id ?? null,
-      parsed.brief ?? null,
       parsed.runner ?? null,
       parsed.host_id ?? null,
       parsed.model ?? null,
@@ -178,10 +180,19 @@ export async function createDraftSession(
   db: DbClient,
   userId: string,
   nodeId: string,
-  overrides: { model?: string | null; effort?: string | null; runner?: string | null; instance_id?: string | null } = {},
+  overrides: {
+    model?: string | null;
+    effort?: string | null;
+    runner?: string | null;
+    instance_id?: string | null;
+    // #539: the default name's language, from the request; English when
+    // missing. Never read from the account or process state here.
+    locale?: Locale;
+  } = {},
 ): Promise<SessionRow> {
   const id = ulid();
   const now = new Date().toISOString();
+  const t = getFixedT(overrides.locale ?? DEFAULT_LOCALE, "server");
   await db.execute({
     sql: `INSERT INTO sessions (id, node_id, user_id, session_type, state, name, model, effort, runner, instance_id, created_at, last_active_at)
           VALUES (?, ?, ?, 'interactive_task', 'draft', ?, ?, ?, ?, ?, ?, ?)`,
@@ -189,7 +200,7 @@ export async function createDraftSession(
       id,
       nodeId,
       userId,
-      "Nový úkol",
+      t(($) => $.session.default_draft_name),
       overrides.model ?? null,
       overrides.effort ?? null,
       overrides.runner ?? null,
@@ -347,9 +358,11 @@ export async function setSessionCli(db: DbClient, id: string, cli: string): Prom
 }
 
 // State machine. running/suspended are the live states (a session can
-// bounce between them via suspend/resume, #190); closed is terminal from the
-// user's point of view but auto-archives (a view filter, never a delete) as
-// the only way out of closed. archived itself is terminal. draft (#374) is
+// bounce between them via suspend/resume, #190); closed is "done, off the
+// active lists", not "never again": writing into it reopens it exactly the
+// way it reopens a suspended thread (#498, session-runtime.ts's
+// sendMessage), and otherwise it auto-archives (a view filter, never a
+// delete). archived itself is terminal. draft (#374) is
 // a thread before its first message: its only transition is to running (the
 // first message, session-runtime.ts's sendMessage), and its only other exit
 // is deletion (deleteDraftSession/pruneStaleDraftSessions), never a state
@@ -358,7 +371,7 @@ const ALLOWED_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   draft: ["running"],
   running: ["suspended", "closed"],
   suspended: ["running", "closed"],
-  closed: ["archived"],
+  closed: ["running", "archived"],
   archived: [],
 };
 
@@ -378,7 +391,9 @@ export async function transitionSessionState(
   }
 
   const now = new Date().toISOString();
-  const closedAt = toState === "closed" ? now : existing.closed_at;
+  // A reopened thread (#498: closed -> running) is no longer closed; a
+  // stale closed_at would read as "closed at" on a running row.
+  const closedAt = toState === "closed" ? now : toState === "running" ? null : existing.closed_at;
 
   await db.execute({
     sql: "UPDATE sessions SET state = ?, last_active_at = ?, closed_at = ? WHERE id = ?",
@@ -395,20 +410,75 @@ export async function transitionSessionState(
   return row;
 }
 
+// Where the two suspends below run. On the central server (#458) there is
+// no content to summarise and no run to end: a task thread's run lives on
+// the device that drives it, and only that device's own run end or boot
+// sweep suspends it. Overridable for tests; defaults to the process's role.
+export interface ServerSideSuspendOptions {
+  central?: boolean;
+}
+
+// A thread some device drives: a runner task (runner set) or one with a run
+// still open. Neither the central server nor the device itself ends such a
+// thread on an MCP transport closing -- a dropped connection, or the
+// central server restarting, says nothing about the run on the device.
+// What is left is a hand-opened CLI or a connector session whose only life
+// was its MCP connection to this process.
+async function isDeviceDrivenSession(db: DbClient, row: { id: string; runner: string | null }): Promise<boolean> {
+  if (row.runner !== null) return true;
+  const open = await db.execute({
+    sql: "SELECT 1 FROM session_runs WHERE session_id = ? AND ended_at IS NULL LIMIT 1",
+    args: [row.id],
+  });
+  return open.rows.length > 0;
+}
+
+// The central server's suspend: record only, no summary (#458: it holds no
+// transcript to build one from, and never opens a content.db), and never
+// for a thread a device drives. Returns whether the row was suspended.
+async function suspendRecordOnCentral(db: DbClient, sessionId: string): Promise<boolean> {
+  const row = await loadSession(db, sessionId);
+  if (row?.state !== "running") return false;
+  if (await isDeviceDrivenSession(db, row)) return false;
+  await transitionSessionState(db, row.user_id, sessionId, "suspended");
+  return true;
+}
+
 // GC backstop (#218): called from mcp/transport.ts's onclose, for a crash
 // that never reaches a graceful close, a genuine client disconnect, or the
 // transport's own 30-minute idle GC force-closing it. Suspends (#329;
 // previously closed) the session iff it is still 'running' -- an
 // already-suspended session (the agent's own portuni_session_suspend
 // already ran) is untouched either way, since suspendSessionServerSide only
-// acts on 'running'. Thin wrapper around suspendSessionServerSide
-// (domain/session-handoff.ts).
+// acts on 'running'. On a device a thin wrapper around
+// suspendSessionServerSide (domain/session-handoff.ts); on the central
+// server suspendRecordOnCentral above. Neither branch touches a thread a
+// device drives (isDeviceDrivenSession) -- #487.
 export async function closeSessionIfRunning(
   db: DbClient,
   sessionId: string,
   reason: ServerHandoffReason,
+  opts: ServerSideSuspendOptions = {},
 ): Promise<void> {
-  await suspendSessionServerSide(db, sessionId, reason);
+  if (opts.central ?? isCentralServer()) {
+    await suspendRecordOnCentral(db, sessionId);
+    return;
+  }
+  // #487: the same rule the central branch has always had, on the device
+  // too. A transport closing -- the client dropping, or the transport's own
+  // 30-minute idle GC reaping a connection the agent simply had not called a
+  // Portuni tool over -- says nothing about a thread the runner drives: the
+  // agent process is alive, its run is open, and the user is still working
+  // in it. Only the runtime ends such a thread (idle with no turn in flight,
+  // a provider error or limit, a restart's boot sweep). Leaving the row
+  // 'running' is also what lets the agent's MCP client reconnect to it:
+  // mcp/session-persistence.ts's lookupSpawnSessionForBind refuses a spawn
+  // id whose row is no longer running (SESSION_BIND_REFUSED), so suspending
+  // here used to cost a live agent its Portuni tools for good.
+  const row = await loadSession(db, sessionId);
+  if (row?.state !== "running") return;
+  if (await isDeviceDrivenSession(db, row)) return;
+  await suspendSessionServerSide(db, sessionContentStoreForProcess(), sessionId, reason);
 }
 
 // Boot sweep (#272): a 'running' row can survive a process restart (app
@@ -417,13 +487,28 @@ export async function closeSessionIfRunning(
 // there is no live transport that could possibly own any of these
 // connections anymore, so every 'running' row left over from a previous
 // life is stale by definition. Suspends (#329; previously closed) each one
-// with a server-generated handoff instead, so a session interrupted only by
-// a restart stays resumable. Not scoped to a single user: this is a
+// with no summary (#497): a session interrupted only by a restart stays
+// resumable from its conversation, or from a summary built from the
+// transcript when the next message resumes it. Not scoped to a single user: this is a
 // process-wide maintenance sweep, same as autoArchiveClosedSessions above.
-export async function closeStaleRunningSessionsOnBoot(db: DbClient): Promise<number> {
+// On the central server (#458) it is record maintenance only: the rows it
+// suspends are the MCP-connection sessions that died with the process, with
+// no summary, and a thread a device drives stays `running` until that
+// device's own boot sweep ends it.
+export async function suspendStaleRunningSessionsOnBoot(
+  db: DbClient,
+  opts: ServerSideSuspendOptions = {},
+): Promise<number> {
   const res = await db.execute({ sql: "SELECT id, user_id FROM sessions WHERE state = 'running'" });
+  if (opts.central ?? isCentralServer()) {
+    let suspended = 0;
+    for (const row of res.rows) {
+      if (await suspendRecordOnCentral(db, String(row.id))) suspended++;
+    }
+    return suspended;
+  }
   for (const row of res.rows) {
-    await suspendSessionServerSide(db, String(row.id), "boot_sweep");
+    await suspendSessionServerSide(db, sessionContentStoreForProcess(), String(row.id), "boot_sweep");
   }
   return res.rows.length;
 }
@@ -435,28 +520,14 @@ export async function closeStaleRunningSessionsOnBoot(db: DbClient): Promise<num
 // action, so it would just add audit-log noise proportional to session
 // volume without a corresponding actor to attribute it to.
 const DEFAULT_ARCHIVE_AFTER_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-// Retention for session_events (runner batch, #317): the event log of an
-// archived session is dropped once closed_at is older than this -- the
-// session row, its runs, audit trail and handoff file all stay.
-const DEFAULT_EVENTS_RETENTION_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
-
 export async function autoArchiveClosedSessions(
   db: DbClient,
   olderThanMs: number = DEFAULT_ARCHIVE_AFTER_MS,
-  eventsRetentionMs: number = DEFAULT_EVENTS_RETENTION_MS,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - olderThanMs).toISOString();
   const res = await db.execute({
     sql: "UPDATE sessions SET state = 'archived' WHERE state = 'closed' AND closed_at IS NOT NULL AND closed_at < ?",
     args: [cutoff],
-  });
-  const eventsCutoff = new Date(Date.now() - eventsRetentionMs).toISOString();
-  await db.execute({
-    sql: `DELETE FROM session_events
-           WHERE session_id IN (
-             SELECT id FROM sessions WHERE state = 'archived' AND closed_at IS NOT NULL AND closed_at < ?
-           )`,
-    args: [eventsCutoff],
   });
   return res.rowsAffected;
 }
@@ -602,13 +673,11 @@ export async function getLatestRunHostId(db: DbClient, sessionId: string): Promi
 export interface SuspendSessionInput {
   // Null when there is nowhere on this device to write a file (#329:
   // suspendSessionServerSide on a session with no local mirror) -- the
-  // handoff text then goes into handoffInline instead.
+  // handoff text then goes into the device content store's
+  // handoff_inline instead (#456), never onto the record. #497: both null
+  // for a suspend that writes no summary at all (every reason but Předat).
   handoffPath: string | null;
-  handoffHash: string;
-  // Server-generated handoff content when handoffPath is null. Always
-  // cleared (set to null) on any suspend that DOES have a path -- only one
-  // representation is ever active for a given suspend.
-  handoffInline?: string | null;
+  handoffHash: string | null;
   agentSessionId?: string | null;
   // Title extracted from the handoff content (session-handoff.ts's
   // extractHandoffTitle). Spec: "enriched from the handoff title at
@@ -637,19 +706,15 @@ export async function suspendSession(
   }
 
   const now = new Date().toISOString();
-  const enrichedName =
-    !existing.name_is_custom && input.handoffTitle && input.handoffTitle.trim().length > 0
-      ? input.handoffTitle.trim()
-      : existing.name;
+  const enrichedName = handoffEnrichedName(existing, input.handoffTitle ?? null);
   await db.execute({
     sql: `UPDATE sessions
-             SET state = 'suspended', handoff_path = ?, handoff_hash = ?, handoff_inline = ?,
+             SET state = 'suspended', handoff_path = ?, handoff_hash = ?,
                  agent_session_id = COALESCE(?, agent_session_id), last_active_at = ?, name = ?
            WHERE id = ?`,
     args: [
       input.handoffPath,
       input.handoffHash,
-      input.handoffInline ?? null,
       input.agentSessionId ?? null,
       now,
       enrichedName,

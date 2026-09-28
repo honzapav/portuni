@@ -5,12 +5,15 @@
 //
 //   GET /overview   read   -> OverviewPayload
 //
-// Every section is loaded unfiltered by domain/queries/overview.ts and
-// filtered here by the caller's own node visibility (filterVisibleNodeIds,
-// same split as GET /graph). `access_requests` additionally requires
-// "manage" scope (matching GET /access/requests) -- a lower-scoped caller
-// gets an empty array for that one field rather than a 403 for the whole
-// dashboard.
+// Every section is loaded by domain/queries/overview.ts and filtered here by
+// the caller's own node visibility (filterVisibleNodeIds, same split as
+// GET /graph). The two session sections are different: a thread is its
+// owner's (#457), so `sessions` and `activity.session_writes` are filtered
+// by `user_id = identity` in SQL and never by node visibility -- Přehled and
+// the running count show the caller's own threads only.
+// `access_requests` additionally requires "manage" scope (matching
+// GET /access/requests) -- a lower-scoped caller gets an empty array for
+// that one field rather than a 403 for the whole dashboard.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
@@ -27,21 +30,7 @@ import {
   loadOverviewSessions,
   loadOverviewSyncIssues,
 } from "../domain/queries/overview.js";
-import type { OverviewPayload, OverviewSessionRow } from "../shared/api-types.js";
-
-// A workspace session anchored to a node is visible iff the node is;
-// interactive_chat has no anchor (node_id null) and no shared read scope of
-// its own to check against, so the safe default is to only surface it to
-// its own owner rather than the whole workspace.
-function filterSessions(
-  rows: OverviewSessionRow[],
-  identity: RequestIdentity,
-  visibleNodeIds: Set<string>,
-): OverviewSessionRow[] {
-  return rows.filter((r) =>
-    r.node_id ? visibleNodeIds.has(r.node_id) : r.user_id === identity.userId,
-  );
-}
+import type { OverviewPayload } from "../shared/api-types.js";
 
 export async function handleGetOverview(
   req: IncomingMessage,
@@ -61,20 +50,21 @@ export async function handleGetOverview(
       newNodes,
       accessRequests,
     ] = await Promise.all([
-      loadOverviewSessions(db),
+      loadOverviewSessions(db, identity.userId),
       loadOverviewDisconnectedJumps(db),
       loadOverviewAttentionNodes(db),
       loadOverviewSyncIssues(db),
       loadOverviewEvents(db),
-      loadOverviewSessionWrites(db),
+      loadOverviewSessionWrites(db, identity.userId),
       loadOverviewNewNodes(db),
       scopeAtLeast(identity.globalScope, "manage")
         ? listVisibleRequests(db, identity, "pending")
         : Promise.resolve([]),
     ]);
 
+    // sessionRows are not in here: they are already the caller's own and no
+    // longer gated on node visibility (#457).
     const allNodeIds = new Set<string>();
-    for (const r of sessionRows) if (r.node_id) allNodeIds.add(r.node_id);
     for (const r of disconnectedJumps) allNodeIds.add(r.node_id);
     for (const r of attentionNodes) allNodeIds.add(r.id);
     for (const r of syncIssues) allNodeIds.add(r.node_id);
@@ -83,11 +73,10 @@ export async function handleGetOverview(
     for (const r of newNodes) allNodeIds.add(r.id);
     const visible = await filterVisibleNodeIds(db, identity, [...allNodeIds]);
 
-    const visibleSessions = filterSessions(sessionRows, identity, visible);
     const payload: OverviewPayload = {
       sessions: {
-        running: visibleSessions.filter((r) => r.state === "running"),
-        suspended: visibleSessions.filter((r) => r.state === "suspended"),
+        running: sessionRows.filter((r) => r.state === "running"),
+        suspended: sessionRows.filter((r) => r.state === "suspended"),
         disconnected_jumps: disconnectedJumps.filter((r) => visible.has(r.node_id)),
       },
       attention: {

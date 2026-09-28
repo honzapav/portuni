@@ -60,13 +60,14 @@ describe("runner instances registry", () => {
     assert.equal(JSON.stringify(row).includes("bar"), false);
   });
 
-  it("rejects secret-shaped env keys with INSTANCE_ENV_KEY_REFUSED", async () => {
+  it("rejects secret-shaped env keys with INSTANCE_ENV_KEY_SECRET", async () => {
     for (const key of ["ANTHROPIC_API_KEY", "gh_token", "MY_SECRET", "DB_PASSWORD"]) {
       await assert.rejects(
         () => createInstance({ name: "X", runner: "claude", env: { [key]: "v" } }, dataDir),
         (err: unknown) => {
           assert.ok(err instanceof InstanceEnvKeyRefusedError);
-          assert.equal(err.code, "INSTANCE_ENV_KEY_REFUSED");
+          assert.equal(err.code, "INSTANCE_ENV_KEY_SECRET");
+          assert.deepEqual(err.params, { key });
           assert.equal(err.key, key);
           return true;
         },
@@ -76,9 +77,11 @@ describe("runner instances registry", () => {
 
   it("rejects PORTUNI_* env keys", async () => {
     await assert.rejects(
-      () => createInstance({ name: "X", runner: "claude", env: { PORTUNI_MCP_TOKEN: "v" } }, dataDir),
+      () => createInstance({ name: "X", runner: "claude", env: { PORTUNI_WORKSPACE_ROOT: "v" } }, dataDir),
       (err: unknown) => {
         assert.ok(err instanceof InstanceEnvKeyRefusedError);
+        assert.equal(err.code, "INSTANCE_ENV_KEY_RESERVED");
+        assert.equal(err.key, "PORTUNI_WORKSPACE_ROOT");
         return true;
       },
     );
@@ -218,14 +221,23 @@ describe("runner instances registry: model/effort defaults", () => {
   it("rejects an unknown key inside defaults", async () => {
     await assert.rejects(
       () => createInstance({ name: "Bad", runner: "claude", defaults: { nonsense: "x" } as never }, dataDir),
-      InstanceDefaultsKeyRefusedError,
+      (err: unknown) => {
+        assert.ok(err instanceof InstanceDefaultsKeyRefusedError);
+        assert.equal(err.code, "INSTANCE_DEFAULTS_KEY_UNKNOWN");
+        assert.deepEqual(err.params, { key: "nonsense" });
+        return true;
+      },
     );
   });
 
   it("rejects an invalid effort level", async () => {
     await assert.rejects(
       () => createInstance({ name: "Bad effort", runner: "claude", defaults: { effort: "extreme" as never } }, dataDir),
-      InstanceDefaultsKeyRefusedError,
+      (err: unknown) => {
+        assert.ok(err instanceof InstanceDefaultsKeyRefusedError);
+        assert.equal(err.code, "INSTANCE_DEFAULTS_EFFORT_INVALID");
+        return true;
+      },
     );
   });
 

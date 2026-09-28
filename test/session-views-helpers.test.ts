@@ -1,23 +1,37 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   sessionRowChip,
-  sessionRowAccess,
   applyLiveSessionState,
   mergeLiveSessionStates,
   sortInboxSessions,
-  countRunningSessions,
   pickOpenChatSession,
   hostDisplayName,
   requestChatSession,
   isChatSessionState,
-  mountedChatSessions,
   isThreadSession,
   nodeRowActive,
   shownChatSessionId,
+  threadCloseAction,
+  threadAcceptsMessages,
+  composerStatePlaceholder,
+  sessionRowOpensChat,
+  isOpenableChatState,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
+import { createI18n } from "../apps/server/shared/i18n/create.js";
+import { RESOURCES } from "../apps/server/shared/i18n/resources.js";
+
+const { i18n } = createI18n({
+  lng: "en",
+  resources: { en: RESOURCES.en, cs: RESOURCES.cs },
+  escapeValue: false,
+  initAsync: false,
+});
+const tEn = i18n.getFixedT("en", "common");
+const tCs = i18n.getFixedT("cs", "common");
 
 function overviewRow(overrides: Partial<OverviewSessionRow> & { id: string; user_id: string }): OverviewSessionRow {
   return {
@@ -29,7 +43,6 @@ function overviewRow(overrides: Partial<OverviewSessionRow> & { id: string; user
     session_type: "interactive_task",
     cli: "claude",
     instance_id: null,
-    brief: "do the thing",
     runner: "claude",
     waiting_since: null,
     state: "running",
@@ -44,59 +57,38 @@ function overviewRow(overrides: Partial<OverviewSessionRow> & { id: string; user
 }
 
 describe("sessionRowChip", () => {
-  it("running with no open question is 'Běží', pulsing", () => {
-    const chip = sessionRowChip("running", null);
-    assert.equal(chip.label, "Běží");
+  it("running with no open question is 'Running', pulsing", () => {
+    const chip = sessionRowChip("running", null, tEn);
+    assert.equal(chip.label, "Running");
     assert.equal(chip.pulsing, true);
   });
 
-  it("running with waiting_since is 'Čeká na mě'", () => {
-    assert.equal(sessionRowChip("running", "2026-09-13 10:00:00").label, "Čeká na mě");
+  it("running with waiting_since is 'Waiting on me'", () => {
+    assert.equal(sessionRowChip("running", "2026-09-13 10:00:00", tEn).label, "Waiting on me");
+    assert.equal(sessionRowChip("running", "2026-09-13 10:00:00", tCs).label, "Čeká na mě");
   });
 
-  it("closed is 'Hotovo' and archived is 'Archiv', neither pulsing", () => {
-    assert.equal(sessionRowChip("closed", null).label, "Hotovo");
-    assert.equal(sessionRowChip("closed", null).pulsing, false);
-    assert.equal(sessionRowChip("archived", null).label, "Archiv");
-    assert.equal(sessionRowChip("archived", null).pulsing, false);
+  it("closed is 'Done' in a row and 'Closed' in the header, archived is 'Archived', neither pulsing", () => {
+    assert.equal(sessionRowChip("closed", null, tEn).label, "Done");
+    assert.equal(sessionRowChip("closed", null, tEn, "header").label, "Closed");
+    assert.equal(sessionRowChip("closed", null, tCs).label, "Hotovo");
+    assert.equal(sessionRowChip("closed", null, tCs, "header").label, "Uzavřeno");
+    assert.equal(sessionRowChip("closed", null, tEn).pulsing, false);
+    assert.equal(sessionRowChip("archived", null, tEn).label, "Archived");
+    assert.equal(sessionRowChip("archived", null, tCs).label, "Archiv");
+    assert.equal(sessionRowChip("archived", null, tEn).pulsing, false);
   });
 
-  it("suspended is 'Pozastaveno', not pulsing", () => {
-    const chip = sessionRowChip("suspended", null);
-    assert.equal(chip.label, "Pozastaveno");
+  it("suspended is 'Suspended', not pulsing", () => {
+    const chip = sessionRowChip("suspended", null, tEn);
+    assert.equal(chip.label, "Suspended");
     assert.equal(chip.pulsing, false);
   });
 
-  it("a draft's chip reads 'Nový' in both variants, so the header never repeats the draft's name", () => {
-    assert.equal(sessionRowChip("draft", null, "row").label, "Nový");
-    assert.equal(sessionRowChip("draft", null, "header").label, "Nový");
-    assert.equal(sessionRowChip("draft", null).pulsing, false);
-  });
-});
-
-describe("sessionRowAccess", () => {
-  it("the owner can resume and pause/close", () => {
-    const access = sessionRowAccess("U1", "U1", false);
-    assert.equal(access.canResume, true);
-    assert.equal(access.canPauseOrClose, true);
-  });
-
-  it("a manage-scoped non-owner can pause/close but not resume", () => {
-    const access = sessionRowAccess("U1", "U2", true);
-    assert.equal(access.canResume, false);
-    assert.equal(access.canPauseOrClose, true);
-  });
-
-  it("a plain teammate can do neither", () => {
-    const access = sessionRowAccess("U1", "U2", false);
-    assert.equal(access.canResume, false);
-    assert.equal(access.canPauseOrClose, false);
-  });
-
-  it("an unknown caller (meId null) can do neither", () => {
-    const access = sessionRowAccess("U1", null, false);
-    assert.equal(access.canResume, false);
-    assert.equal(access.canPauseOrClose, false);
+  it("a draft's chip reads 'New' in both variants, so the header never repeats the draft's name", () => {
+    assert.equal(sessionRowChip("draft", null, tEn, "row").label, "New");
+    assert.equal(sessionRowChip("draft", null, tEn, "header").label, "New");
+    assert.equal(sessionRowChip("draft", null, tEn).pulsing, false);
   });
 });
 
@@ -140,44 +132,28 @@ describe("applyLiveSessionState / mergeLiveSessionStates", () => {
 });
 
 describe("sortInboxSessions", () => {
-  it("orders waiting, then running, then suspended, all restricted to the caller", () => {
+  it("orders waiting, then running, then suspended", () => {
     const running1 = overviewRow({ id: "r1", user_id: "me" });
     const waiting1 = overviewRow({ id: "w1", user_id: "me", waiting_since: "2026-09-13 09:00:00" });
     const suspended1 = overviewRow({ id: "p1", user_id: "me", state: "suspended" });
-    const notMine = overviewRow({ id: "x1", user_id: "someone-else" });
-    const ordered = sortInboxSessions([running1, waiting1, notMine], [suspended1], "me");
+    const ordered = sortInboxSessions([running1, waiting1], [suspended1]);
     assert.deepEqual(
       ordered.map((s) => s.id),
       ["w1", "r1", "p1"],
     );
   });
 
-  it("excludes sessions belonging to another user entirely", () => {
-    const theirs = overviewRow({ id: "x1", user_id: "someone-else" });
-    assert.deepEqual(sortInboxSessions([theirs], [], "me"), []);
-  });
-
-  it("returns nothing when the caller's id is unknown", () => {
-    const mine = overviewRow({ id: "m1", user_id: "me" });
-    assert.deepEqual(sortInboxSessions([mine], [], null), []);
-  });
-});
-
-describe("countRunningSessions", () => {
-  it("counts only running entries across the live-state map", () => {
-    const states: Record<string, SessionStateMessage> = {
-      S1: { session_id: "S1", state: "running", waiting_since: null, node_id: "n1" },
-      S2: { session_id: "S2", state: "suspended", waiting_since: null, node_id: "n1" },
-      S3: { session_id: "S3", state: "running", waiting_since: "2026-09-13 10:00:00", node_id: "n2" },
-    };
-    assert.equal(countRunningSessions(states), 2);
-  });
-
-  it("is zero for an empty map", () => {
-    assert.equal(countRunningSessions({}), 0);
+  // #457: GET /overview already answers with the caller's own threads only,
+  // so this helper no longer filters by owner -- it just orders what it got.
+  it("keeps every row it is given, in bucket order", () => {
+    const a = overviewRow({ id: "a", user_id: "me" });
+    const b = overviewRow({ id: "b", user_id: "me", state: "suspended" });
+    assert.deepEqual(
+      sortInboxSessions([a], [b]).map((s) => s.id),
+      ["a", "b"],
+    );
   });
 });
-
 
 describe("pickOpenChatSession", () => {
   const s = (id: string, state: "running" | "suspended" | "closed" | "draft") => ({ id, state });
@@ -218,11 +194,15 @@ describe("requestChatSession", () => {
 
 describe("isThreadSession (v2 rule 7)", () => {
   it("an interactive_task with no cli is a thread", () => {
-    assert.equal(isThreadSession({ session_type: "interactive_task", cli: null }), true);
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: null, runner: null }), true);
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: null, runner: "claude" }), true);
+  });
+  it("a runner thread stays a thread once its agent connects to MCP and fills in cli", () => {
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: "claude", runner: "claude" }), true);
   });
   it("a hand-opened CLI session or a chat session is not", () => {
-    assert.equal(isThreadSession({ session_type: "interactive_task", cli: "claude" }), false);
-    assert.equal(isThreadSession({ session_type: "interactive_chat", cli: null }), false);
+    assert.equal(isThreadSession({ session_type: "interactive_task", cli: "claude", runner: null }), false);
+    assert.equal(isThreadSession({ session_type: "interactive_chat", cli: null, runner: null }), false);
   });
 });
 
@@ -263,76 +243,78 @@ describe("shownChatSessionId", () => {
     assert.equal(shownChatSessionId("n2", open("n1")), null);
   });
 
-  it("shows nothing without a selection, without a session, or for a closed one", () => {
+  it("shows nothing without a selection, without a session, or for an archived one", () => {
     assert.equal(shownChatSessionId(null, open("n1")), null);
     assert.equal(shownChatSessionId("n1", null), null);
-    assert.equal(shownChatSessionId("n1", open("n1", "closed")), null);
+    assert.equal(shownChatSessionId("n1", open("n1", "archived")), null);
+    // #498: a closed thread reaches here only when it was opened on
+    // purpose (selectShownThread), and then it is shown.
+    assert.equal(shownChatSessionId("n1", open("n1", "closed")), "S1");
     assert.equal(shownChatSessionId("n1", open("n1", "draft")), "S1");
   });
 });
 
-describe("mountedChatSessions (#429)", () => {
-  type Thread = { id: string; node_id: string | null; state: SessionState };
-  const thread = (id: string, node_id: string | null, state: SessionState = "running"): Thread => ({
-    id,
-    node_id,
-    state,
-  });
-
-  it("mounts every chat-eligible thread of every open node, in open-node order", () => {
-    const byNode = {
-      n1: [thread("a"), thread("b", null, "suspended")],
-      n2: [thread("c", "n2", "draft")],
-    };
-    byNode.n1[0].node_id = "n1";
-    byNode.n1[1].node_id = "n1";
-    const mounted = mountedChatSessions(byNode, ["n2", "n1"], null);
-    assert.deepEqual(mounted.map((s) => s.id), ["c", "a", "b"]);
-  });
-
-  it("leaves out closed and archived threads -- those fall back to the node detail", () => {
-    const byNode = { n1: [thread("a", "n1", "closed"), thread("b", "n1", "archived"), thread("c", "n1")] };
-    assert.deepEqual(mountedChatSessions(byNode, ["n1"], null).map((s) => s.id), ["c"]);
-    assert.equal(isChatSessionState("closed"), false);
+describe("isChatSessionState", () => {
+  it("running, suspended and draft render as chat; closed and archived fall back to the node detail", () => {
+    assert.equal(isChatSessionState("running"), true);
+    assert.equal(isChatSessionState("suspended"), true);
     assert.equal(isChatSessionState("draft"), true);
-  });
-
-  it("mounts the shown thread even when the node map has not caught up with it", () => {
-    const shown = thread("draft-1", "n1", "draft");
-    assert.deepEqual(mountedChatSessions({}, ["n1"], shown).map((s) => s.id), ["draft-1"]);
-    // ...and only once when the map does carry it.
-    const byNode = { n1: [thread("draft-1", "n1", "draft"), thread("a", "n1")] };
-    assert.deepEqual(mountedChatSessions(byNode, ["n1"], shown).map((s) => s.id), ["draft-1", "a"]);
-  });
-
-  it("prefers the shown thread's own object over the map's copy of it", () => {
-    const shown = { ...thread("a", "n1"), state: "suspended" as SessionState };
-    const byNode = { n1: [thread("a", "n1")] };
-    assert.equal(mountedChatSessions(byNode, ["n1"], shown)[0], shown);
-  });
-
-  it("overlays the map copy's name onto the shown thread -- a rename elsewhere reaches the chat header", () => {
-    const shown = { ...thread("a", "n1"), name: "old", model: "opus" };
-    const byNode = { n1: [{ ...thread("a", "n1"), name: "new" }] };
-    const [mounted] = mountedChatSessions(byNode, ["n1"], shown);
-    assert.equal(mounted.name, "new");
-    assert.equal((mounted as { model?: string }).model, "opus", "everything else stays the shown thread's own");
-    // Same name: the shown object itself, so nothing downstream re-renders.
-    const same = { n1: [{ ...thread("a", "n1"), name: "old" }] };
-    assert.equal(mountedChatSessions(same, ["n1"], shown)[0], shown);
-  });
-
-  it("keeps the same mounted ids when only the shown thread changes -- a switch is not a remount", () => {
-    const byNode = { n1: [thread("a", "n1"), thread("b", "n1")] };
-    const before = mountedChatSessions(byNode, ["n1"], byNode.n1[0]).map((s) => s.id);
-    const after = mountedChatSessions(byNode, ["n1"], byNode.n1[1]).map((s) => s.id);
-    assert.deepEqual(before, after);
-  });
-
-  it("drops the threads of a node that is no longer open, and a thread that left the map", () => {
-    const byNode = { n1: [thread("a", "n1")], n2: [thread("c", "n2")] };
-    assert.deepEqual(mountedChatSessions(byNode, ["n1"], null).map((s) => s.id), ["a"]);
-    assert.deepEqual(mountedChatSessions({ n1: [] }, ["n1"], null), []);
+    assert.equal(isChatSessionState("closed"), false);
+    assert.equal(isChatSessionState("archived"), false);
   });
 });
 
+// #506: one answer for every surface that closes a thread -- the sidebar's
+// Uzly and Stav rows, the chat header and the Relace row all read it.
+describe("threadCloseAction", () => {
+  it("deletes a draft outright, on every surface", () => {
+    assert.equal(threadCloseAction("draft"), "delete");
+  });
+  it("closes a running or suspended thread without asking (#498)", () => {
+    assert.equal(threadCloseAction("running"), "close");
+    assert.equal(threadCloseAction("suspended"), "close");
+  });
+  it("offers nothing for a closed or archived thread", () => {
+    assert.equal(threadCloseAction("closed"), null);
+    assert.equal(threadCloseAction("archived"), null);
+  });
+});
+
+// #498: a closed thread has a composer; writing into it reopens it.
+describe("the composer and the Relace row for a closed thread (#498)", () => {
+  it("the composer takes a message in every state but archived", () => {
+    for (const state of ["draft", "running", "suspended", "closed"] as const) {
+      assert.equal(threadAcceptsMessages(state), true, state);
+      assert.equal(composerStatePlaceholder(state, tEn), "Write a message…", state);
+    }
+    assert.equal(threadAcceptsMessages("archived"), false);
+    assert.equal(composerStatePlaceholder("archived", tEn), "This thread is archived.");
+    assert.equal(composerStatePlaceholder("archived", tCs), "Relace je uzavřená.");
+  });
+
+  it("a closed row opens its chat like a suspended one; archived and draft do not", () => {
+    assert.equal(sessionRowOpensChat("running"), true);
+    assert.equal(sessionRowOpensChat("suspended"), true);
+    assert.equal(sessionRowOpensChat("closed"), true);
+    assert.equal(sessionRowOpensChat("archived"), false);
+    assert.equal(sessionRowOpensChat("draft"), false);
+  });
+
+  it("a closed thread can be shown as chat, an archived one cannot", () => {
+    assert.equal(isOpenableChatState("closed"), true);
+    assert.equal(isOpenableChatState("archived"), false);
+    assert.equal(isChatSessionState("closed"), false, "and it is still not a sidebar thread");
+  });
+
+  it("no surface offers Navázat or a close dialog anymore", () => {
+    const src = (p: string) =>
+      readFileSync(new URL(`../apps/web/src/${p}`, import.meta.url), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+    for (const file of ["App.tsx", "components/SessionChat.tsx", "components/DetailPane.sessions.tsx"]) {
+      const text = src(file);
+      assert.doesNotMatch(text, /Uzavřít (vlákno|relaci)\?/, `${file} has no close dialog`);
+      assert.doesNotMatch(text, /title="Navázat"/, `${file} has no Navázat`);
+    }
+  });
+});

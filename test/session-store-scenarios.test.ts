@@ -9,6 +9,7 @@
 // the record, the send clock) from #466.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { createSessionStore } from "../apps/web/src/lib/session-store.js";
 import type { SessionStore } from "../apps/web/src/lib/session-store.js";
@@ -28,6 +29,7 @@ import {
   renamePersistentSession,
   closePersistentSession,
   deletePersistentSession,
+  deleteDraftSession,
   patchSessionRunnerInstance,
 } from "../apps/web/src/api.js";
 import {
@@ -48,7 +50,6 @@ function row(overrides: Partial<SessionSummary> & { id: string }): SessionSummar
     cli: null,
     instance_id: null,
     terminal_id: null,
-    brief: null,
     runner: "claude",
     host_id: null,
     host_label: null,
@@ -186,6 +187,58 @@ describe("scenario 4: a rename shows everywhere without a refetch", () => {
   });
 });
 
+// #474: the sidebar's rename is the same server call as the chat header's,
+// a draft included. Both tests run App.tsx's `workspaceRenameTask` step for
+// step -- the optimistic put, the call, the previous record back on a
+// refusal -- against the real store and the real api.ts.
+describe("scenario 4b: a draft renamed in the sidebar survives the node's refetch", () => {
+  it("renames on the server, so the row the refetch carries has the new name", async () => {
+    store.put(row({ id: "d1", state: "draft", name: "Nové vlákno" }));
+    answer("POST /sessions/d1/rename", row({ id: "d1", state: "draft", name: "Rozpočet", name_is_custom: true }));
+
+    const before = store.get("d1")!;
+    store.put({ ...before, name: "Rozpočet", name_is_custom: true });
+    await renamePersistentSession("d1", "Rozpočet");
+    assert.equal(selectSession(store, "d1")?.name, "Rozpočet");
+
+    // Since #463 the node's list carries the caller's drafts: before the
+    // rename went to the server this refetch wrote the old name back.
+    answer("GET /nodes/n1/sessions", {
+      sessions: [row({ id: "d1", state: "draft", name: "Rozpočet", name_is_custom: true })],
+    });
+    await fetchNodePersistentSessions("n1");
+
+    assert.equal(selectSession(store, "d1")?.name, "Rozpočet");
+    assert.equal(selectNodeThreads(store, "n1")[0].name, "Rozpočet");
+    assert.equal(store.snapshot().size, 1);
+    assert.deepEqual(calls, ["POST /sessions/d1/rename", "GET /nodes/n1/sessions"]);
+  });
+
+  it("puts the previous record back and names the reason when the rename is refused", async () => {
+    store.put(row({ id: "d1", state: "draft", name: "Nové vlákno", instance_id: "work" }));
+    answers.set("POST /sessions/d1/rename", { status: 409, body: { error: "session_closed" } });
+
+    let detailError: string | null = null;
+    const before = store.get("d1")!;
+    store.put({ ...before, name: "Rozpočet", name_is_custom: true });
+    await renamePersistentSession("d1", "Rozpočet").catch((e) => {
+      store.put(before);
+      detailError = `Vlákno se nepodařilo přejmenovat: ${String(e)}`;
+    });
+
+    const after = selectSession(store, "d1");
+    assert.equal(after?.name, "Nové vlákno");
+    assert.equal(after?.name_is_custom, false);
+    // The restore is the whole previous record, not a patch of the
+    // optimistic one.
+    assert.equal(after?.instance_id, "work");
+    assert.equal(after?.state, "draft");
+    assert.equal(selectNodeThreads(store, "n1")[0].name, "Nové vlákno");
+    assert.notEqual(detailError, null);
+    assert.match(String(detailError), /Vlákno se nepodařilo přejmenovat/);
+  });
+});
+
 describe("scenario 5: a frame for an unknown thread is a partial record the list completes", () => {
   it("creates the stub and replaces it whole on the refetch", async () => {
     store.applyFrame(frame({ session_id: "x9", state: "running", name: "Běží jinde" }));
@@ -193,10 +246,11 @@ describe("scenario 5: a frame for an unknown thread is a partial record the list
     assert.equal(partial?.partial, true);
     assert.equal(partial?.runner, null);
     assert.equal(selectRunningCount(store), 1);
-    assert.deepEqual(
-      selectNodeThreads(store, "n1").map((s) => s.id),
-      ["x9"],
-    );
+    // Heard of, but not a thread yet (#475): the burst of frames carries
+    // every running session the caller can see, a hand-opened CLI session
+    // included, so the list is what says whether this one belongs in the
+    // node's sub-rows at all.
+    assert.deepEqual(selectNodeThreads(store, "n1"), []);
 
     answer("GET /nodes/n1/sessions", {
       sessions: [row({ id: "x9", name: "Běží jinde", runner: "claude", instance_id: "tempo" })],
@@ -207,6 +261,10 @@ describe("scenario 5: a frame for an unknown thread is a partial record the list
     assert.equal(complete?.runner, "claude");
     assert.equal(complete?.instance_id, "tempo");
     assert.equal(store.snapshot().size, 1);
+    assert.deepEqual(
+      selectNodeThreads(store, "n1").map((s) => s.id),
+      ["x9"],
+    );
   });
 });
 
@@ -245,6 +303,87 @@ describe("scenario 6: a closed thread leaves every selector", () => {
     assert.deepEqual(selectMountedThreads(store, ["n1"], "d1"), []);
     assert.equal(selectShownThread(store, "n1", "d1"), null);
     assert.equal(Object.keys(selectLiveStates(store)).length, 0);
+  });
+});
+
+// #506: a draft can be deleted from the Stav list, the chat header and the
+// Relace row, and every one of them is the same deleteDraftSession.
+// #498: a closed thread is off the sidebar, but Relace's Otevřít chat shows
+// it (App.tsx passes it as openedClosedId), and writing into it reopens it.
+describe("scenario 6c: a closed thread opened from Relace is shown until it moves on", () => {
+  it("shows the opened closed thread, never one closed while on screen", () => {
+    store.putMany([
+      row({ id: "s1", state: "closed", closed_at: "2026-09-22 11:00:00" }),
+      row({ id: "s2", last_active_at: "2026-09-22 09:00:00" }),
+    ]);
+    // Not in the sidebar.
+    assert.deepEqual(selectNodeThreads(store, "n1").map((s) => s.id), ["s2"]);
+    // Requested but not opened as closed (it was closed while on screen):
+    // the node falls back to its live thread, as before.
+    assert.equal(selectShownThread(store, "n1", "s1")?.id, "s2");
+    // Opened from Relace: shown, and mounted.
+    assert.equal(selectShownThread(store, "n1", "s1", "s1")?.id, "s1");
+    assert.deepEqual(selectMountedThreads(store, ["n1"], "s1", "s1").map((s) => s.id), ["s2", "s1"]);
+    assert.deepEqual(selectMountedThreads(store, ["n1"], "s1").map((s) => s.id), ["s2"]);
+    // Another node's request never shows it.
+    assert.equal(selectShownThread(store, "n2", "s1", "s1"), null);
+
+    // Written into: running again, a live thread like any other.
+    store.applyFrame(frame({ session_id: "s1", state: "running" }));
+    assert.equal(selectShownThread(store, "n1", "s1", null)?.id, "s1");
+    assert.deepEqual(selectNodeThreads(store, "n1").map((s) => s.id).sort(), ["s1", "s2"]);
+  });
+
+  it("an archived thread is never shown as chat", () => {
+    store.putMany([row({ id: "s1", state: "archived" }), row({ id: "s2" })]);
+    assert.equal(selectShownThread(store, "n1", "s1", "s1")?.id, "s2");
+  });
+});
+
+describe("scenario 6b: a draft deleted from any surface leaves the store at once", () => {
+  it("removes the record before the DELETE lands and sends the DELETE", async () => {
+    store.putMany([row({ id: "d1", state: "draft" }), row({ id: "s2", last_active_at: "2026-09-22 09:00:00" })]);
+    answer("DELETE /sessions/d1", { deleted: true });
+    // The signal the DELETE was sent: the recorded backend answered it.
+    const recorded = globalThis.fetch;
+    let answered!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      answered = resolve;
+    });
+    globalThis.fetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
+      const res = await recorded(...args);
+      answered();
+      return res;
+    }) as typeof globalThis.fetch;
+
+    deleteDraftSession("d1");
+
+    // Synchronously gone: the chat showing it closes and the shown thread
+    // falls back to the node's other one, as with the sidebar's ×.
+    assert.equal(selectSession(store, "d1"), undefined);
+    assert.equal(selectShownThread(store, "n1", "d1")?.id, "s2");
+    assert.deepEqual(selectMountedThreads(store, ["n1"], "d1").map((s) => s.id), ["s2"]);
+    await sent;
+    assert.deepEqual(calls, ["DELETE /sessions/d1"]);
+    assert.equal(selectSession(store, "d1"), undefined);
+  });
+
+  it("is the one deletion the sidebar, the chat header and Relace call", () => {
+    // Read as code: comments stripped, so a comment naming the old function
+    // neither fails nor satisfies an assertion. There is no component
+    // harness to mount these files in; this pins the wiring by its calls.
+    const src = (p: string) =>
+      readFileSync(new URL(`../apps/web/src/${p}`, import.meta.url), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+    for (const file of ["App.tsx", "components/SessionChat.tsx", "components/DetailPane.sessions.tsx"]) {
+      const text = src(file);
+      assert.match(text, /deleteDraftSession\(/, `${file} deletes a draft through deleteDraftSession`);
+      assert.match(text, /threadCloseAction\(/, `${file} asks threadCloseAction what close does`);
+      assert.doesNotMatch(text, /deletePersistentSession/, `${file} has no second draft deletion`);
+    }
+    // The Stav list hands its × to the same onCloseTask as the Uzly rows.
+    assert.match(src("components/WorkspaceNodeList.tsx"), /function TaskList\([^)]*onCloseTask/);
   });
 });
 

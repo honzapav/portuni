@@ -18,12 +18,14 @@ export function summarizeNodeActivity(
 }
 
 export type TaskGroupKey = "waiting" | "running" | "suspended" | "draft" | "done";
-export const TASK_GROUPS: { key: TaskGroupKey; label: string }[] = [
-  { key: "waiting", label: "Vyžadují pozornost" },
-  { key: "running", label: "Pracují" },
-  { key: "suspended", label: "Pozastavené" },
-  { key: "draft", label: "Nové" },
-  { key: "done", label: "Hotové" },
+// The order of the groups; their headings are catalog keys
+// (WorkspaceNodeList, common `node_list.group.*`).
+export const TASK_GROUPS: { key: TaskGroupKey }[] = [
+  { key: "waiting" },
+  { key: "running" },
+  { key: "suspended" },
+  { key: "draft" },
+  { key: "done" },
 ];
 
 export function taskGroupOf(s: Pick<SessionSummary, "state" | "waiting_since">): TaskGroupKey {
@@ -31,4 +33,17 @@ export function taskGroupOf(s: Pick<SessionSummary, "state" | "waiting_since">):
   if (s.state === "suspended") return "suspended";
   if (s.state === "draft") return "draft";
   return "done";
+}
+
+// The Práce tab's badge: the tasks the Stav view lists across the open
+// nodes, minus the done ones -- tasks, not nodes, are what the user works
+// through.
+export function countOpenTasks(
+  threadsByNode: Record<string, readonly Pick<SessionSummary, "state" | "waiting_since">[]>,
+): number {
+  let n = 0;
+  for (const tasks of Object.values(threadsByNode)) {
+    for (const t of tasks) if (taskGroupOf(t) !== "done") n++;
+  }
+  return n;
 }

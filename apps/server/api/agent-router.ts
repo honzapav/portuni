@@ -16,9 +16,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdir, rename as fsRename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DbClient } from "../infra/db.js";
-import { z } from "zod";
+import { z, type ZodType } from "zod";
 import type { RequestIdentity } from "../auth/request-identity.js";
-import { parseBody, parseJsonBody, respondError, respondJson } from "../http/middleware.js";
+import { parseBody, parseJsonBody, respondApiError, respondError, respondJson } from "../http/middleware.js";
+import { isErrorCode } from "../shared/error-codes.js";
 import { handleHealth } from "./health.js";
 import { handleWriteScope } from "./write-scope.js";
 import { handleExchangeHandoff, handleMintHandoff } from "./auth.js";
@@ -48,9 +49,24 @@ import {
 } from "../domain/sync/central/engine-central.js";
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
+import {
+  fileCreateSchema,
+  fileMoveSchema,
+  fileRenameSchema,
+  mirrorCreatePayload,
+  respondMirrorCreateError,
+} from "./node-route-helpers.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob, withNodeSyncLock } from "../domain/sync/sync-jobs.js";
 import { createAgentSessionRuntime } from "../boot/session-runtime.js";
-import { RenameSessionBody, SetSessionModelBody, StartSessionBody } from "./sessions.js";
+import {
+  RenameSessionBody,
+  SetSessionModelBody,
+  StartSessionBody,
+  MessageBody,
+  SessionLocaleBody,
+  sessionResumeInfoPayload,
+} from "./sessions.js";
+import { respondSessionRefusal } from "./session-refusals.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -68,6 +84,7 @@ import {
 import { mimeFor, localHashFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { safeMirrorJoin, deriveLocalPath, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
+import { transcriptHostLabel } from "../domain/runner/hosts.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
 import { removeLocalCopyAndState } from "../domain/sync/local-cleanup.js";
 import { trackPendingPush, clearPendingPushIfCurrent, awaitPendingPush } from "../domain/sync/pending-pushes.js";
@@ -86,32 +103,79 @@ import type {
 // contract instead of hiding it.
 const NO_DB = null as unknown as DbClient;
 
+// A central 404 relayed with the central server's own code and params
+// (SESSION_NOT_FOUND, NOT_FOUND...); a 404 that carries no known code
+// is the unknown node the graph plane answers, NODE_NOT_FOUND.
 function respondCentral404(res: ServerResponse, err: unknown): boolean {
   if (err instanceof CentralHttpError && err.status === 404) {
-    respondJson(res, 404, { error: "node not found" });
+    if (isErrorCode(err.code)) {
+      respondApiError(res, 404, err.code, err.message, err.params);
+    } else {
+      respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
+    }
+    return true;
+  }
+  // A new thread is provisioned (its mirror made) before its record is
+  // created, so an unknown node can surface from the mirror step first.
+  if (err instanceof MirrorCreateError && err.code === "NODE_NOT_FOUND") {
+    respondApiError(res, 404, "NODE_NOT_FOUND", "node not found");
     return true;
   }
   return false;
 }
 
-// Same substring-matched runtime errors api/sessions.ts's REST routes map
-// to 409s -- the session runtime throws plain Errors, not typed ones, so
-// both callers key off the same message fragments.
-function respondAgentSessionError(res: ServerResponse, err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  if (err.message.includes("has no live run")) {
-    respondJson(res, 409, { error: err.message, code: "NO_LIVE_RUN" });
-    return true;
+// The shared start of the device's rename/move: decode the
+// /nodes/:id/files/:fileId/<verb> match, gate the node's write and parse the
+// body. Null once the gate or the parse has answered.
+async function parseNodeFileMutation<T>(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  match: RegExpMatchArray,
+  schema: ZodType<T>,
+): Promise<{ nodeId: string; fileId: string; body: T } | null> {
+  const nodeId = decodeURIComponent(match[1]);
+  const fileId = decodeURIComponent(match[2]);
+  if (!guardAgentRestWrite(req, res, identity, nodeId)) return null;
+  const body = await parseJsonBody(req, res, schema);
+  if (!body) return null;
+  return { nodeId, fileId, body };
+}
+
+// The IDOR guard of the device's delete/rename/move: a file this device
+// mirrors must belong to the URL's node (else 404 FILE_NOT_ON_DEVICE, and
+// false); one it does not mirror is null -- not an error, the route then
+// forwards to central with no local step. A create's background upload
+// still in flight for the mirrored path is awaited before returning, so it
+// cannot land after the record changed.
+async function findFileOnNodeForMutation(
+  res: ServerResponse,
+  client: CentralClient,
+  userId: string,
+  nodeId: string,
+  fileId: string,
+): Promise<Awaited<ReturnType<typeof findEntryByFileId>> | false> {
+  const found = await findEntryByFileId(client, userId, fileId);
+  if (found && found.nodeId !== nodeId) {
+    respondApiError(res, 404, "FILE_NOT_ON_DEVICE", "file not found on this device");
+    return false;
   }
-  if (err.message.includes("already has a live run")) {
-    respondJson(res, 409, { error: err.message, code: "ALREADY_RUNNING" });
-    return true;
-  }
-  if (err.message.includes("no resumable conversation")) {
-    respondJson(res, 409, { error: err.message, code: "NOT_RESUMABLE" });
-    return true;
-  }
-  return false;
+  if (found?.entry.local_path) await awaitPendingPush(found.entry.local_path);
+  return found;
+}
+
+// findFileOnNodeForMutation narrowed to what rename/move act on: the
+// mirrored local path, or null when this device does not mirror the file.
+async function mirroredPathForMutation(
+  res: ServerResponse,
+  client: CentralClient,
+  userId: string,
+  nodeId: string,
+  fileId: string,
+): Promise<string | null | false> {
+  const found = await findFileOnNodeForMutation(res, client, userId, nodeId, fileId);
+  if (found === false) return false;
+  return found?.entry.local_path ?? null;
 }
 
 // --- File content over the device mirror -------------------------------
@@ -139,24 +203,22 @@ const AGENT_CODE_STATUS: Record<FileContentErrorCode, number> = {
 
 function respondFileContentError(res: ServerResponse, err: unknown): boolean {
   if (err instanceof FileContentError) {
-    const body: Record<string, unknown> = { error: err.message, code: err.code };
-    if (err.code === "CONFLICT" && err.currentVersion) {
-      body.currentVersion = err.currentVersion;
-    }
-    respondJson(res, AGENT_CODE_STATUS[err.code], body);
+    const extra = err.code === "CONFLICT" && err.currentVersion ? { currentVersion: err.currentVersion } : undefined;
+    respondApiError(res, AGENT_CODE_STATUS[err.code], err.code, err.message, err.params, extra);
     return true;
   }
   return false;
 }
 
-// Relay a central error verbatim (status + code + currentVersion) so the
-// webview sees the same shape the central text endpoint would produce.
+// Relay a central error verbatim (status + code + params + currentVersion)
+// so the webview sees the same shape the central text endpoint would
+// produce. A central answer with no known code (a 5xx, a proxy's page) is
+// INTERNAL_ERROR under the central status.
 function respondCentralFileError(res: ServerResponse, err: unknown): boolean {
   if (err instanceof CentralHttpError) {
-    const body: Record<string, unknown> = { error: err.message };
-    if (err.code) body.code = err.code;
-    if (err.currentVersion) body.currentVersion = err.currentVersion;
-    respondJson(res, err.status, body);
+    const extra = err.currentVersion ? { currentVersion: err.currentVersion } : undefined;
+    const code = isErrorCode(err.code) ? err.code : "INTERNAL_ERROR";
+    respondApiError(res, err.status, code, err.message, err.params, extra);
     return true;
   }
   return false;
@@ -176,26 +238,6 @@ const agentPutFileSchema = z.object({
   content: z.string(),
   baseVersion: z.string().optional(),
   force: z.boolean().optional(),
-});
-
-// Same shape as api/files.ts's renameSchema.
-const agentRenameFileSchema = z.object({ new_filename: z.string().min(1) });
-
-// Same shape as api/files.ts's moveSchema.
-const agentMoveFileSchema = z.object({
-  new_section: z.enum(["wip", "outputs", "resources"]).optional(),
-  new_subpath: z.string().nullable().optional(),
-  new_filename: z.string().min(1).optional(),
-  new_node_id: z.string().optional(),
-  confirmed: z.boolean().optional(),
-});
-
-// Same shape as api/files.ts's createSchema -- kept in sync deliberately.
-const agentCreateFileSchema = z.object({
-  filename: z.string().min(1),
-  section: z.enum(["wip", "outputs", "resources"]).optional(),
-  subpath: z.string().nullish(),
-  content: z.string().optional(),
 });
 
 export type AgentRouteFn = (
@@ -386,7 +428,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     if (syncJobMatch && method === "GET") {
       const job = getSyncJob(identity.userId, decodeURIComponent(syncJobMatch[1]));
       if (!job) {
-        respondJson(res, 404, { error: "job not found" });
+        respondApiError(res, 404, "SYNC_JOB_NOT_FOUND", "job not found");
         return true;
       }
       respondJson(res, 200, job);
@@ -454,6 +496,27 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       // promoteDraftAndStart). The row itself is created through the
       // runtime's own store, which in this mode is CentralSessionStore,
       // i.e. central's POST /sessions/record draft shape.
+      // #460 "Navázat na handoff": the file lives in THIS device's mirror
+      // and the run starts here; only the new record is central's, through
+      // the runtime's CentralSessionStore. Same call as the local router.
+      if (body.handoff_path) {
+        try {
+          const { session, run } = await sessionRuntime.startFromHandoff({
+            userId: identity.userId,
+            nodeId: body.node_id,
+            handoffPath: body.handoff_path,
+            policy: body.policy,
+            locale: body.locale,
+          });
+          const updated = await sessionRuntime.getSession(session.id);
+          respondJson(res, 201, { session: updated ?? session, run });
+        } catch (err) {
+          if (respondSessionRefusal(res, err)) return true;
+          if (respondCentral404(res, err)) return true;
+          respondError(res, "POST /sessions", err);
+        }
+        return true;
+      }
       if (body.brief === undefined) {
         try {
           const session = await sessionRuntime.createDraft({
@@ -461,6 +524,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
             nodeId: body.node_id,
             model: body.model,
             effort: body.effort,
+            locale: body.locale,
           });
           respondJson(res, 201, { session, run: null });
         } catch (err) {
@@ -470,15 +534,17 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         return true;
       }
       if (!body.runner) {
-        respondJson(res, 400, { error: "runner is required when brief is given", code: "RUNNER_REQUIRED" });
+        respondApiError(res, 400, "RUNNER_REQUIRED", "runner is required when brief is given");
         return true;
       }
       if (!getAdapter(body.runner)) {
-        respondJson(res, 400, { error: `unknown runner '${body.runner}'`, code: "UNKNOWN_RUNNER" });
+        respondApiError(res, 400, "UNKNOWN_RUNNER", `unknown runner '${body.runner}'`, { runner: body.runner });
         return true;
       }
       if (body.instance_id != null && (await getInstanceEnv(body.instance_id)) === null) {
-        respondJson(res, 400, { error: `unknown instance '${body.instance_id}'`, code: "UNKNOWN_INSTANCE" });
+        respondApiError(res, 400, "UNKNOWN_INSTANCE", `unknown instance '${body.instance_id}'`, {
+          instanceId: body.instance_id,
+        });
         return true;
       }
       try {
@@ -491,6 +557,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           policy: body.policy,
           model: body.model,
           effort: body.effort,
+          locale: body.locale,
         });
         // Same reason as the local route: startTask's own return value is
         // the session row as of creation, before the run had a chance to
@@ -508,13 +575,14 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     if (sessionMessagesMatch && method === "POST") {
       const sessionId = decodeURIComponent(sessionMessagesMatch[1]);
       if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
-      const body = await parseJsonBody(req, res, z.object({ text: z.string().trim().min(1) }));
+      const body = await parseJsonBody(req, res, MessageBody);
       if (!body) return true;
       try {
-        await sessionRuntime.sendMessage(sessionId, body.text);
+        await sessionRuntime.sendMessage(sessionId, body.text, { locale: body.locale });
         respondJson(res, 202, { ok: true });
       } catch (err) {
-        if (respondAgentSessionError(res, err)) return true;
+        // #497: a resume with nothing to continue from on this device.
+        if (respondSessionRefusal(res, err)) return true;
         respondError(res, `POST /sessions/${sessionId}/messages`, err);
       }
       return true;
@@ -528,12 +596,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       const body = await parseJsonBody(
         req,
         res,
-        z.object({ decision: z.object({ value: z.union([z.string(), z.boolean()]) }) }),
+        z.object({ decision: z.object({ value: z.union([z.string(), z.boolean(), z.record(z.string(), z.string())]) }) }),
       );
       if (!body) return true;
       const pending = sessionRuntime.pendingQuestion(sessionId);
       if (!pending || pending.request_id !== requestId) {
-        respondJson(res, 409, { error: "no pending question with this request_id", code: "NO_PENDING_QUESTION" });
+        respondApiError(res, 409, "NO_PENDING_QUESTION", "no pending question with this request_id");
         return true;
       }
       try {
@@ -610,11 +678,13 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     if (sessionContinueMatch && method === "POST") {
       const sessionId = decodeURIComponent(sessionContinueMatch[1]);
       if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(req, res, SessionLocaleBody);
+      if (!body) return true;
       try {
-        const { session, run } = await sessionRuntime.continueSession(sessionId);
+        const { session, run } = await sessionRuntime.continueSession(sessionId, { locale: body.locale });
         respondJson(res, 200, { session, run });
       } catch (err) {
-        if (respondAgentSessionError(res, err)) return true;
+        if (respondSessionRefusal(res, err)) return true;
         respondError(res, `POST /sessions/${sessionId}/continue`, err);
       }
       return true;
@@ -633,6 +703,26 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       return true;
     }
 
+    // #459: "Předat" -- device-local for the same reason interrupt/close
+    // are: the run, the transcript the summary is built from and the
+    // node's mirror are all here. Only the record patch reaches central,
+    // through the runtime's CentralSessionStore.
+    const sessionHandoffMatch = pathname.match(/^\/sessions\/([^/]+)\/handoff$/);
+    if (sessionHandoffMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionHandoffMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(req, res, SessionLocaleBody);
+      if (!body) return true;
+      try {
+        const { session, handoff_path } = await sessionRuntime.handoff(sessionId, { locale: body.locale });
+        respondJson(res, 200, { session, handoff_path });
+      } catch (err) {
+        if (respondSessionRefusal(res, err)) return true;
+        respondError(res, `POST /sessions/${sessionId}/handoff`, err);
+      }
+      return true;
+    }
+
     const sessionSignalsMatch = pathname.match(/^\/sessions\/([^/]+)\/signals$/);
     if (sessionSignalsMatch && method === "GET") {
       const sessionId = decodeURIComponent(sessionSignalsMatch[1]);
@@ -641,6 +731,30 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         respondJson(res, 200, signals);
       } catch (err) {
         respondError(res, `GET /sessions/${sessionId}/signals`, err);
+      }
+      return true;
+    }
+
+    // #456: resume-info moved from the central list to the device-local
+    // one -- the inline handoff summary it reports is content, and content
+    // lives in this device's content.db. The mirror it hashes the handoff
+    // file against is this device's too, so central could never have
+    // answered it correctly for a team workspace anyway.
+    const sessionResumeInfoMatch = pathname.match(/^\/sessions\/([^/]+)\/resume-info$/);
+    if (sessionResumeInfoMatch && method === "GET") {
+      const sessionId = decodeURIComponent(sessionResumeInfoMatch[1]);
+      try {
+        const session = await sessionRuntime.getSession(sessionId);
+        if (!session) {
+          respondApiError(res, 404, "SESSION_NOT_FOUND", "session not found");
+          return true;
+        }
+        const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
+        const configDir = url.searchParams.get("config_dir") || null;
+        respondJson(res, 200, await sessionResumeInfoPayload(session, mirrorRoot, configDir));
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `GET /sessions/${sessionId}/resume-info`, err);
       }
       return true;
     }
@@ -656,7 +770,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           limit: limit !== null ? Number(limit) : undefined,
         });
         const events = rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
-        respondJson(res, 200, { events });
+        // #458: the transcript is this device's content.db. A thread the
+        // record says ran on another device has none here, and the answer
+        // says so rather than looking like an empty chat.
+        const session = await sessionRuntime.getSession(sessionId);
+        const transcriptHost = transcriptHostLabel(session?.host_id ?? null, rows.length);
+        respondJson(res, 200, { events, ...(transcriptHost ? { transcript_host: transcriptHost } : {}) });
       } catch (err) {
         respondError(res, `GET /sessions/${sessionId}/events`, err);
       }
@@ -679,7 +798,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     if (createFileMatch && method === "POST") {
       const nodeId = decodeURIComponent(createFileMatch[1]);
       if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
-      const body = await parseJsonBody(req, res, agentCreateFileSchema);
+      const body = await parseJsonBody(req, res, fileCreateSchema);
       if (!body) return true;
       const filename = body.filename;
       if (
@@ -689,7 +808,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         filename === "." ||
         filename === ".."
       ) {
-        respondJson(res, 400, { error: `invalid filename: ${filename}`, code: "INVALID_PATH" });
+        respondApiError(res, 400, "INVALID_PATH", `invalid filename: ${filename}`, { path: filename });
         return true;
       }
       const section: Section = body.section ?? "wip";
@@ -713,12 +832,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         try {
           abs = safeMirrorJoin(mirrorRoot, section, ...subSegs, filename);
         } catch {
-          respondJson(res, 400, { error: "invalid path", code: "INVALID_PATH" });
+          respondApiError(res, 400, "INVALID_PATH", "invalid path", { path: filename });
           return true;
         }
         try {
           await stat(abs);
-          respondJson(res, 409, { error: `file already exists: ${filename}`, code: "EXISTS" });
+          respondApiError(res, 409, "EXISTS", `file already exists: ${filename}`, { filename });
           return true;
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
@@ -785,7 +904,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         const body = (await parseBody(req)) as { action?: string } | undefined;
         const action = body?.action;
         if (action !== "keep_local" && action !== "take_remote" && action !== "restore") {
-          respondJson(res, 400, { error: "action must be keep_local | take_remote | restore" });
+          respondApiError(res, 400, "INVALID_RESOLVE_ACTION", "action must be keep_local | take_remote | restore");
           return true;
         }
         // findEntryByFileId fans out across every node this device has
@@ -796,7 +915,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         // shape either way.
         const found = await findEntryByFileId(client, identity.userId, fileId);
         if (!found || found.nodeId !== nodeId || !found.entry.local_path) {
-          respondJson(res, 404, { error: "file not found on this device" });
+          respondApiError(res, 404, "FILE_NOT_ON_DEVICE", "file not found on this device");
           return true;
         }
         await awaitPendingPush(found.entry.local_path);
@@ -818,7 +937,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         respondJson(res, 200, { file_id: fileId, action, status: "ok" });
       } catch (err) {
         if (err instanceof PullDirtyLocalError) {
-          respondJson(res, 409, { error: err.message });
+          respondApiError(res, 409, "PULL_DIRTY_LOCAL", err.message);
           return true;
         }
         if (respondCentral404(res, err)) return true;
@@ -837,27 +956,20 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     // so the upload cannot land at the old remote path after the rename.
     const renameFileMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/rename$/);
     if (renameFileMatch && method === "POST") {
-      const nodeId = decodeURIComponent(renameFileMatch[1]);
-      const fileId = decodeURIComponent(renameFileMatch[2]);
-      if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
-      const body = await parseJsonBody(req, res, agentRenameFileSchema);
-      if (!body) return true;
+      const request = await parseNodeFileMutation(req, res, identity, renameFileMatch, fileRenameSchema);
+      if (!request) return true;
+      const { nodeId, fileId, body } = request;
       const fn = body.new_filename;
       if (fn.includes("/") || fn.includes("\\") || fn.includes("\0") || fn === "." || fn === "..") {
-        respondJson(res, 400, { error: `invalid filename: ${fn}`, code: "INVALID_PATH" });
+        respondApiError(res, 400, "INVALID_PATH", `invalid filename: ${fn}`, { path: fn });
         return true;
       }
       try {
         // Same IDOR guard as delete/resolve: a file this device mirrors must
         // belong to THIS node; one it does not mirror is simply not found
         // here and forwards to central with no local step.
-        const found = await findEntryByFileId(client, identity.userId, fileId);
-        if (found && found.nodeId !== nodeId) {
-          respondJson(res, 404, { error: "file not found on this device" });
-          return true;
-        }
-        const oldLocal = found?.entry.local_path ?? null;
-        if (oldLocal) await awaitPendingPush(oldLocal);
+        const oldLocal = await mirroredPathForMutation(res, client, identity.userId, nodeId, fileId);
+        if (oldLocal === false) return true;
         const r = await client.renameFile(nodeId, fileId, fn);
         if (oldLocal && (r as { status?: unknown }).status === "ok") {
           const newLocal = join(dirname(oldLocal), fn);
@@ -906,23 +1018,16 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     // stale copy as a second file.
     const moveFileMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/move$/);
     if (moveFileMatch && method === "POST") {
-      const nodeId = decodeURIComponent(moveFileMatch[1]);
-      const fileId = decodeURIComponent(moveFileMatch[2]);
-      if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
-      const body = await parseJsonBody(req, res, agentMoveFileSchema);
-      if (!body) return true;
+      const request = await parseNodeFileMutation(req, res, identity, moveFileMatch, fileMoveSchema);
+      if (!request) return true;
+      const { nodeId, fileId, body } = request;
       if (body.new_node_id && body.new_node_id !== nodeId) {
         if (!guardAgentRestWrite(req, res, identity, body.new_node_id)) return true;
       }
       try {
         // Same IDOR guard as rename/resolve/delete.
-        const found = await findEntryByFileId(client, identity.userId, fileId);
-        if (found && found.nodeId !== nodeId) {
-          respondJson(res, 404, { error: "file not found on this device" });
-          return true;
-        }
-        const oldLocal = found?.entry.local_path ?? null;
-        if (oldLocal) await awaitPendingPush(oldLocal);
+        const oldLocal = await mirroredPathForMutation(res, client, identity.userId, nodeId, fileId);
+        if (oldLocal === false) return true;
         const r = (await client.moveFileRecord(nodeId, fileId, {
           new_section: body.new_section,
           new_subpath: body.new_subpath ?? null,
@@ -1018,7 +1123,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       const fileId = decodeURIComponent(deleteFileMatch[2]);
       if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
       if (url.searchParams.get("confirmed") !== "true") {
-        respondJson(res, 400, { error: "confirmed=true required" });
+        respondApiError(res, 400, "CONFIRMATION_REQUIRED", "confirmed=true required");
         return true;
       }
       try {
@@ -1028,15 +1133,11 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         // that is not an error: the route is local-only for every node
         // (is_device_local_path), so it forwards to central's own delete
         // exactly as a non-agent-mode delete would, with no local step.
-        const found = await findEntryByFileId(client, identity.userId, fileId);
-        if (found && found.nodeId !== nodeId) {
-          respondJson(res, 404, { error: "file not found on this device" });
-          return true;
-        }
-        // A create's background upload still in flight for this path must
-        // finish first, or its adapter.put would land after the record is
+        // The helper also waits out a create's in-flight background upload
+        // for this path, or its adapter.put would land after the record is
         // gone and resurrect the remote object as an orphan.
-        if (found?.entry.local_path) await awaitPendingPush(found.entry.local_path);
+        const found = await findFileOnNodeForMutation(res, client, identity.userId, nodeId, fileId);
+        if (found === false) return true;
         // Record + remote object first (the source of truth); only clean up
         // the local copy once that has actually succeeded. Central answers
         // 200 with { status: "repair_needed" } when the remote delete
@@ -1069,7 +1170,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       if (method === "PUT" && !guardAgentRestWrite(req, res, identity, nodeId)) return true;
       const relPath = url.searchParams.get("path");
       if (!relPath) {
-        respondJson(res, 400, { error: "path query param required" });
+        respondApiError(res, 400, "PATH_PARAM_REQUIRED", "path query param required");
         return true;
       }
       const mirror = await getLocalMirror(identity.userId, nodeId);
@@ -1110,17 +1211,23 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
             try {
               entry = extractZipEntry(raw.bytes, SHOWTIME_PREVIEW_ENTRY);
             } catch (e) {
-              respondJson(res, 422, {
-                error: `not a readable .showtime bundle (${(e as Error).message}): ${relPath}`,
-                code: "NO_PREVIEW",
-              });
+              respondApiError(
+                res,
+                422,
+                "NO_PREVIEW",
+                `not a readable .showtime bundle (${(e as Error).message}): ${relPath}`,
+                { path: relPath },
+              );
               return true;
             }
             if (!entry) {
-              respondJson(res, 422, {
-                error: `bundle carries no ${SHOWTIME_PREVIEW_ENTRY}; save it with a newer Showtime: ${relPath}`,
-                code: "NO_PREVIEW",
-              });
+              respondApiError(
+                res,
+                422,
+                "NO_PREVIEW",
+                `bundle carries no ${SHOWTIME_PREVIEW_ENTRY}; save it with a newer Showtime: ${relPath}`,
+                { path: relPath },
+              );
               return true;
             }
             const payload: FileContentResponse = {
@@ -1134,10 +1241,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
             return true;
           }
           if (!agentIsEditableMime(mime) || raw.bytes.includes(0)) {
-            respondJson(res, 415, {
-              error: `file is not editable text: ${relPath}`,
-              code: "NOT_EDITABLE",
-            });
+            respondApiError(res, 415, "NOT_EDITABLE", `file is not editable text: ${relPath}`, { path: relPath });
             return true;
           }
           const payload: FileContentResponse = {
@@ -1160,10 +1264,13 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       if (!body) return true;
       if (isShowtimePath(relPath)) {
         // The editor holds the bundled preview, never the bundle's text.
-        respondJson(res, 415, {
-          error: `a .showtime bundle is read-only here; edit it in Showtime: ${relPath}`,
-          code: "NOT_EDITABLE",
-        });
+        respondApiError(
+          res,
+          415,
+          "NOT_EDITABLE",
+          `a .showtime bundle is read-only here; edit it in Showtime: ${relPath}`,
+          { path: relPath },
+        );
         return true;
       }
       try {
@@ -1215,22 +1322,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
       try {
         const result = await createMirrorForNodeCentral(client, identity.userId, { nodeId });
-        respondJson(res, result.created ? 201 : 200, {
-          node_id: result.node_id,
-          local_path: result.local_path,
-          created: result.created,
-          // Folder URLs come from the central server (/nodes/:id/folder-url
-          // stays a central route); the agent doesn't resolve them.
-          remote_url: null,
-          subdirs: result.subdirs,
-          remote_scaffold: result.remote_scaffold,
-          scope_config: result.scope_config,
-        });
+        // Folder URLs come from the central server (/nodes/:id/folder-url
+        // stays a central route); the agent doesn't resolve them.
+        respondJson(res, result.created ? 201 : 200, mirrorCreatePayload(result, null));
       } catch (err) {
         if (err instanceof MirrorCreateError) {
-          const status =
-            err.code === "NODE_NOT_FOUND" ? 404 : err.code === "PATH_TRAVERSAL" ? 400 : 500;
-          respondJson(res, status, { error: err.message, code: err.code });
+          respondMirrorCreateError(res, err);
           return true;
         }
         respondError(res, `POST /nodes/${nodeId}/mirror`, err);
@@ -1240,8 +1337,9 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
 
     // Anything else is a graph-plane route that belongs on the central
     // server; landing here means a proxy misroute. Be loud about it.
-    respondJson(res, 501, {
-      error: "agent_mode",
+    // `error` stays "agent_mode": the route-parity test and older clients
+    // recognise the misroute by it.
+    respondApiError(res, 501, "NOT_SERVED_BY_SYNC_AGENT", "agent_mode", undefined, {
       detail: "route not served by the local sync agent; use the central server",
     });
     return true;

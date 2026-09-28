@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import cytoscape from "cytoscape";
+import { useTranslation } from "react-i18next";
 import { LayoutGrid, Plus, Shuffle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type {
@@ -1067,6 +1068,7 @@ function GraphView({
   onCreateOrganization,
   canCreateNode,
 }: Props) {
+  const { t } = useTranslation("graph");
   // Defer the search query so typing stays responsive even when the graph
   // is large enough that the filter pass takes a perceptible amount of
   // time. React re-runs the filter effect with the deferred value during
@@ -2293,8 +2295,8 @@ function GraphView({
           variant="outline"
           size="icon-lg"
           onClick={handleRetileNodes}
-          title="Uspořádat uzly uvnitř organizací (organizace zůstanou na místě)"
-          aria-label="Uspořádat uzly"
+          title={t(($) => $.layout.retile.title)}
+          aria-label={t(($) => $.layout.retile.aria_label)}
           className="bg-[var(--color-surface)] text-muted-foreground shadow-sm"
         >
           <LayoutGrid />
@@ -2303,8 +2305,8 @@ function GraphView({
           variant="outline"
           size="icon-lg"
           onClick={handleFullRelayout}
-          title="Kompletně přegenerovat layout včetně rozmístění organizací"
-          aria-label="Přegenerovat layout"
+          title={t(($) => $.layout.full_relayout.title)}
+          aria-label={t(($) => $.layout.full_relayout.aria_label)}
           className="bg-[var(--color-surface)] text-muted-foreground shadow-sm"
         >
           <Shuffle />
@@ -2331,24 +2333,24 @@ function EmptyStateCta({
   onCreateOrganization: () => void;
   canCreateNode: boolean;
 }) {
+  const { t } = useTranslation("graph");
   return (
     <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-4">
       <div className="pointer-events-auto max-w-[420px] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-6 shadow-2xl">
         <h2 className="mb-2 text-[16px] font-semibold tracking-tight text-[var(--color-text)]">
-          Začni vytvořením první organizace.
+          {t(($) => $.empty.title)}
         </h2>
         <p className="mb-5 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          Portuni mapuje, na čem pracuješ — týmy, projekty, procesy. Začni
-          tím, že přidáš svou organizaci.
+          {t(($) => $.empty.body)}
         </p>
         <Button
           onClick={onCreateOrganization}
           disabled={!canCreateNode}
-          title={canCreateNode ? undefined : "Vytváření uzlů vyžaduje vyšší roli"}
+          title={canCreateNode ? undefined : t(($) => $.empty.create_disabled)}
           className="w-full"
         >
           <Plus />
-          Vytvořit organizaci
+          {t(($) => $.empty.create_organization)}
         </Button>
       </div>
     </div>

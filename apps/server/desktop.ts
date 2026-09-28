@@ -3,14 +3,17 @@
 //   - DB path derived from PORTUNI_DATA_DIR
 //   - port from PORTUNI_PORT (0 = OS-assigned), printed on stdout so the
 //     parent process can read it back as PORTUNI_LISTENING_PORT=<n>
-//   - no AUTH_TOKEN by default — loopback-only is the security boundary
+//   - PORTUNI_AUTH_TOKEN always passed by the Tauri host; without it the
+//     sidecar refuses to start (PORTUNI_BACKEND_ERROR=..., #521)
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { startHttpServer, type HttpServerHandle } from "./http/server.js";
+import { assertAuthConfig } from "./infra/auth-config.js";
 import { getDb } from "./infra/db.js";
-import { ensureSchema } from "./infra/schema.js";
+import { getDeviceContentDb } from "./infra/device-content-db.js";
+import { ensurePersonalWorkspaceSchema } from "./boot/content-import.js";
 import { SOLO_USER } from "./infra/schema.js";
 import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
@@ -206,7 +209,7 @@ async function agentMain(client: CentralClient): Promise<void> {
   // local mode -- and nothing used to reap them, so the run stayed open and
   // its session read "running" forever. The idle sweep cannot see them: it
   // filters an in-process map that is empty after a restart.
-  void sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client), client);
+  void sweepOrphanedRunsOnBootCentral(new CentralSessionStore(client));
   // #406: agent mode spills too (readNodeFileOrPath downloads through
   // CentralClient.getFileRaw for a node this device does not mirror), and no
   // MCP transport survives a restart.
@@ -332,12 +335,21 @@ async function agentMain(client: CentralClient): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // The front door always needs a bearer (#521); fail before any boot work
+  // so the host shows the reason instead of a half-started sidecar.
+  assertAuthConfig();
   const dataDir = process.env.PORTUNI_DATA_DIR;
   if (!dataDir) {
     throw new Error("PORTUNI_DATA_DIR must be set in desktop mode");
   }
   mkdirSync(dataDir, { recursive: true });
   registerRunnerAdapters();
+
+  // The device content db (content.db next to runners.json): a thread's
+  // transcript and its first message live on the device that ran it, in
+  // both workspaces, so this is opened before the central-mode branch --
+  // a sync agent has no graph db but it does have content.
+  await getDeviceContentDb();
 
   // Central-mode sync agent: PORTUNI_AGENT_MODE=1 (plus central URL+token)
   // branches before any Turso/graph-db wiring.
@@ -352,7 +364,16 @@ async function main(): Promise<void> {
   }
 
   await waitForDb();
-  await ensureSchema();
+
+  // Personal workspace, one-time copy (#456): this device has always kept
+  // everything, so its transcripts, briefs and inline summaries are in the
+  // graph db. Moved into content.db before serving a single request, so a
+  // thread opened right after the upgrade still has its history. The same
+  // boot step index.ts runs; idempotent, keyed on content.db's own
+  // device_schema.version, retried on the next boot after a failure. It
+  // runs before ensureSchema: migration 040 drops that content from the
+  // graph db and is held back while the copy is incomplete (#462).
+  await ensurePersonalWorkspaceSchema();
 
   const port = Number(process.env.PORTUNI_PORT ?? 0);
   process.env.PORT = String(port);

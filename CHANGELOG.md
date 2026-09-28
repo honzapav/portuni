@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.25.0](https://github.com/honzapav/portuni/compare/v0.24.0...v0.25.0) (2026-09-26)
+
+
+### Features
+
+* **server:** central migration – sessions without brief/handoff_inline, session_events dropped ([#520](https://github.com/honzapav/portuni/issues/520)) ([0d4390b](https://github.com/honzapav/portuni/commit/0d4390ba57fbd969189e1322d04a7ba05b50f212)), closes [#462](https://github.com/honzapav/portuni/issues/462)
+* **web,server,runner,desktop:** localization – English default, Czech per account ([#545](https://github.com/honzapav/portuni/issues/545)) ([b754fc2](https://github.com/honzapav/portuni/commit/b754fc2df8a02b004afc23e1817f7871f88524c5))
+
+
+### Bug Fixes
+
+* **runner,server,web:** the chat never loses work – run lifecycle, questions, thread state, handoff on demand, closed threads reopen ([#523](https://github.com/honzapav/portuni/issues/523)) ([2cdc4c9](https://github.com/honzapav/portuni/commit/2cdc4c99452272715fc70d614f6048a0f0411656))
+* **server,web:** localization review – runner refusal on every path, local event days, full lint ([#556](https://github.com/honzapav/portuni/issues/556)) ([9814f90](https://github.com/honzapav/portuni/commit/9814f9050d7c2dcadd5e31f8237ee4fa5ae1fad1))
+
+## [0.24.0](https://github.com/honzapav/portuni/compare/v0.23.1...v0.24.0) (2026-09-24)
+
+
+### Features
+
+* **runner,server,web:** the chat never loses work – run lifecycle, questions, thread state, handoff on demand ([#510](https://github.com/honzapav/portuni/issues/510)) ([3581004](https://github.com/honzapav/portuni/commit/35810040c1b1e3597eff360d30729b59cbacc75c))
+
+
+### Bug Fixes
+
+* **runner:** no suspend mid-work – Esc stops the turn, idle skips a working agent ([#486](https://github.com/honzapav/portuni/issues/486)) ([6a1e352](https://github.com/honzapav/portuni/commit/6a1e352a0c430a97373b1c74a819acadd49d89a5))
+* **web:** a runner thread stays in Práce once its agent connects to MCP ([#524](https://github.com/honzapav/portuni/issues/524)) ([2287348](https://github.com/honzapav/portuni/commit/22873485cdd8599903d1436a3fdec86180bb6db3))
+
+## [0.23.1](https://github.com/honzapav/portuni/compare/v0.23.0...v0.23.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **server,web:** live channel sends snapshots and replays in batches, not one frame per item ([#481](https://github.com/honzapav/portuni/issues/481)) ([80663c5](https://github.com/honzapav/portuni/commit/80663c5f70f22edf7b29590277b2eca6fc4fe18a))
+
+## [0.23.0](https://github.com/honzapav/portuni/compare/v0.22.0...v0.23.0) (2026-09-23)
+
+
+### Features
+
+* **runner,server,web:** the central server holds the session record, the device holds the content; Předat and Navázat na handoff ([#478](https://github.com/honzapav/portuni/issues/478)) ([5d0ba84](https://github.com/honzapav/portuni/commit/5d0ba8405ffb78c42ea89ebc168bc1e2c3fe5988))
+* **web,desktop:** files organize – drag and drop, folders, plan apply ([#450](https://github.com/honzapav/portuni/issues/450)) ([d6857af](https://github.com/honzapav/portuni/commit/d6857afe7a6762a8cd3cf3beca281891b92dd1e2))
+
+
+### Bug Fixes
+
+* **runner,web:** MCP confirmation dialogs reach the chat, and Ne refuses ([#473](https://github.com/honzapav/portuni/issues/473)) ([fae7513](https://github.com/honzapav/portuni/commit/fae7513aa9795805537ed0b8bb69f0f027038226))
+* **web,runner:** chat surface quirks and a resume that keeps the conversation ([#469](https://github.com/honzapav/portuni/issues/469)) ([dc97d14](https://github.com/honzapav/portuni/commit/dc97d1407b17d76be54f2a360783c45359c125c5))
+* **web,runner:** draft picker sticks, default CLAUDE_CONFIG_DIR logs in, turn end clears the working row ([#453](https://github.com/honzapav/portuni/issues/453)) ([d078f36](https://github.com/honzapav/portuni/commit/d078f364a4859b488ef22e5e628925a0cc6988e5))
+* **web:** a run waiting for its first message is idle, not "Přemýšlím…" ([cc5fcee](https://github.com/honzapav/portuni/commit/cc5fceed35f44e03585ce2d56ccd0384909ad1fb))
+* **web:** a run waiting for its first message is idle, not Přemýšlím ([#454](https://github.com/honzapav/portuni/issues/454)) ([cc5fcee](https://github.com/honzapav/portuni/commit/cc5fceed35f44e03585ce2d56ccd0384909ad1fb))
+* **web:** no focus outline on the command palette input ([#441](https://github.com/honzapav/portuni/issues/441)) ([0cb5948](https://github.com/honzapav/portuni/commit/0cb59486c368ec0e6ec1f9fcb70a9c0907962a26))
+
 ## [0.22.0](https://github.com/honzapav/portuni/compare/v0.21.0...v0.22.0) (2026-09-21)
 
 

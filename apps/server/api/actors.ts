@@ -3,7 +3,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
 import { archiveActor, createActor, updateActor } from "../domain/actors.js";
-import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import { respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import { readNonEmptyBody } from "./route-helpers.js";
 
 export async function handleListActors(
   req: IncomingMessage,
@@ -42,11 +43,8 @@ export async function handleCreateActor(
   identity: RequestIdentity,
 ): Promise<void> {
   try {
-    const body = (await parseBody(req)) as Record<string, unknown> | undefined;
-    if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "body required" });
-      return;
-    }
+    const body = await readNonEmptyBody(req, res, "body required");
+    if (!body) return;
     const row = await createActor(getDb(), identity.userId, body as Parameters<typeof createActor>[2]);
     respondJson(res, 201, row);
   } catch (err) {
@@ -61,11 +59,8 @@ export async function handleUpdateActor(
   actorId: string,
 ): Promise<void> {
   try {
-    const body = (await parseBody(req)) as Record<string, unknown> | undefined;
-    if (!body || Object.keys(body).length === 0) {
-      respondJson(res, 400, { error: "no fields to update" });
-      return;
-    }
+    const body = await readNonEmptyBody(req, res, "no fields to update");
+    if (!body) return;
     const row = await updateActor(getDb(), identity.userId, {
       actor_id: actorId,
       ...(body as object),

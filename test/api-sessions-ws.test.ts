@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { ulid } from "ulid";
 import WebSocket from "ws";
 import type { AddressInfo } from "node:net";
+import { useTestBearer } from "./helpers/auth.js";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
 import { ensureSchema } from "../apps/server/infra/schema.js";
 import { getDb, setDbForTesting } from "../apps/server/infra/db.js";
@@ -29,7 +30,9 @@ import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/ru
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import { createSessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
 import { setSessionRuntimeForTesting } from "../apps/server/boot/session-runtime.js";
+import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
+import type { SessionRow } from "../apps/server/shared/types.js";
 
 const SECRET = "test-secret-at-least-32-chars-long!!";
 const U1 = "01U100000000000000000001A";
@@ -125,6 +128,9 @@ class FrameCollector {
 // dependency is a live lookup into the registry module, not a captured
 // adapter reference (identical to how boot/session-runtime.ts wires it).
 let currentRuntime: ReturnType<typeof createSessionRuntime>;
+// What the live channel's row reads go through when a test needs to hold
+// or fail one; null reads straight through.
+let getSessionOverride: ((sessionId: string) => Promise<SessionRow | null>) | null = null;
 
 function installAdapter(script: readonly FakeScriptStep[]): void {
   clearRegistryForTests();
@@ -161,6 +167,10 @@ describe("GET /sessions/ws", () => {
       args: [ulid(), nodeId, orgId, U1],
     });
 
+    // The process's auth mode stays env (the google identity context is
+    // injected below), and an env-mode server never starts without a
+    // bearer (#521).
+    useTestBearer();
     handle = startHttpServer({ port: 0, host: "127.0.0.1", registerSigint: false });
     if (!handle.server.listening) {
       await new Promise<void>((resolve) => handle.server.once("listening", resolve));
@@ -179,10 +189,16 @@ describe("GET /sessions/ws", () => {
 
     currentRuntime = createSessionRuntime({
       store: new DbSessionStore(db),
+      content: (await installTestContentDb()).content,
       registry: { getAdapter },
       provision: stubProvision(),
     });
-    setSessionRuntimeForTesting(currentRuntime);
+    const runtime = currentRuntime;
+    setSessionRuntimeForTesting({
+      ...runtime,
+      getSession: (sessionId: string) =>
+        getSessionOverride ? getSessionOverride(sessionId) : runtime.getSession(sessionId),
+    });
   });
 
   after(async () => {
@@ -191,6 +207,7 @@ describe("GET /sessions/ws", () => {
     resetGateCachesForTesting();
     setDbForTesting(null);
     setSessionRuntimeForTesting(null);
+    clearTestContentDb();
     clearRegistryForTests();
     delete process.env.TURSO_URL;
     rmSync(tmp, { recursive: true, force: true });
@@ -198,6 +215,7 @@ describe("GET /sessions/ws", () => {
 
   beforeEach(() => {
     installAdapter([{ wait: "message" }]);
+    getSessionOverride = null;
   });
 
   test("an upgrade with no/invalid bearer is refused with 401", async () => {
@@ -229,9 +247,13 @@ describe("GET /sessions/ws", () => {
     ws.send(JSON.stringify({ id: "sub1", type: "subscribe", payload: { session_id: session.id, after: 1 } }));
     await collector.waitFor((f) => f.id === "sub1" && f.type === "reply");
 
-    const replayed = collector.frames.filter((f) => f.type === "event");
+    // The replay is one `events` frame per page, never a frame per event.
+    assert.ok(!collector.frames.some((f) => f.type === "event"));
+    const pages = collector.frames.filter((f) => f.type === "events");
+    assert.equal(pages.length, 1);
+    const replayed = (pages[0].payload as { events: { kind: string }[] }).events;
     assert.equal(replayed.length, 1, "after:1 must skip run_started and replay only the brief");
-    assert.equal((replayed[0].payload as { event: { kind: string } }).event.kind, "user_message");
+    assert.equal(replayed[0].kind, "user_message");
 
     // Unblocks the script -- its own assistant_message must arrive live,
     // on the same subscription, after the persisted replay.
@@ -315,11 +337,16 @@ describe("GET /sessions/ws", () => {
     const collector = new FrameCollector(ws);
     await waitOpen(ws);
 
-    const snapshot = await collector.waitFor(
-      (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
-    );
-    assert.equal((snapshot.payload as { state: string }).state, "running");
-    assert.equal((snapshot.payload as { waiting_since: string | null }).waiting_since, null);
+    // The whole snapshot is one frame, never a frame per session.
+    const snapshotFrame = await collector.waitFor((f) => f.type === "session_states");
+    const sessions = (snapshotFrame.payload as { sessions: { session_id: string; state: string; waiting_since: string | null }[] })
+      .sessions;
+    const snapshot = sessions.find((s) => s.session_id === session.id);
+    assert.ok(snapshot);
+    assert.equal(snapshot.state, "running");
+    assert.equal(snapshot.waiting_since, null);
+    assert.equal(collector.frames.filter((f) => f.type === "session_states").length, 1);
+    assert.ok(!collector.frames.some((f) => f.type === "session_state"));
 
     // Unblocks the script into the question step -- the resulting
     // state_changed event must fan out as a live session_state update to
@@ -336,6 +363,39 @@ describe("GET /sessions/ws", () => {
     await waitClose(ws);
   });
 
+  test("a run that ends on its own leaves suspended as the last session_state (#494)", async () => {
+    installAdapter([{ wait: "message" }, { end: "completed" }]);
+    const runtime = currentRuntime;
+    const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
+
+    const token = await tokenFor(U1);
+    const ws = openSocket(base, token);
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === "session_states");
+
+    // Unblocks the script into its end: the runtime suspends the thread
+    // itself after run_ended, with no REST call in between.
+    await runtime.sendMessage(session.id, "done");
+    const isOwn = (f: Frame) =>
+      f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id;
+    await collector.waitFor((f) => isOwn(f) && (f.payload as { state: string }).state === "suspended");
+    assert.equal((await runtime.getSession(session.id))?.state, "suspended");
+    // The transition is in the log too, so a replay says the same.
+    const events = await runtime.listEvents(session.id);
+    assert.ok(
+      events.some((e) => {
+        if (e.kind !== "state_changed") return false;
+        const payload = JSON.parse(e.payload) as { from: string; to: string };
+        return payload.from === "running" && payload.to === "suspended";
+      }),
+    );
+    const own = collector.frames.filter(isOwn);
+    assert.equal((own[own.length - 1].payload as { state: string }).state, "suspended");
+    ws.close();
+    await waitClose(ws);
+  });
+
   test("a rename through the runtime fans out as session_state carrying the new name", async () => {
     installAdapter([{ wait: "message" }]);
     const runtime = currentRuntime;
@@ -345,9 +405,7 @@ describe("GET /sessions/ws", () => {
     const ws = openSocket(base, token);
     const collector = new FrameCollector(ws);
     await waitOpen(ws);
-    await collector.waitFor(
-      (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
-    );
+    await collector.waitFor((f) => f.type === "session_states");
 
     await runtime.renameSession(session.id, "Přejmenováno");
     const update = await collector.waitFor(
@@ -361,7 +419,89 @@ describe("GET /sessions/ws", () => {
     await waitClose(ws);
   });
 
-  test("a second user who can see the node gets session_state and event frames but an error reply to message", async () => {
+  // #494: a slow row read must neither hold back the frames after it nor
+  // land after them with the older row.
+  test("a stuck row read does not hold back a newer session_state, and its stale row never goes out", async () => {
+    installAdapter([{ wait: "message" }]);
+    const runtime = currentRuntime;
+    const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
+
+    const token = await tokenFor(U1);
+    const ws = openSocket(base, token);
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === "session_states");
+
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let reads = 0;
+    getSessionOverride = async (sessionId) => {
+      reads += 1;
+      if (reads === 1) {
+        const stale = await runtime.getSession(sessionId);
+        await firstHeld;
+        return stale;
+      }
+      return runtime.getSession(sessionId);
+    };
+    const named = (name: string) => (f: Frame) =>
+      f.type === "session_state" &&
+      (f.payload as { session_id: string }).session_id === session.id &&
+      (f.payload as { name?: string }).name === name;
+
+    await runtime.renameSession(session.id, "První");
+    await runtime.renameSession(session.id, "Druhé");
+    await collector.waitFor(named("Druhé"));
+
+    releaseFirst();
+    await runtime.renameSession(session.id, "Třetí");
+    await collector.waitFor(named("Třetí"));
+    const names = collector.frames
+      .filter((f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id)
+      .map((f) => (f.payload as { name?: string }).name);
+    assert.deepEqual(names, ["Druhé", "Třetí"], "the held read's older row was dropped");
+    ws.close();
+    await waitClose(ws);
+  });
+
+  test("a failed row read is reported, and the next session_state still goes out", { timeout: 10_000 }, async (t) => {
+    installAdapter([{ wait: "message" }]);
+    const runtime = currentRuntime;
+    const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
+
+    const token = await tokenFor(U1);
+    const ws = openSocket(base, token);
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === "session_states");
+
+    let markWarned!: () => void;
+    const warned = new Promise<void>((resolve) => {
+      markWarned = resolve;
+    });
+    const warn = t.mock.method(console, "warn", () => markWarned());
+    getSessionOverride = async () => {
+      getSessionOverride = null;
+      throw new Error("central unreachable");
+    };
+    await runtime.renameSession(session.id, "Nedoručeno");
+    await warned;
+    assert.match(String(warn.mock.calls[0].arguments[0]), new RegExp(session.id));
+
+    await runtime.renameSession(session.id, "Doručeno");
+    await collector.waitFor(
+      (f) =>
+        f.type === "session_state" &&
+        (f.payload as { session_id: string }).session_id === session.id &&
+        (f.payload as { name?: string }).name === "Doručeno",
+    );
+    ws.close();
+    await waitClose(ws);
+  });
+
+  test("a second user who can see the node sees nothing of the owner's thread (#457)", async () => {
     installAdapter([{ wait: "message" }]);
     const runtime = currentRuntime;
     const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
@@ -371,18 +511,28 @@ describe("GET /sessions/ws", () => {
     const collector = new FrameCollector(ws);
     await waitOpen(ws);
 
-    await collector.waitFor(
-      (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
-    );
-
+    // The snapshot burst is U2's own threads; U1's never appears in it.
     ws.send(JSON.stringify({ id: "sub1", type: "subscribe", payload: { session_id: session.id, after: 0 } }));
-    await collector.waitFor((f) => f.id === "sub1" && f.type === "reply");
-    assert.ok(collector.frames.some((f) => f.type === "event"));
+    const subReply = await collector.waitFor((f) => f.id === "sub1");
+    assert.equal(subReply.type, "error");
+    assert.equal((subReply.payload as { code: string }).code, "SESSION_NOT_FOUND");
+    assert.ok(
+      !collector.frames.some(
+        (f) => f.type === "session_state" && (f.payload as { session_id: string }).session_id === session.id,
+      ),
+    );
+    assert.ok(
+      !collector.frames.some(
+        (f) =>
+          f.type === "session_states" &&
+          (f.payload as { sessions: { session_id: string }[] }).sessions.some((s) => s.session_id === session.id),
+      ),
+    );
 
     ws.send(JSON.stringify({ id: "msg1", type: "message", payload: { session_id: session.id, text: "nope" } }));
     const errorReply = await collector.waitFor((f) => f.id === "msg1");
     assert.equal(errorReply.type, "error");
-    assert.equal((errorReply.payload as { code: string }).code, "SESSION_FORBIDDEN");
+    assert.equal((errorReply.payload as { code: string }).code, "SESSION_NOT_FOUND");
 
     ws.close();
     await waitClose(ws);
@@ -436,7 +586,7 @@ describe("GET /sessions/ws", () => {
     await waitClose(ws);
   });
 
-  test("GET /sessions lists only the sessions the caller can see, newest activity first", async () => {
+  test("GET /sessions lists the caller's own sessions only (#457)", async () => {
     const runtime = currentRuntime;
     const own = await runtime.startTask({ userId: U1, nodeId, brief: "mine", runner: "fake" });
     // A chat session with no anchor node belongs to U2 alone: U1 never
@@ -457,9 +607,9 @@ describe("GET /sessions/ws", () => {
     const asU2 = await fetch(`${base}/sessions?state=running,suspended`, { headers: { authorization: `Bearer ${await tokenFor(U2)}` } });
     const u2Ids = ((await asU2.json()) as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id);
     assert.ok(u2Ids.includes(chatId));
-    // U2 can see the project node (org-visible by default), so U1's
-    // node-anchored task is listed for U2 too.
-    assert.ok(u2Ids.includes(own.session.id));
+    // U2 can see the project node (org-visible by default), and that says
+    // nothing about U1's thread on it any more (#457).
+    assert.ok(!u2Ids.includes(own.session.id));
 
     const bad = await fetch(`${base}/sessions?state=bogus`, { headers: { authorization: `Bearer ${await tokenFor(U1)}` } });
     assert.equal(bad.status, 400);

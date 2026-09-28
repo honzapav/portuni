@@ -63,6 +63,7 @@ export default defineConfig({
 					label: 'Guides',
 					items: [
 						{ label: 'Working in the Desktop App', slug: 'guides/working-in-the-app' },
+						{ label: 'Thread Lifecycle', slug: 'guides/thread-lifecycle' },
 						{ label: 'Setting Up Remotes', slug: 'guides/setting-up-remotes' },
 						{ label: 'Symbiotic Workflows', slug: 'guides/symbiotic-workflows' },
 					],

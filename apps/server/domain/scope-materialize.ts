@@ -322,9 +322,13 @@ export async function dataSourcesForNode(
 // Best-effort fetch of a node's orientation summary for PORTUNI_SCOPE.md
 // (context, responsibilities, recent events, handoff pointer). Same
 // degrade-to-nothing contract as dataSourcesForNode: config materialization
-// must never fail because this read did.
+// must never fail because this read did. The handoff pointer is the
+// `userId`'s own latest suspended thread: a thread is its owner's (#457),
+// so another user's thread name and handoff path never reach this user's
+// orientation, however visible the node is to both.
 export async function orientationForNode(
   nodeId: string | null | undefined,
+  userId: string,
 ): Promise<OrientationSummary | null> {
   if (!nodeId) return null;
   try {
@@ -346,7 +350,7 @@ export async function orientationForNode(
       args: [nodeId],
     });
 
-    const suspended = await listSessions(db, { node_id: nodeId, state: "suspended" });
+    const suspended = await listSessions(db, { node_id: nodeId, state: "suspended", user_id: userId });
     const withHandoff = suspended.find((s) => s.handoff_path);
 
     return {
@@ -402,7 +406,7 @@ export async function materializeAllRegisteredMirrors(opts?: {
 }): Promise<MaterializeResult> {
   const aggregated: MaterializeResult = { written: [], removed: [], errors: [] };
   const resolveDataSources = opts?.dataSourcesFor ?? dataSourcesForNode;
-  const resolveOrientation = opts?.orientationFor ?? orientationForNode;
+  const resolveOrientation = opts?.orientationFor ?? ((nodeId: string) => orientationForNode(nodeId, SOLO_USER));
   const mirrors = await listUserMirrors(SOLO_USER);
   if (mirrors.length === 0) return aggregated;
 

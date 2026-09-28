@@ -13,17 +13,16 @@ import type { SessionScopeRecord } from "../../../shared/api-types.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
+import type { ErrorParams } from "../../../shared/error-codes.js";
+import { readErrorParams } from "../../../shared/error-params.js";
 import type {
   CreateDraftSessionInput,
   CreateRunInput,
   CreateRunnerSessionInput,
-  ListEventsOptions,
   PatchRunInput,
   PatchSessionInput,
-  SessionEventRow,
   SessionRunRow,
 } from "../../runner/store.js";
-import type { CanonicalEvent } from "../../runner/types.js";
 
 export class CentralHttpError extends Error {
   constructor(
@@ -31,10 +30,19 @@ export class CentralHttpError extends Error {
     readonly status: number,
     readonly code?: string,
     readonly currentVersion?: string,
+    // The central server's `params` for `code` (shared/error-codes.ts), so a
+    // relay hands the web everything it renders the message from.
+    readonly params?: ErrorParams,
   ) {
     super(message);
     this.name = "CentralHttpError";
   }
+}
+
+// Keeps only the string/number values of an error body's `params`.
+function readParams(value: unknown): ErrorParams | undefined {
+  const out = readErrorParams(value);
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export interface PutFileOpts {
@@ -134,17 +142,17 @@ export interface CentralClient {
   createSessionRun(input: CreateRunInput): Promise<SessionRunRow>;
   patchSessionRun(sessionId: string, runId: string, patch: PatchRunInput): Promise<SessionRunRow>;
   listSessionRuns(sessionId: string): Promise<SessionRunRow[]>;
-  appendSessionEvents(
-    sessionId: string,
-    runId: string | null,
-    events: CanonicalEvent[],
-  ): Promise<number[]>;
-  listSessionEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
+  // There is deliberately no event method here: a thread's transcript, its
+  // first message and its inline handoff summary are CONTENT and stay on
+  // the device that ran it (#456, docs/superpowers/specs/
+  // 2026-09-22-local-sessions-design.md, "Principle"). Nothing on the
+  // device sends them to the central server; SessionContentStore over the
+  // device's own content.db is their only writer and reader.
   // GET /sessions/:id/scope (#427): the session's read/write set by node id
   // and the anchor node's name. `session_scope` is a graph-db table, so a
-  // sync agent has none -- the suspend fallback
-  // (domain/runner/suspend-fallback-central.ts) fills its summary's scope
-  // sections from here instead of leaving them empty.
+  // sync agent has none -- the server-side suspend
+  // (domain/session-handoff.ts's createSuspendServerSide, #458) fills its
+  // summary's scope sections from here instead of leaving them empty.
   sessionScopeRecord(sessionId: string): Promise<SessionScopeRecord>;
   // GET /nodes/:id/orientation: what buildOrientationHint would render
   // locally, computed by the central server (which has the real graph db)
@@ -232,6 +240,7 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       status,
       typeof obj.code === "string" ? obj.code : undefined,
       typeof obj.currentVersion === "string" ? obj.currentVersion : undefined,
+      readParams(obj.params),
     );
   }
 
@@ -453,6 +462,8 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
         effort: input.effort ?? null,
         runner: input.runner ?? null,
         instance_id: input.instance_id ?? null,
+        // #539: the central server names the draft in the request's language.
+        ...(input.locale ? { locale: input.locale } : {}),
       });
       if (r.status !== 201) throwFor(r.status, p, r.json);
       return r.json as SessionRow;
@@ -490,25 +501,6 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       const r = await request("GET", p);
       if (r.status !== 200) throwFor(r.status, p, r.json);
       return (r.json as { runs: SessionRunRow[] }).runs;
-    },
-
-    async appendSessionEvents(sessionId, runId, events) {
-      const p = `/sessions/${encodeURIComponent(sessionId)}/events`;
-      const r = await request("POST", p, { run_id: runId, events });
-      if (r.status !== 200) throwFor(r.status, p, r.json);
-      return (r.json as { seqs: number[] }).seqs;
-    },
-
-    async listSessionEvents(sessionId, opts) {
-      const params = new URLSearchParams();
-      if (opts?.after !== undefined) params.set("after", String(opts.after));
-      if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
-      const qs = params.toString();
-      const p = `/sessions/${encodeURIComponent(sessionId)}/events${qs ? `?${qs}` : ""}`;
-      const r = await request("GET", p);
-      if (r.status !== 200) throwFor(r.status, p, r.json);
-      const events = (r.json as { events: Array<{ payload: unknown } & Omit<SessionEventRow, "payload">> }).events;
-      return events.map((e) => ({ ...e, payload: JSON.stringify(e.payload) }));
     },
 
     async sessionScopeRecord(sessionId) {

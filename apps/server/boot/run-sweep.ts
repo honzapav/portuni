@@ -14,9 +14,8 @@ import {
   sweepOrphanedRunsOn,
   type RunSweepBackend,
 } from "../domain/runner/run-sweep.js";
-import { createSuspendFallbackCentral } from "../domain/runner/suspend-fallback-central.js";
+import { deviceSessionContentStore } from "../domain/runner/store-content.js";
 import type { SessionStore } from "../domain/runner/store.js";
-import type { CentralClient } from "../domain/sync/central/client.js";
 
 export async function sweepOrphanedRunsOnBoot(backend?: RunSweepBackend): Promise<void> {
   try {
@@ -33,13 +32,9 @@ export async function sweepOrphanedRunsOnBoot(backend?: RunSweepBackend): Promis
 
 // #393: a central-mode sidecar spawns the same children and leaves the same
 // pid files, but has no graph db -- the run and session records live on
-// central. The suspend half reuses the runtime's own agent-mode fallback,
-// so an orphaned run is written up exactly the way a live one that timed
-// out would be.
-export async function sweepOrphanedRunsOnBootCentral(
-  store: SessionStore,
-  client: CentralClient,
-): Promise<void> {
-  const suspend = createSuspendFallbackCentral(store, client);
-  await sweepOrphanedRunsOnBoot(centralRunSweepBackend(store, suspend));
+// central. #458: the outcome is the same code as local mode's (host_lost on
+// the run, suspended on the record, run_ended in this device's transcript),
+// only the store behind it differs.
+export async function sweepOrphanedRunsOnBootCentral(store: SessionStore): Promise<void> {
+  await sweepOrphanedRunsOnBoot(centralRunSweepBackend(store, deviceSessionContentStore()));
 }

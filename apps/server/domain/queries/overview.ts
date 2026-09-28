@@ -4,9 +4,12 @@
 // coupling, no permission filtering -- that happens in api/overview.ts,
 // same split as loadGraph/GET /graph.
 //
-// Each query returns its rows unfiltered; the REST handler drops rows on
-// nodes the caller cannot see via filterVisibleNodeIds. Caps below are
-// generous but finite -- this is a dashboard, not an export.
+// Each query returns its rows unfiltered by node; the REST handler drops
+// rows on nodes the caller cannot see via filterVisibleNodeIds. The two
+// session queries are the exception: a thread is its owner's (#457), which
+// is not a node question, so they take the caller's user id and filter in
+// SQL -- the cap below then counts the caller's own rows. Caps are generous
+// but finite -- this is a dashboard, not an export.
 
 import type { DbClient } from "../../infra/db.js";
 import type {
@@ -21,14 +24,17 @@ import type {
 
 export async function loadOverviewSessions(
   db: DbClient,
+  userId: string,
 ): Promise<OverviewSessionRow[]> {
   const res = await db.execute({
     sql: `SELECT s.*, n.name AS node_name, n.type AS node_type
             FROM sessions s
             LEFT JOIN nodes n ON n.id = s.node_id
            WHERE s.state IN ('running', 'suspended')
+             AND s.user_id = ?
            ORDER BY s.last_active_at DESC
            LIMIT 100`,
+    args: [userId],
   });
   return res.rows.map((row) => ({
     id: row.id as string,
@@ -39,7 +45,6 @@ export async function loadOverviewSessions(
     session_type: row.session_type as OverviewSessionRow["session_type"],
     cli: row.cli as string | null,
     instance_id: row.instance_id as string | null,
-    brief: row.brief as string | null,
     runner: row.runner as string | null,
     waiting_since: row.waiting_since as string | null,
     state: row.state as OverviewSessionRow["state"],
@@ -163,6 +168,7 @@ export async function loadOverviewEvents(db: DbClient): Promise<OverviewEvent[]>
 // getSessionWriteCount in domain/sessions.ts.
 export async function loadOverviewSessionWrites(
   db: DbClient,
+  userId: string,
 ): Promise<OverviewSessionWrite[]> {
   const res = await db.execute({
     sql: `SELECT ss.session_id, s.name AS session_name, ss.node_id,
@@ -171,8 +177,10 @@ export async function loadOverviewSessionWrites(
             JOIN sessions s ON s.id = ss.session_id
             JOIN nodes n ON n.id = ss.node_id
            WHERE ss.writable = 1
+             AND s.user_id = ?
            ORDER BY ss.added_at DESC
            LIMIT 30`,
+    args: [userId],
   });
   return res.rows.map((row) => ({
     session_id: row.session_id as string,

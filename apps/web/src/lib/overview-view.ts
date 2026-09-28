@@ -17,7 +17,9 @@ export function capRows<T>(rows: readonly T[], expanded: boolean): { shown: T[];
 
 // Rule 7: a hand-opened CLI session is not a thread. Relace lists threads
 // and says how many CLI sessions there are besides.
-export function splitThreadsAndCli<T extends { session_type: string; cli: string | null; state: string }>(
+export function splitThreadsAndCli<
+  T extends { session_type: string; cli: string | null; runner: string | null; state: string },
+>(
   rows: readonly T[],
 ): { threads: T[]; cli: { total: number; running: number } } {
   const threads: T[] = [];
@@ -41,11 +43,10 @@ export type OverviewCounters = { waiting: number; running: number; attention: nu
 export function overviewCounters(
   running: readonly OverviewSessionRow[],
   suspended: readonly OverviewSessionRow[],
-  meId: string | null,
   attention: number,
   unsynced: number,
 ): OverviewCounters {
-  const mine = sortInboxSessions(running, suspended, meId).filter(isThreadSession);
+  const mine = sortInboxSessions(running, suspended).filter(isThreadSession);
   return {
     waiting: mine.filter((s) => s.state === "running" && s.waiting_since !== null).length,
     running: mine.filter((s) => s.state === "running" && s.waiting_since === null).length,

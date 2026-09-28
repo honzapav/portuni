@@ -12,9 +12,11 @@
 //   node's name underneath. The group says the state; there are no state
 //   dots here, so the only dots in this view are node-type dots.
 import { useState } from "react";
-import { Plus, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
+import { Plus, Share2, X } from "lucide-react";
 import type { WorkspaceNodeRow } from "../lib/sessions";
-import { nodeRowActive } from "../lib/session-views";
+import { nodeRowActive, threadCloseAction } from "../lib/session-views";
 import { scopedKey } from "../lib/workspace-storage";
 import {
   type NodeActivity,
@@ -36,11 +38,11 @@ type Props = {
   // "+" on a node row: start a new task there (opens a thread directly,
   // #374 -- no dialog, no required field).
   onNewTask: (id: string) => void;
-  // #343: each open node's own running/suspended persistent (runner)
-  // sessions, already live-overlaid by the caller (mergeLiveSessionStates),
-  // plus (#374) any locally-opened draft not yet promoted -- every list the
-  // server serves excludes a draft, so the caller merges its own in.
-  // Status comes from state/waiting_since (session_state frames).
+  // #343: each open node's own steerable threads -- running, waiting,
+  // suspended and (#374) draft alike, drafts included because since #463
+  // the node's session list carries the caller's own. The caller derives
+  // the map from the session store (#465), so the status shown here is the
+  // record's own state/waiting_since, kept current by session_state frames.
   threadsByNode: Record<string, SessionSummary[]>;
   // #412: the thread the canvas currently shows, marked in both
   // arrangements (the per-node tree and the grouped task list) the same way
@@ -50,10 +52,13 @@ type Props = {
   // Inline rename (#374, "sub-rows ... inline rename").
   onRenameTask: (session: SessionSummary, name: string) => void;
   // The × on a thread's own row: a draft with no first message yet is
-  // deleted outright (nothing to lose); anything else is Uzavřít, which
-  // asks first -- #378 is what will replace this stand-in confirm() with
-  // a real dialog carrying the session's summary.
+  // deleted outright (nothing to lose); anything else is Uzavřít, without
+  // a dialog (#498: a closed thread reopens by writing into it).
   onCloseTask: (session: SessionSummary) => void;
+  // #459 "Předat": ends the turn and the run and writes the thread's
+  // handoff file into the node's mirror, so another machine can pick the
+  // work up from it. Offered on a running or suspended thread only.
+  onHandoffTask: (session: SessionSummary) => void;
 };
 
 export type ListMode = "nodes" | "state";
@@ -72,14 +77,46 @@ function nodeTypeVar(type: string): string {
   return known.includes(type) ? `var(--color-node-${type})` : "var(--color-node-default)";
 }
 
+type CommonT = TFunction<"common">;
+
 // The node's status dot (lib/workspace-list.ts decides which): waiting or
 // running only -- a suspended or draft thread is not activity.
-const ACTIVITY_DOT: Record<Exclude<NodeActivity, null>, { color: string; title: string; pulse: boolean }> = {
-  waiting: { color: "var(--color-node-process)", title: "Úkol čeká na odpověď", pulse: true },
-  running: { color: "var(--color-status-active)", title: "Úkol běží", pulse: true },
+const ACTIVITY_DOT: Record<
+  Exclude<NodeActivity, null>,
+  { color: string; title: (t: CommonT) => string; pulse: boolean }
+> = {
+  waiting: {
+    color: "var(--color-node-process)",
+    title: (t) => t(($) => $.node_list.activity.waiting),
+    pulse: true,
+  },
+  running: {
+    color: "var(--color-status-active)",
+    title: (t) => t(($) => $.node_list.activity.running),
+    pulse: true,
+  },
+};
+
+// A task's status as the tooltip of its row under the node.
+const TASK_STATE_TITLE: Record<TaskGroupKey, (t: CommonT) => string> = {
+  waiting: (t) => t(($) => $.node_list.task.state.waiting),
+  running: (t) => t(($) => $.node_list.task.state.running),
+  suspended: (t) => t(($) => $.node_list.task.state.suspended),
+  draft: (t) => t(($) => $.node_list.task.state.draft),
+  done: (t) => t(($) => $.node_list.task.state.done),
+};
+
+// The group headings of the Stav arrangement; TASK_GROUPS gives the order.
+const TASK_GROUP_LABEL: Record<TaskGroupKey, (t: CommonT) => string> = {
+  waiting: (t) => t(($) => $.node_list.group.waiting),
+  running: (t) => t(($) => $.node_list.group.running),
+  suspended: (t) => t(($) => $.node_list.group.suspended),
+  draft: (t) => t(($) => $.node_list.group.draft),
+  done: (t) => t(($) => $.node_list.group.done),
 };
 
 export default function WorkspaceNodeList(props: Props) {
+  const { t } = useTranslation("common");
   const [mode, setMode] = useState<ListMode>(readListMode);
   const changeMode = (m: ListMode) => {
     setMode(m);
@@ -93,20 +130,20 @@ export default function WorkspaceNodeList(props: Props) {
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center gap-2 px-3 pt-4 pb-2">
+      <div className="flex items-center gap-2 px-4 pt-4 pb-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-dim)]">
-          Otevřené
+          {t(($) => $.node_list.heading)}
         </span>
-        <ButtonGroup className="ml-auto" aria-label="Řazení">
+        <ButtonGroup className="ml-auto" aria-label={t(($) => $.node_list.mode.aria_label)}>
           <Button
             variant="outline"
             size="xs"
             aria-pressed={mode === "nodes"}
             onClick={() => changeMode("nodes")}
             className={pressed}
-            title="Seskupit podle uzlů"
+            title={t(($) => $.node_list.mode.nodes_title)}
           >
-            Uzly
+            {t(($) => $.node_list.mode.nodes)}
           </Button>
           <Button
             variant="outline"
@@ -114,9 +151,9 @@ export default function WorkspaceNodeList(props: Props) {
             aria-pressed={mode === "state"}
             onClick={() => changeMode("state")}
             className={pressed}
-            title="Jen úkoly, podle stavu"
+            title={t(($) => $.node_list.mode.state_title)}
           >
-            Stav
+            {t(($) => $.node_list.mode.state)}
           </Button>
         </ButtonGroup>
       </div>
@@ -138,11 +175,13 @@ function NodeTree({
   onOpenSessionChat,
   onRenameTask,
   onCloseTask,
+  onHandoffTask,
 }: Props) {
+  const { t } = useTranslation("common");
   if (rows.length === 0) {
     return (
       <div className="px-4 py-6 text-[13px] text-[var(--color-text-dim)]">
-        Žádné otevřené uzly. Otevři uzel přes Hledat uzel (⌘K) nebo vytvoř nový.
+        {t(($) => $.node_list.empty_nodes)}
       </div>
     );
   }
@@ -195,8 +234,8 @@ function NodeTree({
                   role="img"
                   className={`inline-block h-[7px] w-[7px] shrink-0 rounded-full ${ACTIVITY_DOT[activity].pulse ? "animate-pulse" : ""}`}
                   style={{ background: ACTIVITY_DOT[activity].color }}
-                  title={ACTIVITY_DOT[activity].title}
-                  aria-label={ACTIVITY_DOT[activity].title}
+                  title={ACTIVITY_DOT[activity].title(t)}
+                  aria-label={ACTIVITY_DOT[activity].title(t)}
                 />
               )}
               <span className="hidden shrink-0 items-center gap-0.5 group-focus-within:inline-flex group-hover:inline-flex">
@@ -210,8 +249,8 @@ function NodeTree({
                       e.stopPropagation();
                       onNewTask(r.id);
                     }}
-                    title="Nový úkol pro tento uzel"
-                    aria-label="Nový úkol"
+                    title={t(($) => $.node_list.node.new_task_title)}
+                    aria-label={t(($) => $.node_list.node.new_task_aria_label)}
                     className="text-muted-foreground"
                   >
                     <Plus />
@@ -224,8 +263,8 @@ function NodeTree({
                     e.stopPropagation();
                     onCloseNode(r.id);
                   }}
-                  title="Zavřít uzel"
-                  aria-label="Zavřít uzel"
+                  title={t(($) => $.node_list.node.close)}
+                  aria-label={t(($) => $.node_list.node.close)}
                   className="text-muted-foreground"
                 >
                   <X />
@@ -239,11 +278,12 @@ function NodeTree({
                   <li key={s.id}>
                     <TaskRow
                       session={s}
-                      title={taskTitle(s)}
+                      title={TASK_STATE_TITLE[taskGroupOf(s)](t)}
                       active={s.id === activeSessionId}
                       onClick={() => onOpenSessionChat(r.id, s.id)}
                       onRename={(name) => onRenameTask(s, name)}
                       onClose={() => onCloseTask(s)}
+                      onHandoff={() => onHandoffTask(s)}
                     />
                   </li>
                 ))}
@@ -256,28 +296,12 @@ function NodeTree({
   );
 }
 
-function taskTitle(s: Pick<SessionSummary, "state" | "waiting_since">): string {
-  switch (taskGroupOf(s)) {
-    case "waiting":
-      return "Čeká na odpověď";
-    case "running":
-      return "Běží";
-    case "suspended":
-      return "Pozastaveno";
-    case "draft":
-      return "Nový";
-    default:
-      return "Hotovo";
-  }
-}
-
 // A task under its node: flush with the node name (no rail, no extra
 // indent -- the column is narrow). State is in the tooltip, not a dot, so
 // the only dots in a row are the node-type dot above and the node's own
 // summary dot. Double-click renames inline; the × (revealed on hover,
 // same pattern as the node row's own + / ×) closes the thread -- a draft
-// is deleted outright, anything else asks first (#374's stand-in for
-// #378's own confirmation).
+// is deleted outright, anything else is Uzavřít without a dialog (#498).
 function TaskRow({
   session,
   title,
@@ -285,6 +309,7 @@ function TaskRow({
   onClick,
   onRename,
   onClose,
+  onHandoff,
 }: {
   session: SessionSummary;
   title: string;
@@ -292,7 +317,9 @@ function TaskRow({
   onClick: () => void;
   onRename: (name: string) => void;
   onClose: () => void;
+  onHandoff: () => void;
 }) {
+  const { t } = useTranslation("common");
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(session.name);
 
@@ -344,7 +371,7 @@ function TaskRow({
         }}
         title={title}
         aria-current={active ? "true" : undefined}
-        className={`h-8 w-full min-w-0 justify-start gap-2.5 pr-7 pl-7 font-normal text-[12.5px] ${
+        className={`h-8 w-full min-w-0 justify-start gap-2.5 pr-13 pl-7 font-normal text-[12.5px] ${
           active
             ? "bg-[var(--color-surface-2)] font-medium text-[var(--color-text)]"
             : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
@@ -352,26 +379,52 @@ function TaskRow({
       >
         <span className="min-w-0 flex-1 truncate text-left">{session.name}</span>
       </Button>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        title="Uzavřít vlákno"
-        aria-label="Uzavřít vlákno"
-        className="absolute right-1 hidden text-muted-foreground group-hover/task:inline-flex group-focus-within/task:inline-flex"
-      >
-        <X />
-      </Button>
+      {/* #459: Předat -- running and suspended threads only; a draft has
+          nothing to summarise and a closed one is done. */}
+      {(session.state === "running" || session.state === "suspended") && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={(e) => {
+            e.stopPropagation();
+            onHandoff();
+          }}
+          title={t(($) => $.node_list.task.handoff)}
+          aria-label={t(($) => $.node_list.task.handoff)}
+          className="absolute right-7 hidden text-muted-foreground group-hover/task:inline-flex group-focus-within/task:inline-flex"
+        >
+          <Share2 />
+        </Button>
+      )}
+      <TaskCloseButton onClose={onClose} />
     </div>
+  );
+}
+
+// The hover-revealed x at a task row's right edge.
+function TaskCloseButton({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation("common");
+  return (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
+      title={t(($) => $.node_list.task.close)}
+      aria-label={t(($) => $.node_list.task.close)}
+      className="absolute right-1 hidden text-muted-foreground group-hover/task:inline-flex group-focus-within/task:inline-flex"
+    >
+      <X />
+    </Button>
   );
 }
 
 // ---------------------------------------------------------------- Stav
 
-function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat }: Props) {
+function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat, onCloseTask }: Props) {
+  const { t } = useTranslation("common");
   const byGroup = new Map<TaskGroupKey, { node: WorkspaceNodeRow; task: SessionSummary }[]>();
   for (const node of rows) {
     for (const task of threadsByNode[node.id] ?? []) {
@@ -385,30 +438,30 @@ function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat }: P
   if (byGroup.size === 0) {
     return (
       <div className="px-4 py-6 text-[13px] text-[var(--color-text-dim)]">
-        Žádné úkoly. Spusť úkol z detailu uzlu tlačítkem Nový úkol.
+        {t(($) => $.node_list.empty_tasks)}
       </div>
     );
   }
 
   return (
     <ul className="flex flex-col px-3 pb-4">
-      {TASK_GROUPS.map(({ key, label }) => {
+      {TASK_GROUPS.map(({ key }) => {
         const items = byGroup.get(key);
         if (!items || items.length === 0) return null;
         const dim = key === "done";
         return (
           <li key={key} className={dim ? "opacity-60" : ""}>
-            <GroupHeader label={label} count={items.length} />
+            <GroupHeader label={TASK_GROUP_LABEL[key](t)} count={items.length} />
             <ul className="flex flex-col gap-1">
               {items.map(({ node, task }) => (
-                <li key={task.id}>
+                <li key={task.id} className="group/task relative flex items-center">
                   <Button
                     variant="ghost"
                     onClick={() => onOpenSessionChat(node.id, task.id)}
                     aria-current={task.id === activeSessionId ? "true" : undefined}
                     className={`h-auto w-full min-w-0 flex-col items-stretch gap-0.5 px-2.5 py-1.5 text-left font-normal hover:bg-[var(--color-surface-2)] ${
                       task.id === activeSessionId ? "bg-[var(--color-surface-2)]" : ""
-                    }`}
+                    } ${threadCloseAction(task.state) !== null ? "pr-7" : ""}`}
                   >
                     <span className="truncate text-[13px] font-medium text-[var(--color-text)]">{task.name}</span>
                     <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-[var(--color-text-dim)]">
@@ -420,6 +473,12 @@ function TaskList({ rows, threadsByNode, activeSessionId, onOpenSessionChat }: P
                       <span className="truncate">{node.name}</span>
                     </span>
                   </Button>
+                  {/* #506: the same × as a thread's row under its node --
+                      a draft is deleted, a running or suspended thread goes
+                      to Uzavřít; a finished one has nothing to close. */}
+                  {threadCloseAction(task.state) !== null && (
+                    <TaskCloseButton onClose={() => onCloseTask(task)} />
+                  )}
                 </li>
               ))}
             </ul>

@@ -22,7 +22,9 @@ import type { DbClient, DbRow } from "./db.js";
 
 // Topological (FK-safe) order -- the same order schema.pg.ts's
 // PG_BASELINE_DDL creates tables in. Every table a fresh install of either
-// dialect has as of migration 035 / pg-001, except `migrations` itself.
+// dialect has as of migration 040 / pg-001, except `migrations` itself.
+// No session_events: a thread's transcript lives on the device that ran
+// it (content.db), never in the graph db (#462).
 export const TABLE_ORDER: readonly string[] = [
   "users",
   "nodes",
@@ -33,7 +35,6 @@ export const TABLE_ORDER: readonly string[] = [
   "oauth_codes",
   "sessions",
   "session_runs",
-  "session_events",
   "session_scope",
   "edges",
   "audit_log",
@@ -61,7 +62,6 @@ export const ORDER_BY: Readonly<Record<string, string>> = {
   oauth_codes: "id",
   sessions: "id",
   session_runs: "id",
-  session_events: "session_id, seq",
   session_scope: "session_id, node_id",
   edges: "id",
   audit_log: "id",
@@ -106,7 +106,7 @@ export async function exportTable(db: DbClient, table: string): Promise<DbRow[]>
 
 export async function exportDb(db: DbClient, outDir: string): Promise<ExportManifest> {
   // The dump carries everything the database does -- audit_log, e-mail
-  // addresses, session transcripts -- so it is owner-readable only, the
+  // addresses, session records -- so it is owner-readable only, the
   // directory included (mkdir's mode applies to the leaf it creates).
   await mkdir(outDir, { recursive: true, mode: 0o700 });
   const tables: Record<string, TableManifestEntry> = {};

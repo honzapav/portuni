@@ -20,7 +20,13 @@
 // comment for the canonical protocol description.
 
 import { isTauri } from "./backend-url.js";
+import { ApiError, ClientError } from "./api-error.js";
+import { requestLocale } from "./locale.js";
+import type { Locale } from "../../../server/shared/i18n/config";
+import type { ErrorParams } from "../../../server/shared/error-codes";
 import type { SessionSummary, SessionRunRow } from "../types";
+import type { QuestionAnswer } from "./session-chat.js";
+import { invoke } from "./tauri-invoke.js";
 
 export type SessionState = "running" | "suspended" | "closed" | "archived";
 export type ConnectionStatus = "open" | "reconnecting" | "closed";
@@ -57,11 +63,16 @@ interface ReplyFrame {
 interface ErrorFrame {
   id?: string;
   type: "error";
-  payload: { code: string; message: string };
+  payload: { code: string; message: string; params?: ErrorParams };
 }
 interface EventFrame {
   type: "event";
   payload: { session_id: string; event: CanonicalEventEnvelope };
+}
+// A page of the persisted log a subscribe replays, in seq order.
+interface EventsFrame {
+  type: "events";
+  payload: { session_id: string; events: CanonicalEventEnvelope[] };
 }
 interface DeltaFrame {
   type: "delta";
@@ -71,19 +82,32 @@ interface SessionStateFrame {
   type: "session_state";
   payload: SessionStateMessage;
 }
-type ServerFrame = ReplyFrame | ErrorFrame | EventFrame | DeltaFrame | SessionStateFrame;
+// The snapshot sent once on connect: every running or suspended session the
+// caller can see, in one frame.
+interface SessionStatesFrame {
+  type: "session_states";
+  payload: { sessions: SessionStateMessage[] };
+}
+type ServerFrame =
+  | ReplyFrame
+  | ErrorFrame
+  | EventFrame
+  | EventsFrame
+  | DeltaFrame
+  | SessionStateFrame
+  | SessionStatesFrame;
 
 type ClientFrame =
   | { id: string; type: "subscribe"; payload: { session_id: string; after?: number } }
   | { id: string; type: "unsubscribe"; payload: { session_id: string } }
-  | { id: string; type: "message"; payload: { session_id: string; text: string } }
+  | { id: string; type: "message"; payload: { session_id: string; text: string; locale?: Locale } }
   | {
       id: string;
       type: "answer";
-      payload: { session_id: string; request_id: string; decision: { value: string | boolean } };
+      payload: { session_id: string; request_id: string; decision: { value: QuestionAnswer } };
     }
   | { id: string; type: "interrupt"; payload: { session_id: string } }
-  | { id: string; type: "continue"; payload: { session_id: string } }
+  | { id: string; type: "continue"; payload: { session_id: string; locale?: Locale } }
   | { id: string; type: "close"; payload: { session_id: string } };
 
 // 1s -> 30s, doubling, same schedule as the Rust bridge's own
@@ -108,6 +132,11 @@ function randomFrameId(): string {
 
 export interface Transport {
   send(frame: ClientFrame): void;
+  // Drops a frame that is still queued for the next open (the socket was
+  // not open when it was sent). A frame already on the wire is out of
+  // reach; cancelling it is a no-op. The client cancels every request it
+  // reports as failed, so a failed request is never delivered later.
+  cancel(id: string): void;
   onFrame(cb: (frame: ServerFrame) => void): () => void;
   onStatus(cb: (status: ConnectionStatus) => void): () => void;
   connect(): void;
@@ -120,8 +149,7 @@ export interface DirectWsTransportOptions {
   minBackoffMs?: number;
   maxBackoffMs?: number;
   // The WebSocket constructor to use; defaults to the global one. The
-  // server-side test runner (CI is Node 20, which has no global WebSocket)
-  // passes the `ws` package's class instead.
+  // server-side test runner passes the `ws` package's class instead.
   WebSocket?: WebSocketLike;
   // How long a socket may sit in CONNECTING before this transport gives up
   // on it and schedules a reconnect. A TCP connect to a host that accepts
@@ -171,8 +199,8 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
   // before the just-opened socket finishes its handshake -- WebSocket's
   // own `send()` throws in CONNECTING state, and this is the common case
   // right after `connect()`, not a rare race. Queued here and flushed in
-  // FIFO order once onopen fires.
-  const sendQueue: string[] = [];
+  // FIFO order once onopen fires; `cancel(id)` takes one back out.
+  const sendQueue: Array<{ id: string; text: string }> = [];
 
   function emitStatus(status: ConnectionStatus): void {
     for (const cb of statusListeners) cb(status);
@@ -225,7 +253,7 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
       clearConnectTimer();
       backoffMs = minBackoffMs;
       while (sendQueue.length > 0 && socket === ws) {
-        ws.send(sendQueue.shift() as string);
+        ws.send((sendQueue.shift() as { text: string }).text);
       }
       emitStatus("open");
     };
@@ -257,8 +285,12 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
       if (socket?.readyState === WebSocketCtor.OPEN) {
         socket.send(text);
       } else {
-        sendQueue.push(text);
+        sendQueue.push({ id: frame.id, text });
       }
+    },
+    cancel(id) {
+      const index = sendQueue.findIndex((queued) => queued.id === id);
+      if (index !== -1) sendQueue.splice(index, 1);
     },
     onFrame(cb) {
       frameListeners.add(cb);
@@ -297,9 +329,13 @@ function createTauriTransport(): Transport {
 
   return {
     send(frame) {
-      void import("@tauri-apps/api/core").then(({ invoke }) =>
-        invoke("sessions_send", { frame: JSON.stringify(frame) }),
-      );
+      void invoke("sessions_send", { frame: JSON.stringify(frame) });
+    },
+    cancel(id) {
+      // Same import-then-invoke chain as send (lib/tauri-invoke.ts awaits one
+      // shared module promise), so a cancel issued after a send reaches Rust
+      // after it: both continuations run in order.
+      void invoke("sessions_cancel", { id });
     },
     onFrame(cb) {
       frameListeners.add(cb);
@@ -311,7 +347,6 @@ function createTauriTransport(): Transport {
     },
     connect() {
       void (async () => {
-        const { invoke } = await import("@tauri-apps/api/core");
         const { listen } = await import("@tauri-apps/api/event");
         unlistenEvent = await listen<{ frame: ServerFrame }>("session-event", (ev) => {
           for (const cb of frameListeners) cb(ev.payload.frame);
@@ -327,7 +362,7 @@ function createTauriTransport(): Transport {
       unlistenStatus?.();
       unlistenEvent = null;
       unlistenStatus = null;
-      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("sessions_disconnect"));
+      void invoke("sessions_disconnect");
     },
   };
 }
@@ -336,7 +371,7 @@ export interface SessionsClient {
   subscribe(sessionId: string, afterSeq?: number): Promise<void>;
   unsubscribe(sessionId: string): void;
   message(sessionId: string, text: string): Promise<void>;
-  answer(sessionId: string, requestId: string, value: string | boolean): Promise<void>;
+  answer(sessionId: string, requestId: string, value: QuestionAnswer): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
   // #378: "Pokračovat v nové session" / "Navázat" -- closes this session and
   // starts a fresh, running one on the same node, carrying its summary as
@@ -344,9 +379,13 @@ export interface SessionsClient {
   // active thread to it without a second round trip.
   continueSession(sessionId: string): Promise<{ session: SessionSummary; run: SessionRunRow }>;
   close(sessionId: string): Promise<void>;
-  onEvent(sessionId: string, cb: (event: CanonicalEventEnvelope) => void): () => void;
+  // Persisted events, a batch per frame in seq order: a replay page arrives
+  // as one call, a live event as a call with one.
+  onEvents(sessionId: string, cb: (events: CanonicalEventEnvelope[]) => void): () => void;
   onDelta(sessionId: string, cb: (delta: SessionDeltaMessage) => void): () => void;
-  onSessionState(cb: (state: SessionStateMessage) => void): () => void;
+  // Live session states, a batch per frame: the snapshot on connect arrives
+  // as one call with every session, a later change as a call with one.
+  onSessionStates(cb: (states: SessionStateMessage[]) => void): () => void;
   onConnectionStatus(cb: (status: ConnectionStatus) => void): () => void;
   // Opens the transport (a no-op while already connected). Called for you
   // unless the client was created with `autoConnect: false`.
@@ -374,54 +413,171 @@ export interface CreateSessionsClientOptions {
   autoConnect?: boolean;
 }
 
+// #496: requests that must not be reported as failed while the server may
+// still carry them out -- a resend of either repeats the action.
+const SETTLED_BY_REPLY_ON_WIRE: ReadonlySet<ClientFrame["type"]> = new Set(["message", "continue"]);
+
+interface PendingRequest {
+  type: ClientFrame["type"];
+  sessionId: string;
+  // Null once the frame is on the wire for a request settled by its reply
+  // or the connection dropping (SETTLED_BY_REPLY_ON_WIRE).
+  timer: ReturnType<typeof setTimeout> | null;
+  resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+}
+
+// A subscribe waiting for an open connection: its callers, and the `after`
+// the first of them asked for.
+interface ParkedSubscribe {
+  after: number | undefined;
+  waiters: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }>;
+}
+
 export function createSessionsClient(options: CreateSessionsClientOptions = {}): SessionsClient {
   const transport = options.transport ?? (isTauri() ? createTauriTransport() : createDirectWsTransport(defaultDevWsUrl()));
 
-  const eventListeners = new Map<string, Set<(event: CanonicalEventEnvelope) => void>>();
+  const eventListeners = new Map<string, Set<(events: CanonicalEventEnvelope[]) => void>>();
   const deltaListeners = new Map<string, Set<(delta: SessionDeltaMessage) => void>>();
-  const sessionStateListeners = new Set<(state: SessionStateMessage) => void>();
+  const sessionStateListeners = new Set<(states: SessionStateMessage[]) => void>();
   const connectionStatusListeners = new Set<(status: ConnectionStatus) => void>();
-  const pendingReplies = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  const pendingReplies = new Map<string, PendingRequest>();
   // The subscribed set, and the highest seq observed per session -- what a
   // reconnect resubscribes with. Deltas never touch this (they carry no
   // seq and are not part of the persisted, replayable event log).
   const subscribedSessions = new Set<string>();
   const lastSeq = new Map<string, number>();
-  let wasOpen = false;
+  let isOpen = false;
 
-  // Every request frame carries an id the server echoes on its reply, and
-  // the caller awaits that reply (the composer stays disabled until
-  // `message()` resolves). A reply can legitimately never arrive -- the
-  // socket dropped after the frame went out, the server restarted, the
-  // run ended mid-request -- so a pending entry that is never answered
-  // rejects on a timer instead of leaving the caller awaiting forever.
-  // Cleared on disconnect, where every outstanding request is rejected at
-  // once.
+  // #496: a request is delivered once, or reported as failed and never sent
+  // afterwards. Every request frame carries an id the server echoes on its
+  // reply, and the caller awaits that reply (the composer stays disabled
+  // until `message()` resolves).
+  // - An unanswered request rejects after REQUEST_TIMEOUT_MS, and its frame
+  //   is cancelled out of the transport's queue: a frame that waited out a
+  //   reconnect is never delivered after the caller was told it failed, so
+  //   sending the text again cannot reach the agent twice.
+  // - When an open connection drops, every request already sent rejects at
+  //   once: its reply cannot arrive on the next connection. A request sent
+  //   while the connection is down stays queued for the next open (or its
+  //   timeout).
+  // - A subscribe is the exception: it never goes out while the connection
+  //   is down, never times out while waiting for it, and survives a drop.
+  //   Each open (the first one included) sends one subscribe per wanted
+  //   session and settles every caller waiting on it (`parkedSubscribes`),
+  //   so a load that finishes after a reconnect shows no error.
+  // - A message or a Pokračovat v nové session that is on the wire (sent on
+  //   an open connection, or flushed by the open that followed) has no
+  //   timeout: the server may legitimately take longer than
+  //   REQUEST_TIMEOUT_MS (a start waiting for the lifecycle lock, a
+  //   redelivery waiting for a run to end), and a failure reported while
+  //   the server still delivers it is what makes a resend reach the agent
+  //   twice. Its reply or the connection dropping settles it.
+  // - `disconnect()` rejects everything still outstanding.
+  const parkedSubscribes = new Map<string, ParkedSubscribe>();
+
+  function armTimeout(id: string, type: ClientFrame["type"], reject: (e: Error) => void) {
+    return setTimeout(() => {
+      pendingReplies.delete(id);
+      transport.cancel(id);
+      reject(new ClientError("REQUEST_TIMEOUT", `request_timeout: ${type} got no reply within ${REQUEST_TIMEOUT_MS} ms`));
+    }, REQUEST_TIMEOUT_MS);
+  }
+
   function send<T>(frame: Omit<ClientFrame, "id">): Promise<T> {
     const id = randomFrameId();
     const full = { ...frame, id } as ClientFrame;
+    const sessionId = (frame.payload as { session_id: string }).session_id;
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingReplies.delete(id);
-        reject(new Error(`request_timeout: ${frame.type} got no reply within ${REQUEST_TIMEOUT_MS} ms`));
-      }, REQUEST_TIMEOUT_MS);
-      pendingReplies.set(id, {
+      const onWireSettlesByReply = isOpen && SETTLED_BY_REPLY_ON_WIRE.has(frame.type);
+      const pending: PendingRequest = {
+        type: frame.type,
+        sessionId,
+        timer: onWireSettlesByReply ? null : armTimeout(id, frame.type, reject),
         resolve: (v) => {
-          clearTimeout(timer);
+          if (pending.timer) clearTimeout(pending.timer);
           (resolve as (v: unknown) => void)(v);
         },
         reject: (e) => {
-          clearTimeout(timer);
+          if (pending.timer) clearTimeout(pending.timer);
           reject(e);
         },
-      });
+      };
+      pendingReplies.set(id, pending);
       transport.send(full);
     });
   }
 
+  function park(sessionId: string, after: number | undefined): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let parked = parkedSubscribes.get(sessionId);
+      if (!parked) {
+        parked = { after, waiters: [] };
+        parkedSubscribes.set(sessionId, parked);
+      }
+      parked.waiters.push({ resolve: resolve as (v: unknown) => void, reject });
+    });
+  }
+
+  function sendSubscribe(sessionId: string, after: number | undefined): Promise<void> {
+    return send<void>({ type: "subscribe", payload: { session_id: sessionId, after } });
+  }
+
+  // The open connection went away: sent requests fail now, sent subscribes
+  // wait for the next open instead.
+  function onConnectionLost(): void {
+    for (const [id, pending] of pendingReplies) {
+      pendingReplies.delete(id);
+      if (pending.timer) clearTimeout(pending.timer);
+      transport.cancel(id);
+      if (pending.type === "subscribe" && subscribedSessions.has(pending.sessionId)) {
+        void park(pending.sessionId, lastSeq.get(pending.sessionId)).then(pending.resolve, pending.reject);
+      } else {
+        pending.reject(new ClientError("DISCONNECTED", `disconnected: the session channel dropped before the ${pending.type} reply arrived`));
+      }
+    }
+  }
+
+  // Each open subscribes every wanted session once: the first open carries
+  // the subscribes made while connecting, a reconnect resubscribes with the
+  // last seq this client itself observed, so nothing is re-delivered and
+  // nothing is missed -- the server's own replay (sessions-ws.ts) fills
+  // exactly that gap.
+  function onConnectionOpened(): void {
+    // The open flushed every queued frame: a message or a continue waiting
+    // in the queue is on the wire now and waits for its reply instead.
+    for (const pending of pendingReplies.values()) {
+      if (pending.timer && SETTLED_BY_REPLY_ON_WIRE.has(pending.type)) {
+        clearTimeout(pending.timer);
+        pending.timer = null;
+      }
+    }
+    for (const sessionId of subscribedSessions) {
+      const parked = parkedSubscribes.get(sessionId);
+      parkedSubscribes.delete(sessionId);
+      const after = lastSeq.get(sessionId) ?? parked?.after;
+      // Nobody but the parked callers awaits a resubscribe, so its rejection
+      // is swallowed when there are none: a disconnect() before the reply
+      // rejects every outstanding request, and an unhandled one of those
+      // crashes the webview's own error reporting.
+      sendSubscribe(sessionId, after).then(
+        () => {
+          for (const w of parked?.waiters ?? []) w.resolve(undefined);
+        },
+        (e: Error) => {
+          for (const w of parked?.waiters ?? []) w.reject(e);
+        },
+      );
+    }
+  }
+
   function rejectAllPending(reason: string): void {
-    for (const [, pending] of pendingReplies) pending.reject(new Error(reason));
+    for (const [, pending] of pendingReplies) pending.reject(new ClientError("DISCONNECTED", reason));
     pendingReplies.clear();
+    for (const [, parked] of parkedSubscribes) {
+      for (const w of parked.waiters) w.reject(new ClientError("DISCONNECTED", reason));
+    }
+    parkedSubscribes.clear();
   }
 
   transport.onFrame((frame) => {
@@ -431,7 +587,8 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       if (!pending) return;
       pendingReplies.delete(frame.id);
       if (frame.type === "error") {
-        pending.reject(new Error(`${frame.payload.code}: ${frame.payload.message}`));
+        const { code, message, params } = frame.payload;
+        pending.reject(new ApiError(0, code, `${code}: ${message}`, params ?? {}));
       } else {
         pending.resolve(frame.payload);
       }
@@ -440,7 +597,14 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     if (frame.type === "event") {
       const { session_id, event } = frame.payload;
       lastSeq.set(session_id, event.seq);
-      for (const cb of eventListeners.get(session_id) ?? []) cb(event);
+      for (const cb of eventListeners.get(session_id) ?? []) cb([event]);
+      return;
+    }
+    if (frame.type === "events") {
+      const { session_id, events } = frame.payload;
+      if (events.length === 0) return;
+      lastSeq.set(session_id, events[events.length - 1].seq);
+      for (const cb of eventListeners.get(session_id) ?? []) cb(events);
       return;
     }
     if (frame.type === "delta") {
@@ -450,35 +614,24 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       return;
     }
     if (frame.type === "session_state") {
-      for (const cb of sessionStateListeners) cb(frame.payload);
+      for (const cb of sessionStateListeners) cb([frame.payload]);
+      return;
+    }
+    if (frame.type === "session_states") {
+      for (const cb of sessionStateListeners) cb(frame.payload.sessions);
     }
   });
 
   transport.onStatus((status) => {
     for (const cb of connectionStatusListeners) cb(status);
     if (status === "open") {
-      // A fresh connect (first time) has nothing to resubscribe yet; a
-      // RE-connect after a drop resubscribes every still-wanted session
-      // with the last seq this client itself observed, so nothing is
-      // re-delivered and nothing is missed -- the server's own replay
-      // (sessions-ws.ts) fills exactly that gap.
-      if (wasOpen) {
-        for (const sessionId of subscribedSessions) {
-          // Nobody awaits a resubscribe, so its rejection has to be
-          // swallowed here: a drop (or a disconnect()) before the reply
-          // arrives rejects every outstanding request, and an unhandled
-          // one of those crashes the webview's own error reporting --
-          // and fails whichever test happened to create it. There is
-          // nothing to report either way; the next reconnect resubscribes
-          // from the same lastSeq.
-          send({ type: "subscribe", payload: { session_id: sessionId, after: lastSeq.get(sessionId) } }).catch(() => {
-            // Deliberately empty: see above.
-          });
-        }
+      if (!isOpen) {
+        isOpen = true;
+        onConnectionOpened();
       }
-      wasOpen = true;
-    } else if (status === "closed") {
-      wasOpen = false;
+    } else if (isOpen) {
+      isOpen = false;
+      onConnectionLost();
     }
   });
 
@@ -495,15 +648,20 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     async subscribe(sessionId, afterSeq) {
       subscribedSessions.add(sessionId);
       const after = afterSeq ?? lastSeq.get(sessionId);
-      await send({ type: "subscribe", payload: { session_id: sessionId, after } });
+      if (!isOpen) return park(sessionId, after);
+      await sendSubscribe(sessionId, after);
     },
     unsubscribe(sessionId) {
       subscribedSessions.delete(sessionId);
       lastSeq.delete(sessionId);
+      // Nothing left to load for a caller still waiting on the open.
+      const parked = parkedSubscribes.get(sessionId);
+      parkedSubscribes.delete(sessionId);
+      for (const w of parked?.waiters ?? []) w.resolve(undefined);
       transport.send({ id: randomFrameId(), type: "unsubscribe", payload: { session_id: sessionId } });
     },
     async message(sessionId, text) {
-      await send({ type: "message", payload: { session_id: sessionId, text } });
+      await send({ type: "message", payload: { session_id: sessionId, text, locale: requestLocale() } });
     },
     async answer(sessionId, requestId, value) {
       await send({
@@ -517,13 +675,13 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     async continueSession(sessionId) {
       return send<{ session: SessionSummary; run: SessionRunRow }>({
         type: "continue",
-        payload: { session_id: sessionId },
+        payload: { session_id: sessionId, locale: requestLocale() },
       });
     },
     async close(sessionId) {
       await send({ type: "close", payload: { session_id: sessionId } });
     },
-    onEvent(sessionId, cb) {
+    onEvents(sessionId, cb) {
       let set = eventListeners.get(sessionId);
       if (!set) {
         set = new Set();
@@ -541,7 +699,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       set.add(cb);
       return () => set.delete(cb);
     },
-    onSessionState(cb) {
+    onSessionStates(cb) {
       sessionStateListeners.add(cb);
       return () => sessionStateListeners.delete(cb);
     },
@@ -551,6 +709,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     },
     disconnect() {
       connected = false;
+      isOpen = false;
       rejectAllPending("disconnected: the session channel was closed before the reply arrived");
       transport.disconnect();
     },

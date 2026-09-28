@@ -144,7 +144,7 @@ export class CapabilityError extends Error {
 export class LocalModeNoRemoteError extends Error {
   readonly code = "LOCAL_MODE_NO_REMOTE" as const;
   constructor() {
-    super("Lokální workspace nemá remote; sdílení souborů běží přes centrální server.");
+    super("A personal workspace has no remote; files are shared through the central server in a team workspace.");
     this.name = "LocalModeNoRemoteError";
   }
 }

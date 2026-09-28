@@ -11,9 +11,9 @@ specific.
 
 | File | Purpose |
 |---|---|
-| `config.json` | Project id, image, Keychain entries, model, sandbox setup commands (harness README: Config) |
+| `config.json` | Project id, image, Keychain entries, sandbox setup commands; model and review come from the harness defaults (harness README: Config) |
 | `prompt.project.md` | Project section of the prompt: gate, tests, docs, repo rules |
-| `Dockerfile` | node:22 + gh + claude-code + Rust toolchain + Tauri Linux deps |
+| `Dockerfile` | node:24 + gh + claude-code + Rust toolchain + Tauri Linux deps |
 | `package.json` | Pins the harness version |
 | `logs/`, `worktrees/`, `prompt.generated.md` | Runtime state, gitignored |
 
@@ -24,7 +24,7 @@ specific.
    `sandcastle.portuni.github-pat` (values never on disk; the login keychain is
    locked over ssh, unlock it in the same `ssh -t` command):
    ```bash
-   ssh -t honzas-macbook-pro 'security unlock-keychain ~/Library/Keychains/login.keychain-db && \
+   ssh -t wintermute-mac 'security unlock-keychain ~/Library/Keychains/login.keychain-db && \
      security add-generic-password -U -s sandcastle.claude-code.oauth-token -a "$USER" -w && \
      security add-generic-password -U -s sandcastle.portuni.github-pat -a "$USER" -w'
    ```
@@ -39,10 +39,10 @@ specific.
 ## Run
 
 ```bash
-ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop start'
-ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop watch'    # detach Ctrl-b d
-ssh    honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop status'
-ssh    honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop stop'
+ssh -t wintermute-mac 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop start'
+ssh -t wintermute-mac 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop watch'    # detach Ctrl-b d
+ssh    wintermute-mac 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop status'
+ssh    wintermute-mac 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop stop'
 ```
 
 `-t` is required: the launcher may prompt for the old Mac's login password to
@@ -51,7 +51,7 @@ unlock the keychain. Knobs: `SANDCASTLE_MODEL`, `SANDCASTLE_BRANCH`,
 `SANDCASTLE_MAX_RUNS`.
 
 Deploy harness or config changes: merge to `main`, then
-`ssh honzas-macbook-pro 'cd ~/Dev/projekty/portuni && git pull --ff-only && (cd .sandcastle && npm ci)'`
+`ssh wintermute-mac 'cd ~/Dev/projekty/portuni && git pull --ff-only && (cd .sandcastle && npm ci)'`
 (the image needs a rebuild only when the Dockerfile changes).
 
 ## Portuni specifics

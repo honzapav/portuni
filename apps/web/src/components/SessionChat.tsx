@@ -18,8 +18,19 @@
 // stick-to-bottom scrolling); everything about sessions -- subscribe,
 // suspend/resume, handoffs, access control -- stays ours.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hostDisplayName, sessionRowAccess } from "../lib/session-views";
+import { displayError } from "../errors";
+import type { TFunction } from "i18next";
+import { Trans, useTranslation } from "react-i18next";
+import {
+  modelDescriptionText,
+  questionDetailIsContent,
+  questionDetailText,
+  questionTitleText,
+  runErrorText,
+  toolOutputText,
+} from "../lib/chat-event-text";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { composerStatePlaceholder, hostDisplayName, threadAcceptsMessages, threadCloseAction } from "../lib/session-views";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
 import { useSessionStore } from "../lib/use-session-store";
@@ -29,14 +40,21 @@ import {
   runnerChoiceLabel,
   runnerPickerGroups,
 } from "../lib/runner-picker";
-import { useMe } from "../lib/use-me";
 import type { SessionsClient } from "../lib/sessions-client";
 import {
   toCanonicalEvent,
   sessionStatusChip,
   latestQuestionEvent,
+  approvalChoices,
+  askPrompts,
+  togglePick,
+  picksComplete,
+  askAnswer,
+  createAnswerGate,
+  type AskPicks,
+  type QuestionAnswer,
   appendDelta,
-  clearDeltaBuffer,
+  deltaBuffersAfter,
   createDeltaCoalescer,
   deriveTranscriptRows,
   activitySummary,
@@ -44,30 +62,26 @@ import {
   runIsLiveFor,
   turnInFlight,
   nextSentAt,
-  WORKING_LABEL,
+  transcriptElsewhere,
+  runEndedText,
+  workingLabel,
   type ActivityItem,
+  type FileChangeOp,
   type ActivityRow,
   type ChatEvent,
-  insertBySeq,
+  insertManyBySeq,
   type CanonicalEvent,
   type DeltaBuffers,
   type TranscriptRow,
   type WorkingPhase,
 } from "../lib/session-chat";
+import { HandoffRefusedError } from "../lib/handoff-refusal";
 import { useNowTick } from "../lib/use-now-tick";
 import { contextRingState, latestContextUsage } from "../lib/context-ring";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectGroup, SelectLabel } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { BrainIcon, Check, CircleX, Pencil, Redo2, X } from "lucide-react";
+import { BrainIcon, Check, CircleX, Pencil, Redo2, Share2, X } from "lucide-react";
 import {
   Conversation,
   ConversationContent,
@@ -118,7 +132,14 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
-import { patchSessionModelEffort, patchSessionRunnerInstance, renamePersistentSession } from "../api";
+import {
+  deleteDraftSession,
+  fetchTranscriptHost,
+  handoffSession,
+  patchSessionModelEffort,
+  patchSessionRunnerInstance,
+  renamePersistentSession,
+} from "../api";
 import {
   fetchRunnerModels,
   listRunnerInstances,
@@ -127,6 +148,7 @@ import {
   type RunnerInstanceSummary,
   type RunnerModel,
 } from "../lib/runners";
+import { useLocale } from "../lib/use-locale";
 
 // Spec rule 3 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
 // transcript, notice bar, question panel and composer share one centred
@@ -152,6 +174,9 @@ export default function SessionChat({
   sessionsClient: SessionsClient;
   onOpenFile?: (relPath: string) => void;
 }) {
+  const { t } = useTranslation("chat");
+  const { t: tCommon } = useTranslation("common");
+  const locale = useLocale();
   const session = useSessionStore(
     sessionStore,
     useCallback((store: SessionStore) => selectSession(store, sessionId), [sessionId]),
@@ -168,6 +193,9 @@ export default function SessionChat({
   const [sentAt, setSentAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // #461: the label the events route answers with when the conversation is
+  // on another machine -- null while it is here, or not known yet.
+  const [transcriptHost, setTranscriptHost] = useState<string | null>(null);
   // The composer's draft belongs to the session, not to this component --
   // see lib/session-drafts.ts. Seeded once per mount (the caller keys this
   // component on the session id, so a different session is a different
@@ -179,11 +207,15 @@ export default function SessionChat({
     setComposerTextState(text);
   };
   const [sending, setSending] = useState(false);
-  const [actionPending, setActionPending] = useState<"interrupt" | "close" | "continue" | null>(null);
-  // #378: "Uzavřít" is the one irreversible action, so it's the only one
-  // that asks -- confirmed via this dialog, not window.confirm (a no-op in
-  // the Tauri webview).
-  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  const [actionPending, setActionPending] = useState<"interrupt" | "close" | "continue" | "handoff" | null>(null);
+  // #459: the file Předat wrote, shown as a notice until the thread moves
+  // on -- the path is the whole point of the action (it is what the other
+  // machine opens), so it does not vanish with the request.
+  const [handoffPath, setHandoffPath] = useState<string | null>(null);
+  // Once the server said Předat cannot work from here (no mirror of the
+  // node, the run or the transcript on another device), the action is not
+  // offered again in this view; the reason stays on screen.
+  const [handoffUnavailable, setHandoffUnavailable] = useState(false);
   // Inline rename in the header (same affordance as the Relace row): the
   // rename goes through POST /sessions/:id/rename, and api.ts writes the
   // row it answers with into the store -- the sidebar, this header and the
@@ -194,7 +226,6 @@ export default function SessionChat({
   // #378: a new run starting is "the thread woken again" -- the notice bar
   // (below) is dismissible per-occurrence.
   const [noticeDismissed, setNoticeDismissed] = useState(false);
-  const { meId, canManage } = useMe();
 
   // Composer row 2 (v2 rule 5): the runner/instance choice, open while the
   // thread is a draft. The lists come from the device (both routes are
@@ -247,7 +278,18 @@ export default function SessionChat({
     setTextDeltaBuffers({});
     setReasoningDeltaBuffers({});
     setLiveRunId(null);
+    setTranscriptHost(null);
     setSentAt((current) => nextSentAt(current, { kind: "reset" }));
+
+    // #461: where the transcript is, asked of the device that would serve
+    // it. One row is enough -- the replay below comes over the live
+    // channel, this call is only here for the header. A failure says
+    // nothing (the replay is the thing that matters), so it is swallowed.
+    void fetchTranscriptHost(sessionId)
+      .then((host) => {
+        if (!cancelled) setTranscriptHost(host);
+      })
+      .catch(() => undefined);
 
     // Deltas are coalesced (spec, "Streaming"): a burst of frames becomes
     // one state update per animation frame. Flushed on run end so nothing
@@ -267,41 +309,58 @@ export default function SessionChat({
 
     // Live run detection rides on the replayed/streamed events themselves
     // (run_started without a later run_ended), so one code path covers
-    // both the backfill and everything after it.
-    const offEvent = sessionsClient.onEvent(sessionId, (envelope) => {
-      const event = toCanonicalEvent(envelope.kind, envelope.payload);
-      setEvents((prev) => insertBySeq(prev, { seq: envelope.seq, event }));
+    // both the backfill and everything after it. `runId` mirrors the
+    // liveRunId state for the handler's own synchronous use: an
+    // assistant_message/reasoning event carries no run id of its own, and
+    // the state value is a render value this closure never sees updated.
+    let runId: string | null = null;
+    // A batch (a replay page, or one live event) is one pass: the list is
+    // extended once, and the per-event bookkeeping below runs in the same
+    // handler, so React renders it once.
+    const offEvent = sessionsClient.onEvents(sessionId, (envelopes) => {
+      const batch = envelopes.map((envelope) => ({ seq: envelope.seq, event: toCanonicalEvent(envelope.kind, envelope.payload) }));
+      setEvents((prev) => insertManyBySeq(prev, batch));
+      for (const { event } of batch) handleEvent(event);
+    });
+    function handleEvent(event: CanonicalEvent): void {
       // run_started and run_ended (an error at start included) both stop
       // the send clock; every other event leaves it alone.
       setSentAt((current) => nextSentAt(current, { kind: "event", event }));
       if (event.kind === "run_started") {
+        runId = event.payload.run_id;
         setLiveRunId(event.payload.run_id);
       } else if (event.kind === "run_ended") {
+        runId = null;
         coalescer.flush();
-        setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
-        setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setLiveRunId(null);
-      } else if (event.kind === "assistant_message") {
-        setLiveRunId((current) => {
-          if (current) setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, current));
-          return current;
-        });
-      } else if (event.kind === "reasoning") {
-        setLiveRunId((current) => {
-          if (current) setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, current));
-          return current;
-        });
+      } else if (event.kind === "turn_ended") {
+        // #495: frames still waiting for the tick belong to the turn that
+        // just ended; delivered after the clear, they would prefix the
+        // next turn's answer.
+        coalescer.drop(event.payload.run_id, "text");
+        coalescer.drop(event.payload.run_id, "reasoning");
+      } else if (runId && (event.kind === "assistant_message" || event.kind === "reasoning")) {
+        // The finalized block supersedes what streamed: drop its still
+        // buffered frames before clearing, or the tick delivers the
+        // block's tail into the buffer the clear just emptied and that
+        // fragment renders as a streaming bubble until the run ends.
+        coalescer.drop(runId, event.kind === "reasoning" ? "reasoning" : "text");
       }
-    });
+      // run_ended, turn_ended and the finalized blocks clear the buffers
+      // (deltaBuffersAfter); every other event leaves them as they are.
+      const id = runId;
+      setTextDeltaBuffers((prev) => deltaBuffersAfter(prev, "text", event, id));
+      setReasoningDeltaBuffers((prev) => deltaBuffersAfter(prev, "reasoning", event, id));
+    }
     const offDelta = sessionsClient.onDelta(sessionId, (delta) => coalescer.push(delta));
-    // No onSessionState handler here: App binds the live channel to the
+    // No onSessionStates handler here: App binds the live channel to the
     // store once (#465), so a frame folds into the record this component
     // already reads (spec principle 3).
 
     void sessionsClient
       .subscribe(sessionId, 0)
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(displayError(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -329,13 +388,18 @@ export default function SessionChat({
   // replay). Absent entirely for a draft or a session that never reported.
   const liveUsage = useMemo(() => latestContextUsage(events), [events]);
 
+  // #492: one answer per question -- a second click or Enter while the
+  // first is on its way is dropped, not sent into a NO_PENDING_QUESTION.
+  const [answerGate] = useState(createAnswerGate);
+
   // Every hook has run; from here the record is what the component reads.
   // It is missing only in the moment between its removal from the store (a
   // deleted draft) and the parent dropping this pane, so there is nothing
-  // to show and nothing to say.
-  if (!session) return null;
+  // to show and nothing to say. A record known only from a live frame
+  // (`partial`) is the same case: the parent never mounts a chat for one,
+  // and half a record would render a nameless header.
+  if (!session || session.partial) return null;
 
-  const access = sessionRowAccess(session.user_id, meId, canManage);
   const host = hostDisplayName(session);
   const startRename = () => {
     setNameDraft(session.name);
@@ -357,7 +421,7 @@ export default function SessionChat({
       await renamePersistentSession(sessionId, trimmed);
       setRenaming(false);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setRenameSaving(false);
     }
@@ -373,7 +437,7 @@ export default function SessionChat({
     sessionStore.put({ ...before, runner: picked, instance_id: instanceId });
     void patchSessionRunnerInstance(sessionId, { runner: picked, instance_id: instanceId }).catch((e) => {
       sessionStore.put(before);
-      setError(`Runner a instanci se nepodařilo uložit: ${String(e)}`);
+      setError(t(($) => $.error.save_runner, { error: displayError(e) }));
     });
   };
 
@@ -385,7 +449,7 @@ export default function SessionChat({
     sessionStore.put({ ...before, model });
     void patchSessionModelEffort(sessionId, { model }).catch((e) => {
       sessionStore.put(before);
-      setError(`Model se nepodařilo uložit: ${String(e)}`);
+      setError(t(($) => $.error.save_model, { error: displayError(e) }));
     });
   };
   const handleEffortChange = (value: string) => {
@@ -394,13 +458,15 @@ export default function SessionChat({
     sessionStore.put({ ...before, effort });
     void patchSessionModelEffort(sessionId, { effort }).catch((e) => {
       sessionStore.put(before);
-      setError(`Úsilí se nepodařilo uložit: ${String(e)}`);
+      setError(t(($) => $.error.save_effort, { error: displayError(e) }));
     });
   };
 
   const ring = contextRingState(
     liveUsage?.used ?? session.context_used_tokens,
     liveUsage?.max ?? session.context_max_tokens,
+    locale,
+    t,
   );
   const openQuestion = latestQuestionEvent(events);
   const isWaiting = session.state === "running" && session.waiting_since !== null;
@@ -414,7 +480,11 @@ export default function SessionChat({
   // flight) and nothing else at the transcript end says what is happening.
   const phase = runIsLive || sentAt !== null ? workingPhase(events, liveRunId, sentAt) : null;
   const showWorking = phase !== null && !streamingText && !streamingReasoning && !isWaiting;
-  const chip = sessionStatusChip(session.state, session.waiting_since);
+  const chip = sessionStatusChip(session.state, session.waiting_since, tCommon);
+  // #461: the conversation is on another machine and this one holds only
+  // the record. Nothing to replay, nothing to send -- the chat says where
+  // the transcript is and how to pick the thread up here (Předat there).
+  const elsewhere = transcriptElsewhere(transcriptHost, events.length, t);
   // #378: an open thread with a run that ended other than by Uzavřít --
   // the next message replays the whole conversation from the summary.
   const showNotice = session.state === "suspended" && !noticeDismissed;
@@ -425,14 +495,40 @@ export default function SessionChat({
     try {
       await sessionsClient[action](sessionId);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setActionPending(null);
     }
   };
 
-  // "Pokračovat v nové session" (offered any time) / "Navázat" (a closed
-  // thread): POST /sessions/:id/continue closes this session (its summary
+  // #459 "Předat": POST /sessions/:id/handoff ends the turn and the run and
+  // writes the thread's summary into the node's mirror; api.ts puts the
+  // suspended record into the store, so the header, the sidebar and Relace
+  // all follow. The answered path stays on screen as the notice below --
+  // it is what the other machine opens (Navázat na handoff there).
+  const handleHandoff = async () => {
+    setActionPending("handoff");
+    setError(null);
+    try {
+      const { handoff_path } = await handoffSession(sessionId);
+      setHandoffPath(handoff_path);
+      setNoticeDismissed(false);
+    } catch (e) {
+      setError(displayError(e));
+      // HANDOFF_NO_CONTENT passes once the content downloads; keep offering it.
+      if (
+        e instanceof HandoffRefusedError &&
+        e.code !== "HANDOFF_NOT_ALLOWED" &&
+        e.code !== "HANDOFF_NO_CONTENT"
+      )
+        setHandoffUnavailable(true);
+    } finally {
+      setActionPending(null);
+    }
+  };
+
+  // "Pokračovat v nové session" (running or suspended): POST
+  // /sessions/:id/continue closes this session (its summary
   // seeds the new one) and starts a fresh, running one on the same node --
   // the new row goes into the store, which is what makes it this node's
   // shown thread (the old one is closed, so it leaves the selectors).
@@ -443,7 +539,7 @@ export default function SessionChat({
       const { session: newSession } = await sessionsClient.continueSession(sessionId);
       sessionStore.put(newSession);
     } catch (e) {
-      setError(String(e));
+      setError(displayError(e));
       setActionPending(null);
     }
   };
@@ -465,25 +561,28 @@ export default function SessionChat({
       setComposerText("");
     } catch (e) {
       setSentAt((current) => nextSentAt(current, { kind: "send_failed" }));
-      setError(String(e));
+      setError(displayError(e));
     } finally {
       setSending(false);
     }
   };
 
-  const handleAnswer = async (value: string | boolean) => {
+  const handleAnswer = async (value: QuestionAnswer) => {
     if (!openQuestion) return;
+    const requestId = openQuestion.payload.request_id;
+    if (!answerGate.claim(requestId)) return;
     try {
-      await sessionsClient.answer(sessionId, openQuestion.payload.request_id, value);
+      await sessionsClient.answer(sessionId, requestId, value);
     } catch (e) {
-      setError(String(e));
+      answerGate.release(requestId);
+      setError(displayError(e));
     }
   };
 
-  // Messages and answers are owner-only (#321's access table); a
-  // non-owner who can see the node reads the chat but cannot type into it.
-  const composerDisabled =
-    session.state === "closed" || session.state === "archived" || isWaiting || !access.canResume;
+  // #457: every thread the app can show is the caller's own, so there is no
+  // access echo left here -- only the state decides.
+  // #498: a closed thread takes a message too -- it reopens on it.
+  const composerDisabled = !threadAcceptsMessages(session.state) || isWaiting || elsewhere !== null;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -532,12 +631,12 @@ export default function SessionChat({
               <HeaderIcon
                 onClick={() => void saveRename()}
                 disabled={renameSaving}
-                title="Uložit název"
+                title={t(($) => $.header.save_name)}
                 className="text-[var(--color-accent)]"
               >
                 <Check />
               </HeaderIcon>
-              <HeaderIcon onClick={cancelRename} disabled={renameSaving} title="Zrušit">
+              <HeaderIcon onClick={cancelRename} disabled={renameSaving} title={t(($) => $.header.cancel_rename)}>
                 <X />
               </HeaderIcon>
             </>
@@ -557,7 +656,7 @@ export default function SessionChat({
                   <ContextTrigger
                     className="mr-1 h-7 gap-1.5 px-1.5 text-[12px]"
                     style={{ color: ring.warn ? "var(--color-node-process)" : "var(--color-text-dim)" }}
-                    title="Využití kontextového okna"
+                    title={t(($) => $.context.ring_label)}
                   />
                   <ContextContent align="end">
                     <ContextContentHeader />
@@ -571,16 +670,29 @@ export default function SessionChat({
                   </ContextContent>
                 </Context>
               )}
-              {access.canResume && (
-                <HeaderIcon onClick={startRename} disabled={actionPending !== null} title="Přejmenovat">
-                  <Pencil />
+              <HeaderIcon onClick={startRename} disabled={actionPending !== null} title={t(($) => $.header.rename)}>
+                <Pencil />
+              </HeaderIcon>
+              {/* #459: Předat -- hands the thread to another machine
+                  through its handoff file. Running and suspended only:
+                  a draft has nothing to summarise, a closed thread is
+                  done. #461: and only where the conversation is -- the
+                  summary is written from the transcript, so a device that
+                  holds none of it cannot hand the thread anywhere. */}
+              {(session.state === "running" || session.state === "suspended") && !elsewhere && !handoffUnavailable && (
+                <HeaderIcon
+                  onClick={() => void handleHandoff()}
+                  disabled={actionPending !== null}
+                  title={actionPending === "handoff" ? t(($) => $.header.handing_off) : t(($) => $.header.hand_off)}
+                >
+                  <Share2 />
                 </HeaderIcon>
               )}
-              {(session.state === "running" || session.state === "suspended") && access.canResume && (
+              {(session.state === "running" || session.state === "suspended") && (
                 <HeaderIcon
                   onClick={() => void handleContinue()}
                   disabled={actionPending !== null}
-                  title={actionPending === "continue" ? "Pokračuji…" : "Pokračovat v nové session"}
+                  title={actionPending === "continue" ? t(($) => $.header.continuing) : t(($) => $.header.continue)}
                   // From 80 % of the window the fresh session is the advice,
                   // so the icon steps up to the accent colour.
                   className={ring?.warn ? "text-[var(--color-accent)]" : undefined}
@@ -588,13 +700,21 @@ export default function SessionChat({
                   <Redo2 />
                 </HeaderIcon>
               )}
-              {(session.state === "running" || session.state === "suspended") && access.canPauseOrClose && (
+              {/* #506: a draft gets the same Uzavřít, which deletes it
+                  without asking; removing the record closes this chat the
+                  way the sidebar's × does. */}
+              {threadCloseAction(session.state) !== null && (
                 <>
                   <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />
                   <HeaderIcon
-                    onClick={() => setCloseConfirmOpen(true)}
+                    onClick={() => {
+                      // #498: Uzavřít asks nothing -- a closed thread
+                      // reopens by writing into it.
+                      if (threadCloseAction(session.state) === "delete") deleteDraftSession(session.id);
+                      else void runAction("close");
+                    }}
                     disabled={actionPending !== null}
-                    title={actionPending === "close" ? "Zavírám…" : "Uzavřít"}
+                    title={actionPending === "close" ? t(($) => $.header.closing) : t(($) => $.header.close)}
                     className="hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
                   >
                     <CircleX />
@@ -609,45 +729,26 @@ export default function SessionChat({
       {showNotice && (
         <div className={`${THREAD_COLUMN} mt-2 flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] text-[var(--color-text-muted)]`}>
           <span className="flex-1 leading-[1.5]">
-            Proces byl ukončen. Další zpráva konverzaci nastartuje znovu — dosavadní kontext půjde do modelu ještě
-            jednou.
+            {handoffPath ? (
+              <Trans
+                t={t}
+                i18nKey={($) => $.notice.handed_off}
+                values={{ path: handoffPath }}
+                components={{ code: <code translate="no" /> }}
+              />
+            ) : (
+              t(($) => $.notice.suspended)
+            )}
           </span>
           <button
             type="button"
             onClick={() => setNoticeDismissed(true)}
             className="shrink-0 text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-            aria-label="Skrýt"
+            aria-label={t(($) => $.notice.dismiss)}
           >
             <X className="size-3.5" />
           </button>
         </div>
-      )}
-
-      {closeConfirmOpen && (
-        <Dialog open onOpenChange={(open) => !open && setCloseConfirmOpen(false)}>
-          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
-            <DialogHeader>
-              <DialogTitle>Uzavřít vlákno?</DialogTitle>
-              <DialogDescription>
-                Vlákno „{session.name}“ se uzavře. Server napřed uloží shrnutí konverzace.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCloseConfirmOpen(false)}>
-                Zpět
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  setCloseConfirmOpen(false);
-                  void runAction("close");
-                }}
-              >
-                Uzavřít
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
       )}
 
       {error && (
@@ -659,9 +760,11 @@ export default function SessionChat({
       <Conversation>
         <ConversationContent className={`${THREAD_COLUMN} gap-5`}>
           {loading ? (
-            <Shimmer duration={1.5}>Načítám konverzaci…</Shimmer>
+            <Shimmer duration={1.5}>{t(($) => $.conversation.loading)}</Shimmer>
+          ) : elsewhere ? (
+            <ConversationEmptyState title={elsewhere.title} description={elsewhere.hint} />
           ) : rows.length === 0 && !showWorking ? (
-            <ConversationEmptyState title="Zatím žádné zprávy" description="Napiš první zprávu níže." />
+            <ConversationEmptyState />
           ) : (
             <>
               {rows.map((row) => (
@@ -669,13 +772,13 @@ export default function SessionChat({
               ))}
               {streamingReasoning && (
                 <Reasoning isStreaming defaultOpen>
-                  <ReasoningTrigger getThinkingMessage={reasoningTriggerMessage} />
-                  <ReasoningContent>{streamingReasoning}</ReasoningContent>
+                  <ReasoningTrigger />
+                  <ReasoningContent translate="no">{streamingReasoning}</ReasoningContent>
                 </Reasoning>
               )}
               {streamingText && (
                 <Message from="assistant">
-                  <MessageContent>
+                  <MessageContent translate="no">
                     <MessageResponse isAnimating>{streamingText}</MessageResponse>
                   </MessageContent>
                 </Message>
@@ -687,8 +790,8 @@ export default function SessionChat({
         <ConversationScrollButton />
       </Conversation>
 
-      {openQuestion && isWaiting && access.canResume && (
-        <QuestionConfirmation question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
+      {openQuestion && isWaiting && (
+        <QuestionConfirmation key={openQuestion.payload.request_id} question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
       )}
 
       <div className="border-t border-[var(--color-border)] py-3">
@@ -712,13 +815,11 @@ export default function SessionChat({
                 }
               }}
               placeholder={
-                !access.canResume
-                  ? "Zprávy může posílat jen vlastník relace."
+                elsewhere
+                  ? t(($) => $.composer.placeholder.elsewhere, { host: elsewhere.host })
                   : isWaiting
-                    ? "Relace čeká na odpověď na otázku výše."
-                    : session.state === "closed" || session.state === "archived"
-                      ? "Relace je uzavřená."
-                      : "Napiš zprávu…"
+                    ? t(($) => $.composer.placeholder.waiting)
+                    : composerStatePlaceholder(session.state, tCommon)
               }
             />
           </PromptInputBody>
@@ -727,38 +828,34 @@ export default function SessionChat({
           <PromptInputFooter className="flex-col items-stretch gap-1">
             <div className="flex items-center justify-between gap-2">
             <PromptInputTools>
-              {access.canResume && (
-                <>
-                  <PromptInputSelect value={session.model ?? ""} onValueChange={handleModelChange}>
-                    <PromptInputSelectTrigger className="w-auto min-w-0" title="Model">
-                      <PromptInputSelectValue placeholder="Model (výchozí)" />
-                    </PromptInputSelectTrigger>
-                    <PromptInputSelectContent>
-                      {models.map((m) => (
-                        <PromptInputSelectItem key={m.id} value={m.id} title={m.description}>
-                          {m.displayName}
-                        </PromptInputSelectItem>
-                      ))}
-                    </PromptInputSelectContent>
-                  </PromptInputSelect>
-                  {selectedModel?.supportsEffort && (
-                    <PromptInputSelect value={session.effort ?? ""} onValueChange={handleEffortChange}>
-                      <PromptInputSelectTrigger
-                        className="w-auto min-w-0"
-                        title="Úsilí uvažování — projeví se od příštího běhu"
-                      >
-                        <PromptInputSelectValue placeholder="Úsilí (výchozí)" />
-                      </PromptInputSelectTrigger>
-                      <PromptInputSelectContent>
-                        {selectedModel.effortLevels.map((e) => (
-                          <PromptInputSelectItem key={e} value={e}>
-                            {e}
-                          </PromptInputSelectItem>
-                        ))}
-                      </PromptInputSelectContent>
-                    </PromptInputSelect>
-                  )}
-                </>
+              <PromptInputSelect value={session.model ?? ""} onValueChange={handleModelChange}>
+                <PromptInputSelectTrigger className="w-auto min-w-0" title={t(($) => $.composer.model.title)}>
+                  <PromptInputSelectValue placeholder={t(($) => $.composer.model.placeholder)} />
+                </PromptInputSelectTrigger>
+                <PromptInputSelectContent>
+                  {models.map((m) => (
+                    <PromptInputSelectItem key={m.id} value={m.id} title={modelDescriptionText(m, t)}>
+                      {m.displayName}
+                    </PromptInputSelectItem>
+                  ))}
+                </PromptInputSelectContent>
+              </PromptInputSelect>
+              {selectedModel?.supportsEffort && (
+                <PromptInputSelect value={session.effort ?? ""} onValueChange={handleEffortChange}>
+                  <PromptInputSelectTrigger
+                    className="w-auto min-w-0"
+                    title={t(($) => $.composer.effort.title)}
+                  >
+                    <PromptInputSelectValue placeholder={t(($) => $.composer.effort.placeholder)} />
+                  </PromptInputSelectTrigger>
+                  <PromptInputSelectContent>
+                    {selectedModel.effortLevels.map((e) => (
+                      <PromptInputSelectItem key={e} value={e}>
+                        {e}
+                      </PromptInputSelectItem>
+                    ))}
+                  </PromptInputSelectContent>
+                </PromptInputSelect>
               )}
             </PromptInputTools>
             <PromptInputSubmit
@@ -772,28 +869,27 @@ export default function SessionChat({
             />
             </div>
             <div className="flex min-h-6 items-center gap-1.5 px-1 text-[11.5px] text-[var(--color-text-dim)]">
-              {session.state === "draft" && access.canResume && session.runner ? (
+              {session.state === "draft" && session.runner ? (
                 <PromptInputSelect
                   value={encodeRunnerChoice(session.runner, session.instance_id)}
                   onValueChange={handleRunnerChange}
                 >
                   <PromptInputSelectTrigger
                     className="h-6 w-auto min-w-0 px-1.5 text-[11.5px] font-normal"
-                    title="Runner a instance — platí pro celé vlákno, mění se jen u nového"
+                    title={t(($) => $.composer.runner.title)}
                   >
                     {/* The trigger names the pair ("claude · Work"); the
                         list's own items name the instance under its
                         runner's heading. */}
-                    <PromptInputSelectValue>{runnerChoiceLabel(session, instances)}</PromptInputSelectValue>
+                    <PromptInputSelectValue>{runnerChoiceLabel(session, instances, t)}</PromptInputSelectValue>
                   </PromptInputSelectTrigger>
                   <PromptInputSelectContent>
-                    {runnerPickerGroups(runners, instances, initialChoiceRef.current).map((g) => (
+                    {runnerPickerGroups(runners, instances, initialChoiceRef.current, t).map((g) => (
                       <SelectGroup key={g.runner}>
                         <SelectLabel>{g.label}</SelectLabel>
                         {g.options.map((o) => (
                           <PromptInputSelectItem key={o.value} value={o.value}>
-                            {o.label}
-                            {o.isDefault ? " (výchozí)" : ""}
+                            {o.isDefault ? t(($) => $.composer.runner.default_option, { label: o.label }) : o.label}
                           </PromptInputSelectItem>
                         ))}
                       </SelectGroup>
@@ -801,7 +897,7 @@ export default function SessionChat({
                   </PromptInputSelectContent>
                 </PromptInputSelect>
               ) : (
-                <span className="px-1.5">{runnerChoiceLabel(session, instances)}</span>
+                <span className="px-1.5">{runnerChoiceLabel(session, instances, t)}</span>
               )}
               {/* #428: the host whose sidecar runs the thread -- a label,
                   never a choice, hidden when unknown. */}
@@ -843,18 +939,6 @@ function HeaderIcon({
   );
 }
 
-// Czech trigger text for the Reasoning kit's default English wording:
-// "Přemýšlím…" while streaming, "Uvažoval N s" once the block is done.
-function reasoningTriggerMessage(isStreaming: boolean, duration?: number): React.ReactNode {
-  if (isStreaming || duration === 0) {
-    return <Shimmer duration={1}>Přemýšlím…</Shimmer>;
-  }
-  if (duration === undefined) {
-    return <p>Uvažoval několik sekund</p>;
-  }
-  return <p>Uvažoval {duration} s</p>;
-}
-
 function SystemMarker({ children }: { children: React.ReactNode }) {
   return <div className="text-center text-[11px] text-[var(--color-text-dim)]">{children}</div>;
 }
@@ -863,11 +947,12 @@ function SystemMarker({ children }: { children: React.ReactNode }) {
 // activity is one folded group per turn, bookkeeping is no row at all
 // (lib/session-chat.ts's deriveTranscriptRows decides).
 function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile?: (relPath: string) => void }) {
+  const { t } = useTranslation("chat");
   switch (row.kind) {
     case "prompt":
       return (
         <Message from="user">
-          <MessageContent className="group-[.is-user]:border group-[.is-user]:border-[var(--color-border)] group-[.is-user]:bg-[var(--color-accent-soft)]">
+          <MessageContent translate="no" className="group-[.is-user]:border group-[.is-user]:border-[var(--color-border)] group-[.is-user]:bg-[var(--color-accent-soft)]">
             <MessageResponse>{row.text}</MessageResponse>
           </MessageContent>
         </Message>
@@ -875,7 +960,7 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
     case "answer":
       return (
         <Message from="assistant">
-          <MessageContent>
+          <MessageContent translate="no">
             <MessageResponse>{row.text}</MessageResponse>
           </MessageContent>
         </Message>
@@ -883,22 +968,39 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
     case "activity":
       return <ActivityGroupRow row={row} onOpenFile={onOpenFile} />;
     case "question":
-      return <SystemMarker>Otázka: {row.title}</SystemMarker>;
+      return (
+        <SystemMarker>
+          <Trans
+            t={t}
+            i18nKey={($) => $.transcript.question}
+            values={{ title: questionTitleText(row, t) }}
+            components={{ title: <span translate={row.code ? undefined : "no"} /> }}
+          />
+        </SystemMarker>
+      );
     case "compaction":
       return (
         <Checkpoint className="justify-center text-[11px]">
           <CheckpointIcon className="size-3.5" />
-          Komprese kontextu
+          {t(($) => $.transcript.compaction)}
         </Checkpoint>
       );
     case "summary":
-      return <SystemMarker>Shrnutí uloženo</SystemMarker>;
-    case "note":
-      return <SystemMarker>{row.text}</SystemMarker>;
+      return <SystemMarker>{t(($) => $.transcript.summary_saved)}</SystemMarker>;
+    case "interrupted":
+      return <SystemMarker>{t(($) => $.transcript.interrupted)}</SystemMarker>;
+    case "run_ended":
+      return (
+        <SystemMarker>
+          <span style={{ color: "var(--color-danger)" }}>{runEndedText(row.reason, t)}</span>
+        </SystemMarker>
+      );
     case "error":
       return (
         <SystemMarker>
-          <span style={{ color: "var(--color-danger)" }}>{row.message}</span>
+          <span style={{ color: "var(--color-danger)" }} translate={row.content ? "no" : undefined}>
+            {row.code ? runErrorText(row, t) : row.message}
+          </span>
         </SystemMarker>
       );
     default:
@@ -911,10 +1013,11 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
 // run's open one) stays expanded on the tool that is running; a
 // historical group expands only by hand, per mount.
 function ActivityGroupRow({ row, onOpenFile }: { row: ActivityRow; onOpenFile?: (relPath: string) => void }) {
+  const { t } = useTranslation("chat");
   const [open, setOpen] = useState(false);
   const running = row.live ? row.items.find((i) => i.kind === "tool" && i.call.status === "started") : undefined;
-  const summary = activitySummary(row.items);
-  const headerText = summary.text || (row.live ? "Pracuji…" : "Aktivita");
+  const summary = activitySummary(row.items, t);
+  const headerText = summary.text || (row.live ? t(($) => $.activity.working) : t(($) => $.activity.fallback));
   return (
     <ChainOfThought open={row.live || open} onOpenChange={setOpen} className="text-[12.5px]">
       <ChainOfThoughtHeader
@@ -935,16 +1038,17 @@ function ActivityGroupRow({ row, onOpenFile }: { row: ActivityRow; onOpenFile?: 
 }
 
 function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relPath: string) => void }) {
+  const { t } = useTranslation("chat");
   if (item.kind === "reasoning") {
     return (
-      <ChainOfThoughtStep label="Uvažování" icon={BrainIcon}>
+      <ChainOfThoughtStep label={t(($) => $.reasoning.step_label)} icon={BrainIcon}>
         <Reasoning
           isStreaming={false}
           defaultOpen={false}
           duration={item.durationMs === null ? undefined : Math.max(1, Math.round(item.durationMs / 1000))}
         >
-          <ReasoningTrigger getThinkingMessage={reasoningTriggerMessage} />
-          <ReasoningContent>{item.summary}</ReasoningContent>
+          <ReasoningTrigger />
+          <ReasoningContent translate="no">{item.summary}</ReasoningContent>
         </Reasoning>
       </ChainOfThoughtStep>
     );
@@ -961,19 +1065,26 @@ function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relP
             item.path
           )
         }
-        description={fileChangeOpLabel(item.op)}
+        description={FILE_CHANGE_OP[item.op](t)}
       />
     );
   }
   const p = item.call;
   const failed = p.status === "failed";
+  // A denial of the runner's own is shown in the UI language; any other
+  // output is the tool's and stays as it came.
+  const output = toolOutputText(p, t);
   return (
     <ChainOfThoughtStep label={p.title || p.tool} status={p.status === "started" ? "active" : "complete"}>
       <Tool defaultOpen={false} className="mb-0 bg-[var(--color-surface)]">
         <ToolHeader title={p.title || undefined} tool={p.tool} state={p.status} className="p-2.5" />
         <ToolContent>
           {p.input_summary && <ToolInput input={p.input_summary} />}
-          <ToolOutput output={failed ? null : p.output_excerpt} errorText={failed ? p.output_excerpt : null} />
+          <ToolOutput
+            output={failed ? null : output}
+            errorText={failed ? output : null}
+            translate={p.output_code ? undefined : "no"}
+          />
         </ToolContent>
       </Tool>
     </ChainOfThoughtStep>
@@ -984,14 +1095,15 @@ function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relP
 // what fills it, with a label for the last thing that happened and the
 // seconds since it appeared.
 function WorkingRow({ phase }: { phase: WorkingPhase }) {
+  const { t } = useTranslation("chat");
   const [since] = useState(() => Date.now());
   const now = useNowTick(1000);
   const seconds = Math.max(0, Math.floor((now - since) / 1000));
   return (
     <div className="flex items-center gap-2 text-[12.5px] text-[var(--color-text-dim)]" role="status">
       <Loader size={14} />
-      <Shimmer duration={1.5}>{WORKING_LABEL[phase]}</Shimmer>
-      <span className="tabular-nums">{seconds} s</span>
+      <Shimmer duration={1.5}>{workingLabel(phase, t)}</Shimmer>
+      <span className="tabular-nums">{t(($) => $.working.elapsed, { count: seconds })}</span>
     </div>
   );
 }
@@ -1007,41 +1119,105 @@ function QuestionConfirmation({
   onAnswer,
 }: {
   question: Extract<CanonicalEvent, { kind: "question" }>;
-  onAnswer: (value: string | boolean) => void;
+  onAnswer: (value: QuestionAnswer) => void;
 }) {
+  const { t } = useTranslation("chat");
   const [text, setText] = useState("");
+  const [picks, setPicks] = useState<AskPicks>({});
+  const prompts = question.payload.type === "input" ? askPrompts(question.payload) : [];
+  // Several dotazy: each one's text stands where the detail does today.
+  const perQuestion = prompts.length > 1;
+  const submitText = () => {
+    const value = askAnswer(prompts, picks, text);
+    if (value !== null) onAnswer(value);
+  };
+  const pick = (prompt: (typeof prompts)[number], label: string) => {
+    const next = togglePick(picks, prompt, label);
+    setPicks(next);
+    if (picksComplete(prompts, next)) {
+      const value = askAnswer(prompts, next, "");
+      if (value !== null) onAnswer(value);
+    }
+  };
   return (
     <div className="border-t border-[var(--color-border)]">
       <div className={`${THREAD_COLUMN} py-2.5`}>
       <Confirmation state="requested" className="border-none bg-[var(--color-surface)] p-0">
-        <ConfirmationTitle className="text-[13px] font-medium text-[var(--color-text)]">
-          {question.payload.title}
+        <ConfirmationTitle
+          className="text-[13px] font-medium text-[var(--color-text)]"
+          translate={question.payload.code ? undefined : "no"}
+        >
+          {questionTitleText(question.payload, t)}
         </ConfirmationTitle>
-        {question.payload.detail && (
-          <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]">{question.payload.detail}</p>
+        {question.payload.detail && !perQuestion && (
+          <p
+            className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]"
+            translate={questionDetailIsContent(question.payload) ? "no" : undefined}
+          >
+            {questionDetailText(question.payload, t)}
+          </p>
         )}
         <ConfirmationRequest>
           {question.payload.type === "approval" ? (
             <ConfirmationActions>
-              {(question.payload.options ?? ["Ano", "Ne"]).map((opt) => (
-                <ConfirmationAction key={opt} onClick={() => onAnswer(opt)}>
-                  {opt}
+              {approvalChoices(question.payload.options, t).map((choice) => (
+                <ConfirmationAction
+                  key={choice.key}
+                  translate={choice.content ? "no" : undefined}
+                  onClick={() => onAnswer(choice.value)}
+                >
+                  {choice.label}
                 </ConfirmationAction>
               ))}
             </ConfirmationActions>
           ) : (
-            <ConfirmationActions className="w-full">
-              <Input
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onAnswer(text);
-                }}
-                placeholder="Odpověď…"
-                className="min-w-0 flex-1"
-              />
-              <ConfirmationAction onClick={() => onAnswer(text)}>Odeslat</ConfirmationAction>
-            </ConfirmationActions>
+            <>
+              {prompts.map((prompt) => (
+                <Fragment key={prompt.question}>
+                  {perQuestion && (
+                    <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]" translate="no">
+                      {prompt.question}
+                    </p>
+                  )}
+                  {prompt.options.length > 0 && (
+                    <ConfirmationActions>
+                      {prompt.options.map((label) => (
+                        <ConfirmationAction
+                          key={label}
+                          translate="no"
+                          // One single-choice dotaz answers on the click,
+                          // like approval; otherwise a pick is shown until
+                          // the rest is answered.
+                          variant={
+                            (prompts.length === 1 && !prompt.multi_select) ||
+                            (picks[prompt.question] ?? []).includes(label)
+                              ? "default"
+                              : "outline"
+                          }
+                          onClick={() => pick(prompt, label)}
+                        >
+                          {label}
+                        </ConfirmationAction>
+                      ))}
+                    </ConfirmationActions>
+                  )}
+                </Fragment>
+              ))}
+              <ConfirmationActions className="w-full">
+                <Input
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => {
+                    // An IME composition's Enter confirms the composition,
+                    // it is not a send.
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) submitText();
+                  }}
+                  placeholder={t(($) => $.question.answer_placeholder)}
+                  className="min-w-0 flex-1"
+                />
+                <ConfirmationAction onClick={submitText}>{t(($) => $.question.send)}</ConfirmationAction>
+              </ConfirmationActions>
+            </>
           )}
         </ConfirmationRequest>
       </Confirmation>
@@ -1050,15 +1226,11 @@ function QuestionConfirmation({
   );
 }
 
-function fileChangeOpLabel(op: "create" | "edit" | "delete" | "rename"): string {
-  switch (op) {
-    case "create":
-      return "vytvořen";
-    case "edit":
-      return "upraven";
-    case "delete":
-      return "smazán";
-    case "rename":
-      return "přejmenován";
-  }
-}
+// One message per operation: the Czech participle agrees with "soubor", so
+// each op is a whole word of its own in every language.
+const FILE_CHANGE_OP: Record<FileChangeOp, (t: TFunction<"chat">) => string> = {
+  create: (t) => t(($) => $.file_change.create, { ns: "chat" }),
+  edit: (t) => t(($) => $.file_change.edit, { ns: "chat" }),
+  delete: (t) => t(($) => $.file_change.delete, { ns: "chat" }),
+  rename: (t) => t(($) => $.file_change.rename, { ns: "chat" }),
+};

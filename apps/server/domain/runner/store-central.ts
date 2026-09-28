@@ -1,14 +1,21 @@
 // CentralSessionStore (spec: "domain/runner/store-central.ts"): the
-// central/agent-mode implementation of SessionStore, over CentralClient
-// instead of a local libsql Client -- "one implementation" (rule 1): the
-// session runtime (session-runtime.ts) never changes between local and
-// agent mode, only which SessionStore backs it (boot/session-runtime.ts
-// binds DbSessionStore locally; agent-router.ts binds this one).
+// central/agent-mode implementation of the RECORD half of SessionStore,
+// over CentralClient instead of a local libsql Client -- "one
+// implementation" (rule 1): the session runtime (session-runtime.ts)
+// never changes between local and agent mode, only which SessionStore
+// backs it (boot/session-runtime.ts binds DbSessionStore locally;
+// agent-router.ts binds this one).
 //
 // Every method is a thin call into the matching CentralClient method,
 // which itself is a thin call into api/sessions.ts's "central record
 // half" REST routes -- see that file's header comment for the full route
 // list this class is built over.
+//
+// #456: the transcript, the first message and the inline handoff summary
+// never come near this class -- they are the device's content, written
+// through SessionContentStore against the device's own content.db in both
+// workspaces (docs/superpowers/specs/2026-09-22-local-sessions-design.md,
+// "The content store on the device").
 
 import type { CentralClient } from "../sync/central/client.js";
 import type { SessionRow } from "../../shared/types.js";
@@ -16,32 +23,13 @@ import type {
   CreateDraftSessionInput,
   CreateRunInput,
   CreateRunnerSessionInput,
-  ListEventsOptions,
   PatchRunInput,
   PatchSessionInput,
-  SessionEventRow,
   SessionRunRow,
   SessionStore,
 } from "./store.js";
-import type { CanonicalEvent } from "./types.js";
-
-// Batches events appended within a short window into one POST
-// /sessions/:id/events call (spec: "add a 50ms coalescing buffer here so a
-// burst of tool_call events is one round trip"). Keyed by session id --
-// each session's own events always go to that session's own URL, so
-// batching only ever applies within one session's own burst.
-const COALESCE_WINDOW_MS = 50;
-
-interface PendingAppend {
-  runId: string | null;
-  events: CanonicalEvent[];
-  resolve: (seqs: number[]) => void;
-  reject: (err: unknown) => void;
-}
 
 export class CentralSessionStore implements SessionStore {
-  private readonly pending = new Map<string, PendingAppend[]>();
-  private readonly flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // A SessionStore.patchRun call only carries a run id (no session id), but
   // the REST shape is /sessions/:id/runs/:run_id -- this is populated by
   // every call that ever learns a run's session_id (createRun, listRuns,
@@ -97,45 +85,5 @@ export class CentralSessionStore implements SessionStore {
   async liveRun(sessionId: string): Promise<SessionRunRow | null> {
     const runs = await this.listRuns(sessionId);
     return runs.find((r) => r.ended_at === null) ?? null;
-  }
-
-  appendEvents(sessionId: string, runId: string | null, events: CanonicalEvent[]): Promise<number[]> {
-    if (events.length === 0) return Promise.resolve([]);
-    return new Promise((resolve, reject) => {
-      const list = this.pending.get(sessionId) ?? [];
-      list.push({ runId, events, resolve, reject });
-      this.pending.set(sessionId, list);
-      if (!this.flushTimers.has(sessionId)) {
-        const timer = setTimeout(() => {
-          void this.flush(sessionId);
-        }, COALESCE_WINDOW_MS);
-        timer.unref?.();
-        this.flushTimers.set(sessionId, timer);
-      }
-    });
-  }
-
-  private async flush(sessionId: string): Promise<void> {
-    this.flushTimers.delete(sessionId);
-    const batch = this.pending.get(sessionId) ?? [];
-    this.pending.delete(sessionId);
-    if (batch.length === 0) return;
-
-    const allEvents = batch.flatMap((b) => b.events);
-    const runId = batch.find((b) => b.runId !== null)?.runId ?? null;
-    try {
-      const seqs = await this.client.appendSessionEvents(sessionId, runId, allEvents);
-      let offset = 0;
-      for (const b of batch) {
-        b.resolve(seqs.slice(offset, offset + b.events.length));
-        offset += b.events.length;
-      }
-    } catch (err) {
-      for (const b of batch) b.reject(err);
-    }
-  }
-
-  async listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]> {
-    return this.client.listSessionEvents(sessionId, opts);
   }
 }

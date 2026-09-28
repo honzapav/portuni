@@ -99,6 +99,8 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/auth/users/admin" && m === "GET") return "admin";
   if (pathname === "/auth/users/invite" && m === "POST") return "admin";
   if (pathname === "/me" && m === "GET") return "read";
+  // #538: a user changes only their own row (the UI language).
+  if (pathname === "/me" && m === "PATCH") return "read";
   if (pathname === "/graph" && m === "GET") return "read";
   // Přehled tab (#196): the aggregate is readable at "read", same as
   // /graph -- the one manage-gated field inside it (pending access
@@ -246,8 +248,9 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // #378: closes this session and starts a new one on the same node.
   if (/^\/sessions\/[^/]+\/continue$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/close$/.test(pathname) && m === "POST") return "write";
+  // #459: "Předat" -- suspends the thread into its handoff file.
+  if (/^\/sessions\/[^/]+\/handoff$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/events$/.test(pathname) && m === "GET") return "read";
-  if (/^\/sessions\/[^/]+\/events$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/runs$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/runs$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/runs\/[^/]+$/.test(pathname) && m === "PATCH") return "write";

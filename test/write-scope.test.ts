@@ -20,10 +20,10 @@ import {
   resolveGuardScriptPath,
   resolvePortuniMcpUrl,
   resolvePortuniRoot,
-  resolveTokenEnvVar,
   type OrientationSummary,
 } from "../apps/server/domain/write-scope.js";
 import { materializeScopeConfig } from "../apps/server/domain/scope-materialize.js";
+import { clientTokenEnvVar } from "../apps/server/infra/auth-config.js";
 
 describe("isWithin", () => {
   it("matches strict prefix at directory boundary", () => {
@@ -237,7 +237,7 @@ describe("buildClaudeSettings", () => {
     };
     const command = hooks.PreToolUse[0].hooks[0].command;
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by shell, not JS
-    const expectedCommand = 'PORTUNI_URL="http://127.0.0.1:47012" PORTUNI_AUTH_TOKEN="${PORTUNI_MCP_TOKEN:-}" "/repo/scripts/portuni-guard.sh"';
+    const expectedCommand = 'PORTUNI_URL="http://127.0.0.1:47012" PORTUNI_GUARD_TOKEN="${PORTUNI_MCP_TOKEN:-}" PORTUNI_GUARD_TOKEN_VAR=PORTUNI_MCP_TOKEN "/repo/scripts/portuni-guard.sh"';
     assert.equal(command, expectedCommand);
   });
 
@@ -462,7 +462,7 @@ describe("resolveGuardScriptPath", () => {
   });
 });
 
-describe("resolveTokenEnvVar", () => {
+describe("clientTokenEnvVar", () => {
   const saved = process.env.PORTUNI_WORKSPACE_ID;
   afterEach(() => {
     if (saved === undefined) delete process.env.PORTUNI_WORKSPACE_ID;
@@ -471,12 +471,12 @@ describe("resolveTokenEnvVar", () => {
 
   it("returns the plain var when PORTUNI_WORKSPACE_ID is unset", () => {
     delete process.env.PORTUNI_WORKSPACE_ID;
-    assert.equal(resolveTokenEnvVar(), "PORTUNI_MCP_TOKEN");
+    assert.equal(clientTokenEnvVar(), "PORTUNI_MCP_TOKEN");
   });
 
   it("suffixes with uppercased id, dashes to underscores", () => {
     process.env.PORTUNI_WORKSPACE_ID = "honza-pav";
-    assert.equal(resolveTokenEnvVar(), "PORTUNI_MCP_TOKEN_HONZA_PAV");
+    assert.equal(clientTokenEnvVar(), "PORTUNI_MCP_TOKEN_HONZA_PAV");
   });
 });
 
@@ -590,7 +590,7 @@ describe("materializeScopeConfig", () => {
     assert.ok(settings.hooks?.PreToolUse?.[0]);
     const command = settings.hooks.PreToolUse[0].hooks[0].command;
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by shell, not JS
-    const expectedCommand = 'PORTUNI_URL="http://127.0.0.1:47012" PORTUNI_AUTH_TOKEN="${PORTUNI_MCP_TOKEN:-}" "/usr/local/bin/portuni-guard.sh"';
+    const expectedCommand = 'PORTUNI_URL="http://127.0.0.1:47012" PORTUNI_GUARD_TOKEN="${PORTUNI_MCP_TOKEN:-}" PORTUNI_GUARD_TOKEN_VAR=PORTUNI_MCP_TOKEN "/usr/local/bin/portuni-guard.sh"';
     assert.equal(command, expectedCommand);
     assert.match(settings.hooks.PreToolUse[0].matcher, /Edit\|Write/);
   });

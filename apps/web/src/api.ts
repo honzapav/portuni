@@ -26,9 +26,13 @@ import type {
   OverviewPayload,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
+import { requestLocale } from "./lib/locale";
+import type { Locale } from "../../server/shared/i18n/config";
 import { isCentralMode } from "./lib/data-mode";
 import type { MoveTarget } from "./lib/file-plan";
 import type { SessionStore } from "./lib/session-store";
+import { parseHandoffRefusal } from "./lib/handoff-refusal";
+import { ApiError, ClientError, parseApiError } from "./lib/api-error";
 
 // The window's session store (#465, spec
 // docs/superpowers/specs/2026-09-22-web-session-state-design.md, "Writing"):
@@ -50,7 +54,10 @@ export function bindSessionStore(store: SessionStore | null): void {
 // state would be the copy going stale in one step.
 function foldIntoSession(id: string, patch: Record<string, unknown>): void {
   const existing = sessionStore?.get(id);
-  if (!existing) return;
+  // A record known only from a live frame is not a row to fold into: it has
+  // no name and no runner, and the refetch that frame triggered replaces it
+  // whole in a moment.
+  if (!existing || existing.partial) return;
   sessionStore?.put({ ...existing, ...patch });
 }
 
@@ -69,7 +76,7 @@ export type User = {
 export async function fetchUsers(): Promise<User[]> {
   const res = await apiFetch("/users");
   if (res.status === 403) return [];
-  if (!res.ok) throw new Error(`users: ${res.status}`);
+  await throwForStatus(res, "users");
   return res.json();
 }
 
@@ -90,13 +97,13 @@ export type Actor = {
 
 export async function fetchGraph(): Promise<GraphPayload> {
   const res = await apiFetch("/graph");
-  if (!res.ok) throw new Error(`graph: ${res.status}`);
+  await throwForStatus(res, "graph");
   return res.json();
 }
 
 export async function fetchNode(id: string): Promise<NodeDetail> {
   const res = await apiFetch(`/nodes/${encodeURIComponent(id)}`);
-  if (!res.ok) throw new Error(`node: ${res.status}`);
+  await throwForStatus(res, "node");
   const node: NodeDetail = await res.json();
   // A team workspace serves node-detail with local_mirror:null (the central server
   // has no device state). Overlay it from the device here, in the single fetch
@@ -127,7 +134,7 @@ export async function fetchNode(id: string): Promise<NodeDetail> {
 // mirror so callers only reach for this when local_mirror is absent.
 export async function fetchNodeMirror(id: string): Promise<NodeMirrorResponse> {
   const res = await apiFetch(`/nodes/${encodeURIComponent(id)}/mirror`);
-  if (!res.ok) throw new Error(`mirror: ${res.status}`);
+  await throwForStatus(res, "mirror");
   return res.json();
 }
 
@@ -240,6 +247,33 @@ export function closePersistentSession(id: string): Promise<SessionSummary> {
   );
 }
 
+// POST /sessions/:id/handoff (#459) -- "Předat": ends the turn and the run
+// and writes the thread's summary to wip/sessions/<id>-handoff.md in the
+// node's mirror, so another machine can pick the work up from the file
+// (Navázat na handoff there). The answer carries the suspended record and
+// the file's node-relative path; the record goes into the session store,
+// which is what makes the sidebar, the chat header and Relace agree.
+// A plain REST wrapper (not sessionsClient) for the same reason
+// continueSession is one: the Relace tab has no live-channel client.
+// A refusal (409) rejects with HandoffRefusedError carrying the server's
+// HANDOFF_* code, which the caller renders with displayError.
+export async function handoffSession(id: string): Promise<{ session: SessionSummary; handoff_path: string }> {
+  const path = `/sessions/${encodeURIComponent(id)}/handoff`;
+  const res = await apiFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locale: requestLocale() }),
+  });
+  if (res.status === 409) {
+    const refusal = parseHandoffRefusal(res.status, await res.clone().text().catch(() => ""));
+    if (refusal) throw refusal;
+  }
+  await throwForStatus(res, `POST ${path}`);
+  const r = (await res.json()) as { session: SessionSummary; handoff_path: string };
+  sessionStore?.put(r.session);
+  return r;
+}
+
 // #375/#376/#426: sets the thread's own model/effort override. Its own
 // device-local route rather than a PATCH /sessions/:id field, because a
 // model change reaches the live run's Query immediately and that run only
@@ -291,6 +325,20 @@ export function fetchPersistentSessionResumeInfo(
   return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
 }
 
+// GET /sessions/:id/events -- a device-local route (#458): the transcript
+// is the running device's own content.db, so the machine that answers is
+// the one that has it. The chat replays the log over the live channel, so
+// this asks for a single row and reads the header only: `transcript_host`
+// is the label of the machine holding the conversation, set only when this
+// device has none of it. Null means "the transcript is here (or there is
+// none yet)".
+export function fetchTranscriptHost(id: string): Promise<string | null> {
+  return jsonRequest<{ events: unknown[]; transcript_host?: string }>(
+    "GET",
+    `/sessions/${encodeURIComponent(id)}/events?limit=1`,
+  ).then((r) => r.transcript_host ?? null);
+}
+
 // GET /sessions/:id -- the raw session record (apps/server/shared/types.ts's
 // SessionRow, a zod schema server-side, deliberately not imported here so
 // this stays web-safe). Every SessionSummary field except the two the server
@@ -315,23 +363,42 @@ export function fetchSession(id: string): Promise<Omit<SessionSummary, "write_co
   });
 }
 
-// POST /sessions -- starts a task (session + first run) as a server-driven
-// run. `brief` omitted creates a draft instead (#374, "a thread opens
-// empty"): no run, `run` comes back null; the first message
-// (sessionsClient.message) is what promotes it and starts the run.
+// POST /sessions -- opens a thread. The web never sends a first message
+// here (#374, "a thread opens empty", and #461: the first message is
+// content, so it travels over the live channel to the device that runs the
+// thread, not through this record route): no run, `run` comes back null,
+// and `sessionsClient.message` is what promotes the draft and starts the
+// run.
 export function startSession(input: {
   node_id: string;
-  brief?: string;
   runner?: string;
   instance_id?: string | null;
   policy?: "default" | "auto";
+  // #460 "Navázat na handoff": a node-relative wip/sessions/<id>-handoff.md
+  // path. The new thread starts from that file's content on this device --
+  // no runner goes with it, the server resolves it.
+  handoff_path?: string;
 }): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
-  return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", input).then(
+  return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", {
+    ...input,
+    locale: requestLocale(),
+  }).then(
     (r) => {
       sessionStore?.put(r.session);
       return r;
     },
   );
+}
+
+// #460 "Navázat na handoff": a new thread on THIS device that continues
+// from a handoff file of the node -- one another thread wrote, possibly on
+// another machine. 409 HANDOFF_FILE_NOT_HERE when the file has not synced here
+// yet; nothing is created then.
+export function startSessionFromHandoff(
+  nodeId: string,
+  handoffPath: string,
+): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
+  return startSession({ node_id: nodeId, handoff_path: handoffPath });
 }
 
 // Opens a new, empty thread on a node -- one click, no modal (#374). The
@@ -348,6 +415,18 @@ export function deletePersistentSession(id: string): Promise<void> {
   });
 }
 
+// #506: the one way a draft is deleted -- the × in the sidebar (Uzly and
+// Stav), the chat header's Uzavřít and the Relace row's all call this, with
+// no dialog (a draft has no message, so there is nothing to lose).
+// Optimistic: the record leaves the store now, so the row leaves every
+// selector and a chat showing the draft closes at once; the DELETE removes
+// it again when it lands. A refused DELETE is swallowed like before: the
+// node's next list carries the draft back if the server kept it.
+export function deleteDraftSession(id: string): void {
+  sessionStore?.remove(id);
+  void deletePersistentSession(id).catch(() => undefined);
+}
+
 // POST /sessions/:id/continue (#378) -- closes this session (its summary
 // seeds the new one, not a fresh suspend) and starts a new, running one on
 // the same node. "Pokračovat v nové session" (offered any time) and
@@ -359,6 +438,7 @@ export function continueSession(id: string): Promise<{ session: SessionSummary; 
   return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>(
     "POST",
     `/sessions/${encodeURIComponent(id)}/continue`,
+    { locale: requestLocale() },
   ).then((r) => {
     sessionStore?.put(r.session);
     return r;
@@ -432,29 +512,41 @@ export function createNode(input: {
 // requested but the device's sync agent isn't running yet -- in a team workspace that
 // means you're not signed in. The backend returns 501 sync_agent_down. Components
 // can catch this specific type to show a friendly hint instead of a toast.
-export class SyncAgentDownError extends Error {
+export class SyncAgentDownError extends ClientError {
   constructor() {
-    super("Synchronizační agent neběží – přihlas se v Nastavení → Účet.");
+    super("SYNC_AGENT_DOWN", "The device's sync agent is not running (sign in under Settings -> Account).");
     this.name = "SyncAgentDownError";
   }
 }
 
-// Parses a Response and throws SyncAgentDownError for 501 sync_agent_down or a
-// generic Error for other non-ok statuses.
+// True for the desktop proxy's 501 `sync_agent_down` answer.
+async function isSyncAgentDownResponse(res: Response): Promise<boolean> {
+  if (res.status !== 501) return false;
+  try {
+    const j = (await res.clone().json()) as { error?: string; code?: string };
+    return j.error === "sync_agent_down" || j.code === "SYNC_AGENT_DOWN";
+  } catch {
+    return false; /* body not JSON */
+  }
+}
+
+// The parsed JSON error body of a non-ok answer, or {} when it is not JSON.
+async function errorBody(res: Response): Promise<Record<string, unknown>> {
+  try {
+    const j = (await res.clone().json()) as unknown;
+    return j && typeof j === "object" && !Array.isArray(j) ? (j as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+// Parses a Response and throws SyncAgentDownError for 501 sync_agent_down or
+// an ApiError (the server's code and params) for other non-ok statuses.
 async function throwForStatus(res: Response, label: string): Promise<void> {
   if (res.ok) return;
-  if (res.status === 501) {
-    let isSyncAgentDown = false;
-    try {
-      const j = (await res.clone().json()) as { error?: string };
-      if (j.error === "sync_agent_down") isSyncAgentDown = true;
-    } catch {
-      /* body not JSON — fall through */
-    }
-    if (isSyncAgentDown) throw new SyncAgentDownError();
-  }
+  if (await isSyncAgentDownResponse(res)) throw new SyncAgentDownError();
   const text = await res.text().catch(() => "");
-  throw new Error(`${label}: ${res.status} ${text}`);
+  throw parseApiError(res.status, text, label);
 }
 
 // Exported for lib/runners.ts, which needs the same REST-over-api_request
@@ -575,7 +667,7 @@ export async function fetchActors(params?: {
     qs.set("is_placeholder", params.is_placeholder ? "1" : "0");
   }
   const res = await apiFetch(`/actors?${qs}`);
-  if (!res.ok) throw new Error(`actors: ${res.status}`);
+  await throwForStatus(res, "actors");
   return res.json();
 }
 
@@ -731,9 +823,9 @@ export function removeTool(id: string): Promise<{ deleted: string }> {
 // Thrown by saveFileContent when the on-disk file changed since it was
 // opened. Carries the current on-disk version so the UI can offer
 // keep-mine (resend with force) / reload-theirs (re-fetch).
-export class FileConflictError extends Error {
+export class FileConflictError extends ApiError {
   constructor(readonly currentVersion: string) {
-    super("file changed on disk since it was opened");
+    super(409, "CONFLICT", "file changed on disk since it was opened");
     this.name = "FileConflictError";
   }
 }
@@ -745,14 +837,9 @@ export async function fetchFileContent(
   const res = await apiFetch(
     `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}`,
   );
-  if (res.status === 422) {
-    // A .showtime bundle without its preview.html (saved by a Showtime older
-    // than the preview). The editor shows this text as-is.
-    const j = (await res.clone().json().catch(() => null)) as { code?: string } | null;
-    if (j?.code === "NO_PREVIEW") {
-      throw new Error("Soubor .showtime neobsahuje náhled. Ulož ho znovu v aktuální verzi Showtime.");
-    }
-  }
+  // A .showtime bundle without its preview.html (saved by a Showtime older
+  // than the preview) is a 422 NO_PREVIEW ApiError; the editor shows its
+  // catalog text like any other error.
   await throwForStatus(res, "file content");
   return res.json();
 }
@@ -770,33 +857,15 @@ export async function saveFileContent(
       body: JSON.stringify(body),
     },
   );
-  if (res.status === 501) {
-    let isSyncAgentDown = false;
-    try {
-      const j = (await res.clone().json()) as { error?: string };
-      if (j.error === "sync_agent_down") isSyncAgentDown = true;
-    } catch {
-      /* not JSON */
-    }
-    if (isSyncAgentDown) throw new SyncAgentDownError();
-  }
   if (res.status === 409) {
     // Both CONFLICT (stale base version) and NO_MIRROR map to 409 on the
     // backend. Only the former is an editor conflict the user can resolve
-    // with keep-mine / reload-theirs; treat everything else as a plain error.
-    const j = (await res.json().catch(() => ({}))) as {
-      code?: string;
-      currentVersion?: string;
-      error?: string;
-    };
+    // with keep-mine / reload-theirs; everything else is a plain ApiError.
+    const j = (await errorBody(res)) as { code?: string; currentVersion?: string };
     if (j.code === "CONFLICT" && j.currentVersion)
       throw new FileConflictError(j.currentVersion);
-    throw new Error(j.error ?? `save: 409`);
   }
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`save: ${res.status} ${text}`);
-  }
+  await throwForStatus(res, "save");
   return res.json();
 }
 
@@ -849,9 +918,11 @@ export async function moveFile(
     { new_section: target.section, new_subpath: target.subpath, confirmed: true },
   );
   if (r.status !== "ok") {
-    throw new Error(
-      r.repair_hint ?? r.error ?? r.detail?.error ?? `Přesun se nepovedl (${r.status ?? "bez stavu"})`,
-    );
+    const detail = r.repair_hint ?? r.error ?? r.detail?.error;
+    if (detail) throw new Error(detail);
+    throw new ClientError("FILE_MOVE_FAILED", `move failed: ${r.status ?? "no status"}`, {
+      status: r.status ?? "-",
+    });
   }
   return r;
 }
@@ -876,10 +947,7 @@ export async function resolveFileSync(
       body: JSON.stringify({ action }),
     },
   );
-  if (!res.ok) {
-    const j = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(j.error ?? `resolve: ${res.status}`);
-  }
+  await throwForStatus(res, "resolve");
   return res.json();
 }
 
@@ -915,20 +983,18 @@ export function putNodeAccess(
 
 // Thrown by requestNodeAccess on 409 already_pending: the caller already
 // has an open request on this node. Carries the existing request id.
-export class AccessRequestPendingError extends Error {
-  readonly requestId: string | null;
-  constructor(requestId: string | null) {
-    super("Žádost už čeká na vyřízení.");
+export class AccessRequestPendingError extends ApiError {
+  constructor(readonly pendingRequestId: string | null) {
+    super(409, "ACCESS_REQUEST_PENDING", "An access request is already pending.");
     this.name = "AccessRequestPendingError";
-    this.requestId = requestId;
   }
 }
 
 // Thrown by requestNodeAccess on 409 already_visible: the caller can
 // already see the node (access was granted in the meantime).
-export class AccessAlreadyVisibleError extends Error {
+export class AccessAlreadyVisibleError extends ApiError {
   constructor() {
-    super("Přístup už máš.");
+    super(409, "ACCESS_ALREADY_VISIBLE", "The caller can already see the node.");
     this.name = "AccessAlreadyVisibleError";
   }
 }
@@ -947,14 +1013,12 @@ export async function requestNodeAccess(
     body: JSON.stringify(body),
   });
   if (res.status === 409) {
-    let j: { error?: string; id?: string } = {};
-    try {
-      j = (await res.clone().json()) as { error?: string; id?: string };
-    } catch {
-      /* body not JSON -- fall through to the generic error below */
-    }
-    if (j.error === "already_pending") throw new AccessRequestPendingError(j.id ?? null);
-    if (j.error === "already_visible") throw new AccessAlreadyVisibleError();
+    // `code` from a current server, `error` from an older one.
+    const j = (await errorBody(res)) as { error?: string; code?: string; id?: string };
+    if (j.code === "ACCESS_REQUEST_PENDING" || j.error === "already_pending")
+      throw new AccessRequestPendingError(j.id ?? null);
+    if (j.code === "ACCESS_ALREADY_VISIBLE" || j.error === "already_visible")
+      throw new AccessAlreadyVisibleError();
   }
   await throwForStatus(res, "access-request");
   return res.json();
@@ -1003,9 +1067,9 @@ export function denyAccessRequest(id: string): Promise<AccessRequest> {
 // which has no Google Workspace directory to query (GET /auth/groups
 // responds 501 { error: "google_mode_only" }). Callers should fall back to
 // a users-only picker instead of showing an error banner.
-export class GoogleModeOnlyError extends Error {
+export class GoogleModeOnlyError extends ApiError {
   constructor() {
-    super("Skupiny nejsou dostupné mimo Google režim.");
+    super(501, "GOOGLE_MODE_ONLY", "Groups are only available in Google auth mode.");
     this.name = "GoogleModeOnlyError";
   }
 }
@@ -1013,14 +1077,9 @@ export class GoogleModeOnlyError extends Error {
 export async function searchGroups(query: string): Promise<DirectoryGroup[]> {
   const res = await apiFetch(`/auth/groups?query=${encodeURIComponent(query)}`);
   if (res.status === 501) {
-    let isGoogleModeOnly = false;
-    try {
-      const j = (await res.clone().json()) as { error?: string };
-      if (j.error === "google_mode_only") isGoogleModeOnly = true;
-    } catch {
-      /* body not JSON -- fall through to the generic error below */
-    }
-    if (isGoogleModeOnly) throw new GoogleModeOnlyError();
+    // `code` from a current server, `error` from an older one.
+    const j = (await errorBody(res)) as { error?: string; code?: string };
+    if (j.code === "GOOGLE_MODE_ONLY" || j.error === "google_mode_only") throw new GoogleModeOnlyError();
   }
   await throwForStatus(res, "groups");
   const body = (await res.json()) as { groups: DirectoryGroup[] };
@@ -1034,13 +1093,28 @@ export async function fetchAccountUsers(): Promise<AccountUser[]> {
   return body.users;
 }
 
-// canManage (global_scope 'manage' | 'admin') drives the sharing UI; `id`
-// drives #343's owner-only action gating (sessionRowAccess). /me returns
-// more (email, name, groups, via) but nothing else here consumes it yet.
-export async function fetchMe(): Promise<{ id: string; global_scope: string }> {
+// canManage (global_scope 'manage' | 'admin') drives the sharing UI. Since
+// #457 no session surface gates on identity any more -- every thread the
+// app lists is the caller's own -- so `id` is carried for future callers.
+// /me returns more (email, name, groups, via) but nothing else here
+// consumes it yet. `locale` is the account's UI language (users.locale),
+// null when the account never chose one.
+export interface MeResponse {
+  id: string;
+  global_scope: string;
+  locale: Locale | null;
+}
+
+export async function fetchMe(): Promise<MeResponse> {
   const res = await apiFetch("/me");
   await throwForStatus(res, "me");
   return res.json();
+}
+
+// PATCH /me -- sets the account's UI language (Nastavení > Účet). The
+// server accepts only a catalog language or null (400 INVALID_LOCALE).
+export function patchMeLocale(locale: Locale | null): Promise<MeResponse> {
+  return jsonRequest<MeResponse>("PATCH", "/me", { locale });
 }
 
 // GET /auth/users/admin (admin-only): full account list for the Nastavení >
@@ -1054,9 +1128,9 @@ export async function fetchUsersAdmin(): Promise<UserAdmin[]> {
 
 // Thrown by inviteUser when the email is already registered (paired or
 // previously invited) -- the server maps this to 409.
-export class UserExistsError extends Error {
+export class UserExistsError extends ApiError {
   constructor(email: string) {
-    super(`Uživatel ${email} už existuje.`);
+    super(409, "USER_EXISTS", `User ${email} already exists.`, { email });
     this.name = "UserExistsError";
   }
 }
@@ -1064,11 +1138,11 @@ export class UserExistsError extends Error {
 // Thrown by inviteUser when the server rejects the email as malformed (400,
 // zod's z.string().email() failing validation). The client already checks
 // the format before POSTing, but this still covers races and any other
-// 400 the endpoint might return -- surfaces the same Czech message instead
+// 400 the endpoint might return -- surfaces the same catalog message instead
 // of raw zod issue text.
-export class InvalidEmailError extends Error {
+export class InvalidEmailError extends ApiError {
   constructor() {
-    super("Zadej platný e-mail.");
+    super(400, "INVALID_EMAIL", "The email address is not valid.");
     this.name = "InvalidEmailError";
   }
 }
