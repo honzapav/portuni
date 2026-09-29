@@ -1162,6 +1162,23 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         undefined,
         instanceClaudeConfigDir(instanceEnv),
       ));
+    // Digital Support 1218987479165349: this is the one spot that decides
+    // between a real --resume and a silent restart from a summary -- a
+    // decision the person sending the message has no way to see happen.
+    // Until the UI surfaces it (see session-handoff.ts's
+    // ServerHandoffReason), a log line is the only trace of *why* a
+    // conversation that looks resumable (a run row with an agent_session_id)
+    // fell back anyway, so a report of "it forgot everything" can be matched
+    // to a cause instead of re-guessed each time.
+    if (!canResumeConversation && lastRun?.agent_session_id != null) {
+      console.warn(
+        `[portuni:runner] session ${sessionId}: run ${lastRun.id}'s conversation ` +
+          `${lastRun.agent_session_id} looked resumable but checkConversationResumable said no ` +
+          `(cli=${transcriptCli ?? "null"}, cwd=${provisioned.cwd}, configDir=${
+            instanceClaudeConfigDir(instanceEnv) ?? "<default ~/.claude>"
+          }) - falling back to a summary`,
+      );
+    }
 
     let runStartResume: RunStart["resume"] = null;
     let runProvisioned = provisioned;
