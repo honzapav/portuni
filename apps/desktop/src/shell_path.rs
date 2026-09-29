@@ -1,13 +1,15 @@
-// The PATH a login shell would give the sidecar.
+// The PATH an interactive login shell would give the sidecar.
 //
 // The PATH a GUI-launched app inherits on macOS is launchd's bare
-// `/usr/bin:/bin:/usr/sbin:/sbin` -- nothing from /etc/zprofile or
-// ~/.zprofile, so `~/.local/bin` (the native Claude Code installer's
-// target) and Homebrew are invisible to the sidecar. The runner's `claude`
-// detection and the SDK subprocess run from the sidecar's own env, so they
-// need the same PATH a login shell would see. Resolved once per process (a
-// login shell is ~100 ms), falling back to the inherited PATH when the
-// shell cannot answer.
+// `/usr/bin:/bin:/usr/sbin:/sbin` -- nothing from /etc/zprofile,
+// ~/.zprofile or ~/.zshrc, so `~/.local/bin` (the native Claude Code
+// installer's target), Homebrew and version managers like nvm (which hook
+// PATH from ~/.zshrc, sourced only by interactive shells) are invisible to
+// the sidecar. The runner's `claude` detection and the SDK subprocess run
+// from the sidecar's own env, so they need the same PATH the user's own
+// terminal would see. Resolved once per process (a login shell is
+// ~100 ms), falling back to the inherited PATH when the shell cannot
+// answer.
 pub(crate) fn login_shell_path() -> String {
     static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     PATH.get_or_init(|| {
@@ -23,10 +25,22 @@ pub(crate) fn login_shell_path() -> String {
 
 const PATH_MARKER: &str = "__PORTUNI_PATH__";
 
+// `-i` (interactive) alongside `-l` (login): nvm's installer appends its PATH
+// hook to `~/.zshrc`/`~/.bashrc`, which shells only source when interactive --
+// a plain `-l -c` probe never saw it, so any user-configured tool that shells
+// out to a bare `npx`/`node` (e.g. an MCP server's `command`) failed with
+// "Executable not found in $PATH" even though the same PATH addition works
+// fine in the user's own terminal. `parse_marked_path`'s marker scan already
+// tolerates whatever an interactive profile prints around the PATH (motd,
+// prompt setup, nvm's own banner).
+const LOGIN_SHELL_ARGS: [&str; 2] = ["-i", "-l"];
+
 fn login_shell_path_via(shell: &str) -> Option<String> {
     let script = format!("printf '\n{PATH_MARKER}%s{PATH_MARKER}\n' \"$PATH\"");
     let output = std::process::Command::new(shell)
-        .args(["-l", "-c", &script])
+        .args(LOGIN_SHELL_ARGS)
+        .arg("-c")
+        .arg(&script)
         .stdin(std::process::Stdio::null())
         .output()
         .ok()?;
@@ -77,7 +91,12 @@ fn pick_shell() -> String {
 
 #[cfg(test)]
 mod login_shell_path_tests {
-    use super::{merge_paths, parse_marked_path, PATH_MARKER};
+    use super::{merge_paths, parse_marked_path, LOGIN_SHELL_ARGS, PATH_MARKER};
+
+    #[test]
+    fn probes_an_interactive_login_shell_so_nvm_style_rc_hooks_still_apply() {
+        assert_eq!(LOGIN_SHELL_ARGS, ["-i", "-l"]);
+    }
 
     #[test]
     fn parses_the_path_between_markers_ignoring_profile_noise() {
