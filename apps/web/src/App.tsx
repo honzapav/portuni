@@ -914,6 +914,18 @@ export default function App() {
       // node that already had a thread open snapped back to it the moment
       // the new one appeared.
       setRequestedChatSessionByNode((prev) => requestChatSession(prev, result.session));
+      // #498: a closed thread opened from Relace is pinned as the node's
+      // shown thread; the fresh thread (Pokračovat v nové session on it,
+      // or any other start on the node) takes its place.
+      const nodeId = result.session.node_id;
+      if (nodeId) {
+        setOpenedClosedChatByNode((p) => {
+          if (!(nodeId in p)) return p;
+          const next = { ...p };
+          delete next[nodeId];
+          return next;
+        });
+      }
     },
     [sessionStore],
   );
