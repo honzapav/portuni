@@ -279,9 +279,22 @@ describe("GET /overview", () => {
       args: [ulid(), SOLO, visibleNodeId, fileId],
     });
 
+    // The central server (a team workspace) reports them ...
+    const prevAuthMode = process.env.PORTUNI_AUTH_MODE;
+    process.env.PORTUNI_AUTH_MODE = "google";
+    try {
+      const res = await call(makeIdentity(SOLO, "admin"), "/overview");
+      const body = JSON.parse(res.body) as OverviewPayload;
+      assert.ok(body.attention.sync_issues.some((s) => s.node_id === visibleNodeId && s.last_error === "remote 500"));
+    } finally {
+      if (prevAuthMode === undefined) delete process.env.PORTUNI_AUTH_MODE;
+      else process.env.PORTUNI_AUTH_MODE = prevAuthMode;
+    }
+
+    // ... a personal workspace has no remote, so no sync issue at all (#575).
     const res = await call(makeIdentity(SOLO, "admin"), "/overview");
     const body = JSON.parse(res.body) as OverviewPayload;
-    assert.ok(body.attention.sync_issues.some((s) => s.node_id === visibleNodeId && s.last_error === "remote 500"));
+    assert.deepEqual(body.attention.sync_issues, []);
   });
 
   test("activity section lists recent active events and recent session writes", async () => {

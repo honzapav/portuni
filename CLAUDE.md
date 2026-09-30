@@ -193,7 +193,12 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `LocalModeNoRemoteError` (`LOCAL_MODE_NO_REMOTE`, REST 409) from
   `upsertRemote`/`setupRemoteService`/`setRoutingPolicyService`, and from
   `storeFile`/`pullFile`/`runNodeSync`/`snapshotService`, checked before any
-  other work. Web hides (never merely disables) what cannot exist there.
+  other work. Web hides (never merely disables) what cannot exist there:
+  every sync surface (footer pills, quit guard, Overview's Unsynced counter
+  and `sync_issues`, the Unsynced dialog, Settings → Synchronization, file
+  sync badges and dots, Drive link, conflict/restore actions); a file row
+  keeps only "untracked" and "missing". `GET /sync/pending` answers empty
+  and MCP registers no store/pull/remote/snapshot tool there (#575).
 - A team-workspace sidecar has no graph db. A graph read in code that runs on
   the device goes through a `CentralClient` method or an injected resolver
   whose local default is the direct query; never a swallowed failure.

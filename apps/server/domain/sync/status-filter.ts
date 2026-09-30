@@ -127,3 +127,33 @@ export function filterStatusResult(
 
   return { ...(out as unknown as StatusResult), counts, truncated };
 }
+
+// The classes a personal workspace can have (#575): it has no remote
+// (#310), so a tracked file is either on disk (`clean`) or gone from it
+// (`deleted_local`), and a file on disk with no record is `new_local`.
+export const LOCAL_STATUS_CLASS_VALUES = ["clean", "deleted_local", "new_local"] as const;
+export type LocalStatusClass = (typeof LOCAL_STATUS_CLASS_VALUES)[number];
+
+export interface LocalStatusResult {
+  clean: StatusFileEntry[];
+  deleted_local: StatusFileEntry[];
+  new_local: NewLocalEntry[];
+  counts: Record<LocalStatusClass, number>;
+  truncated: boolean;
+}
+
+// portuni_status's answer in a personal workspace: the local buckets and
+// their counts only, so no remote class reaches the agent.
+export function localStatusView(r: FilteredStatusResult): LocalStatusResult {
+  return {
+    clean: r.clean,
+    deleted_local: r.deleted_local,
+    new_local: r.new_local,
+    counts: {
+      clean: r.counts.clean,
+      deleted_local: r.counts.deleted_local,
+      new_local: r.counts.new_local,
+    },
+    truncated: r.truncated,
+  };
+}

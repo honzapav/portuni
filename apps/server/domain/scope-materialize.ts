@@ -47,6 +47,7 @@ import { listResponsibilities } from "./responsibilities.js";
 import { SOLO_USER } from "../infra/schema.js";
 import type { DataSourceRow } from "../shared/types.js";
 import { getDb } from "../infra/db.js";
+import { isLocalWorkspace } from "../infra/server-config.js";
 import { listDataSources } from "./entity-attributes.js";
 
 const BEGIN_MARKER = "<!-- BEGIN portuni-scope (auto-generated, do not edit) -->";
@@ -265,6 +266,7 @@ export async function materializeScopeConfig(
     currentMirror: cur,
     portuniRoot: args.portuniRoot,
     dataSources: args.dataSources,
+    personalWorkspace: isLocalWorkspace(),
   });
 
   // 3b. A per-mirror .vibe/config.toml the retired writer (#406) left in a

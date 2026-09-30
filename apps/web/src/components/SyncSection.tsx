@@ -1,4 +1,6 @@
-// Nastaveni > Synchronizace. Collaboration runs through a team workspace only
+// Nastaveni > Synchronizace, rendered in a team workspace only (#575):
+// SettingsPage hides the tab in a personal one, whose watcher errors show in
+// each node's Files tab instead. Collaboration runs through a team workspace only
 // (see docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md):
 // a local workspace tracks files on one machine and never holds Drive
 // credentials or routes to a remote (#310), so there is nothing to connect
@@ -90,7 +92,7 @@ export default function SyncSection() {
         </ul>
       )}
 
-      {dataMode?.mode === "central" ? (
+      {dataMode?.mode === "central" && (
         <p className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
           <Trans
             t={t}
@@ -98,10 +100,6 @@ export default function SyncSection() {
             values={{ server: dataMode.server_url ?? "—" }}
             components={{ server: <span className="font-mono text-[var(--color-text)]" /> }}
           />
-        </p>
-      ) : (
-        <p className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          {t(($) => $.sync_section.personal)}
         </p>
       )}
     </section>

@@ -7,6 +7,7 @@ import { listUserMirrors } from "./mirror-registry.js";
 import { statusScan } from "./engine.js";
 import { filterVisibleNodeIds, type GroupIdentityView } from "../../auth/node-access.js";
 import type { SyncPendingNode, SyncPendingResponse } from "../../shared/api-types.js";
+import { isLocalWorkspace } from "../../infra/server-config.js";
 
 // Scan at most this many mirrors at once. A user can have dozens of mirrors;
 // scanning them one after another (the old serial loop) made this endpoint
@@ -17,6 +18,10 @@ export async function computeSyncPending(
   db: DbClient,
   identity: GroupIdentityView,
 ): Promise<SyncPendingResponse> {
+  // A personal workspace has no remote (#310), so nothing is ever "not yet
+  // on a remote": answer empty without touching the disk (#575). The
+  // untracked/missing facts stay per node in the Files tab.
+  if (isLocalWorkspace()) return { nodes: [], total: 0, decisions: 0 };
   const allMirrors = await listUserMirrors(identity.userId);
 
   // Group-visibility guard: a mirror for a node whose ACL has since been

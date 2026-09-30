@@ -140,6 +140,7 @@ import { SessionsSection } from "./DetailPane.sessions";
 import { RequestAccessControl } from "./AccessRequests";
 import { copyText } from "../lib/clipboard";
 import { useDataMode } from "../lib/central";
+import { showsPersonalWorkspaceBanner, showsSyncSurfaces } from "../lib/sync-visibility";
 import { compareText, formatDate } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
 
@@ -333,8 +334,10 @@ function DetailPaneBody({
   // never apply, so SyncBar (and FileRow's "Obnovit") stay hidden rather than
   // rendering an action that would only ever fail with LOCAL_MODE_NO_REMOTE.
   // Optimistically hidden while loading, same as other data-mode-gated UI.
+  // #575 extends it to every sync surface of the Files tab (badges, dots,
+  // Drive link, conflict actions, the tab's own dot).
   const dataMode = useDataMode();
-  const isCentralMode = dataMode?.mode === "central";
+  const isCentralMode = showsSyncSurfaces(dataMode?.mode);
   const [tab, setTabState] = useState<DetailTab>(
     () => TAB_CACHE.get(node.id) ?? "overview",
   );
@@ -770,7 +773,7 @@ function DetailPaneBody({
   // until the read-only fetch finishes, so the user does not see a
   // misleading green before the data arrives.
   const syncDot: { color: string; title: string } | null = (() => {
-    if (!syncLoaded || node.files.length === 0) return null;
+    if (!isCentralMode || !syncLoaded || node.files.length === 0) return null;
     let hasConflict = false;
     let hasPending = false;
     let hasRemoteMissing = false;
@@ -1140,7 +1143,7 @@ function DetailPaneBody({
                 device's sync agent (teammate mirrors). */}
             {/* Rendered here (not inside SyncBar) so the personal-workspace
                 hint shows even on a node with no files yet. */}
-            <LocalWorkspaceFilesBanner />
+            <LocalWorkspaceFilesBanner show={showsPersonalWorkspaceBanner(dataMode?.mode)} />
             <WatcherErrorBanner errors={watcherErrors} />
             {node.type !== "organization" && !node.local_mirror && (
               <NoMirrorBanner

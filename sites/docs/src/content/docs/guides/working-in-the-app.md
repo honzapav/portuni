@@ -19,7 +19,7 @@ The currently selected node lives in the URL as `?node=<id>`, so deep-linking an
 The default landing view: one aggregate, permission-filtered snapshot of the whole workspace (`GET /overview`), composed deterministically — no LLM involved. A strip of four counters on top — Waiting on me, Running, Needs attention, Not synced — each a shortcut to the place it counts (Work, Graph, the Not synced dialog). Under it, four cards; each shows at most eight rows and a "Show all N" link for the rest:
 
 - **Threads** — your own inbox: running/suspended threads you started, ordered "Waiting on me" (an open question) first, then running, then suspended. A thread is its owner's: `GET /overview` returns your threads and nobody else's, so the card and the counters above it never carry a teammate's work, whatever your scope. Sessions opened by hand from a CLI are not rows here; the card's footer says how many there are and how many run, and the node's Threads tab lists them. Plus a headless review queue: nodes a `headless` session reached only via search with no edge path (`session_scope.added_via = 'disconnected'`) — see [Scope Enforcement](/concepts/scope-enforcement/).
-- **Needs attention** — processes in `at_risk`/`broken`, areas in `needs_attention`, projects with `health != on_track` (see [Lifecycle States](/concepts/lifecycle-states/#project-health)), plus pending access requests (visible to `manage` scope and above only) and stuck sync operations (`pending_file_ops` rows with a recorded `last_error` — the closest server-visible signal to a sync issue; true file-conflict state is computed on-device and is not aggregated server-side).
+- **Needs attention** — processes in `at_risk`/`broken`, areas in `needs_attention`, projects with `health != on_track` (see [Lifecycle States](/concepts/lifecycle-states/#project-health)), plus pending access requests (visible to `manage` scope and above only) and stuck sync operations (`pending_file_ops` rows with a recorded `last_error` — the closest server-visible signal to a sync issue; true file-conflict state is computed on-device and is not aggregated server-side; a personal workspace has no remote and lists no sync operations).
 - **Recent activity** — recent events and recent session writes (nodes added to a session's write scope), interleaved by timestamp.
 - **New nodes** — recently created nodes, human- and agent-created alike.
 
@@ -479,14 +479,15 @@ Sections worth highlighting:
 - **Theme** — light / dark; the choice persists in `localStorage` and is reapplied on launch.
 - **Account → Language** — pick English or Čeština. The choice is saved to your account (`users.locale`, `PATCH /me`), so it applies on all your devices; English is the default.
 - **MCP server** — shows the sidecar's URL (typically `http://localhost:4011/mcp`), port, and whether an auth token is set. The bearer token itself lives in macOS Keychain (Tauri-only); reveal it on demand or rotate with one click. Rotating restarts that workspace's sidecar with the new token, so the app keeps working without a restart; external clients need the new token (re-run the install buttons, re-export it in your shell). The install buttons write the URL + token into `~/.claude.json`, `~/.codex/config.toml`, and `~/.vibe/config.toml` so external clients can talk to the app's sidecar without manual config editing.
-- **Sync** — informational: the server URL plus the remote watcher's and the mirror watcher's current state. See below.
+- **Sync** — informational: the server URL plus the remote watcher's and the mirror watcher's current state. Team workspaces only; a personal workspace has no remote and no Sync tab. See below.
 - **Integrations → Showtime** — off by default, stored in `localStorage` like the other settings. On, a `.showtime` deck in a node's files opens as a rendered preview (the `preview.html` Showtime packs into the bundle at every save; `GET /nodes/:id/file` returns that entry as `text/html` for a `.showtime` path) and the preview offers "Open in Showtime" when Showtime.app is installed — the section shows whether Showtime.app was found (`/Applications` or `~/Applications`) and what the button hands over: the node's Portuni connection for the agent and the node's mirror as a working directory. It also puts "New presentation" behind "+ New file" on the Files tab (see Files above). Off, the bundle is a binary file like any other.
 
 ## Sync
 
 Collaboration in Portuni is team workspace — a **local** (single-machine)
-workspace has no remote to connect at all, so Settings → Sync has
-nothing to configure there: stored files always sit in the local mirror
+workspace has no remote to connect at all, so it has no Settings → Sync
+tab and shows nothing else about syncing either (see
+[Mirrors](/concepts/mirrors/)): stored files always sit in the local mirror
 only, and a node's Files pane shows a "Files are stored on this computer only and are
 not shared. …" banner. A **central** workspace shows the server URL that manages file sync
 — nothing to configure client-side either. Configuring the actual Google

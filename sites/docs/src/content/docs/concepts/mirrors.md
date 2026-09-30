@@ -104,8 +104,8 @@ file, a mirror that moved away), it used to reach only
 `~/Library/Logs/ooo.workflow.portuni/sidecar-<workspace>.log` — the user
 just saw that files "were not there". A bounded per-node buffer of recent
 failures (path, error message, timestamp) now backs a warning banner on the
-node's Files tab and a workspace-wide banner on Settings → Sync
-(`GET /sync/health`, and the `watcher_errors` field on
+node's Files tab and, in a team workspace, a workspace-wide banner on
+Settings → Sync (`GET /sync/health`, and the `watcher_errors` field on
 `GET /nodes/:id/sync-status`), so a misconfiguration is diagnosable without
 opening logs. A later successful reconcile of the same path clears it.
 
@@ -201,6 +201,20 @@ count work a sync run will actually push or adopt (plus conflicts) —
 `deleted_local` and `remote_missing` files are surfaced in the node's own
 file list instead, since a sync run does not touch them until you resolve
 them.
+
+**A personal workspace shows nothing about syncing.** It has no remote, so
+the app hides every sync surface instead of showing ones that could never
+clear: no unsynced or "to pull" badge in the footer, no question about
+unsynced files when you quit, no Unsynced counter or sync issues on the
+Overview, no Unsynced dialog and no Settings → Sync tab. In the Files tab a
+file shows only what is true on this disk: **untracked** (the file is in the
+mirror but not registered yet) or **missing** (registered, but gone from
+disk) — no sync badge, no sync dots on folders and sections, no "Copy Drive
+link" and no "Keep local" / "Take from remote". `GET /sync/pending` answers
+zero there, and the MCP server offers no `portuni_store`, `portuni_pull`,
+`portuni_snapshot` or remote tool; `portuni_status` reports only `clean`,
+`deleted_local` and `new_local`. Watcher errors still show on the node's
+Files tab.
 
 **Moving bytes to the remote stays intentional.** Uploads happen the same way
 you'd make a git commit — on purpose, with meaning, via `portuni_store` or

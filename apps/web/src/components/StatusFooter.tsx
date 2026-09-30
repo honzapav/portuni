@@ -17,6 +17,9 @@ type Props = {
   // counts too.
   sessionCount: number;
   onOpenWorkspace: () => void;
+  // #575: false in a personal workspace (no remote) and while the data mode
+  // is unknown -- the unsynced and to-pull pills are not rendered at all.
+  showSync: boolean;
   pendingCount: number;
   // #339: how many nodes hold records the remote watcher registered on
   // central and this device has not pulled yet. 0 renders nothing.
@@ -33,6 +36,7 @@ export default function StatusFooter({
   onOpenSettings,
   sessionCount,
   onOpenWorkspace,
+  showSync,
   pendingCount,
   pullNodeCount,
   onOpenSyncOverview,
@@ -81,7 +85,7 @@ export default function StatusFooter({
           <span className="font-mono">{t(($) => $.footer.threads.label, { count: sessionCount })}</span>
         </Button>
       )}
-      {pendingCount > 0 && (
+      {showSync && pendingCount > 0 && (
         <Button
           variant="ghost"
           size="xs"
@@ -93,7 +97,7 @@ export default function StatusFooter({
           <span className="font-mono">{t(($) => $.footer.unsynced.label, { pendingCount })}</span>
         </Button>
       )}
-      {pullNodeCount > 0 && (
+      {showSync && pullNodeCount > 0 && (
         <Button
           variant="ghost"
           size="xs"
