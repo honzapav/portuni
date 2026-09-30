@@ -43,7 +43,14 @@ import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { getMirrorPath, registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
-import { localHostId } from "../apps/server/domain/runner/hosts.js";
+import {
+  loadDeviceIdentity,
+  localHostId,
+  resetDeviceIdentityForTests,
+  resolveHostLabel,
+  setMachineNameForTests,
+} from "../apps/server/domain/runner/hosts.js";
+import { hostDisplayName } from "../apps/web/src/lib/session-views.js";
 import { claimHostRecordsCentral } from "../apps/server/boot/host-identity.js";
 import { isAllowedSessionTransition } from "../apps/server/domain/sessions.js";
 import { installTestContentDb } from "./helpers/content-db.js";
@@ -1086,6 +1093,56 @@ describe("agent-router: sessions/tasks", () => {
     const { session: next } = (await continued.json()) as { session: SessionRow };
     assert.equal(fake.sessions.get(next.id)?.state, "running");
     await authFetch(`${base}/sessions/${next.id}/close`, { method: "POST" });
+  });
+
+  // #578: the central server never loads this device's identity, so the
+  // summary it builds for a thread run here carries the device's ULID and no
+  // label. The sync agent answers GET /hosts/local with its id and the
+  // hostname, and the web names its own threads from that.
+  it("GET /hosts/local names this device, so a thread it ran shows the hostname in a team workspace", async () => {
+    const savedHostId = process.env.PORTUNI_HOST_ID;
+    const savedLabel = process.env.PORTUNI_HOST_LABEL;
+    delete process.env.PORTUNI_HOST_ID;
+    delete process.env.PORTUNI_HOST_LABEL;
+    const dataDir = await mkdtemp(join(tmpdir(), "portuni-agent-host-"));
+    try {
+      setMachineNameForTests(() => "Case-Mac.local");
+      const identity = loadDeviceIdentity(dataDir);
+      assert.ok(identity);
+
+      stubScript([{ wait: "message" }]);
+      const start = await authFetch(`${base}/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+      });
+      const { session } = (await start.json()) as { session: SessionRow };
+      assert.equal(fake.sessions.get(session.id)?.host_id, identity.host_id);
+
+      const local = await authFetch(`${base}/hosts/local`);
+      assert.equal(local.status, 200);
+      const host = (await local.json()) as { host_id: string; host_label: string | null };
+      assert.deepEqual(host, { host_id: identity.host_id, host_label: "Case-Mac" });
+
+      // What the central server answers for this thread: it loaded no
+      // identity, so it cannot name the device.
+      resetDeviceIdentityForTests();
+      const centralSummary = { host_id: identity.host_id, host_label: resolveHostLabel(identity.host_id) };
+      assert.equal(centralSummary.host_label, null);
+      assert.equal(hostDisplayName(centralSummary, host), "Case-Mac");
+      // A teammate's device still shows as its id.
+      assert.equal(hostDisplayName({ host_id: "01TEAMMATE", host_label: null }, host), "01TEAMMATE");
+
+      await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    } finally {
+      setMachineNameForTests(null);
+      resetDeviceIdentityForTests();
+      if (savedHostId === undefined) delete process.env.PORTUNI_HOST_ID;
+      else process.env.PORTUNI_HOST_ID = savedHostId;
+      if (savedLabel === undefined) delete process.env.PORTUNI_HOST_LABEL;
+      else process.env.PORTUNI_HOST_LABEL = savedLabel;
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("POST /sessions/:id/handoff 409s on a draft", async () => {

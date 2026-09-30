@@ -125,6 +125,11 @@ export function localHostLabel(): string | null {
   return machineName() || null;
 }
 
+// What GET /hosts/local answers: this process's host id and its label.
+export function localHostInfo(): { host_id: string; host_label: string | null } {
+  return { host_id: localHostId(), host_label: localHostLabel() };
+}
+
 // The display label for a host id, or null when nothing here can name it.
 // Until the registry lands, "nothing here can name it" means "some other
 // machine": a teammate's device seen from the central server, or this

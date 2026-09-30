@@ -151,7 +151,8 @@ Which routes stay central on purpose: graph reads and writes, the session
 record half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`,
 `/runs…`, `/sessions/record`, and `POST /hosts/claim`, which the sync
 agent itself calls at boot through `CentralClient.claimHost` (#578) and the
-webview never does; the live half of a model change is
+webview never does -- its sibling `GET /hosts/local`, this device's id and
+label for naming its own threads, is device-local; the live half of a model change is
 `POST /sessions/:id/model`, device-local), `GET /nodes/:id/sessions`, `/overview`,
 `/sync/watch`, `/nodes/:id/file-url`, `/nodes/:id/folder-url`, and `GET`/`PATCH /me`
 (the user's UI language, `users.locale`, lives in the central server's db, so

@@ -401,6 +401,13 @@ live action, `sessions-ws.ts` in the same change.
   that started on one machine and last ran on another shows where it last
   ran. `SessionSummary.host_id` and `host_label` are what the Relace row and
   the chat header render; neither fetches `GET /sessions/:id/runs` per row.
+  In a team workspace the summary is built on the central server, which
+  loaded no device identity, so `host_label` is null there and `host_id`
+  is the device's ULID. The web therefore also asks the device itself:
+  `GET /hosts/local` (`read`, device-local, `api/runners.ts`) answers
+  `{ host_id, host_label }` of the process, and `hostDisplayName`
+  (`apps/web/src/lib/session-views.ts`) uses that label when the record's
+  `host_id` is this device's. A teammate's device still shows as its id.
 - `startRun` writes `<dataDir>/runs/<runId>.pid` (`domain/runner/pid-file.ts`:
   `pid`, `started_at`, `session_id`) right after `adapter.start()` and
   removes it in the `run_ended` branch of `handleAdapterEvent`.

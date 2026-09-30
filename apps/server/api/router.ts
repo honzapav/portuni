@@ -139,6 +139,7 @@ import {
   handleDeleteRunnerInstance,
   handleListRunnerInstances,
   handleListRunnerModels,
+  handleGetLocalHost,
   handleListRunners,
   handleSetRunnerInstanceOrgDefault,
   handleUpdateRunnerInstance,
@@ -914,6 +915,10 @@ async function routeRunners(
   const { pathname } = url;
   if (pathname === "/runners" && method === "GET") {
     await handleListRunners(req, res);
+    return true;
+  }
+  if (pathname === "/hosts/local" && method === "GET") {
+    handleGetLocalHost(res);
     return true;
   }
   // #376: /runners/:runner/models MUST match before the bare

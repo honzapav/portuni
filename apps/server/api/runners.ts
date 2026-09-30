@@ -9,6 +9,7 @@
 //   DELETE /runners/instances/:id            admin  -> delete
 //   PUT    /runners/instances/:id/org-default write -> set this instance as an org's default
 //   DELETE /runners/org-defaults/:orgId      write -> clear an org's default
+//   GET    /hosts/local                      read   -> this device's host id and label (#578)
 //
 // No ownership model here (unlike sessions): the registry is one shared,
 // device-wide file, same as the desktop's old config.json profiles
@@ -21,6 +22,7 @@ import { z } from "zod";
 import { parseJsonBody, respondApiError, respondError, respondJson } from "../http/middleware.js";
 import { detectAll, getAdapter } from "../domain/runner/registry.js";
 import { EFFORT_LEVELS } from "../domain/runner/types.js";
+import { localHostInfo } from "../domain/runner/hosts.js";
 import {
   InstanceDefaultsKeyRefusedError,
   InstanceEnvKeyRefusedError,
@@ -30,7 +32,7 @@ import {
   setOrgDefault,
   updateInstance,
 } from "../domain/runner/instances.js";
-import type { RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
+import type { LocalHostInfo, RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
 
 function respondInstanceError(res: ServerResponse, ctx: string, err: unknown): void {
   if (err instanceof InstanceEnvKeyRefusedError || err instanceof InstanceDefaultsKeyRefusedError) {
@@ -47,6 +49,15 @@ export async function handleListRunners(req: IncomingMessage, res: ServerRespons
   } catch (err) {
     respondError(res, `${req.method} /runners`, err);
   }
+}
+
+// GET /hosts/local (#578): the host the runners here run on. Device-local
+// like the registry: in a team workspace the central server never loaded
+// this device's identity, so the summaries it answers carry the device's id
+// and no label; the web names its own threads from this answer.
+export function handleGetLocalHost(res: ServerResponse): void {
+  const body: LocalHostInfo = localHostInfo();
+  respondJson(res, 200, body);
 }
 
 // #376: the model picker's list -- device-local like every other /runners*

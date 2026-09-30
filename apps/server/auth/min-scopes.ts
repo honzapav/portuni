@@ -270,6 +270,8 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
 
   // --- Hosts (#578): a device claims its own records under its previous ids ---
   if (pathname === "/hosts/claim" && m === "POST") return "write";
+  // This device's own id and label, device-local like /runners.
+  if (pathname === "/hosts/local" && m === "GET") return "read";
 
   // --- Fail-closed: unknown future routes require admin ---
   return "admin";

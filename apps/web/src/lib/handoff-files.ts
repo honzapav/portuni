@@ -7,6 +7,7 @@
 // component does nothing but render them.
 
 import type { DetailFile, SessionSummary } from "../types";
+import { hostDisplayName } from "./session-views";
 
 // Same shape the server accepts in POST /sessions's handoff_path and writes
 // in domain/session-handoff.ts's handoffRelativePath -- kept here as its own
@@ -35,6 +36,9 @@ export type HandoffFileEntry = {
 export function handoffFileEntries(
   files: readonly DetailFile[],
   sessions: readonly SessionSummary[],
+  // This device's id and label (GET /hosts/local), so a thread that ran
+  // here is named even when the record's summary carries no label.
+  localHost: { host_id: string; host_label: string | null } | null = null,
 ): HandoffFileEntry[] {
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const entries: HandoffFileEntry[] = [];
@@ -50,7 +54,7 @@ export function handoffFileEntries(
       relative_path: relativePath,
       session_id: sessionId,
       title: source?.name ?? file.filename,
-      host: source?.host_label?.trim() || source?.host_id?.trim() || null,
+      host: source ? hostDisplayName(source, localHost) : null,
       last_active_at: source?.last_active_at ?? null,
     });
   }
