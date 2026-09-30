@@ -70,7 +70,7 @@
   "GOOGLE_MODE_ONLY": "Skupiny jsou dostupné jen s přihlášením přes Google.",
   "HANDOFF_FILE_NOT_HERE": "Soubor s předáním na tomto zařízení zatím není.",
   "HANDOFF_INVALID": "Přihlašovací kód není platný nebo vypršel.",
-  "HANDOFF_NO_CONTENT": "Obsah vlákna na tomto zařízení zatím není; zkus to znovu, až se stáhne.",
+  "HANDOFF_NO_CONTENT": "Obsah vlákna na tomto zařízení není. Pokračuj tam, kde vlákno běželo, nebo navaž z jeho handoff souboru.",
   "HANDOFF_NO_MIRROR": "Uzel nemá na tomto zařízení mirror, soubor s předáním nejde zapsat.",
   "HANDOFF_NOT_ALLOWED": "Předat jde jen běžící nebo pozastavené vlákno.",
   "HANDOFF_NOT_LOOPBACK": "Tohle přihlášení funguje jen na tomto počítači.",

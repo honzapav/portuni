@@ -712,7 +712,7 @@ export default interface Resources {
     "HANDOFF_INVALID": "The sign-in code is not valid or has expired.",
     "HANDOFF_NOT_ALLOWED": "Only a running or suspended thread can be handed off.",
     "HANDOFF_NOT_LOOPBACK": "This sign-in works only on this computer.",
-    "HANDOFF_NO_CONTENT": "The thread's content is not on this device yet; try again once it has downloaded.",
+    "HANDOFF_NO_CONTENT": "The thread's content is not on this device. Continue it where it ran, or start from its handoff file.",
     "HANDOFF_NO_MIRROR": "The node has no mirror on this device, so the handoff file cannot be written.",
     "HANDOFF_PATH_INVALID": "The handoff file path is not valid.",
     "HANDOFF_RUN_ELSEWHERE": "The thread is running on the device {{host}}; hand it off there.",

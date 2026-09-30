@@ -259,9 +259,9 @@ to pick the work up here is the round trip below — **Hand off** on X, then
 **Continue from handoff** here. Hand off itself is hidden on such a thread: the
 summary is written from the transcript, and this machine holds none of it.
 A message sent into such a thread through REST is refused the same way
-(409 `HANDOFF_TRANSCRIPT_ELSEWHERE`, or `HANDOFF_NO_CONTENT` while the
-first download has not arrived) instead of waking an agent that knows
-nothing of the thread.
+(409 `HANDOFF_TRANSCRIPT_ELSEWHERE`, or `HANDOFF_NO_CONTENT` when the
+record names no other device but this one holds no content either)
+instead of waking an agent that knows nothing of the thread.
 
 **Hand off** (the button reads "Hand off to another device") hands the thread to another machine. It is offered on a running
 or a suspended thread, in the chat header and on the thread's row in the

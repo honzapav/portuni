@@ -1418,10 +1418,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   // The thread's content is not on this device. Always throws: the
   // transcript is on the device the thread last ran on, or -- it ran here,
-  // or nowhere recorded -- the first-boot download from the central server
-  // has not finished or failed. A summary built now would be empty and
-  // would stand in for the real one, so nothing proceeds until the content
-  // arrives.
+  // or nowhere recorded -- this device holds none of it (content never
+  // travels; only a handoff file does). A summary built now would be
+  // empty and would stand in for the real one, so nothing proceeds.
   // `context` picks the code of the "elsewhere" refusal: Předat
   // (HANDOFF_TRANSCRIPT_ELSEWHERE) or a resume by writing
   // (SESSION_TRANSCRIPT_ELSEWHERE) -- the user is told different things.
@@ -1446,7 +1445,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
     throw new SessionHandoffError(
       "HANDOFF_NO_CONTENT",
-      "the thread's content is not on this device yet; retry once it has downloaded",
+      "the thread's content is not on this device; continue it where it ran, or start from its handoff file",
     );
   }
 
