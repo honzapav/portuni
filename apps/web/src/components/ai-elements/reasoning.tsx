@@ -29,7 +29,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { markdownLink } from "@/lib/markdown-link";
+import { renderMarkdownLink } from "@/lib/markdown-link";
 import { useStreamdownPlugins } from "@/lib/streamdown-plugins";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
@@ -247,7 +247,9 @@ export const ReasoningContent = memo(
         <Streamdown
           plugins={plugins}
           translations={translations}
-          components={{ a: markdownLink }}
+          components={{
+            a: ({ href, children }) => renderMarkdownLink(href, children),
+          }}
         >
           {children}
         </Streamdown>
