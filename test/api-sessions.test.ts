@@ -162,6 +162,25 @@ describe("session REST endpoints", () => {
     assert.equal(bodyAll.sessions.length, 2);
   });
 
+  // The central record half of a continued thread (CentralSessionStore ->
+  // POST /sessions/record): the new thread's model/effort override comes
+  // from the thread it continues, and the record keeps it.
+  test("POST /sessions/record keeps the model and effort a task record is created with", async () => {
+    const res = await call(makeIdentity(SOLO), "POST", "/sessions/record", {
+      node_id: nodeId,
+      runner: "claude",
+      instance_id: null,
+      host_id: "tento-mac",
+      model: "claude-opus-5-5",
+      effort: "high",
+    });
+    assert.equal(res.statusCode, 201, res.body);
+    const row = JSON.parse(res.body) as { state: string; model: string | null; effort: string | null };
+    assert.equal(row.state, "running");
+    assert.equal(row.model, "claude-opus-5-5");
+    assert.equal(row.effort, "high");
+  });
+
   // #463: a draft is a thread, so the node list carries the caller's own
   // (a reload or a second window of the same user shows it). Another
   // user's draft never appears, however visible the node is.

@@ -788,6 +788,7 @@ export default interface Resources {
     "SESSION_BIND_REFUSED": "The thread is not running, so the runner cannot connect to it.",
     "SESSION_NOT_DRAFT": "The runner and instance can change only before the thread starts.",
     "SESSION_NOT_FOUND": "The thread was not found.",
+    "SESSION_STATE_CHANGED": "The thread is no longer in the state this action was offered for; refresh the list.",
     "SESSION_TRANSCRIPT_ELSEWHERE": "The thread's transcript is on the device {{host}}; continue it there.",
     "SYNC_AGENT_DOWN": "The sync agent is not running. Sign in under Settings → Account.",
     "SYNC_JOB_NOT_FOUND": "The sync job was not found.",
@@ -1340,6 +1341,8 @@ export default interface Resources {
       "row": {
         "cancel_rename": "Cancel",
         "close": "Close",
+        "continue": "Continue in a new thread",
+        "continuing": "Continuing…",
         "open_chat": "Open chat",
         "rename": "Rename",
         "runner_unknown": "unknown",

@@ -43,6 +43,7 @@ import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { getMirrorPath, registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
+import { isAllowedSessionTransition } from "../apps/server/domain/sessions.js";
 import { installTestContentDb } from "./helpers/content-db.js";
 import { createInstance } from "../apps/server/domain/runner/instances.js";
 import { claudeProjectSlug } from "../apps/server/domain/session-handoff.js";
@@ -153,6 +154,12 @@ class FakeCentral implements CentralClient {
   async patchSessionRecord(id: string, patch: PatchSessionInput): Promise<SessionRow> {
     const row = this.sessions.get(id);
     if (!row) throw new CentralHttpError("session not found", 404);
+    // The real record route refuses what the state machine refuses
+    // (transitionSessionState); a fake that took any state would prove
+    // nothing about a closed or archived thread.
+    if (patch.state !== undefined && !isAllowedSessionTransition(row.state, patch.state)) {
+      throw new CentralHttpError(`${row.state} -> ${patch.state} is not a valid transition`, 500);
+    }
     const updated: SessionRow = {
       ...row,
       ...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -871,6 +878,96 @@ describe("agent-router: sessions/tasks", () => {
     const mirrorRoot = await getMirrorPath(fake.sessions.get(session.id)!.user_id, NODE_ID);
     assert.match(await readFile(join(mirrorRoot!, relPath), "utf8"), /server-handoff reason=continue/);
     await authFetch(`${base}/sessions/${continued.id}/close`, { method: "POST" });
+  });
+
+  // Pokračovat v nové session on a closed thread: the central record keeps
+  // its state, only its handoff_path changes, and the new thread and its
+  // run land on central. The personal-workspace half is in
+  // test/runner-runtime-handoff.test.ts.
+  it("continue on a closed thread leaves the central record closed and starts a new, running one", async () => {
+    stubScript([{ wait: "message" }]);
+    fake.registered = [];
+    const start = await authFetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    const closed = fake.sessions.get(session.id)!;
+    assert.equal(closed.state, "closed");
+    const runsBefore = fake.runs.size;
+
+    const continueRes = await authFetch(`${base}/sessions/${session.id}/continue`, { method: "POST" });
+    assert.equal(continueRes.status, 200);
+    const { session: continued } = (await continueRes.json()) as { session: SessionRow };
+    assert.notEqual(continued.id, session.id);
+
+    const relPath = `wip/sessions/${session.id}-handoff.md`;
+    const old = fake.sessions.get(session.id)!;
+    assert.equal(old.state, "closed");
+    assert.equal(old.closed_at, closed.closed_at);
+    assert.equal(old.handoff_path, relPath);
+    assert.deepEqual(fake.registered, [{ nodeId: NODE_ID, relPath }]);
+    assert.equal(fake.sessions.get(continued.id)?.state, "running");
+    assert.equal(fake.runs.size, runsBefore + 1);
+    await authFetch(`${base}/sessions/${continued.id}/close`, { method: "POST" });
+  });
+
+  // An archived record has no transition to closed; the fake central
+  // refuses what the state machine refuses (isAllowedSessionTransition),
+  // so this proves the runtime never asks central for one.
+  it("continue on an archived thread leaves the central record archived and starts a new, running one", async () => {
+    stubScript([{ wait: "message" }]);
+    const start = await authFetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    fake.sessions.set(session.id, { ...fake.sessions.get(session.id)!, state: "archived" });
+
+    const continueRes = await authFetch(`${base}/sessions/${session.id}/continue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expect_state: "archived" }),
+    });
+    assert.equal(continueRes.status, 200);
+    const { session: continued } = (await continueRes.json()) as { session: SessionRow };
+    assert.equal(fake.sessions.get(session.id)?.state, "archived");
+    assert.equal(fake.sessions.get(session.id)?.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+    assert.equal(fake.sessions.get(continued.id)?.state, "running");
+    await authFetch(`${base}/sessions/${continued.id}/close`, { method: "POST" });
+  });
+
+  // The transcript is on the device that ran the thread: a closed thread
+  // whose latest run is another device's is refused with 409 before any
+  // record is created, even when this device still holds older events.
+  it("continue on a closed thread whose last run was elsewhere is refused with SESSION_TRANSCRIPT_ELSEWHERE", async () => {
+    stubScript([{ wait: "message" }]);
+    const start = await authFetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    for (const run of fake.runs.values()) {
+      if (run.session_id === session.id) fake.runs.set(run.id, { ...run, host_id: "druhy-mac" });
+    }
+    const sessionsBefore = fake.sessions.size;
+    const runsBefore = fake.runs.size;
+
+    const res = await authFetch(`${base}/sessions/${session.id}/continue`, { method: "POST" });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string; code: string; params?: { host?: string } };
+    assert.equal(body.code, "SESSION_TRANSCRIPT_ELSEWHERE");
+    assert.equal(body.params?.host, "druhy-mac");
+    assert.equal(fake.sessions.size, sessionsBefore);
+    assert.equal(fake.runs.size, runsBefore);
+    assert.equal(fake.sessions.get(session.id)?.state, "closed");
+    assert.equal(fake.sessions.get(session.id)?.handoff_path, null);
   });
 
   // The four device-local session/runner routes is_device_local_path sends

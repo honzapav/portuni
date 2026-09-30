@@ -148,6 +148,7 @@
   "SESSION_BIND_REFUSED": "Vlákno neběží, runner se k němu nemůže připojit.",
   "SESSION_NOT_DRAFT": "Runner a instanci jde změnit jen před začátkem vlákna.",
   "SESSION_NOT_FOUND": "Vlákno se nenašlo.",
+  "SESSION_STATE_CHANGED": "Vlákno už není ve stavu, pro který byla tahle akce nabídnutá; obnov seznam.",
   "SESSION_TRANSCRIPT_ELSEWHERE": "Přepis vlákna je na zařízení {{host}}; pokračovat v něm jde jen tam.",
   "SYNC_AGENT_DOWN": "Synchronizační agent neběží. Přihlas se v Nastavení → Účet.",
   "SYNC_JOB_NOT_FOUND": "Úloha synchronizace se nenašla.",
