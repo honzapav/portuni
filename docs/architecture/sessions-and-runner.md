@@ -365,17 +365,37 @@ live action, `sessions-ws.ts` in the same change.
 ## Runs, events, pid files and the boot sweep
 
 - The host of a run is the machine that started it. `domain/runner/hosts.ts`
-  is the whole registry there is: `localHostId()` is `PORTUNI_HOST_ID` or
-  the machine name slugified (`Honzas-MacBook-Pro.local` ->
-  `honzas-macbook-pro`), `localHostLabel()` is `PORTUNI_HOST_LABEL` or that
-  machine name with its case intact, and `resolveHostLabel(id)` answers only
-  for the host this process is -- nothing here can name another machine
-  until the `hosts` table of the remote-hosts spec exists. The runtime
-  stamps `localHostId()` on every session and run it creates, so in a team
-  workspace the sync agent's id is what reaches the central server's record
-  (`POST /sessions/:id/runs` already carried `host_id`). Ids are
-  human-readable rather than ULIDs precisely because the surfaces fall back
-  to them when there is no label.
+  is the whole registry there is. The id is the remote-hosts spec's Host
+  id: a ULID minted at the device's first boot and stored in its data dir
+  as `device.json` (`resolveRunnerDataDir()`, next to `content.db`; per
+  workspace on the desktop), read once at boot by `loadDeviceIdentity()`
+  on every device -- the desktop sidecar in both workspaces and the
+  standalone server as a personal workspace, never the central server
+  (#578). `localHostId()` is `PORTUNI_HOST_ID`, else that stored id, else
+  (a process that loaded none) the machine name slugified
+  (`Honzas-MacBook-Pro.local` -> `honzas-macbook-pro`); the hostname is
+  only the label: `localHostLabel()` is `PORTUNI_HOST_LABEL` or the machine
+  name with its case intact, read live, and `resolveHostLabel(id)` answers
+  only for the host this process is -- nothing here can name another
+  machine until the `hosts` table of the remote-hosts spec exists, so a
+  teammate's device shows as its id. The runtime stamps `localHostId()` on
+  every session and run it creates, so in a team workspace the sync
+  agent's id is what reaches the central server's record
+  (`POST /sessions/:id/runs` already carried `host_id`).
+- Renaming a machine therefore changes nothing a thread is keyed on. The
+  records a device made before the id was stored carry its hostname slug:
+  `device.json` keeps the ids the device ran under in `previous_host_ids`
+  (the first one is the slug at the moment the file was created), and the
+  boot claims them (`boot/host-identity.ts`, `claimHostRecords` in
+  `domain/sessions.ts`): a personal workspace rewrites `sessions.host_id`
+  and `session_runs.host_id` in its own graph db before serving, a sync
+  agent calls `POST /hosts/claim { host_id, previous_host_ids }` (`write`)
+  through `CentralClient.claimHost`, and the central server rewrites only
+  the caller's (`user_id`) records. The claim is idempotent and
+  best-effort; a failure is logged and the next boot retries. A device
+  running with `PORTUNI_HOST_ID` writes no file and claims nothing. An
+  unreadable `device.json` is left alone (a new id would orphan every
+  record of the old one) and the process runs under the slug.
 - `toSummary` (`api/sessions.ts`) reports the latest run that names a host
   (`getLatestRunHostId`), falling back to the session row's own -- a thread
   that started on one machine and last ran on another shows where it last

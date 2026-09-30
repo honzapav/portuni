@@ -110,6 +110,7 @@ import {
 } from "./events.js";
 import {
   handleAnswerSessionQuestion,
+  handleClaimHost,
   handleCloseSession,
   handleContinueSession,
   handleHandoffSession,
@@ -773,6 +774,13 @@ async function routeSessions(
   // /sessions/:id with no further segment, or use a different sub-path).
   if (pathname === "/sessions/record" && method === "POST") {
     await handleCreateSessionRecord(req, res, identity);
+    return true;
+  }
+  // #578: the sync agent's boot claims the records it made under its
+  // previous host ids. Same posture as the record half above.
+  if (pathname === "/hosts/claim" && method === "POST") {
+    if (!guardRestSessionWrite(req, res, identity)) return true;
+    await handleClaimHost(req, res, identity);
     return true;
   }
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);

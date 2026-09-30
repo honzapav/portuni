@@ -21,6 +21,8 @@ import {
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
 import { getSessionRuntime } from "./boot/session-runtime.js";
+import { loadDeviceIdentity } from "./domain/runner/hosts.js";
+import { claimHostRecordsLocal } from "./boot/host-identity.js";
 
 async function main() {
   // Refuse a server whose front door cannot authenticate before touching
@@ -36,7 +38,14 @@ async function main() {
   // content at all.
   const central = isCentralServer();
   if (central) await ensureSchema();
-  else await ensurePersonalWorkspaceSchema();
+  else {
+    await ensurePersonalWorkspaceSchema();
+    // A personal workspace is a device: its host id is a ULID in its data
+    // dir, and records under its previous ids (the hostname slug) are its
+    // own again before the first request (#578). The central server runs
+    // no task and has no device id.
+    await claimHostRecordsLocal(loadDeviceIdentity());
+  }
   registerRunnerAdapters();
   startHttpServer();
   // Standalone server: opt in with PORTUNI_WATCH_MIRRORS=1. Default off so it

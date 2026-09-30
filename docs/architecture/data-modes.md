@@ -149,7 +149,9 @@ locally, `agent-router.ts`, and that JSON file.
 
 Which routes stay central on purpose: graph reads and writes, the session
 record half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`,
-`/runs…`, `/sessions/record`; the live half of a model change is
+`/runs…`, `/sessions/record`, and `POST /hosts/claim`, which the sync
+agent itself calls at boot through `CentralClient.claimHost` (#578) and the
+webview never does; the live half of a model change is
 `POST /sessions/:id/model`, device-local), `GET /nodes/:id/sessions`, `/overview`,
 `/sync/watch`, `/nodes/:id/file-url`, `/nodes/:id/folder-url`, and `GET`/`PATCH /me`
 (the user's UI language, `users.locale`, lives in the central server's db, so

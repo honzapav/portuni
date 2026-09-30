@@ -13,6 +13,8 @@ import { startHttpServer, type HttpServerHandle } from "./http/server.js";
 import { assertAuthConfig } from "./infra/auth-config.js";
 import { getDb } from "./infra/db.js";
 import { getDeviceContentDb } from "./infra/device-content-db.js";
+import { loadDeviceIdentity } from "./domain/runner/hosts.js";
+import { claimHostRecordsCentral, claimHostRecordsLocal } from "./boot/host-identity.js";
 import { ensurePersonalWorkspaceSchema } from "./boot/content-import.js";
 import { SOLO_USER } from "./infra/schema.js";
 import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
@@ -345,6 +347,11 @@ async function main(): Promise<void> {
   mkdirSync(dataDir, { recursive: true });
   registerRunnerAdapters();
 
+  // This device's host id (#578): a ULID in the data dir, minted on the
+  // first boot, so renaming the machine never turns its own threads into
+  // another device's. Both workspaces; PORTUNI_HOST_ID still overrides.
+  const hostIdentity = loadDeviceIdentity(dataDir);
+
   // The device content db (content.db next to runners.json): a thread's
   // transcript and its first message live on the device that ran it, in
   // both workspaces, so this is opened before the central-mode branch --
@@ -355,6 +362,9 @@ async function main(): Promise<void> {
   // branches before any Turso/graph-db wiring.
   const agentClient = createCentralClientFromEnv();
   if (agentClient) {
+    // Records made under this device's previous ids live on the central
+    // server; best-effort, never holds up the boot.
+    void claimHostRecordsCentral(agentClient, hostIdentity);
     await agentMain(agentClient);
     return;
   }
@@ -374,6 +384,9 @@ async function main(): Promise<void> {
   // runs before ensureSchema: migration 040 drops that content from the
   // graph db and is held back while the copy is incomplete (#462).
   await ensurePersonalWorkspaceSchema();
+  // Before serving: a thread this device ran under its old id is its own
+  // again by the time the first request reads it (#578).
+  await claimHostRecordsLocal(hostIdentity);
 
   const port = Number(process.env.PORTUNI_PORT ?? 0);
   process.env.PORT = String(port);

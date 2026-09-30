@@ -13,6 +13,7 @@ import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import { SessionHandoffError, createSessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { localHostId } from "../apps/server/domain/runner/hosts.js";
+import { claimHostRecordsLocal } from "../apps/server/boot/host-identity.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
@@ -730,6 +731,32 @@ describe("session runtime: continueSession on a closed or archived thread", () =
     const old = await store.getSession(session.id);
     assert.equal(old?.state, "closed");
     assert.equal(old?.handoff_path, null);
+  });
+
+  // #578: the machine was renamed, so the thread's records carry the old
+  // hostname slug. The boot claim rewrites them to this device's id and
+  // Předat and Pokračovat v nové session work again.
+  it("after the boot claim, a thread recorded under the old host id can be handed off and continued", async () => {
+    const { db, nodeId, store, runtime } = await withMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "before the rename", runner: "fake" });
+    await runtime.closeSession(session.id);
+    await db.execute({ sql: "UPDATE sessions SET host_id = ? WHERE id = ?", args: ["stary-mac", session.id] });
+    await db.execute({ sql: "UPDATE session_runs SET host_id = ? WHERE session_id = ?", args: ["stary-mac", session.id] });
+    await assert.rejects(
+      () => runtime.continueSession(session.id),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "SESSION_TRANSCRIPT_ELSEWHERE",
+    );
+
+    await claimHostRecordsLocal({ host_id: localHostId(), previous_host_ids: ["stary-mac"] });
+    assert.equal((await store.getSession(session.id))?.host_id, localHostId());
+
+    await db.execute({ sql: "UPDATE sessions SET state = 'suspended' WHERE id = ?", args: [session.id] });
+    const handedOver = await runtime.handoff(session.id);
+    assert.equal(handedOver.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+    await db.execute({ sql: "UPDATE sessions SET state = 'closed' WHERE id = ?", args: [session.id] });
+    const { session: next } = await runtime.continueSession(session.id);
+    assert.equal(next.state, "running");
+    await runtime.closeSession(next.id);
   });
 
   it("a request carrying the state it was offered on is refused once the thread has moved on, and ends nothing", async () => {

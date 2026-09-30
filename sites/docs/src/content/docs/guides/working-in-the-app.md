@@ -263,6 +263,14 @@ A message sent into such a thread through REST is refused the same way
 record names no other device but this one holds no content either)
 instead of waking an agent that knows nothing of the thread.
 
+"The device" is the Portuni installation, not the machine's name: each
+workspace keeps a device id of its own in its data folder, created the
+first time it starts, and the machine's name is only the label shown next
+to a thread. Renaming the computer keeps its threads its own — Hand off and
+Continue in a new thread work on them as before, and the thread shows the
+new name. A thread started before this id existed is taken over the first
+time the app starts after the update.
+
 **Hand off** (the button reads "Hand off to another device") hands the thread to another machine. It is offered on a running
 or a suspended thread, in the chat header and on the thread's row in the
 Work sidebar. On a running thread it ends the turn and the run, and the
