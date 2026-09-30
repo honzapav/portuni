@@ -582,6 +582,12 @@ export const RequestLocale = z.enum(LOCALES).optional();
 // The body of Předat and Pokračovat v nové session: nothing but the locale,
 // and an empty body is fine.
 export const SessionLocaleBody = z.object({ locale: RequestLocale });
+// POST /sessions/:id/continue: `expect_state` is the state the action was
+// offered on (a Relace row's closed or archived thread); the runtime refuses
+// SESSION_STATE_CHANGED when the thread has moved on since.
+export const ContinueSessionBody = SessionLocaleBody.extend({
+  expect_state: z.enum(SESSION_STATES).optional(),
+});
 
 // Shared with api/agent-router.ts's POST /sessions: one schema, both routers.
 // brief/runner optional (#374): a thread opens empty (spec rule 5, "no
@@ -833,10 +839,13 @@ export async function handleContinueSession(
 ): Promise<void> {
   try {
     const db = getDb();
-    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "resume", SessionLocaleBody);
+    const guarded = await guardSessionBody(req, res, db, identity, sessionId, "resume", ContinueSessionBody);
     if (!guarded) return;
     const { body } = guarded;
-    const { session, run } = await getSessionRuntime().continueSession(sessionId, { locale: body.locale });
+    const { session, run } = await getSessionRuntime().continueSession(sessionId, {
+      locale: body.locale,
+      ...(body.expect_state ? { expectState: body.expect_state } : {}),
+    });
     await logAudit(identity.userId, "session_continue", "session", sessionId, { new_session_id: session.id });
     respondJson(res, 200, { session: await toSummary(session), run });
   } catch (err) {
@@ -960,6 +969,10 @@ const RecordSessionBody = z.union([
     runner: z.string().min(1),
     instance_id: z.string().nullable().optional(),
     host_id: z.string().nullable().optional(),
+    // #375: the thread's own model/effort override, carried over by
+    // Pokračovat v nové session from the thread it continues.
+    model: z.string().nullable().optional(),
+    effort: z.enum(EFFORT_LEVELS).nullable().optional(),
   }),
 ]);
 
@@ -999,6 +1012,8 @@ export async function handleCreateSessionRecord(
             runner: body.runner,
             instance_id: body.instance_id ?? null,
             host_id: body.host_id ?? null,
+            model: body.model ?? null,
+            effort: body.effort ?? null,
           });
     await logAudit(identity.userId, "session_record", "session", session.id, {
       node_id: body.node_id,
