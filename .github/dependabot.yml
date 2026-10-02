@@ -1,91 +1,75 @@
-# Dependabot configuration for Portuni.
-# Covers every package ecosystem in the repo so version + security updates
-# are no longer limited to whatever GitHub auto-detects. Minor/patch bumps are
-# grouped per ecosystem to cut PR noise; majors and security fixes still open
-# individual PRs. Version updates wait 7 days after a release (cooldown);
-# security updates are not delayed.
+# Dependabot: jen bezpečnostní opravy, jeden PR za každou část repa.
+# Pravidelné aktualizace verzí jsou vypnuté (open-pull-requests-limit: 0).
+# Jednotný standard pro všechna repa sledovaná službou asana-github-sync.
 version: 2
 updates:
-  # Backend Node server (root package.json / package-lock.json).
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
-    cooldown:
-      default-days: 7
+    open-pull-requests-limit: 0
     groups:
-      root-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-
-  # React + Vite frontend.
+      bezpecnost:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: "npm"
     directory: "/apps/web"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
-    cooldown:
-      default-days: 7
+    open-pull-requests-limit: 0
     groups:
-      web-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-
-  # Marketing/landing site (Astro).
+      bezpecnost:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: "npm"
     directory: "/sites/marketing"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
-    cooldown:
-      default-days: 7
+    open-pull-requests-limit: 0
     groups:
-      marketing-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-
-  # Documentation site (Astro).
+      bezpecnost:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: "npm"
     directory: "/sites/docs"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
-    cooldown:
-      default-days: 7
+    open-pull-requests-limit: 0
     groups:
-      docs-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-
-  # Tauri 2 desktop shell (Rust).
+      bezpecnost:
+        applies-to: security-updates
+        patterns:
+          - "*"
+  - package-ecosystem: "npm"
+    directory: "/.sandcastle"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      bezpecnost:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: "cargo"
     directory: "/apps/desktop"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
-    cooldown:
-      default-days: 7
+    open-pull-requests-limit: 0
     groups:
-      cargo-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-
-  # CI/release workflows.
+      bezpecnost:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
-    cooldown:
-      default-days: 7
+    open-pull-requests-limit: 0
     groups:
-      github-actions:
-        update-types:
-          - "minor"
-          - "patch"
+      bezpecnost:
+        applies-to: security-updates
+        patterns:
+          - "*"

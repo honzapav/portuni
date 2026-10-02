@@ -311,6 +311,8 @@
     "row": {
       "cancel_rename": "Zrušit",
       "close": "Uzavřít",
+      "continue": "Pokračovat v nové session",
+      "continuing": "Pokračuji…",
       "open_chat": "Otevřít chat",
       "rename": "Přejmenovat",
       "runner_unknown": "neznámý",
