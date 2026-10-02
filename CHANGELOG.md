@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.1](https://github.com/honzapav/portuni/compare/v0.25.0...v0.25.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **web:** Práce badge counts open tasks, not open nodes ([#526](https://github.com/honzapav/portuni/issues/526)) ([116b836](https://github.com/honzapav/portuni/commit/116b836019cb95ef666d060b09ca35da806a0a5a))
+
 ## [0.25.0](https://github.com/honzapav/portuni/compare/v0.24.0...v0.25.0) (2026-09-26)
 
 

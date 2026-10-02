@@ -375,6 +375,12 @@ const ALLOWED_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   archived: [],
 };
 
+// The one rule every record store follows (the local store here, the
+// central record route through it, and the tests' fake central server).
+export function isAllowedSessionTransition(from: SessionState, to: SessionState): boolean {
+  return from === to || ALLOWED_TRANSITIONS[from].includes(to);
+}
+
 export async function transitionSessionState(
   db: DbClient,
   actorUserId: string,
@@ -384,7 +390,7 @@ export async function transitionSessionState(
   const existing = await loadSession(db, sessionId);
   if (!existing) throw new Error(`transitionSessionState: ${sessionId} not found`);
   if (existing.state === toState) return existing;
-  if (!ALLOWED_TRANSITIONS[existing.state].includes(toState)) {
+  if (!isAllowedSessionTransition(existing.state, toState)) {
     throw new Error(
       `transitionSessionState: ${existing.state} -> ${toState} is not a valid transition`,
     );
