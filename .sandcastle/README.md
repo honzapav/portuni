@@ -4,7 +4,7 @@ Autonomous agent (Claude Code, personal account) that works through GitHub
 issues labelled `ready-for-agent` and commits to a batch branch
 `ralph/backlog-YYYY-MM-DD`, PR only. The launcher, supervisor and prompt core
 come from [`honzapav/sandcastle-harness`](https://github.com/honzapav/sandcastle-harness)
-(pinned by tag in `package.json`); this directory holds only what is Portuni
+(newest release, no version pin); this directory holds only what is Portuni
 specific.
 
 ## Files
@@ -31,7 +31,7 @@ specific.
    Claude token: `claude setup-token` (personal profile). GitHub: fine-grained
    PAT with `honzapav/portuni` selected and Contents, Issues, Pull requests:
    read and write. One PAT per repo.
-3. `(cd .sandcastle && npm ci)`.
+3. `./.sandcastle/bootstrap.sh check`.
 4. Image: `./.sandcastle/node_modules/.bin/sandcastle docker build-image --image-name sandcastle:portuni --dockerfile .sandcastle/Dockerfile`
 5. Main working tree on `main` and clean; the launcher fast-forwards it to
    `origin/main` and refuses to start when local commits are ahead.
@@ -51,7 +51,7 @@ unlock the keychain. Knobs: `SANDCASTLE_MODEL`, `SANDCASTLE_BRANCH`,
 `SANDCASTLE_MAX_RUNS`.
 
 Deploy harness or config changes: merge to `main`, then
-`ssh wintermute-mac 'cd ~/Dev/projekty/portuni && git pull --ff-only && (cd .sandcastle && npm ci)'`
+`ssh wintermute-mac 'cd ~/Dev/projekty/portuni && git pull --ff-only && ./.sandcastle/bootstrap.sh check'`
 (the image needs a rebuild only when the Dockerfile changes).
 
 ## Portuni specifics
