@@ -30,7 +30,14 @@ import {
   toolOutputText,
 } from "../lib/chat-event-text";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { composerStatePlaceholder, hostDisplayName, threadAcceptsMessages, threadCloseAction } from "../lib/session-views";
+import {
+  composerStatePlaceholder,
+  hostDisplayName,
+  threadAcceptsMessages,
+  threadCanContinue,
+  threadCloseAction,
+} from "../lib/session-views";
+import type { SessionRunRow, SessionSummary } from "../types";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
 import { useSessionStore } from "../lib/use-session-store";
@@ -169,11 +176,17 @@ export default function SessionChat({
   sessionStore,
   sessionsClient,
   onOpenFile,
+  onContinued,
 }: {
   sessionId: string;
   sessionStore: SessionStore;
   sessionsClient: SessionsClient;
   onOpenFile?: (relPath: string) => void;
+  // The thread Pokračovat v nové session started: the app makes it the
+  // node's shown thread. A running or suspended thread leaves the surface
+  // on its own once closed; a closed one opened from Relace stays pinned
+  // as the shown thread, so the switch has to be asked for.
+  onContinued?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
 }) {
   const { t } = useTranslation("chat");
   const { t: tCommon } = useTranslation("common");
@@ -528,17 +541,18 @@ export default function SessionChat({
     }
   };
 
-  // "Pokračovat v nové session" (running or suspended): POST
-  // /sessions/:id/continue closes this session (its summary
-  // seeds the new one) and starts a fresh, running one on the same node --
-  // the new row goes into the store, which is what makes it this node's
-  // shown thread (the old one is closed, so it leaves the selectors).
+  // "Pokračovat v nové session" (running, suspended or closed): POST
+  // /sessions/:id/continue closes this session (its summary seeds the new
+  // one; a closed one stays closed) and starts a fresh, running one on the
+  // same node -- the new row goes into the store and the app is told to
+  // show it (onContinued).
   const handleContinue = async () => {
     setActionPending("continue");
     setError(null);
     try {
-      const { session: newSession } = await sessionsClient.continueSession(sessionId);
+      const { session: newSession, run } = await sessionsClient.continueSession(sessionId);
       sessionStore.put(newSession);
+      onContinued?.({ session: newSession, run });
     } catch (e) {
       setError(displayError(e));
       setActionPending(null);
@@ -689,7 +703,11 @@ export default function SessionChat({
                   <Share2 />
                 </HeaderIcon>
               )}
-              {(session.state === "running" || session.state === "suspended") && (
+              {/* Every thread with a transcript here, a closed one too
+                  (it stays closed and lends its summary); the summary is
+                  built from this device's transcript, so not where the
+                  conversation is elsewhere. */}
+              {threadCanContinue(session.state) && !elsewhere && (
                 <HeaderIcon
                   onClick={() => void handleContinue()}
                   disabled={actionPending !== null}
