@@ -209,10 +209,24 @@ export function composerStatePlaceholder(state: SessionState, t: CommonT): strin
 }
 
 // #498: Relace's Otevřít chat, the same for a closed thread as for a
-// suspended one (there is no Navázat anymore -- the closed thread has a
-// composer).
+// suspended one (writing into the closed thread reopens it).
 export function sessionRowOpensChat(state: SessionState): boolean {
   return state === "running" || state === "suspended" || state === "closed";
+}
+
+// "Pokračovat v nové session" in the chat header: every thread that has a
+// transcript to summarise. A draft has none; an archived thread has no
+// chat, so its only offer is the Relace row's (sessionRowContinues).
+export function threadCanContinue(state: SessionState): boolean {
+  return state !== "draft";
+}
+
+// The Relace row's "Pokračovat v nové session": a done thread -- closed or
+// archived -- only, so a click in a list never ends a live run (a running
+// or suspended thread offers it in its chat header). A hand-opened CLI
+// session has no runner to continue under and never gets it.
+export function sessionRowContinues(s: { state: SessionState; runner: string | null }): boolean {
+  return (s.state === "closed" || s.state === "archived") && s.runner !== null;
 }
 
 // The pane Práce shows for the selected node: the open session, but only

@@ -28,7 +28,7 @@ import {
   type SuspendServerSide,
   type SuspendServerSideOptions,
 } from "../session-handoff.js";
-import type { SessionRow } from "../../shared/types.js";
+import type { SessionRow, SessionState } from "../../shared/types.js";
 import type { SessionRunRow, SessionStore } from "./store.js";
 import type { ListEventsOptions, SessionContentStore } from "./store-content.js";
 import type { SessionEventRow } from "../../shared/api-types.js";
@@ -84,6 +84,7 @@ export class SessionHandoffError extends Error {
       | "HANDOFF_RUN_ELSEWHERE"
       | "HANDOFF_TRANSCRIPT_ELSEWHERE"
       | "SESSION_TRANSCRIPT_ELSEWHERE"
+      | "SESSION_STATE_CHANGED"
       | "HANDOFF_NO_CONTENT"
       | "HANDOFF_FILE_NOT_HERE"
       | "HANDOFF_PATH_INVALID",
@@ -239,6 +240,15 @@ export interface SessionRequestOptions {
   locale?: Locale;
 }
 
+export interface ContinueSessionOptions extends SessionRequestOptions {
+  // The state the caller offered the action on. A Relace row offers
+  // Pokračovat v nové session on a closed or archived thread only; when
+  // the thread was reopened meanwhile (a message from another window
+  // took the lifecycle lock first), the request is refused
+  // (SESSION_STATE_CHANGED) instead of ending the run that reopened it.
+  expectState?: SessionState;
+}
+
 export interface StartTaskInput extends SessionRequestOptions {
   userId: string;
   nodeId: string;
@@ -352,10 +362,11 @@ export interface SessionRuntime {
   // #378: closes THIS session (summary written from what's in the log,
   // used to seed the new one -- not from a fresh suspend, since Uzavřít-
   // shaped closes never go through the auto-summary path) and starts a new
-  // one, running, on the same node -- "Pokračovat v nové session" (offered
-  // any time) and "Navázat" (a closed thread, same call minus the prior
-  // close) both call this.
-  continueSession(sessionId: string, opts?: SessionRequestOptions): Promise<{ session: SessionRow; run: SessionRunRow }>;
+  // one, running, on the same node -- "Pokračovat v nové session", offered
+  // on a running, suspended, closed or archived thread; a closed or
+  // archived one keeps its state and only lends its summary. Refused when
+  // the thread's transcript is not on this device.
+  continueSession(sessionId: string, opts?: ContinueSessionOptions): Promise<{ session: SessionRow; run: SessionRunRow }>;
   subscribe(target: string, listener: RuntimeListener): () => void;
   sessionSignals(sessionId: string): Promise<SessionSignals>;
   // The session's currently open question, or null -- lets a caller (the
@@ -1407,10 +1418,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   // The thread's content is not on this device. Always throws: the
   // transcript is on the device the thread last ran on, or -- it ran here,
-  // or nowhere recorded -- the first-boot download from the central server
-  // has not finished or failed. A summary built now would be empty and
-  // would stand in for the real one, so nothing proceeds until the content
-  // arrives.
+  // or nowhere recorded -- this device holds none of it (content never
+  // travels; only a handoff file does). A summary built now would be
+  // empty and would stand in for the real one, so nothing proceeds.
   // `context` picks the code of the "elsewhere" refusal: Předat
   // (HANDOFF_TRANSCRIPT_ELSEWHERE) or a resume by writing
   // (SESSION_TRANSCRIPT_ELSEWHERE) -- the user is told different things.
@@ -1435,7 +1445,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
     throw new SessionHandoffError(
       "HANDOFF_NO_CONTENT",
-      "the thread's content is not on this device yet; retry once it has downloaded",
+      "the thread's content is not on this device; continue it where it ran, or start from its handoff file",
     );
   }
 
@@ -1571,12 +1581,39 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // way Navázat na handoff's does.
   async function continueSessionLocked(
     sessionId: string,
-    locale?: Locale,
+    opts: ContinueSessionOptions,
   ): Promise<{ session: SessionRow; run: SessionRunRow }> {
+    const locale = opts.locale;
     const oldSession = await mustGetSession(sessionId);
+    if (opts.expectState !== undefined && oldSession.state !== opts.expectState) {
+      throw new SessionHandoffError(
+        "SESSION_STATE_CHANGED",
+        `the thread is ${oldSession.state}, not ${opts.expectState} as when the action was offered`,
+        { state: oldSession.state, expected: opts.expectState },
+      );
+    }
     if (!oldSession.node_id) throw new Error(`continueSession: session ${sessionId} has no anchor node`);
     const runner = oldSession.runner;
     if (!runner) throw new Error(`continueSession: session ${sessionId} has no runner to continue under`);
+
+    // The summary is built from this device's transcript, so the thread has
+    // to be here: its run live in this process, or -- no live run -- its
+    // last run on this host and its content on disk. A thread whose last
+    // run was on another device is refused even when this device still
+    // holds older events (a thread resumed elsewhere from its handoff
+    // file): the summary would be stale and the run there would go on
+    // under a thread this device just closed. A thread with no events
+    // here but an inline summary (Předat on a device with no mirror) is
+    // continued from that summary; one with neither is refused. Checked
+    // before anything is provisioned, so a refusal creates nothing.
+    const hasEvents = (await content.listEvents(sessionId, { limit: 1 })).length > 0;
+    const inlineSummary = hasEvents ? null : ((await content.getContent(sessionId))?.handoff_inline ?? null);
+    if (!liveRuns.has(sessionId)) {
+      const host = await runHostOf(oldSession);
+      if ((host && host !== localHostId()) || (!hasEvents && inlineSummary === null)) {
+        await refuseForMissingContent(oldSession);
+      }
+    }
 
     // Provisioned before the old thread is closed: when the new run cannot
     // start (#507), the old one stays as it is.
@@ -1594,7 +1631,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       await drain(sessionId);
     }
 
-    const summary = await handoffs.summarize(oldSession, "continue", locale);
+    const summary = inlineSummary ?? (await handoffs.summarize(oldSession, "continue", locale));
     // The old run is already ended: a file that cannot be written (a full
     // disk, a mirror gone read-only) must not strand the old thread running
     // with no live run. The summary still seeds the new thread inline, the
@@ -1604,13 +1641,19 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       return null;
     });
 
-    await store.patchSession(sessionId, {
-      state: "closed",
-      ...(written ? { handoff_path: written.handoffPath, handoff_hash: written.handoffHash } : {}),
-    });
-    await appendAndPublish(sessionId, null, [
-      { kind: "state_changed", payload: { from: oldSession.state, to: "closed", waiting: false } },
-    ]);
+    // A closed or archived thread keeps its state: the summary and the file
+    // are all this takes from it (an archived record has no transition to
+    // closed, and a closed one has nothing to announce).
+    const done = oldSession.state === "closed" || oldSession.state === "archived";
+    const patch = written ? { handoff_path: written.handoffPath, handoff_hash: written.handoffHash } : {};
+    if (done) {
+      if (written) await store.patchSession(sessionId, patch);
+    } else {
+      await store.patchSession(sessionId, { state: "closed", ...patch });
+      await appendAndPublish(sessionId, null, [
+        { kind: "state_changed", payload: { from: oldSession.state, to: "closed", waiting: false } },
+      ]);
+    }
 
     const newSession = await store.createSession({
       node_id: oldSession.node_id,
@@ -1705,9 +1748,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   function continueSession(
     sessionId: string,
-    opts?: SessionRequestOptions,
+    opts?: ContinueSessionOptions,
   ): Promise<{ session: SessionRow; run: SessionRunRow }> {
-    return withLifecycleLock(sessionId, () => continueSessionLocked(sessionId, opts?.locale));
+    return withLifecycleLock(sessionId, () => continueSessionLocked(sessionId, opts ?? {}));
   }
 
   function subscriberCount(target: string): number {

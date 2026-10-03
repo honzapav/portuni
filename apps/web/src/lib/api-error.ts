@@ -258,6 +258,7 @@ const MESSAGES: Record<DisplayErrorCode, Render> = {
   RUNNER_REQUIRED: (t) => t(($) => $.RUNNER_REQUIRED, { ns: "errors" }),
   RUN_NOT_FOUND: (t) => t(($) => $.RUN_NOT_FOUND, { ns: "errors" }),
   SESSION_NOT_DRAFT: (t) => t(($) => $.SESSION_NOT_DRAFT, { ns: "errors" }),
+  SESSION_STATE_CHANGED: (t) => t(($) => $.SESSION_STATE_CHANGED, { ns: "errors" }),
   SESSION_NOT_FOUND: (t) => t(($) => $.SESSION_NOT_FOUND, { ns: "errors" }),
   SESSION_TRANSCRIPT_ELSEWHERE: (t, p) => t(($) => $.SESSION_TRANSCRIPT_ELSEWHERE, { ns: "errors", host: s(p.host) }),
   SYNC_AGENT_DOWN: (t) => t(($) => $.SYNC_AGENT_DOWN, { ns: "errors" }),
