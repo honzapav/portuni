@@ -12,6 +12,7 @@ import { setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import { SessionHandoffError, createSessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { localHostId } from "../apps/server/domain/runner/hosts.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
@@ -587,5 +588,203 @@ describe("session runtime: startFromHandoff (#460 Navázat na handoff)", () => {
       () => runtime.startFromHandoff({ userId: "U1", nodeId, handoffPath: "wip/docs/secret.md" }),
       (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_PATH_INVALID",
     );
+  });
+});
+
+// "Pokračovat v nové session" on a thread that is already done: a closed
+// or archived thread lends its summary to a new thread and keeps its own
+// state (an archived record has no transition to closed). The check that
+// the transcript is on this device runs before anything is provisioned.
+// A personal workspace here; test/agent-router-sessions.test.ts runs the
+// closed case through the fake central server for a team workspace.
+describe("session runtime: continueSession on a closed or archived thread", () => {
+  let workspace: string | null = null;
+
+  afterEach(async () => {
+    resetLocalDbForTests();
+    delete process.env.PORTUNI_WORKSPACE_ROOT;
+    if (workspace) await rm(workspace, { recursive: true, force: true });
+    workspace = null;
+  });
+
+  async function withMirror(script: FakeScriptStep[]) {
+    const shared = await sharedDb();
+    workspace = await mkdtemp(join(tmpdir(), "portuni-runtime-continue-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    const mirrorRoot = join(workspace, "mirror");
+    await mkdir(mirrorRoot, { recursive: true });
+    await registerMirror("U1", shared.nodeId, mirrorRoot);
+    const store = new DbSessionStore(shared.db);
+    const adapter = new FakeRunnerAdapter({ script });
+    // A refusal has to come before provisioning: the count says so.
+    const provisions = { count: 0 };
+    const stub = stubProvision();
+    const provision: typeof stub = async (input) => {
+      provisions.count += 1;
+      return stub(input);
+    };
+    const runtime = createSessionRuntime({ store, content, registry: registryOf(adapter), provision });
+    return { ...shared, store, runtime, adapter, mirrorRoot, provisions };
+  }
+
+  async function sessionCount(db: SharedDb["db"], nodeId: string): Promise<number> {
+    const rs = await db.execute({ sql: "SELECT COUNT(*) AS n FROM sessions WHERE node_id = ?", args: [nodeId] });
+    return Number(rs.rows[0].n);
+  }
+
+  it("a closed thread stays closed, gets the file, and seeds a new running thread", async () => {
+    const { nodeId, store, runtime, adapter, mirrorRoot } = await withMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "the old task", runner: "fake" });
+    await runtime.closeSession(session.id);
+    const closed = await store.getSession(session.id);
+    const eventsBefore = await content.listEvents(session.id);
+
+    const { session: next, run } = await runtime.continueSession(session.id);
+
+    const old = await store.getSession(session.id);
+    assert.equal(old?.state, "closed");
+    assert.equal(old?.closed_at, closed?.closed_at, "the close is not redone");
+    assert.equal(old?.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+    const file = await readFile(join(mirrorRoot, old!.handoff_path!), "utf8");
+    assert.match(file, /the old task/);
+    // Nothing is announced on the old thread: no closed -> closed event.
+    assert.deepEqual(
+      (await content.listEvents(session.id)).map((e) => e.kind),
+      eventsBefore.map((e) => e.kind),
+    );
+
+    assert.notEqual(next.id, session.id);
+    assert.equal(next.state, "running");
+    assert.equal(next.node_id, nodeId);
+    assert.equal(next.name, session.name);
+    const orientation = adapter.getLastRunStart()?.orientation ?? "";
+    assert.match(orientation, /Continuing from the previous session/);
+    assert.match(orientation, /the old task/, "the old thread's content reaches the new one");
+    assert.ok((await content.listEvents(next.id)).some((e) => e.run_id === run.id && e.kind === "run_started"));
+    await runtime.closeSession(next.id);
+  });
+
+  it("an archived thread stays archived and seeds a new running thread", async () => {
+    const { db, nodeId, store, runtime, adapter } = await withMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "long ago", runner: "fake" });
+    await runtime.closeSession(session.id);
+    await store.patchSession(session.id, { state: "archived" });
+
+    const { session: next } = await runtime.continueSession(session.id);
+
+    const old = await store.getSession(session.id);
+    assert.equal(old?.state, "archived");
+    assert.equal(old?.handoff_path, `wip/sessions/${session.id}-handoff.md`);
+    assert.equal(next.state, "running");
+    assert.match(adapter.getLastRunStart()?.orientation ?? "", /long ago/);
+    assert.equal(await sessionCount(db, nodeId), 2);
+    await runtime.closeSession(next.id);
+  });
+
+  // Předat on a device with no mirror leaves the summary inline; a thread
+  // whose events are not here but whose inline summary is continues from
+  // that summary, and the file written now is that summary.
+  it("a closed thread with an inline summary and no events here continues from the summary", async () => {
+    const { db, nodeId, store, runtime, adapter, mirrorRoot } = await withMirror([{ wait: "message" }]);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: null,
+    });
+    await db.execute({ sql: "UPDATE sessions SET state = 'closed' WHERE id = ?", args: [created.id] });
+    await content.setContent(created.id, { handoff_inline: "# Shrnutí\n\nRozepsaný business case." });
+
+    const { session: next } = await runtime.continueSession(created.id);
+
+    assert.equal(next.state, "running");
+    assert.match(adapter.getLastRunStart()?.orientation ?? "", /Rozepsaný business case/);
+    const old = await store.getSession(created.id);
+    assert.equal(old?.state, "closed");
+    assert.match(await readFile(join(mirrorRoot, old!.handoff_path!), "utf8"), /Rozepsaný business case/);
+    await runtime.closeSession(next.id);
+  });
+
+  it("a closed thread whose last run was on another device is refused before anything is created, even with old events here", async () => {
+    const { db, nodeId, store, runtime, provisions } = await withMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.closeSession(session.id);
+    // The thread went on elsewhere (resumed from its file on another
+    // machine): its latest run is that device's, the events here are stale.
+    await db.execute({ sql: "UPDATE session_runs SET host_id = ? WHERE session_id = ?", args: ["druhy-mac", session.id] });
+    assert.ok((await content.listEvents(session.id)).length > 0);
+    const before = await sessionCount(db, nodeId);
+    const provisionsBefore = provisions.count;
+
+    await assert.rejects(
+      () => runtime.continueSession(session.id),
+      (err: unknown) =>
+        err instanceof SessionHandoffError &&
+        err.code === "SESSION_TRANSCRIPT_ELSEWHERE" &&
+        err.params?.host === "druhy-mac",
+    );
+    assert.equal(provisions.count, provisionsBefore, "refused before provisioning");
+    assert.equal(await sessionCount(db, nodeId), before);
+    const old = await store.getSession(session.id);
+    assert.equal(old?.state, "closed");
+    assert.equal(old?.handoff_path, null);
+  });
+
+  it("a request carrying the state it was offered on is refused once the thread has moved on, and ends nothing", async () => {
+    const { db, nodeId, store, runtime } = await withMirror([{ wait: "message" }]);
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.closeSession(session.id);
+    // The Relace row showed a closed thread; a message from another window
+    // reopened it before the row's click reached the runtime.
+    await runtime.sendMessage(session.id, "ještě něco");
+    assert.equal((await store.getSession(session.id))?.state, "running");
+    const before = await sessionCount(db, nodeId);
+
+    await assert.rejects(
+      () => runtime.continueSession(session.id, { expectState: "closed" }),
+      (err: unknown) =>
+        err instanceof SessionHandoffError &&
+        err.code === "SESSION_STATE_CHANGED" &&
+        err.params?.state === "running" &&
+        err.params?.expected === "closed",
+    );
+    assert.equal(await sessionCount(db, nodeId), before);
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[runs.length - 1].ended_at, null, "the run that reopened the thread is still live");
+    assert.equal((await store.getSession(session.id))?.state, "running");
+
+    // The same state as offered goes through.
+    await runtime.closeSession(session.id);
+    const { session: next } = await runtime.continueSession(session.id, { expectState: "closed" });
+    assert.equal(next.state, "running");
+    await runtime.closeSession(next.id);
+  });
+
+  it("a closed thread that ran here but whose content is not on this device is refused", async () => {
+    const { db, nodeId, store, runtime, provisions } = await withMirror([{ wait: "message" }]);
+    const created = await store.createSession({
+      node_id: nodeId,
+      user_id: "U1",
+      runner: "fake",
+      instance_id: null,
+      host_id: localHostId(),
+    });
+    // Its run was this device's; the content (events, inline summary) is
+    // not here -- a content row with nothing in it counts as nothing.
+    await store.createRun({ session_id: created.id, runner: "fake", instance_id: null, host_id: localHostId() });
+    await db.execute({ sql: "UPDATE sessions SET state = 'closed' WHERE id = ?", args: [created.id] });
+    await content.setContent(created.id, { handoff_inline: null });
+    const before = await sessionCount(db, nodeId);
+    const provisionsBefore = provisions.count;
+
+    await assert.rejects(
+      () => runtime.continueSession(created.id),
+      (err: unknown) => err instanceof SessionHandoffError && err.code === "HANDOFF_NO_CONTENT",
+    );
+    assert.equal(provisions.count, provisionsBefore, "refused before provisioning");
+    assert.equal(await sessionCount(db, nodeId), before);
+    assert.equal((await store.getSession(created.id))?.state, "closed");
   });
 });

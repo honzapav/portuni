@@ -307,6 +307,8 @@
     "row": {
       "cancel_rename": "Cancel",
       "close": "Close",
+      "continue": "Continue in a new thread",
+      "continuing": "Continuing…",
       "open_chat": "Open chat",
       "rename": "Rename",
       "runner_unknown": "unknown",
