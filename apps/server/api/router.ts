@@ -110,6 +110,7 @@ import {
 } from "./events.js";
 import {
   handleAnswerSessionQuestion,
+  handleClaimHost,
   handleCloseSession,
   handleContinueSession,
   handleHandoffSession,
@@ -138,6 +139,7 @@ import {
   handleDeleteRunnerInstance,
   handleListRunnerInstances,
   handleListRunnerModels,
+  handleGetLocalHost,
   handleListRunners,
   handleSetRunnerInstanceOrgDefault,
   handleUpdateRunnerInstance,
@@ -775,6 +777,13 @@ async function routeSessions(
     await handleCreateSessionRecord(req, res, identity);
     return true;
   }
+  // #578: the sync agent's boot claims the records it made under its
+  // previous host ids. Same posture as the record half above.
+  if (pathname === "/hosts/claim" && method === "POST") {
+    if (!guardRestSessionWrite(req, res, identity)) return true;
+    await handleClaimHost(req, res, identity);
+    return true;
+  }
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
   if (stateMatch && method === "POST") {
     await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));
@@ -906,6 +915,10 @@ async function routeRunners(
   const { pathname } = url;
   if (pathname === "/runners" && method === "GET") {
     await handleListRunners(req, res);
+    return true;
+  }
+  if (pathname === "/hosts/local" && method === "GET") {
+    handleGetLocalHost(res);
     return true;
   }
   // #376: /runners/:runner/models MUST match before the bare

@@ -31,6 +31,7 @@ import {
   loadOverviewSyncIssues,
 } from "../domain/queries/overview.js";
 import type { OverviewPayload } from "../shared/api-types.js";
+import { isLocalWorkspace } from "../infra/server-config.js";
 
 export async function handleGetOverview(
   req: IncomingMessage,
@@ -53,7 +54,8 @@ export async function handleGetOverview(
       loadOverviewSessions(db, identity.userId),
       loadOverviewDisconnectedJumps(db),
       loadOverviewAttentionNodes(db),
-      loadOverviewSyncIssues(db),
+      // A personal workspace has no remote, so no sync issue (#575).
+      isLocalWorkspace() ? Promise.resolve([]) : loadOverviewSyncIssues(db),
       loadOverviewEvents(db),
       loadOverviewSessionWrites(db, identity.userId),
       loadOverviewNewNodes(db),

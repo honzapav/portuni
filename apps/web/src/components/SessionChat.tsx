@@ -37,6 +37,7 @@ import {
   threadCanContinue,
   threadCloseAction,
 } from "../lib/session-views";
+import { useLocalHost } from "../lib/use-local-host";
 import type { SessionRunRow, SessionSummary } from "../types";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
@@ -404,6 +405,7 @@ export default function SessionChat({
   // #492: one answer per question -- a second click or Enter while the
   // first is on its way is dropped, not sent into a NO_PENDING_QUESTION.
   const [answerGate] = useState(createAnswerGate);
+  const localHost = useLocalHost();
 
   // Every hook has run; from here the record is what the component reads.
   // It is missing only in the moment between its removal from the store (a
@@ -413,7 +415,7 @@ export default function SessionChat({
   // and half a record would render a nameless header.
   if (!session || session.partial) return null;
 
-  const host = hostDisplayName(session);
+  const host = hostDisplayName(session, localHost);
   const startRename = () => {
     setNameDraft(session.name);
     setRenaming(true);

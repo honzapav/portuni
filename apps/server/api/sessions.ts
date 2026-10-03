@@ -42,6 +42,10 @@
 //   POST  /sessions/:id/runs               write   -> central record half (#323): create a run record
 //   PATCH /sessions/:id/runs/:run_id       write   -> central record half (#323): patch a run record
 //   GET   /sessions/:id/runs               read    -> central record half (#323): list a session's runs
+//   POST  /hosts/claim                     write   -> #578: rewrite the caller's sessions and runs
+//                                                      recorded under a device's previous host ids
+//                                                      to its current id; the sync agent's boot
+//                                                      is the only caller
 //
 // The "central record half" routes exist so the SAME SessionStore interface
 // (domain/runner/store.ts) that DbSessionStore implements over this
@@ -77,6 +81,7 @@ import {
 import { findVisibleNodeRow } from "./node-route-helpers.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import {
+  claimHostRecords,
   deleteDraftSession,
   getLatestRunHostId,
   getSession,
@@ -982,6 +987,40 @@ const RecordSessionBody = z.union([
 // then records it here via POST /sessions/:id/runs -- the deliberate split
 // this route exists for is "one implementation" (rule 1): the runtime code
 // path is identical in both modes, only the SessionStore backing it swaps.
+const ClaimHostBody = z.object({
+  host_id: z.string().trim().min(1).max(200),
+  previous_host_ids: z.array(z.string().trim().min(1).max(200)).max(100),
+});
+
+// POST /hosts/claim (#578): a device whose id changed (the hostname slug
+// before ids were stored in its data dir) takes its old records back. Only
+// the caller's own threads are rewritten; repeating the call changes
+// nothing.
+export async function handleClaimHost(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    const body = await parseJsonBody(req, res, ClaimHostBody);
+    if (!body) return;
+    const claimed = await claimHostRecords(getDb(), {
+      hostId: body.host_id,
+      previousHostIds: body.previous_host_ids,
+      userId: identity.userId,
+    });
+    if (claimed.sessions > 0 || claimed.runs > 0) {
+      await logAudit(identity.userId, "host_claim", "host", body.host_id, {
+        previous_host_ids: body.previous_host_ids,
+        ...claimed,
+      });
+    }
+    respondJson(res, 200, claimed);
+  } catch (err) {
+    respondError(res, `${req.method} /hosts/claim`, err);
+  }
+}
+
 export async function handleCreateSessionRecord(
   req: IncomingMessage,
   res: ServerResponse,

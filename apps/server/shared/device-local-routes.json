@@ -8,6 +8,7 @@
     { "method": "GET", "pattern": "/sync/jobs/current", "example": "/sync/jobs/current" },
     { "method": "GET", "pattern": "/sync/jobs/{id}", "example": "/sync/jobs/01JOB" },
     { "method": "GET", "pattern": "/runners", "example": "/runners" },
+    { "method": "GET", "pattern": "/hosts/local", "example": "/hosts/local" },
     { "method": "GET", "pattern": "/runners/{runner}/models", "example": "/runners/claude/models" },
     { "method": "GET", "pattern": "/runners/instances", "example": "/runners/instances" },
     { "method": "POST", "pattern": "/runners/instances", "example": "/runners/instances" },

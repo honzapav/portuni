@@ -149,7 +149,10 @@ locally, `agent-router.ts`, and that JSON file.
 
 Which routes stay central on purpose: graph reads and writes, the session
 record half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`,
-`/runs…`, `/sessions/record`; the live half of a model change is
+`/runs…`, `/sessions/record`, and `POST /hosts/claim`, which the sync
+agent itself calls at boot through `CentralClient.claimHost` (#578) and the
+webview never does -- its sibling `GET /hosts/local`, this device's id and
+label for naming its own threads, is device-local; the live half of a model change is
 `POST /sessions/:id/model`, device-local), `GET /nodes/:id/sessions`, `/overview`,
 `/sync/watch`, `/nodes/:id/file-url`, `/nodes/:id/folder-url`, and `GET`/`PATCH /me`
 (the user's UI language, `users.locale`, lives in the central server's db, so
@@ -198,6 +201,39 @@ a draft's record: the sync agent sends the request's `locale` with `POST
 (#539). The OAuth consent and sign-in error pages exist only on the central
 server; they use `users.locale`, else `Accept-Language`, else English. Detail:
 [`sessions-and-runner.md`](./sessions-and-runner.md).
+
+## What a personal workspace shows
+
+A personal workspace has no remote (#310), so everything about syncing with
+one is **hidden**, never merely disabled (#575). The web decides with
+`showsSyncSurfaces()` (`apps/web/src/lib/sync-visibility.ts`, over
+`useDataMode()`); while the mode is still loading every sync surface stays
+hidden, and a team workspace shows them once the lookup resolves.
+
+- **Web.** No footer "unsynced"/"to pull" pills, no `/sync/pending` poll and
+  no quit guard; Overview has no Unsynced counter, the Attention card no
+  sync issues, and the Unsynced dialog (`SyncOverview`) cannot be opened;
+  Settings has no Synchronization tab (watcher errors stay on the Files
+  tab's `WatcherErrorBanner`). In the Files tab no sync badge, no sync dots
+  on folders, sections or the tab, no "Copy Drive link", no "Keep local /
+  Take remote" and no "Restore". A file row keeps only the local facts:
+  "untracked" (on disk, no record) and "missing" (`deleted_local`: a record
+  whose file is gone). `LocalWorkspaceFilesBanner` reads the same
+  `useDataMode()`.
+- **Server.** `GET /sync/pending` answers `{nodes: [], total: 0,
+  decisions: 0}` without scanning the disk (`computeSyncPending`), and
+  `GET /overview` answers `attention.sync_issues: []`.
+- **MCP.** `portuni_store`, `portuni_pull`, `portuni_setup_remote`,
+  `portuni_set_routing_policy`, `portuni_list_remotes`, `portuni_snapshot`
+  and the `setup-drive-remote` prompt are not registered; the server brief
+  (`PERSONAL_INSTRUCTIONS`), `portuni://sync-model`
+  (`sync-model-personal.md`) and the `PORTUNI_SCOPE.md` hint never mention
+  uploading. `portuni_status` takes no `remote_name` and answers only
+  `clean`, `deleted_local` and `new_local`.
+
+A team workspace is unchanged: the sync agent serves its own
+`/sync/pending` and MCP tools (`agent-router.ts`, `agent-tools.ts`), and
+the central server's MCP server registers every tool.
 
 ## Editing files
 

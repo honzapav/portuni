@@ -23,6 +23,14 @@ otherwise. Rust lives in `apps/desktop/src/` (`lib.rs`, `auth.rs`,
   `workspaces/<id>/`, Keychain accounts `<base>.<id>`. Disabling a
   workspace stops its sidecar; closing its window does not (see Quit
   sequence).
+- The device's host id lives in that data dir too: `device.json`
+  (`host_id`, a ULID minted at the sidecar's first boot, and
+  `previous_host_ids`), next to `content.db` and `runners.json`, one per
+  workspace, in both kinds of workspace (#578). The hostname is only the
+  label, so renaming the Mac changes nothing a thread is keyed on. Deleting
+  the file mints a new id and makes the device's old threads another
+  device's; `PORTUNI_HOST_ID` overrides it. Mechanism:
+  `sessions-and-runner.md`, "The host of a run".
 - Per-mirror MCP configs reference the token as `PORTUNI_MCP_TOKEN_<ID>`
   (the server learns its id from `PORTUNI_WORKSPACE_ID`; a standalone
   server without one keeps `PORTUNI_MCP_TOKEN`). The name comes from

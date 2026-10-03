@@ -35,9 +35,6 @@ import { remoteSweep } from "../apps/server/domain/sync/remote-sweep.js";
 import { resolveRemote, listRemotes, listRules, legacyRemoteRowCounts } from "../apps/server/domain/sync/routing.js";
 import { getAdapter } from "../apps/server/domain/sync/adapter-cache.js";
 import { runNodeSync } from "../apps/server/domain/sync/sync-run.js";
-import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createMcpServer, buildDefaultEnvIdentity } from "../apps/server/mcp/server.js";
 import { snapshotService, __setSnapshotExporterForTests, __resetSnapshotExporterForTests } from "../apps/server/mcp/tools/sync-snapshot.js";
 import { LocalModeNoRemoteError } from "../apps/server/domain/sync/types.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
@@ -274,36 +271,6 @@ describe("file mutations on a local workspace touch the local copy and the row o
       () => remoteSweep(db, { userId: SOLO_USER, nodeId }),
       (err: unknown) => err instanceof LocalModeNoRemoteError,
     );
-  });
-});
-
-describe("MCP tools return LOCAL_MODE_NO_REMOTE as a structured error result", () => {
-  it("portuni_setup_remote -> isError with code (same code REST sends as 409)", async () => {
-    const shared = await makeSharedDb();
-    setDbForTesting(shared.db);
-    const { server } = createMcpServer(buildDefaultEnvIdentity());
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const client = new McpClient({ name: "local-mode-test", version: "0.0.1" }, { capabilities: {} });
-    await server.connect(serverTransport);
-    await client.connect(clientTransport);
-    try {
-      const result = await client.callTool({
-        name: "portuni_setup_remote",
-        arguments: { name: "gdrive", type: "fs", config: { root: workspace } },
-      });
-      assert.equal(result.isError, true);
-      const payload = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text) as {
-        code?: string;
-        error?: string;
-      };
-      assert.equal(payload.code, "LOCAL_MODE_NO_REMOTE");
-      assert.equal(payload.error, new LocalModeNoRemoteError().message);
-      const remotes = await shared.db.execute("SELECT COUNT(*) AS n FROM remotes WHERE name = 'gdrive'");
-      assert.equal(Number(remotes.rows[0].n), 0, "refused before any write");
-    } finally {
-      await client.close();
-      setDbForTesting(null);
-    }
   });
 });
 

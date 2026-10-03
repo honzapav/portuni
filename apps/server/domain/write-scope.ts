@@ -450,6 +450,9 @@ export function buildSoftHint(args: {
   currentMirror: string;
   portuniRoot: string;
   dataSources?: readonly DataSourceRow[];
+  // A personal workspace has no remote (#310, #575): the registration
+  // paragraph then names only the local facts and no remote operation.
+  personalWorkspace?: boolean;
 }): string {
   const mirror = normalize(args.currentMirror);
   const sources = args.dataSources ?? [];
@@ -485,13 +488,20 @@ export function buildSoftHint(args: {
       "Call `portuni_list_data_sources` (or `portuni_get_context`) to see where this node gets its information before researching elsewhere.",
     );
   }
+  lines.push("", "## Portuni file registration", "");
+  if (args.personalWorkspace) {
+    lines.push(
+      "Files you create in this mirror's `wip/`, `outputs/`, or `resources/` are registered automatically — the desktop app watches the mirror and tracks new files and edits without any action from you.",
+      "This is a personal workspace: files stay on this device and there is no remote to upload to. `portuni_status` lists files on disk that are not registered yet (`new_local`) and registered files that are gone from disk (`deleted_local`).",
+    );
+  } else {
+    lines.push(
+      "Files you create in this mirror's `wip/`, `outputs/`, or `resources/` are registered automatically — the desktop app watches the mirror and tracks new files and edits without any action from you. You normally do not need `portuni_store`.",
+      "`portuni_store` uploads a file to the routed remote (a deliberate push) — use it only when you explicitly want to push. `portuni_status` shows what is unsynced.",
+      "If automatic tracking is not active in your environment, `portuni_status` lists files you created as `new_local`, and `portuni_store` then registers and uploads them. For files that appeared from elsewhere (`new_remote`), use `portuni_adopt_files`.",
+    );
+  }
   lines.push(
-    "",
-    "## Portuni file registration",
-    "",
-    "Files you create in this mirror's `wip/`, `outputs/`, or `resources/` are registered automatically — the desktop app watches the mirror and tracks new files and edits without any action from you. You normally do not need `portuni_store`.",
-    "`portuni_store` uploads a file to the routed remote (a deliberate push) — use it only when you explicitly want to push. `portuni_status` shows what is unsynced.",
-    "If automatic tracking is not active in your environment, `portuni_status` lists files you created as `new_local`, and `portuni_store` then registers and uploads them. For files that appeared from elsewhere (`new_remote`), use `portuni_adopt_files`.",
     "",
     "## Reading related nodes",
     "",

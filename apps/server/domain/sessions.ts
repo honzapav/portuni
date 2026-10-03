@@ -674,6 +674,47 @@ export async function getLatestRunHostId(db: DbClient, sessionId: string): Promi
   return typeof host === "string" && host.length > 0 ? host : null;
 }
 
+// #578: a device's records under the ids it ran under before (the hostname
+// slug before ids were stored in the data dir) are rewritten to its current
+// id, so Předat and Pokračovat v nové session read them as this device's
+// again. `userId` limits the rewrite to that owner's threads -- the central
+// server's POST /hosts/claim passes the caller; a personal workspace's boot
+// passes none, the whole graph db being this device's. Idempotent: a second
+// claim finds nothing left under the old ids.
+export interface ClaimHostRecordsInput {
+  hostId: string;
+  previousHostIds: readonly string[];
+  userId?: string | null;
+}
+
+export async function claimHostRecords(
+  db: DbClient,
+  input: ClaimHostRecordsInput,
+): Promise<{ sessions: number; runs: number }> {
+  const previous = [...new Set(input.previousHostIds.map((id) => id.trim()))].filter(
+    (id) => id !== "" && id !== input.hostId,
+  );
+  if (previous.length === 0) return { sessions: 0, runs: 0 };
+  const inList = previous.map(() => "?").join(", ");
+  const owner = input.userId ?? null;
+  const [sessions, runs] = await db.batch(
+    [
+      {
+        sql: `UPDATE sessions SET host_id = ? WHERE host_id IN (${inList})${owner ? " AND user_id = ?" : ""}`,
+        args: [input.hostId, ...previous, ...(owner ? [owner] : [])],
+      },
+      {
+        sql: `UPDATE session_runs SET host_id = ? WHERE host_id IN (${inList})${
+          owner ? " AND session_id IN (SELECT id FROM sessions WHERE user_id = ?)" : ""
+        }`,
+        args: [input.hostId, ...previous, ...(owner ? [owner] : [])],
+      },
+    ],
+    "write",
+  );
+  return { sessions: sessions.rowsAffected, runs: runs.rowsAffected };
+}
+
 // --- Suspend (phase 2, "Lifecycle" / "Handoff") ---
 
 export interface SuspendSessionInput {

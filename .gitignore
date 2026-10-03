@@ -7,6 +7,7 @@ dist/
 env.d.ts
 portuni.db
 content.db
+device.json
 .firecrawl/
 
 # Project-scoped MCP configs are no longer used by Portuni — connection

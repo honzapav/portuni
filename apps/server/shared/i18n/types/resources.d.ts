@@ -900,6 +900,7 @@ export default interface Resources {
       "drive_link_none": "The file is not on Drive yet",
       "keep_local": "Keep local",
       "keep_local_title": "Push the local version to the remote",
+      "missing_title": "The file is registered but no longer on disk.",
       "not_editable": "This file cannot be edited",
       "open_in_editor": "Open in the editor",
       "open_on_disk": "Show on disk",
@@ -989,7 +990,6 @@ export default interface Resources {
       "central": "File sync to Google Drive is managed by the central server <server>{{server}}</server>.",
       "heading": "Sync",
       "more_errors": "… and {{count}} more." | "… and {{count}} more.",
-      "personal": "This is a personal workspace – files are stored on this computer only and are not shared. Sharing files needs a team workspace (joining a team).",
       "watcher_errors_nodes": "File watching reports {{count}} error in {{nodes}} nodes." | "File watching reports {{count}} errors in {{nodes}} nodes.",
       "watcher_errors_one_node": "File watching reports {{count}} error in 1 node." | "File watching reports {{count}} errors in 1 node."
     },

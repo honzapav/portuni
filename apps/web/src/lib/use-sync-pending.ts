@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchSyncPending } from "../api";
+import { startBackoffPoll } from "./backoff-poll";
 import {
   applyOverrides,
   applyPendingNode,
@@ -23,7 +24,11 @@ const BACKOFF_MAX_MS = 300_000;
 // Polls the cross-mirror unsynced aggregate. On mount, every 30s (paused
 // when the tab is hidden), and on window focus (throttled). Failures keep
 // the last good value and back the cadence off exponentially.
-export function useSyncPending() {
+//
+// `enabled` is false in a personal workspace (and while the data mode is
+// still unknown): there is no remote, so nothing is ever unsynced and the
+// hook neither fetches nor polls (#575); `pending` stays empty.
+export function useSyncPending(enabled: boolean) {
   const [pending, setPending] = useState<SyncPendingResponse>(EMPTY);
   // Supersede guard: overlapping polls (mount + 30s + focus) can let an older
   // response clobber a newer one. Only the latest in-flight request wins.
@@ -72,25 +77,22 @@ export function useSyncPending() {
   );
 
   useEffect(() => {
-    refresh();
-    const id = setInterval(() => {
-      if (document.hidden) return;
-      // Backoff: after N consecutive failures the effective interval doubles
-      // per failure (30s -> 60s -> 120s ... capped at 5 min).
-      const backoff = Math.min(POLL_MS * 2 ** failureCountRef.current, BACKOFF_MAX_MS);
-      if (Date.now() - lastFetchAtRef.current < backoff) return;
-      refresh();
-    }, POLL_MS);
-    const onFocus = () => {
-      if (Date.now() - lastFetchAtRef.current < FOCUS_MIN_INTERVAL_MS) return;
-      refresh();
-    };
-    window.addEventListener("focus", onFocus);
-    return () => {
-      clearInterval(id);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [refresh]);
+    if (!enabled) {
+      // Supersede anything still in flight and drop what it had shown.
+      reqRef.current += 1;
+      store(EMPTY);
+      return;
+    }
+    // Backoff: 30s -> 60s -> 120s ... capped at 5 min.
+    return startBackoffPoll({
+      refresh,
+      pollMs: POLL_MS,
+      focusMinMs: FOCUS_MIN_INTERVAL_MS,
+      backoffMaxMs: BACKOFF_MAX_MS,
+      lastFetchAtRef,
+      failureCountRef,
+    });
+  }, [enabled, refresh, store]);
 
   return { pending, refresh, applyRun };
 }

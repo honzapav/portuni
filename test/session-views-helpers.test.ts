@@ -229,6 +229,14 @@ describe("hostDisplayName (#428)", () => {
     assert.equal(hostDisplayName({ host_id: "honzas-macbook-pro" }), "honzas-macbook-pro");
   });
 
+  it("names this device's own thread from GET /hosts/local when the summary has no label (#578)", () => {
+    const local = { host_id: "01DEVICE", host_label: "Case-Mac" };
+    assert.equal(hostDisplayName({ host_id: "01DEVICE", host_label: null }, local), "Case-Mac");
+    assert.equal(hostDisplayName({ host_id: "01OTHER", host_label: null }, local), "01OTHER");
+    assert.equal(hostDisplayName({ host_id: "01DEVICE", host_label: "Server-Label" }, local), "Server-Label");
+    assert.equal(hostDisplayName({ host_id: "01DEVICE", host_label: null }, { host_id: "01DEVICE", host_label: null }), "01DEVICE");
+  });
+
   it("is null when there is no host at all, so the surface hides the slot", () => {
     assert.equal(hostDisplayName({ host_id: null, host_label: null }), null);
     assert.equal(hostDisplayName({ host_id: "  ", host_label: "  " }), null);

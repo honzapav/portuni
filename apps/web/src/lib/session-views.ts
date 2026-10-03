@@ -153,18 +153,25 @@ export function nodeRowActive(nodeId: string, selectedNodeId: string | null, act
 }
 
 // The host to show on a Relace row and in the chat header (#428): the
-// server's display label when it has one, otherwise the host id itself
-// (domain/runner/hosts.ts keeps ids human-readable for exactly this
-// fallback). Null means "nothing to show" -- the surfaces hide the slot
+// server's display label when it has one, then this device's own label
+// when the thread ran here (#578: in a team workspace the summary comes
+// from the central server, which cannot name the device, so `localHost` is
+// GET /hosts/local's answer from the sidecar), otherwise the host id
+// itself. Null means "nothing to show" -- the surfaces hide the slot
 // rather than rendering an empty separator.
-export function hostDisplayName(session: {
-  host_id: string | null;
-  host_label?: string | null;
-}): string | null {
+export function hostDisplayName(
+  session: {
+    host_id: string | null;
+    host_label?: string | null;
+  },
+  localHost?: { host_id: string; host_label: string | null } | null,
+): string | null {
   const label = session.host_label?.trim();
   if (label) return label;
   const id = session.host_id?.trim();
-  return id || null;
+  if (!id) return null;
+  const localLabel = localHost && localHost.host_id === id ? localHost.host_label?.trim() : null;
+  return localLabel || id;
 }
 
 // ---------------------------------------------------------------- #429

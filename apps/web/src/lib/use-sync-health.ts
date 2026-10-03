@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchSyncHealth } from "../api";
+import { startBackoffPoll } from "./backoff-poll";
 import type { SyncHealthResponse } from "../types";
 
 const EMPTY: SyncHealthResponse = { errors: [] };
@@ -34,24 +35,18 @@ export function useSyncHealth() {
       });
   }, []);
 
-  useEffect(() => {
-    refresh();
-    const id = setInterval(() => {
-      if (document.hidden) return;
-      const backoff = Math.min(POLL_MS * 2 ** failureCountRef.current, BACKOFF_MAX_MS);
-      if (Date.now() - lastFetchAtRef.current < backoff) return;
-      refresh();
-    }, POLL_MS);
-    const onFocus = () => {
-      if (Date.now() - lastFetchAtRef.current < FOCUS_MIN_INTERVAL_MS) return;
-      refresh();
-    };
-    window.addEventListener("focus", onFocus);
-    return () => {
-      clearInterval(id);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [refresh]);
+  useEffect(
+    () =>
+      startBackoffPoll({
+        refresh,
+        pollMs: POLL_MS,
+        focusMinMs: FOCUS_MIN_INTERVAL_MS,
+        backoffMaxMs: BACKOFF_MAX_MS,
+        lastFetchAtRef,
+        failureCountRef,
+      }),
+    [refresh],
+  );
 
   return { health, refresh };
 }
