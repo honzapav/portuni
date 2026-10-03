@@ -96,6 +96,8 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import {
@@ -162,6 +164,12 @@ import { useLocale } from "../lib/use-locale";
 // column -- 10 % gutters each side, never wider than 768 px. The scroll
 // container stays full-width so the scrollbar keeps its edge.
 const THREAD_COLUMN = "mx-auto w-[min(80%,768px)]";
+// The composer's Shift+Enter inserts a literal single "\n", but CommonMark
+// treats a lone newline as a soft break (rendered as a space) -- remark-breaks
+// turns it back into a hard line break. Only the user's own prompt needs this:
+// assistant text is model-authored markdown, where soft-break collapsing is
+// what makes wrapped paragraphs read as one paragraph.
+const PROMPT_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
 // #466 (spec docs/superpowers/specs/2026-09-22-web-session-state-design.md,
 // "`SessionChat`"): this component takes the thread's id, never a row. The
 // row comes from the store -- the window's only copy -- and every change to
@@ -971,7 +979,7 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
       return (
         <Message from="user">
           <MessageContent translate="no" className="group-[.is-user]:border group-[.is-user]:border-[var(--color-border)] group-[.is-user]:bg-[var(--color-accent-soft)]">
-            <MessageResponse>{row.text}</MessageResponse>
+            <MessageResponse remarkPlugins={PROMPT_REMARK_PLUGINS}>{row.text}</MessageResponse>
           </MessageContent>
         </Message>
       );
