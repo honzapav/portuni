@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.0](https://github.com/honzapav/portuni/compare/v0.25.1...v0.26.0) (2026-10-03)
+
+
+### Features
+
+* **runner,web:** Pokračovat v nové session on a closed or archived thread ([#577](https://github.com/honzapav/portuni/issues/577)) ([2748232](https://github.com/honzapav/portuni/commit/27482321cd68717b4647b5ee91c12ad56c471758))
+
 ## [0.25.1](https://github.com/honzapav/portuni/compare/v0.25.0...v0.25.1) (2026-09-28)
 
 
