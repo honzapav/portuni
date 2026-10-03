@@ -278,7 +278,10 @@ GitHub repo Settings UI:
   release-please uses as the changelog entry detail.
 - `.github/CODEOWNERS` — the sensitive areas (CI, deploy, release,
   versions, auth, Tauri capabilities, schema and migrations), owned by
-  @honzapav. Agent auto-merge never covers these paths.
+  @honzapav. The AI queue's Dev lane merges a green PR outside these paths
+  on its own (Dependabot PRs once an agent has checked them, label
+  `zkontrolovano-agentem`); a PR touching them waits for Honza. The repo
+  has no merge automation of its own.
 
 ### CHANGELOG.md seed
 
