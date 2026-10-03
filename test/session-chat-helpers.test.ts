@@ -6,6 +6,7 @@ import {
   insertManyBySeq,
   latestQuestionEvent,
   approvalChoices,
+  splitTrailingNodeId,
   appendDelta,
   clearDeltaBuffer,
   deltaBuffersAfter,
@@ -119,6 +120,28 @@ describe("approvalChoices", () => {
         { key: "option-1", label: "Always", value: "Always", content: true },
       ]);
     }
+  });
+});
+
+describe("splitTrailingNodeId", () => {
+  it("pulls a trailing ULID line off a named node's consent prompt", () => {
+    const detail = 'Allow this session to read "Tempo akademie" (project)? It is outside this session\'s scope.\n01KW6NQ2CXQG5TPC0YVB7NSM8T';
+    assert.deepEqual(splitTrailingNodeId(detail), {
+      text: 'Allow this session to read "Tempo akademie" (project)? It is outside this session\'s scope.',
+      nodeId: "01KW6NQ2CXQG5TPC0YVB7NSM8T",
+    });
+  });
+
+  it("leaves text with no trailing ULID line untouched", () => {
+    assert.deepEqual(splitTrailingNodeId("Allow this session to read node X? It is unknown."), {
+      text: "Allow this session to read node X? It is unknown.",
+      nodeId: null,
+    });
+  });
+
+  it("does not mistake a short ID or one embedded mid-sentence for the trailing line", () => {
+    assert.equal(splitTrailingNodeId("node X\nshort").nodeId, null);
+    assert.equal(splitTrailingNodeId("01KW6NQ2CXQG5TPC0YVB7NSM8T is the node").nodeId, null);
   });
 });
 
