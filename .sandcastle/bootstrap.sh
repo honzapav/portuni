@@ -27,12 +27,14 @@ fi
 
 LAUNCHER="$HERE/node_modules/.bin/sandcastle-loop"
 if [[ ! -x "$LAUNCHER" ]]; then
-  # npm ci needs the lockfile; a repo that has not committed one yet installs
-  # from package.json and writes the lockfile for the next time.
+  # A repo that holds the harness on one version commits a lockfile and gets
+  # exactly that (npm ci). Every other repo has no lockfile: package.json
+  # names the newest release (#semver:*) and no lockfile is written, so the
+  # clone stays clean and the next fresh install is the newest release again.
   if [[ -f "$HERE/package-lock.json" ]]; then
     npm ci --prefix "$HERE"
   else
-    npm install --prefix "$HERE"
+    npm install --prefix "$HERE" --no-package-lock
   fi
 fi
 if [[ ! -x "$LAUNCHER" ]]; then
