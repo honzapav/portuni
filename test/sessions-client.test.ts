@@ -831,6 +831,112 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
   });
 });
 
+// #590 review: Rust replaces its socket on every sessions_connect, and the
+// replaced socket takes its subscriptions with it. This host keeps one
+// socket per sessions_connect, as sessions_ws.rs does; the replaced loop
+// says nothing (the worst case), so only the client can notice.
+describe("sessions-client: the Tauri transport never replaces a live socket by accident (#590)", () => {
+  type Frame = { id?: string; type: string; payload: { session_id?: string } };
+  const flushAll = () => new Promise((resolve) => setImmediate(resolve));
+
+  class ReplacingTauriHost {
+    connectCalls = 0;
+    // Subscriptions per socket; the last one is the live socket.
+    readonly sockets: string[][] = [];
+    private readonly listeners = new Map<string, Set<(ev: { payload: unknown }) => void>>();
+
+    invoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+      if (cmd === "sessions_connect") {
+        this.connectCalls += 1;
+        this.sockets.push([]);
+        queueMicrotask(() => this.emit("session-connection", { status: "open" }));
+        return undefined;
+      }
+      if (cmd === "sessions_send") {
+        const live = this.sockets[this.sockets.length - 1];
+        if (!live) throw new DesktopError("UNKNOWN_DETAIL", "sessions_send: not connected");
+        const frame = JSON.parse(String(args?.frame)) as Frame;
+        if (frame.type === "subscribe" && frame.payload.session_id) live.push(frame.payload.session_id);
+        if (frame.id) {
+          queueMicrotask(() => this.emit("session-event", { frame: { id: frame.id, type: "reply", payload: { ok: true } } }));
+        }
+      }
+      return undefined;
+    };
+
+    listen = async <T,>(event: string, cb: (ev: { payload: T }) => void): Promise<() => void> => {
+      const set = this.listeners.get(event) ?? new Set();
+      this.listeners.set(event, set);
+      const listener = cb as (ev: { payload: unknown }) => void;
+      set.add(listener);
+      return () => set.delete(listener);
+    };
+
+    emit(event: string, payload: unknown): void {
+      for (const cb of this.listeners.get(event) ?? []) cb({ payload });
+    }
+
+    live(): string[] | undefined {
+      return this.sockets[this.sockets.length - 1];
+    }
+  }
+
+  function clientOn(host: ReplacingTauriHost) {
+    const transport = createTauriTransport({ invoke: host.invoke, listen: host.listen, minBackoffMs: 1, maxBackoffMs: 1 });
+    const client = createSessionsClient({ transport, autoConnect: false });
+    clients.push(client);
+    return client;
+  }
+
+  it("a send that fails while sessions_connect is in flight waits for it instead of connecting again", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const host = new ReplacingTauriHost();
+      const client = clientOn(host);
+      client.connect();
+      // A thread switch while the channel is still being opened.
+      client.unsubscribe("OLD");
+      await client.subscribe("S1", 0);
+      // Any retry the failed unsubscribe scheduled is due now.
+      mock.timers.tick(1_000);
+      await flushAll();
+      assert.equal(host.connectCalls, 1);
+      assert.deepEqual(host.live(), ["S1"]);
+      assert.equal(client.connectionState().status, "open");
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("reconnect() while open keeps the live socket", async () => {
+    const host = new ReplacingTauriHost();
+    const client = clientOn(host);
+    client.connect();
+    await client.subscribe("S1", 0);
+    client.reconnect();
+    await flushAll();
+    assert.equal(host.connectCalls, 1);
+    assert.deepEqual(host.live(), ["S1"]);
+    client.disconnect();
+  });
+
+  it("an open while open is a new socket and gets every subscription again", async () => {
+    const host = new ReplacingTauriHost();
+    const client = clientOn(host);
+    client.connect();
+    await client.subscribe("S1", 0);
+    // Rust replaced the socket (a sessions_connect from elsewhere) and the
+    // new loop reports open.
+    host.sockets.push([]);
+    host.emit("session-connection", { status: "open" });
+    await flushAll();
+    assert.deepEqual(host.live(), ["S1"]);
+    assert.equal(client.connectionState().status, "open");
+    client.disconnect();
+  });
+});
+
 describe("live-channel: when the chat says the channel is down (#590)", () => {
   it("a channel out of open counts as down only after the grace period", () => {
     const since = 10_000;

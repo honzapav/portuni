@@ -14,7 +14,7 @@
 
 use crate::errors::CmdError;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,6 +29,11 @@ use tokio_tungstenite::tungstenite::Message;
 
 const MIN_BACKOFF_MS: u64 = 1_000;
 const MAX_BACKOFF_MS: u64 = 30_000;
+// How long one connect (TCP plus the WebSocket upgrade) may take. A sidecar
+// that accepts the TCP connection and never answers the upgrade otherwise
+// parks the loop for good: no `reconnecting`, no retry (#590). Same bound as
+// the direct transport's CONNECT_TIMEOUT_MS in apps/web.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Pure: given the delay just used for a failed (re)connect attempt, what's
 // the next one. Doubles, capped at MAX_BACKOFF_MS. A successful connect
@@ -126,9 +131,9 @@ struct Connection {
     // sessions_send writes frames in here; the background task reads them
     // and forwards each over the live socket.
     outbox: Arc<Outbox>,
-    // Bumped on every sessions_connect/sessions_disconnect for this
-    // workspace so a background task from a PRIOR connect (e.g. sleeping
-    // out a reconnect backoff when a fresh connect or a disconnect
+    // A fresh value from SessionsWsState::next_generation on every
+    // sessions_connect, so a background task from a PRIOR connect (e.g.
+    // sleeping out a reconnect backoff when a fresh connect or a disconnect
     // supersedes it) recognizes it no longer owns the registry entry and
     // exits instead of resurrecting a connection nothing wants anymore.
     generation: u64,
@@ -137,6 +142,10 @@ struct Connection {
 #[derive(Default)]
 pub struct SessionsWsState {
     connections: Mutex<HashMap<String, Connection>>,
+    // Never reset, not even by a disconnect that removes the entry: a loop
+    // from before the disconnect must never match the next connect's
+    // generation.
+    next_generation: AtomicU64,
 }
 
 fn is_current_generation(app: &AppHandle, ws_id: &str, generation: u64) -> bool {
@@ -148,6 +157,30 @@ fn is_current_generation(app: &AppHandle, ws_id: &str, generation: u64) -> bool 
     };
     conns.get(ws_id).map(|c| c.generation) == Some(generation)
 }
+
+// A loop that a newer sessions_connect or a disconnect superseded says
+// nothing more: its `open` or `reconnecting` would land after the new
+// loop's own and leave the webview with a status for a socket that is gone.
+fn emit_if_current(app: &AppHandle, ws_id: &str, generation: u64, status: &'static str) {
+    if is_current_generation(app, ws_id, generation) {
+        emit_connection_status(app, ws_id, status);
+    }
+}
+
+// One connect attempt, bounded by `timeout`. An upgrade that never comes is
+// an error like any other, so the loop backs off and tries again.
+async fn connect_with_timeout(
+    request: tokio_tungstenite::tungstenite::handshake::client::Request,
+    timeout: Duration,
+) -> Result<WsStream, String> {
+    match tokio::time::timeout(timeout, tokio_tungstenite::connect_async(request)).await {
+        Ok(Ok((stream, _response))) => Ok(stream),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!("no WebSocket upgrade within {} s", timeout.as_secs())),
+    }
+}
+
+type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 fn emit_connection_status(app: &AppHandle, ws_id: &str, status: &'static str) {
     let _ = app.emit_to(
@@ -185,8 +218,11 @@ fn connect_for_ws(app: &AppHandle, ws_id: &str) -> Result<(), CmdError> {
         // Replacing an existing entry (a second sessions_connect for the
         // same window, e.g. a remount) closes its outbox, which is exactly
         // the signal the old background task needs to close its socket and
-        // stop instead of running alongside the new one.
-        let generation = conns.get(ws_id).map(|c| c.generation + 1).unwrap_or(0);
+        // stop instead of running alongside the new one. The webview hears
+        // `reconnecting` for it here, before the new loop can say `open`:
+        // the old socket's subscriptions are gone with it, and the next
+        // `open` is what makes the webview subscribe again.
+        let generation = state.next_generation.fetch_add(1, Ordering::SeqCst);
         if let Some(old) = conns.insert(
             ws_id.to_string(),
             Connection {
@@ -195,6 +231,7 @@ fn connect_for_ws(app: &AppHandle, ws_id: &str) -> Result<(), CmdError> {
             },
         ) {
             old.outbox.close();
+            emit_connection_status(app, ws_id, "reconnecting");
         }
         generation
     };
@@ -275,7 +312,7 @@ async fn run_connection_loop(
                     "sessions_connect[{ws_id}]: sidecar not reachable ({}), reconnecting in {backoff_ms} ms: {e}",
                     e.code()
                 );
-                emit_connection_status(&app, &ws_id, "reconnecting");
+                emit_if_current(&app, &ws_id, generation, "reconnecting");
                 if !sleep_unless_superseded(&app, &ws_id, generation, backoff_ms).await {
                     return;
                 }
@@ -316,8 +353,12 @@ async fn run_connection_loop(
             }
         }
 
-        match tokio_tungstenite::connect_async(request).await {
-            Ok((stream, _response)) => {
+        match connect_with_timeout(request, CONNECT_TIMEOUT).await {
+            Ok(mut stream) => {
+                if !is_current_generation(&app, &ws_id, generation) {
+                    let _ = stream.close(None).await;
+                    return;
+                }
                 backoff_ms = MIN_BACKOFF_MS;
                 emit_connection_status(&app, &ws_id, "open");
                 info!("sessions_connect[{ws_id}]: connected");
@@ -372,11 +413,11 @@ async fn run_connection_loop(
                     return;
                 }
                 warn!("sessions_connect[{ws_id}]: connection lost, reconnecting in {backoff_ms} ms");
-                emit_connection_status(&app, &ws_id, "reconnecting");
+                emit_if_current(&app, &ws_id, generation, "reconnecting");
             }
             Err(e) => {
                 warn!("sessions_connect[{ws_id}]: connect failed, reconnecting in {backoff_ms} ms: {e}");
-                emit_connection_status(&app, &ws_id, "reconnecting");
+                emit_if_current(&app, &ws_id, generation, "reconnecting");
             }
         }
 
@@ -433,6 +474,46 @@ mod backoff_tests {
     #[test]
     fn never_overflows_from_a_pathological_starting_value() {
         assert_eq!(next_backoff_ms(u64::MAX), MAX_BACKOFF_MS);
+    }
+}
+
+#[cfg(test)]
+mod connect_timeout_tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    // A peer that accepts the TCP connection and never answers the upgrade
+    // (#590): each attempt gives up by the timeout, so the loop's next one
+    // reaches the listener again.
+    #[tokio::test]
+    async fn an_upgrade_that_never_comes_fails_by_the_timeout_and_the_next_attempt_connects_again() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().take(2).flatten() {
+                held.push(stream);
+                let _ = accepted_tx.send(());
+            }
+            // Keep both open, unanswered, until the test is done with them.
+            let _ = accepted_tx.send(());
+            std::thread::park();
+        });
+
+        let url = format!("ws://127.0.0.1:{port}/sessions/ws");
+        for _ in 0..2 {
+            let started = std::time::Instant::now();
+            let request = url.as_str().into_client_request().expect("request");
+            let err = connect_with_timeout(request, Duration::from_millis(200))
+                .await
+                .expect_err("no upgrade, no stream");
+            assert!(err.contains("no WebSocket upgrade"), "{err}");
+            assert!(started.elapsed() < Duration::from_secs(5));
+        }
+        accepted_rx.recv().expect("first attempt reached the listener");
+        accepted_rx.recv().expect("second attempt reached the listener");
     }
 }
 

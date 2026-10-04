@@ -2500,6 +2500,14 @@ fn rotate_ws_log(p: &std::path::Path) {
     let _ = std::fs::rename(p, &rotated);
 }
 
+// The sidecar's one-line-per-request access log (PORTUNI_LOG_REQUESTS=1,
+// apps/server/http/server.ts) goes to stderr. It stays in sidecar-<ws>.log
+// only: forwarded into the app log, a day of polling would fill the app
+// log's whole retention with requests (#590).
+fn is_sidecar_access_log(line: &str) -> bool {
+    line.starts_with("[req] ")
+}
+
 fn append_ws_log(path: &Option<std::path::PathBuf>, line: &str) {
     if let Some(p) = path {
         if let Some(dir) = p.parent() {
@@ -2814,7 +2822,9 @@ fn spawn_sidecar_ws_with_token(
                     let line = String::from_utf8_lossy(&line).into_owned();
                     let line = line.trim_end_matches(['\n', '\r']);
                     append_ws_log(&ws_log_path, line);
-                    warn!("sidecar[{ws}]:err: {line}");
+                    if !is_sidecar_access_log(line) {
+                        warn!("sidecar[{ws}]:err: {line}");
+                    }
                 }
                 CommandEvent::Terminated(payload) => {
                     error!("sidecar[{ws}] terminated: code={:?}", payload.code);
@@ -4306,7 +4316,16 @@ mod expand_tilde_tests {
 
 #[cfg(test)]
 mod ws_log_rotation_tests {
-    use super::{append_ws_log, should_rotate_ws_log, WS_LOG_MAX_BYTES};
+    use super::{append_ws_log, is_sidecar_access_log, should_rotate_ws_log, WS_LOG_MAX_BYTES};
+
+    #[test]
+    fn only_the_request_access_log_stays_out_of_the_app_log() {
+        assert!(is_sidecar_access_log(
+            "[req] GET /sessions/ws origin=tauri://localhost host=127.0.0.1:4011 -> 101 2ms"
+        ));
+        assert!(!is_sidecar_access_log("[portuni] sessions-ws upgrade failed"));
+        assert!(!is_sidecar_access_log("Error: boom [req] inside"));
+    }
 
     #[test]
     fn rotates_only_at_or_past_the_cap() {

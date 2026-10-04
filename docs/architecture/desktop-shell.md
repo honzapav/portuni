@@ -393,10 +393,16 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
 - Every server frame is re-emitted per window as `session-event`;
   connection status as `session-connection {status}` with
   `open|reconnecting|closed`. Reconnect backoff doubles from 1 s to 30 s
-  (`next_backoff_ms`, unit tested). `SessionsWsState` is keyed by
-  workspace id and carries a `generation` counter bumped on every connect
-  and disconnect, so a background task from a superseded connect exits
-  instead of resurrecting a connection.
+  (`next_backoff_ms`, unit tested). One connect (TCP plus upgrade) may
+  take `CONNECT_TIMEOUT` (10 s); a sidecar that accepts and never
+  upgrades counts as a failed connect, so the loop reports `reconnecting`
+  and tries again. `SessionsWsState` is keyed by workspace id; each
+  connect takes a fresh `generation` from a counter that never resets
+  (not even when a disconnect removes the entry), so a background task
+  from a superseded connect exits instead of resurrecting a connection,
+  and says nothing more: it emits no status once superseded. Replacing a
+  live entry emits `reconnecting` before the new loop can emit `open`,
+  so the webview resubscribes on the new socket.
 - A failed `sessions_connect`/`sessions_send` (before `spawn`: `ws_of`
   failing, no connection for `sessions_send`) is logged on `warn` with
   the workspace id, the window label and the error code before it goes
@@ -405,7 +411,9 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   (`~/Library/Logs/<bundle_id>/sidecar.log`, `tauri_plugin_log`) keeps
   five files of 10 MB (`LOG_FILE_MAX_BYTES`, `LOG_FILES_KEPT`); the
   plugin's default, one 40 KB file, lost a start-up failure within
-  minutes.
+  minutes. Sidecar stderr is forwarded into it except the `[req]` access
+  log (`PORTUNI_LOG_REQUESTS=1`), which stays in `sidecar-<ws>.log`
+  only, so request polling does not fill the app log's retention.
 - Frames wait in a per-connection `Outbox` (a queue, not a channel) until
   the socket is open, across a reconnect too. `sessions_cancel(id)` takes
   a still-queued frame back out by its request id; the web client cancels

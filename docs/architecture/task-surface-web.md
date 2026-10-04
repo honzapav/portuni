@@ -389,7 +389,13 @@ One typed client, two transports behind one `Transport` interface:
   success (a failed subscribe is cancelled and resubscribed on the next
   `open`, like any subscribe that a drop interrupted). Each `connect` and
   `disconnect` bumps a generation, so a superseded connect (StrictMode)
-  leaves no second pair of listeners.
+  leaves no second pair of listeners. Every `sessions_connect` replaces
+  Rust's socket, so the transport never asks for one it does not need:
+  `reconnect()` is a no-op while open or while a connect is in flight,
+  and a `sessions_send` that fails during an in-flight connect waits for
+  it instead of scheduling another. An `open` while already open means a
+  new socket: the client fails the old socket's requests and resubscribes
+  every session.
 - **Vite dev**: `createDirectWsTransport` opens a real `WebSocket` against
   `/api/sessions/ws`. `vite.config.ts` proxies it with `ws: true` and a
   `proxyReqWs` handler that injects the bearer, so the token still never

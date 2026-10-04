@@ -354,7 +354,10 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
 // status goes to `reconnecting` with the error as its reason, and
 // sessions_connect is retried with backoff until it succeeds. A frame whose
 // sessions_send failed waits in `held` for that success (the client cancels
-// one it reports as failed, and resubscribes on the next open).
+// one it reports as failed, and resubscribes on the next open). A send that
+// fails while a sessions_connect is in flight waits for that attempt rather
+// than starting another: every sessions_connect replaces Rust's socket, so
+// a second one would drop the socket the first just opened.
 export interface TauriTransportDeps {
   invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
   listen?: <T>(event: string, cb: (ev: { payload: T }) => void) => Promise<() => void>;
@@ -379,11 +382,19 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
   let backoffMs = minBackoffMs;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   const held: Array<{ id: string; text: string }> = [];
+  // A sessions_connect is awaiting its answer; it flushes `held` when it
+  // succeeds.
+  let connecting = false;
+  // Bumped on every sessions_connect that succeeded: a send that failed
+  // before the latest one was asked for an outbox that exists now.
+  let connectEpoch = 0;
+  let lastStatus: ConnectionStatus = "closed";
 
   const emitStatus = statusListeners.emit;
 
   function fail(command: string, error: unknown): void {
     console.warn(`[portuni:sessions-ws] ${command} failed, retrying in ${backoffMs} ms`, error);
+    lastStatus = "reconnecting";
     emitStatus("reconnecting", error);
     scheduleRetry();
   }
@@ -407,6 +418,7 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
     });
     const offStatus = await listen<{ status: ConnectionStatus }>("session-connection", (ev) => {
       if (ev.payload.status === "open") backoffMs = minBackoffMs;
+      lastStatus = ev.payload.status;
       emitStatus(ev.payload.status);
     });
     if (gen !== generation || unlisten) {
@@ -423,23 +435,35 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
 
   async function attempt(gen: number): Promise<void> {
     if (stopped || gen !== generation) return;
+    connecting = true;
     try {
       if (!(await listenOnce(gen))) return;
       await call("sessions_connect");
     } catch (err) {
       if (gen === generation) fail("sessions_connect", err);
       return;
+    } finally {
+      if (gen === generation) connecting = false;
     }
     if (gen !== generation) return;
+    connectEpoch += 1;
     // Rust holds a live outbox again: hand it what a failed send left
     // behind, in order.
     for (const entry of held.splice(0)) sendNow(entry);
   }
 
   function sendNow(entry: { id: string; text: string }): void {
+    const epoch = connectEpoch;
     call("sessions_send", { frame: entry.text }).catch((err: unknown) => {
       if (stopped) return;
+      if (connectEpoch !== epoch) {
+        // A sessions_connect succeeded after this send was asked for: its
+        // outbox takes the frame.
+        sendNow(entry);
+        return;
+      }
       held.push(entry);
+      if (connecting) return;
       fail("sessions_send", err);
     });
   }
@@ -466,7 +490,9 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
       void attempt(generation);
     },
     reconnect() {
-      if (stopped) return;
+      // Rust replaces the socket on every sessions_connect: one while open
+      // would drop a live channel, one in flight would drop the next.
+      if (stopped || lastStatus === "open" || connecting) return;
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = null;
       backoffMs = minBackoffMs;
@@ -477,6 +503,8 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
     disconnect() {
       stopped = true;
       generation += 1;
+      connecting = false;
+      lastStatus = "closed";
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = null;
       held.length = 0;
@@ -765,10 +793,12 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     };
     for (const cb of connectionStatusListeners) cb(status, connectionState.error);
     if (status === "open") {
-      if (!isOpen) {
-        isOpen = true;
-        onConnectionOpened();
-      }
+      // An open while open is a new socket (the Tauri host replaced its
+      // connection): the old one took its subscriptions and its unanswered
+      // requests with it.
+      if (isOpen) onConnectionLost();
+      isOpen = true;
+      onConnectionOpened();
     } else if (isOpen) {
       isOpen = false;
       onConnectionLost();
