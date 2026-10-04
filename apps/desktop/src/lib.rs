@@ -27,7 +27,7 @@ use rand::rand_core::UnwrapErr;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
-use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -171,6 +171,10 @@ fn advance_quit(app: &AppHandle) {
 // answers -- a crashed/hung webview -- Portuni must not block Cmd+Q/quit
 // forever. This is a safety net now, not the normal path: a healthy
 // window answers via decline_exit or an actual close well within 5s.
+// The app log (sidecar.log): see the tauri_plugin_log builder in run().
+const LOG_FILE_MAX_BYTES: u128 = 10 * 1024 * 1024;
+const LOG_FILES_KEPT: usize = 5;
+
 const EXIT_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 // Generation counter making the fallback timer cancellable (#221): a
@@ -3202,6 +3206,12 @@ pub fn run() {
                     }),
                 ])
                 .level(log::LevelFilter::Info)
+                // The plugin's default is one 40 KB file, which the sidecar's
+                // own stdout rolls over in minutes (#590): a start-up failure
+                // was gone before anyone looked. 10 MB per file, five files
+                // kept, holds well over the last 24 h.
+                .max_file_size(LOG_FILE_MAX_BYTES)
+                .rotation_strategy(RotationStrategy::KeepSome(LOG_FILES_KEPT))
                 .build(),
         )
         .manage(SidecarState(Mutex::new(HashMap::new())))

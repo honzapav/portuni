@@ -397,6 +397,15 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   workspace id and carries a `generation` counter bumped on every connect
   and disconnect, so a background task from a superseded connect exits
   instead of resurrecting a connection.
+- A failed `sessions_connect`/`sessions_send` (before `spawn`: `ws_of`
+  failing, no connection for `sessions_send`) is logged on `warn` with
+  the workspace id, the window label and the error code before it goes
+  back to the webview, which retries it (#590). The loop logs `connected`,
+  `reconnecting in N ms` with its reason, and `closed`. The app log
+  (`~/Library/Logs/<bundle_id>/sidecar.log`, `tauri_plugin_log`) keeps
+  five files of 10 MB (`LOG_FILE_MAX_BYTES`, `LOG_FILES_KEPT`); the
+  plugin's default, one 40 KB file, lost a start-up failure within
+  minutes.
 - Frames wait in a per-connection `Outbox` (a queue, not a channel) until
   the socket is open, across a reconnect too. `sessions_cancel(id)` takes
   a still-queued frame back out by its request id; the web client cancels

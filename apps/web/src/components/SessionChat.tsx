@@ -85,6 +85,8 @@ import {
 } from "../lib/session-chat";
 import { HandoffRefusedError } from "../lib/handoff-refusal";
 import { useNowTick } from "../lib/use-now-tick";
+import { useLiveChannel } from "../lib/use-live-channel";
+import LiveChannelNotice from "./LiveChannelNotice";
 import { contextRingState, latestContextUsage } from "../lib/context-ring";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -191,6 +193,7 @@ export default function SessionChat({
   const { t } = useTranslation("chat");
   const { t: tCommon } = useTranslation("common");
   const locale = useLocale();
+  const liveChannel = useLiveChannel(sessionsClient);
   const session = useSessionStore(
     sessionStore,
     useCallback((store: SessionStore) => selectSession(store, sessionId), [sessionId]),
@@ -777,9 +780,21 @@ export default function SessionChat({
         </div>
       )}
 
+      {/* #590: a channel down after the conversation loaded; while it
+          loads, the notice stands in for the loading line below. */}
+      {liveChannel.down && !loading && (
+        <LiveChannelNotice
+          channel={liveChannel}
+          onReconnect={() => sessionsClient.reconnect()}
+          className={`${THREAD_COLUMN} mt-2`}
+        />
+      )}
+
       <Conversation>
         <ConversationContent className={`${THREAD_COLUMN} gap-5`}>
-          {loading ? (
+          {loading && liveChannel.down ? (
+            <LiveChannelNotice channel={liveChannel} onReconnect={() => sessionsClient.reconnect()} />
+          ) : loading ? (
             <Shimmer duration={1.5}>{t(($) => $.conversation.loading)}</Shimmer>
           ) : elsewhere ? (
             <ConversationEmptyState title={elsewhere.title} description={elsewhere.hint} />

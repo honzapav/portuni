@@ -157,9 +157,27 @@ fn emit_connection_status(app: &AppHandle, ws_id: &str, status: &'static str) {
     );
 }
 
+// A failed command is logged here with the window and the code before it
+// goes back to the webview (#590): the webview retries, but the app log is
+// where a start-up race between the window and the sidecar shows up.
+fn log_command_error(command: &str, window: &tauri::Window, ws_id: Option<&str>, err: &CmdError) {
+    warn!(
+        "{command}[{}]: window {} failed: {} ({err})",
+        ws_id.unwrap_or("-"),
+        window.label(),
+        err.code()
+    );
+}
+
 #[tauri::command]
 pub(crate) async fn sessions_connect(app: AppHandle, window: tauri::Window) -> Result<(), CmdError> {
-    let ws_id = crate::ws_of(&window)?;
+    let ws_id = crate::ws_of(&window).inspect_err(|e| log_command_error("sessions_connect", &window, None, e))?;
+    connect_for_ws(&app, &ws_id).inspect_err(|e| log_command_error("sessions_connect", &window, Some(&ws_id), e))?;
+    info!("sessions_connect[{ws_id}]: window {} connecting", window.label());
+    Ok(())
+}
+
+fn connect_for_ws(app: &AppHandle, ws_id: &str) -> Result<(), CmdError> {
     let outbox = Arc::new(Outbox::default());
     let generation = {
         let state = app.state::<SessionsWsState>();
@@ -168,9 +186,9 @@ pub(crate) async fn sessions_connect(app: AppHandle, window: tauri::Window) -> R
         // same window, e.g. a remount) closes its outbox, which is exactly
         // the signal the old background task needs to close its socket and
         // stop instead of running alongside the new one.
-        let generation = conns.get(&ws_id).map(|c| c.generation + 1).unwrap_or(0);
+        let generation = conns.get(ws_id).map(|c| c.generation + 1).unwrap_or(0);
         if let Some(old) = conns.insert(
-            ws_id.clone(),
+            ws_id.to_string(),
             Connection {
                 outbox: outbox.clone(),
                 generation,
@@ -181,7 +199,7 @@ pub(crate) async fn sessions_connect(app: AppHandle, window: tauri::Window) -> R
         generation
     };
 
-    tauri::async_runtime::spawn(run_connection_loop(app, ws_id, generation, outbox));
+    tauri::async_runtime::spawn(run_connection_loop(app.clone(), ws_id.to_string(), generation, outbox));
     Ok(())
 }
 
@@ -211,11 +229,15 @@ pub(crate) fn disconnect_for_ws(app: &AppHandle, ws_id: &str) {
 
 #[tauri::command]
 pub(crate) fn sessions_send(app: AppHandle, window: tauri::Window, frame: String) -> Result<(), CmdError> {
-    let ws_id = crate::ws_of(&window)?;
+    let ws_id = crate::ws_of(&window).inspect_err(|e| log_command_error("sessions_send", &window, None, e))?;
+    push_for_ws(&app, &ws_id, frame).inspect_err(|e| log_command_error("sessions_send", &window, Some(&ws_id), e))
+}
+
+fn push_for_ws(app: &AppHandle, ws_id: &str, frame: String) -> Result<(), CmdError> {
     let state = app.state::<SessionsWsState>();
     let conns = state.connections.lock().map_err(|e| e.to_string())?;
     let conn = conns
-        .get(&ws_id)
+        .get(ws_id)
         .ok_or_else(|| "sessions_send: not connected".to_string())?;
     conn.outbox.push(frame);
     Ok(())
@@ -249,7 +271,10 @@ async fn run_connection_loop(
         let (port, token) = match crate::sidecar_port_and_token(&app, &ws_id) {
             Ok(pt) => pt,
             Err(e) => {
-                warn!("sessions_connect[{ws_id}]: {e}");
+                warn!(
+                    "sessions_connect[{ws_id}]: sidecar not reachable ({}), reconnecting in {backoff_ms} ms: {e}",
+                    e.code()
+                );
                 emit_connection_status(&app, &ws_id, "reconnecting");
                 if !sleep_unless_superseded(&app, &ws_id, generation, backoff_ms).await {
                     return;
@@ -343,12 +368,14 @@ async fn run_connection_loop(
                 }
 
                 if disconnected || !is_current_generation(&app, &ws_id, generation) {
+                    info!("sessions_connect[{ws_id}]: closed");
                     return;
                 }
+                warn!("sessions_connect[{ws_id}]: connection lost, reconnecting in {backoff_ms} ms");
                 emit_connection_status(&app, &ws_id, "reconnecting");
             }
             Err(e) => {
-                warn!("sessions_connect[{ws_id}]: connect failed: {e}");
+                warn!("sessions_connect[{ws_id}]: connect failed, reconnecting in {backoff_ms} ms: {e}");
                 emit_connection_status(&app, &ws_id, "reconnecting");
             }
         }

@@ -157,6 +157,15 @@ the node's Threads tab; and one left
 open longer than 24 hours is pruned by the same server sweep that resolves
 a `running` row orphaned by a crashed process.
 
+The chat reaches its conversation over the window's live channel (see
+below). When that channel stays disconnected for more than about three
+seconds — at start-up before the backend is up, or after it drops — the
+chat says so in place of "Loading the conversation…", with the reason and
+a **Reconnect** button, and the footer shows a `live…` pill (`live ×` once
+the channel is closed) that reconnects on click. The app keeps retrying on
+its own with a backoff of 1 to 30 seconds; once the channel opens, the
+conversation loads without a restart.
+
 Starting a run takes a moment — the runner's process has to come up — and
 anything you do in that moment waits for it rather than racing it. A second
 message sent while the thread is still starting is delivered to the run

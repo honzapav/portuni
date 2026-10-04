@@ -123,6 +123,13 @@ export default interface Resources {
       "rename": "Rename",
       "save_name": "Save name"
     },
+    "live_channel": {
+      "closed": "The live channel is closed.",
+      "reason": "Reason: {{reason}}",
+      "reason_unknown": "the backend is not reachable yet",
+      "reconnect": "Reconnect",
+      "reconnecting": "Not connected to this conversation's live channel. Retrying…"
+    },
     "loader": {
       "title": "Loading"
     },
@@ -343,6 +350,12 @@ export default interface Resources {
       "title": "Portuni hit an error (this panel replaces a blank white screen). Copy the text below."
     },
     "footer": {
+      "live_channel": {
+        "label_closed": "live ×",
+        "label_reconnecting": "live…",
+        "reason_unknown": "the backend is not reachable yet",
+        "title": "The live channel to the backend is not connected ({{reason}}). Click to reconnect."
+      },
       "mcp": {
         "label_down": "mcp ×",
         "label_loading": "mcp…",

@@ -7,6 +7,7 @@ import OverviewView from "./components/OverviewView";
 import EditorFullscreen from "./components/EditorFullscreen";
 import EditorPane from "./components/EditorPane";
 import StatusFooter from "./components/StatusFooter";
+import { useLiveChannel } from "./lib/use-live-channel";
 import CreateNodeModal from "./components/CreateNodeModal";
 import {
   fetchGraph,
@@ -536,6 +537,7 @@ export default function App() {
     sessionsClient.connect();
     return () => sessionsClient.disconnect();
   }, [sessionsClient]);
+  const liveChannel = useLiveChannel(sessionsClient);
 
   // #343: the latest session_state frame per session -- sent for every
   // session the caller can see the moment sessionsClient connects, and
@@ -1209,6 +1211,8 @@ export default function App() {
         pullNodeCount={pullNodeCount(syncPending.nodes)}
         onOpenSyncOverview={() => setSyncOverviewOpen(true)}
         appUpdate={appUpdate}
+        liveChannel={liveChannel}
+        onReconnectLiveChannel={() => sessionsClient.reconnect()}
       />
       {createModalOpen && graph && (
         <CreateNodeModal
