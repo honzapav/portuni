@@ -18,6 +18,7 @@ import { scopeAtLeast } from "../auth/roles.js";
 import { applyGates, checkUpgradeAuth, respondApiError, respondError } from "./middleware.js";
 import { assertAuthConfig, authSummary } from "../infra/auth-config.js";
 import { getOrCreateLimiter, rateLimitKey } from "./rate-limit.js";
+import { REQUEST_ID_HEADER, requestIdFromHeader, runWithRequestId } from "../infra/request-context.js";
 
 export interface HttpServerHandle {
   server: Server;
@@ -63,28 +64,38 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
   const mountSessionsWs = opts.mountSessionsWs ?? (opts.sessionsWs !== undefined || opts.router === undefined);
   const sessionsWs = mountSessionsWs ? (opts.sessionsWs ?? createSessionsWsServer()) : null;
 
-  // PORTUNI_LOG_REQUESTS=1 enables a single-line access log per request.
+  // PORTUNI_LOG_REQUESTS=1 enables a single-line access log per request,
+  // ending in the request id. The desktop host keys on its "[req] " prefix
+  // to keep these lines out of sidecar.log (is_sidecar_access_log).
   // Used for diagnosing desktop-mode CORS / auth / route problems where
   // the only visible failure is in the webview console.
   const requestLogging = process.env.PORTUNI_LOG_REQUESTS === "1";
 
+  // Every request runs inside its request id (#573): the caller's
+  // X-Portuni-Request-Id (webview via the Rust proxy) or a fresh one, echoed
+  // in the response and read by respondError, the access log and the sync
+  // agent's calls to the central server.
   const httpServer = createServer(async (req, res) => {
-    try {
-      await handleRequest(req, res);
-    } catch (err) {
-      // Last-resort guard: an exception escaping the async handler would
-      // otherwise become an unhandled rejection and kill the process.
-      respondError(res, `${req.method} ${req.url}`, err);
-    }
+    const requestId = requestIdFromHeader(req.headers[REQUEST_ID_HEADER.toLowerCase()]);
+    res.setHeader(REQUEST_ID_HEADER, requestId);
+    await runWithRequestId(requestId, async () => {
+      try {
+        await handleRequest(req, res, requestId);
+      } catch (err) {
+        // Last-resort guard: an exception escaping the async handler would
+        // otherwise become an unhandled rejection and kill the process.
+        respondError(res, `${req.method} ${req.url}`, err);
+      }
+    });
   });
 
-  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleRequest(req: IncomingMessage, res: ServerResponse, requestId: string): Promise<void> {
     const startedAt = requestLogging ? Date.now() : 0;
     if (requestLogging) {
       res.on("finish", () => {
         const took = Date.now() - startedAt;
         console.error(
-          `[req] ${req.method} ${req.url} origin=${req.headers.origin ?? "-"} host=${req.headers.host ?? "-"} -> ${res.statusCode} ${took}ms`,
+          `[req] ${req.method} ${req.url} origin=${req.headers.origin ?? "-"} host=${req.headers.host ?? "-"} -> ${res.statusCode} ${took}ms id=${requestId}`,
         );
       });
     }

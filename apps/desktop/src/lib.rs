@@ -2234,6 +2234,63 @@ pub(crate) fn webview_proxy_secret(app: &AppHandle, ws_id: &str) -> Option<Strin
         .cloned()
 }
 
+// The header carrying a request's id end to end (#573): minted by apiFetch
+// in the webview, forwarded by api_request to the sidecar or the central
+// server, echoed and logged there.
+pub(crate) const REQUEST_ID_HEADER: &str = "X-Portuni-Request-Id";
+
+// The caller's request id when it is a well-formed log token (the server
+// applies the same rule and mints its own otherwise).
+fn request_id_from_headers(headers: Option<&HashMap<String, String>>) -> Option<String> {
+    let (_, v) = headers?
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(REQUEST_ID_HEADER))?;
+    is_valid_request_id(v).then(|| v.clone())
+}
+
+// A request id fit for a log line: 1-64 chars of [A-Za-z0-9_-].
+pub(crate) fn is_valid_request_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+// A path for a log line: no query string, which can carry search text.
+pub(crate) fn strip_query(path: &str) -> &str {
+    path.split(['?', '#']).next().unwrap_or(path)
+}
+
+// Most lines one flush may write, and the longest line kept: the webview
+// sends at most its 300-entry ring, anything beyond is not a trail.
+const UI_TRAIL_MAX_LINES: usize = 300;
+const UI_TRAIL_MAX_LINE_CHARS: usize = 2000;
+
+// The trail lines as they go to the log: one physical line each (a stray
+// newline cannot forge a log line), capped in count and length.
+fn sanitize_trail_lines(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .take(UI_TRAIL_MAX_LINES)
+        .map(|line| {
+            line.chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .take(UI_TRAIL_MAX_LINE_CHARS)
+                .collect()
+        })
+        .collect()
+}
+
+// The webview's UI trail when something failed (#573): the entries added
+// since its last flush, written through the app logger under target `ui`,
+// so they land in sidecar.log next to the host's and the sidecar's lines.
+#[tauri::command]
+fn log_ui_trail(window: tauri::Window, lines: Vec<String>) {
+    let label = window.label().to_string();
+    for line in sanitize_trail_lines(lines) {
+        warn!(target: "ui", "[{label}] {line}");
+    }
+}
+
 // Webview-side HTTP proxy. The webview no longer talks to the sidecar
 // directly: it invokes this command, which lives in the same trust
 // domain as the sidecar (the Tauri host that spawned it) and therefore
@@ -2257,6 +2314,9 @@ async fn api_request(
     // "active" one.
     let (ws_id, cfg) = ws_and_config(&app, &window)?;
     let is_central = workspace::is_central(&cfg);
+    // The id apiFetch minted for this call (#573); it travels to whichever
+    // server answers, so the webview trail and that server's log match.
+    let request_id = request_id_from_headers(headers.as_ref());
 
     // In a team workspace, device-local paths (mirror/sync/scope) are
     // served by the LOCAL sync agent — fall through to the local proxy
@@ -2278,45 +2338,41 @@ async fn api_request(
             serde_json::from_str(b).ok()
         });
 
-        let resp = auth::do_central_request_raw(
+        // Silent refresh + retry once on a 401, same request id. Same
+        // window, so the same workspace the request above was actually for
+        // (#223) -- auth_refresh no longer re-derives it from "the active
+        // one".
+        let refresh_window = window.clone();
+        let refresh_ws = ws_id.clone();
+        let resp = auth::central_request_with_refresh(
             &server_url,
             &method,
             &path,
             body_value.as_ref(),
             &jwt,
+            request_id.as_deref(),
+            || async move {
+                info!("api_request central: got 401, attempting silent refresh");
+                match auth::auth_refresh(refresh_window).await {
+                    Err(e) => {
+                        warn!("api_request central: silent refresh failed: {e}");
+                        None
+                    }
+                    Ok(_) => Some(
+                        keychain_get_ws(auth::KEYCHAIN_SESSION_JWT, &refresh_ws)
+                            .ok_or_else(|| "not logged in after refresh".to_string()),
+                    ),
+                }
+            },
         )
         .await?;
-
-        if resp.status == 401 {
-            // Silent refresh + retry once. Same window, so the same
-            // workspace the request above was actually for (#223) --
-            // auth_refresh no longer re-derives it from "the active one".
-            info!("api_request central: got 401, attempting silent refresh");
-            match auth::auth_refresh(window.clone()).await {
-                Err(e) => {
-                    warn!("api_request central: silent refresh failed: {e}");
-                    return Ok(ApiResponse {
-                        status: resp.status,
-                        body: resp.body,
-                    });
-                }
-                Ok(_) => {
-                    let new_jwt = keychain_get_ws(auth::KEYCHAIN_SESSION_JWT, &ws_id)
-                        .ok_or_else(|| "not logged in after refresh".to_string())?;
-                    let resp2 = auth::do_central_request_raw(
-                        &server_url,
-                        &method,
-                        &path,
-                        body_value.as_ref(),
-                        &new_jwt,
-                    )
-                    .await?;
-                    return Ok(ApiResponse {
-                        status: resp2.status,
-                        body: resp2.body,
-                    });
-                }
-            }
+        if resp.status >= 500 {
+            warn!(
+                "api_request central: {method} {} -> {} request_id={}",
+                strip_query(&path),
+                resp.status,
+                request_id.as_deref().unwrap_or("-")
+            );
         }
 
         return Ok(ApiResponse {
@@ -2375,17 +2431,31 @@ async fn api_request(
             // The host owns auth — drop any caller-provided Authorization
             // or webview-proxy-secret header to prevent webview JS from
             // spoofing one.
-            if k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("x-portuni-webview-proxy") {
+            // The request id is set below from the validated value.
+            if k.eq_ignore_ascii_case("authorization")
+                || k.eq_ignore_ascii_case("x-portuni-webview-proxy")
+                || k.eq_ignore_ascii_case(REQUEST_ID_HEADER)
+            {
                 continue;
             }
             req = req.header(k, v);
         }
+    }
+    if let Some(id) = request_id.as_deref() {
+        req = req.header(REQUEST_ID_HEADER, id);
     }
     if let Some(body) = body {
         req = req.body(body);
     }
     let res = req.send().await.map_err(|e| e.to_string())?;
     let status = res.status().as_u16();
+    if status >= 500 {
+        warn!(
+            "api_request local: {method} {} -> {status} request_id={}",
+            strip_query(&path),
+            request_id.as_deref().unwrap_or("-")
+        );
+    }
     let body = res.text().await.map_err(|e| e.to_string())?;
     Ok(ApiResponse { status, body })
 }
@@ -3322,6 +3392,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             decline_exit,
+            log_ui_trail,
             set_ui_locale,
             get_backend_port,
             get_data_mode,
@@ -4445,5 +4516,48 @@ mod token_rotation_tests {
         assert!(rotate_mcp_token(&mut host, "acme", "fresh".into()).is_err());
         assert_eq!(host.auth_tokens.get("acme").map(String::as_str), Some("old"));
         assert!(host.spawned.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod request_id_tests {
+    use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn request_id_is_read_case_insensitively() {
+        let h = headers(&[("content-type", "application/json"), ("x-portuni-request-id", "01JABC")]);
+        assert_eq!(request_id_from_headers(Some(&h)).as_deref(), Some("01JABC"));
+        let h = headers(&[("X-Portuni-Request-Id", "req_1-a")]);
+        assert_eq!(request_id_from_headers(Some(&h)).as_deref(), Some("req_1-a"));
+        assert_eq!(request_id_from_headers(None), None);
+    }
+
+    #[test]
+    fn a_malformed_request_id_is_dropped() {
+        for bad in ["", "has space", "line\nbreak", &"x".repeat(65)] {
+            let h = headers(&[("X-Portuni-Request-Id", bad)]);
+            assert_eq!(request_id_from_headers(Some(&h)), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn log_paths_lose_their_query() {
+        assert_eq!(strip_query("/search?q=secret"), "/search");
+        assert_eq!(strip_query("/graph#x"), "/graph");
+        assert_eq!(strip_query("/nodes/N1"), "/nodes/N1");
+    }
+
+    #[test]
+    fn trail_lines_are_single_line_and_capped() {
+        let lines = vec!["a\nforged".to_string(), "b".repeat(5000)];
+        let out = sanitize_trail_lines(lines);
+        assert_eq!(out[0], "a forged");
+        assert_eq!(out[1].chars().count(), UI_TRAIL_MAX_LINE_CHARS);
+        let many = sanitize_trail_lines(vec!["x".to_string(); 400]);
+        assert_eq!(many.len(), UI_TRAIL_MAX_LINES);
     }
 }

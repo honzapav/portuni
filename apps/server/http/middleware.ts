@@ -3,7 +3,7 @@
 // API; a single middleware chain keeps invariants in one place.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { currentRequestId, newRequestId } from "../infra/request-context.js";
 import type { ZodType } from "zod";
 import {
   JWT_SECRET_MIN_LENGTH,
@@ -185,8 +185,23 @@ export class ApiError extends Error {
 // `{ error, code, params?, request_id? }`. `error` is English and meant for
 // logs; the web renders `errors:<code>` with `params`. `extra` carries the
 // few machine-readable fields a client branches on (currentVersion,
-// required_scope, repair_hint...).
+// required_scope, repair_hint...). A 5xx is logged with the request id
+// (#573), so the line in the log matches the id the client saw.
 export function respondApiError(
+  res: ServerResponse,
+  status: number,
+  code: ErrorCode,
+  error: string,
+  params?: ErrorParams,
+  extra?: Record<string, unknown>,
+): void {
+  if (status >= 500) {
+    console.error(`[req:${currentRequestId() ?? "-"}] -> ${status} ${code}: ${error}`);
+  }
+  writeApiError(res, status, code, error, params, extra);
+}
+
+function writeApiError(
   res: ServerResponse,
   status: number,
   code: ErrorCode,
@@ -263,8 +278,9 @@ export function parseBody(
   });
 }
 
-// Centralised error responder. Logs the full error server-side with a short
-// request id; sends a code + English message + that id to the client.
+// Centralised error responder. Logs the full error server-side with the
+// request id (#573: the one the caller sent, else the one http/server.ts
+// minted); sends a code + English message + that id to the client.
 // ZodError messages are surfaced as 400 because they describe input shape,
 // not internals. A DB constraint/trigger rejection is a 409 with the
 // trigger's code (infra/sql.ts constraintViolation). An error from the
@@ -273,38 +289,38 @@ export function parseBody(
 // team-workspace device. Anything else is a 500 INTERNAL_ERROR with a generic
 // body so we don't leak DB errors, file paths, or stack traces.
 export function respondError(res: ServerResponse, ctx: string, err: unknown): void {
-  const id = randomUUID().slice(0, 8);
+  const id = currentRequestId() ?? newRequestId();
   const detail =
     err instanceof Error ? (err.stack ?? `${err.name}: ${err.message}`) : String(err);
   console.error(`[req:${id}] ${ctx} -> ${detail}`);
   if (res.headersSent) return;
   const withId = { request_id: id };
   if (err instanceof ApiError) {
-    respondApiError(res, err.status, err.code, err.message, err.params, withId);
+    writeApiError(res, err.status, err.code, err.message, err.params, withId);
     return;
   }
   if (err instanceof RequestBodyTooLargeError) {
-    respondApiError(res, 413, "BODY_TOO_LARGE", err.message, { limit: err.limit }, withId);
+    writeApiError(res, 413, "BODY_TOO_LARGE", err.message, { limit: err.limit }, withId);
     return;
   }
   if (err instanceof Error && err.name === "ZodError") {
-    respondApiError(res, 400, "INVALID_REQUEST", err.message, undefined, withId);
+    writeApiError(res, 400, "INVALID_REQUEST", err.message, undefined, withId);
     return;
   }
   if (err instanceof LocalModeNoRemoteError) {
-    respondApiError(res, 409, err.code, err.message, undefined, withId);
+    writeApiError(res, 409, err.code, err.message, undefined, withId);
     return;
   }
   if (err instanceof CentralHttpError && isErrorCode(err.code) && err.status >= 400 && err.status < 500) {
-    respondApiError(res, err.status, err.code, err.message, err.params, withId);
+    writeApiError(res, err.status, err.code, err.message, err.params, withId);
     return;
   }
   const violation = err instanceof Error ? constraintViolation(err) : null;
   if (violation !== null) {
-    respondApiError(res, 409, violation.code, violation.message, undefined, withId);
+    writeApiError(res, 409, violation.code, violation.message, undefined, withId);
     return;
   }
-  respondApiError(res, 500, "INTERNAL_ERROR", "Internal server error", undefined, withId);
+  writeApiError(res, 500, "INTERNAL_ERROR", "Internal server error", undefined, withId);
 }
 
 function bearer(req: IncomingMessage): string {
@@ -421,9 +437,9 @@ export async function applyGates(
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Authorization, Content-Type, Mcp-Session-Id",
+    "Authorization, Content-Type, Mcp-Session-Id, X-Portuni-Request-Id",
   );
-  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id, X-Portuni-Request-Id");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);

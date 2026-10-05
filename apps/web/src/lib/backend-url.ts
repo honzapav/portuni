@@ -13,6 +13,7 @@
 
 import { ClientError } from "./api-error";
 import { DesktopError, invoke, toDesktopError } from "./tauri-invoke";
+import { errorCode, startApiCall } from "./ui-trail";
 
 declare global {
   interface Window {
@@ -154,15 +155,46 @@ function ensureBackendReady(): Promise<void> {
 
 type ApiResponse = { status: number; body: string };
 
+// The header carrying a request's id end to end (#573): webview -> Rust
+// proxy -> sidecar / central server, and into every log line on the way.
+const REQUEST_ID_HEADER = "X-Portuni-Request-Id";
+
+// Every API call mints a request id and leaves one `api` entry in the UI
+// trail (lib/ui-trail.ts): method, path without query, status, duration,
+// id and the error code.
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   await ensureBackendReady();
 
-  if (!isTauri()) {
-    return fetch(`${BROWSER_BASE}${path}`, init);
-  }
-
   const method = (init?.method ?? "GET").toUpperCase();
+  const { requestId, done: record } = startApiCall(method, path);
 
+  let res: Response;
+  let code: string | null = null;
+  try {
+    if (!isTauri()) {
+      const headers = new Headers(init?.headers);
+      headers.set(REQUEST_ID_HEADER, requestId);
+      res = await fetch(`${BROWSER_BASE}${path}`, { ...init, headers });
+      if (res.status >= 400) code = errorCode(await res.clone().text());
+    } else {
+      const proxied = await proxyRequest(method, path, init, requestId);
+      res = proxied.response;
+      if (proxied.status >= 400) code = errorCode(proxied.body);
+    }
+  } catch (err) {
+    record(null);
+    throw err;
+  }
+  record(res.status, code);
+  return res;
+}
+
+async function proxyRequest(
+  method: string,
+  path: string,
+  init: RequestInit | undefined,
+  requestId: string,
+): Promise<{ response: Response; status: number; body: string }> {
   // api.ts's jsonRequest pre-stringifies bodies; that's the only shape
   // the proxy supports. Reject anything else loudly so a future caller
   // doesn't silently lose its payload.
@@ -179,14 +211,19 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
       headers[key] = value;
     });
   }
+  headers[REQUEST_ID_HEADER] = requestId;
 
   const res = await invoke<ApiResponse>("api_request", {
     method,
     path,
     body,
-    headers: Object.keys(headers).length > 0 ? headers : null,
+    headers,
   });
   // Null-body statuses: new Response("", { status: 204 }) throws TypeError.
   const nullBody = res.status === 204 || res.status === 205 || res.status === 304;
-  return new Response(nullBody ? null : res.body, { status: res.status });
+  return {
+    response: new Response(nullBody ? null : res.body, { status: res.status }),
+    status: res.status,
+    body: res.body,
+  };
 }

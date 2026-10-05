@@ -28,7 +28,7 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_ALLOWED_ORIGINS` | tauri origins + localhost | Extra allowed `Origin` headers (comma-separated) |
 | `PORTUNI_ALLOWED_HOSTS` | loopback | Extra allowed `Host` headers |
 | `PORTUNI_MAX_BODY_BYTES` | 5 MB | Request body cap |
-| `PORTUNI_LOG_REQUESTS` | off | `1` = one-line access log per request |
+| `PORTUNI_LOG_REQUESTS` | off | `1` = one-line access log per request, ending in `id=<request id>` (#573) |
 
 ## MCP
 

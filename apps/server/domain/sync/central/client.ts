@@ -15,6 +15,7 @@ import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
 import type { ErrorParams } from "../../../shared/error-codes.js";
 import { readErrorParams } from "../../../shared/error-params.js";
+import { currentRequestId, newRequestId } from "../../../infra/request-context.js";
 import type {
   CreateDraftSessionInput,
   CreateRunInput,
@@ -197,11 +198,13 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
     path: string,
     body: unknown,
     timeoutMs: number,
+    requestId: string,
   ): Promise<{ status: number; json: unknown }> {
     const res = await doFetch(`${base}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${args.token}`,
+        "x-portuni-request-id": requestId,
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -230,10 +233,14 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
   ): Promise<{ status: number; json: unknown }> {
     const timeoutMs =
       args.requestTimeoutMs ?? (method === "GET" ? GET_TIMEOUT_MS : MUTATION_TIMEOUT_MS);
+    // The id of the request this call serves (#573), so the central
+    // server's log line matches the webview's; a call no request caused (a
+    // watcher tick) gets its own. The retry keeps the same id.
+    const requestId = currentRequestId() ?? newRequestId();
     try {
-      return await requestOnce(method, path, body, timeoutMs);
+      return await requestOnce(method, path, body, timeoutMs, requestId);
     } catch {
-      return requestOnce(method, path, body, timeoutMs);
+      return requestOnce(method, path, body, timeoutMs, requestId);
     }
   }
 
