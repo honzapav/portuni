@@ -193,6 +193,45 @@ export function setTrailFlusher(fn: TrailFlusher): void {
   flusher = fn;
 }
 
+// The `code` of an error body, never anything else from it: the trail holds
+// no bodies.
+export function errorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (parsed && typeof parsed === "object" && typeof (parsed as { code?: unknown }).code === "string") {
+      return (parsed as { code: string }).code;
+    }
+  } catch {
+    /* not JSON */
+  }
+  return null;
+}
+
+// One API call in the trail: the id it sends and a `done` that records its
+// outcome (status, or null for a network failure) with the duration.
+// apiFetch and centralFetch both go through it.
+export function startApiCall(
+  method: string,
+  path: string,
+  trail: UiTrail = uiTrail,
+): { requestId: string; done: (status: number | null, code?: string | null) => void } {
+  const requestId = newRequestId();
+  const startedAt = performance.now();
+  return {
+    requestId,
+    done: (status, code = null) =>
+      trail.record({
+        kind: "api",
+        method,
+        path,
+        status,
+        duration_ms: performance.now() - startedAt,
+        request_id: requestId,
+        code,
+      }),
+  };
+}
+
 // The plain text Settings -> Copy diagnostics puts on the clipboard: a
 // short header the person reading a report needs to place the trail, then
 // the trail itself. Field names are fixed log tokens, not UI text.

@@ -607,39 +607,54 @@ pub struct CentralResponse {
 /// Proxy a request to the central server with the session JWT.
 /// On 401: attempt one silent refresh and retry.
 /// Returns the response shape matching api_request for webview compatibility.
+/// `request_id` is the id centralFetch minted (#573); it goes out on both
+/// attempts, so the webview trail and the central server's log match.
 #[tauri::command]
 pub async fn central_request(
     window: tauri::Window,
     method: String,
     path: String,
     body: Option<Value>,
+    request_id: Option<String>,
 ) -> Result<CentralResponse, CmdError> {
     let ws_id = crate::ws_of(&window)?;
     let config = load_auth_config(window.app_handle(), &ws_id)
         .ok_or(CmdError::LoginNotConfigured)?;
 
     let jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id).ok_or(CmdError::NotLoggedIn)?;
+    let request_id = request_id.filter(|id| crate::is_valid_request_id(id));
 
-    let resp = do_central_request(&config.server_url, &method, &path, body.as_ref(), &jwt, None).await?;
-
-    if resp.status == 401 {
-        // Try silent refresh once. Same window, so the same workspace.
-        info!("central_request: got 401, attempting silent refresh");
-        match auth_refresh(window).await {
-            Err(e) => {
-                warn!("central_request: silent refresh failed: {e}");
-                // Return the original 401 so the frontend can decide what to do.
-                return Ok(resp);
+    // Same window, so the same workspace.
+    let refresh_ws = ws_id.clone();
+    let resp = central_request_with_refresh(
+        &config.server_url,
+        &method,
+        &path,
+        body.as_ref(),
+        &jwt,
+        request_id.as_deref(),
+        || async move {
+            info!("central_request: got 401, attempting silent refresh");
+            match auth_refresh(window).await {
+                Err(e) => {
+                    warn!("central_request: silent refresh failed: {e}");
+                    // Hand the original 401 back so the frontend can decide.
+                    None
+                }
+                Ok(_) => Some(
+                    keychain_get_ws(KEYCHAIN_SESSION_JWT, &refresh_ws).ok_or(CmdError::NotLoggedIn),
+                ),
             }
-            Ok(_) => {
-                let new_jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id)
-                    .ok_or(CmdError::NotLoggedIn)?;
-                return Ok(
-                    do_central_request(&config.server_url, &method, &path, body.as_ref(), &new_jwt, None)
-                        .await?,
-                );
-            }
-        }
+        },
+    )
+    .await?;
+    if resp.status >= 500 {
+        warn!(
+            "central_request: {method} {} -> {} request_id={}",
+            crate::strip_query(&path),
+            resp.status,
+            request_id.as_deref().unwrap_or("-")
+        );
     }
 
     Ok(resp)
@@ -670,7 +685,7 @@ pub async fn do_central_request_raw(
 /// when the refresh itself failed, which hands the original 401 back to the
 /// webview. The retry carries the same request id as the first attempt
 /// (#573), so both land under one id in the central server's log.
-pub async fn central_request_with_refresh<R, RF>(
+pub async fn central_request_with_refresh<E, R, RF>(
     server_url: &str,
     method: &str,
     path: &str,
@@ -678,10 +693,11 @@ pub async fn central_request_with_refresh<R, RF>(
     jwt: &str,
     request_id: Option<&str>,
     refresh: R,
-) -> Result<CentralResponse, String>
+) -> Result<CentralResponse, E>
 where
+    E: From<String>,
     R: FnOnce() -> RF,
-    RF: std::future::Future<Output = Option<Result<String, String>>>,
+    RF: std::future::Future<Output = Option<Result<String, E>>>,
 {
     let resp = do_central_request(server_url, method, path, body, jwt, request_id).await?;
     if resp.status != 401 {
@@ -691,7 +707,7 @@ where
         None => Ok(resp),
         Some(Err(e)) => Err(e),
         Some(Ok(new_jwt)) => {
-            do_central_request(server_url, method, path, body, &new_jwt, request_id).await
+            Ok(do_central_request(server_url, method, path, body, &new_jwt, request_id).await?)
         }
     }
 }
@@ -795,7 +811,7 @@ mod tests {
     #[test]
     fn central_request_forwards_the_request_id_and_keeps_it_on_the_401_retry() {
         let (url, server) = canned_server(vec![401, 200]);
-        let resp = tauri::async_runtime::block_on(central_request_with_refresh(
+        let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _>(
             &url,
             "GET",
             "/nodes",
@@ -818,7 +834,7 @@ mod tests {
     #[test]
     fn central_request_hands_back_the_401_when_the_refresh_fails() {
         let (url, server) = canned_server(vec![401]);
-        let resp = tauri::async_runtime::block_on(central_request_with_refresh(
+        let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _>(
             &url,
             "GET",
             "/nodes",
@@ -831,6 +847,27 @@ mod tests {
         assert_eq!(resp.status, 401);
         let heads = server.join().unwrap();
         assert!(!heads[0].contains("x-portuni-request-id"));
+    }
+
+    /// The central_request command's shape (centralFetch, #573 review):
+    /// a CmdError from the refresh comes back as that CmdError, and the
+    /// first attempt already carried the id.
+    #[test]
+    fn central_request_keeps_the_refresh_cmd_error() {
+        let (url, server) = canned_server(vec![401]);
+        let err = tauri::async_runtime::block_on(central_request_with_refresh(
+            &url,
+            "POST",
+            "/device-tokens",
+            None,
+            "old-jwt",
+            Some("01JCENTRALFETCH"),
+            || async { Some(Err(CmdError::NotLoggedIn)) },
+        ))
+        .err();
+        assert_eq!(err, Some(CmdError::NotLoggedIn));
+        let heads = server.join().unwrap();
+        assert!(heads[0].contains("x-portuni-request-id: 01jcentralfetch"), "{}", heads[0]);
     }
 
     #[test]

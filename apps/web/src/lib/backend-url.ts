@@ -13,7 +13,7 @@
 
 import { ClientError } from "./api-error";
 import { DesktopError, invoke, toDesktopError } from "./tauri-invoke";
-import { newRequestId, uiTrail } from "./ui-trail";
+import { errorCode, startApiCall } from "./ui-trail";
 
 declare global {
   interface Window {
@@ -159,20 +159,6 @@ type ApiResponse = { status: number; body: string };
 // proxy -> sidecar / central server, and into every log line on the way.
 const REQUEST_ID_HEADER = "X-Portuni-Request-Id";
 
-// The `code` of an error body, never anything else from it: the trail holds
-// no bodies.
-function errorCode(body: string): string | null {
-  try {
-    const parsed = JSON.parse(body) as unknown;
-    if (parsed && typeof parsed === "object" && typeof (parsed as { code?: unknown }).code === "string") {
-      return (parsed as { code: string }).code;
-    }
-  } catch {
-    /* not JSON */
-  }
-  return null;
-}
-
 // Every API call mints a request id and leaves one `api` entry in the UI
 // trail (lib/ui-trail.ts): method, path without query, status, duration,
 // id and the error code.
@@ -180,18 +166,7 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
   await ensureBackendReady();
 
   const method = (init?.method ?? "GET").toUpperCase();
-  const requestId = newRequestId();
-  const startedAt = performance.now();
-  const record = (status: number | null, code: string | null = null) =>
-    uiTrail.record({
-      kind: "api",
-      method,
-      path,
-      status,
-      duration_ms: performance.now() - startedAt,
-      request_id: requestId,
-      code,
-    });
+  const { requestId, done: record } = startApiCall(method, path);
 
   let res: Response;
   let code: string | null = null;

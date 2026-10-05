@@ -387,7 +387,7 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   `SettingsPage.tsx` write with `history.replaceState`, recorded by
   `recordView`), `api` (method, path without query string, status or
   `network-error`, duration, request id, the error body's `code`; recorded
-  by `apiFetch`) and `error` (label, error name and message, first stack
+  by `apiFetch` and `centralFetch` through `startApiCall`) and `error` (label, error name and message, first stack
   frame; recorded by `reportError` in `lib/error-overlay.ts`). An entry has
   only those fields: no request or response body, no title, no message
   text (`test/ui-trail.test.ts`).
@@ -406,7 +406,10 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   `[A-Za-z0-9_-]`) and sets it on both branches: the local proxy and
   `auth::central_request_with_refresh` (over `do_central_request_raw`),
   whose retry after a silent 401 refresh carries the same id. A 5xx is
-  logged by the host with the path (no query) and the id.
+  logged by the host with the path (no query) and the id. `centralFetch`
+  (Account: `/me`, `/auth/oauth-grants`, `/device-tokens`) does the same
+  through the `central_request` command, which takes the id as its
+  `request_id` argument (`test/central-fetch-trail.test.ts`).
   `http/server.ts` runs every request inside its id
   (`infra/request-context.ts`, `AsyncLocalStorage`): the caller's, else a
   fresh ULID (MCP clients, the CLI); it echoes it in the response header,

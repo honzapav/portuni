@@ -19,6 +19,7 @@ export { isTauri };
 export { getDataMode, isCentralMode, type DataMode } from "./data-mode";
 import { getDataModeCached, type DataMode } from "./data-mode";
 import { invoke } from "./tauri-invoke";
+import { errorCode, startApiCall } from "./ui-trail";
 
 // Hook: resolves data mode once on mount and caches the result.
 // Returns null while loading (team-workspace features should be optimistically
@@ -115,21 +116,36 @@ type CentralResponse = { status: number; body: string };
 // Calls central_request Tauri command, parses JSON body, throws an ApiError
 // (the server's code and params) on >= 400.
 // `body` is passed as a JSON string (same shape as api_request).
+// Like apiFetch, every call mints a request id (sent on the 401 retry too)
+// and leaves one `api` entry in the UI trail (#573), so a failing click in
+// Account shows the same id in Copy diagnostics, the `ui` log and the
+// central server's log. `call` is the Tauri invoke, swappable in tests.
 export async function centralFetch<T>(
   method: string,
   path: string,
   body?: unknown,
+  call: typeof invoke = invoke,
 ): Promise<T> {
   if (!isTauri()) {
     throw new ClientError("CENTRAL_NEEDS_DESKTOP", "the central server needs the desktop app");
   }
-  const res = await invoke<CentralResponse>("central_request", {
-    method: method.toUpperCase(),
-    path,
-    body: body ?? null,
-  });
+  const upper = method.toUpperCase();
+  const trail = startApiCall(upper, path);
+  let res: CentralResponse;
+  try {
+    res = await call<CentralResponse>("central_request", {
+      method: upper,
+      path,
+      body: body ?? null,
+      requestId: trail.requestId,
+    });
+  } catch (err) {
+    trail.done(null);
+    throw err;
+  }
+  trail.done(res.status, res.status >= 400 ? errorCode(res.body) : null);
   if (res.status >= 400) {
-    throw parseApiError(res.status, res.body, `central ${method.toUpperCase()} ${path}`);
+    throw parseApiError(res.status, res.body, `central ${upper} ${path}`);
   }
   let parsed: unknown;
   try {

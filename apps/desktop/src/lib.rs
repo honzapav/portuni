@@ -2245,14 +2245,18 @@ fn request_id_from_headers(headers: Option<&HashMap<String, String>>) -> Option<
     let (_, v) = headers?
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(REQUEST_ID_HEADER))?;
-    let ok = !v.is_empty()
-        && v.len() <= 64
-        && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    ok.then(|| v.clone())
+    is_valid_request_id(v).then(|| v.clone())
+}
+
+// A request id fit for a log line: 1-64 chars of [A-Za-z0-9_-].
+pub(crate) fn is_valid_request_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 // A path for a log line: no query string, which can carry search text.
-fn strip_query(path: &str) -> &str {
+pub(crate) fn strip_query(path: &str) -> &str {
     path.split(['?', '#']).next().unwrap_or(path)
 }
 
