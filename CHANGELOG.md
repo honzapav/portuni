@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/honzapav/portuni/compare/v0.26.0...v0.27.0) (2026-10-05)
+
+
+### Features
+
+* **desktop,web,server:** on-device UI trail and end-to-end request id ([#591](https://github.com/honzapav/portuni/issues/591)) ([3443839](https://github.com/honzapav/portuni/commit/344383989905b6145500253077ec565575db3556))
+
 ## [0.26.0](https://github.com/honzapav/portuni/compare/v0.25.1...v0.26.0) (2026-10-05)
 
 
