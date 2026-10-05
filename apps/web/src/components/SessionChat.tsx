@@ -96,8 +96,8 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
-import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import { defaultRemarkPlugins } from "streamdown";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import {
@@ -169,7 +169,9 @@ const THREAD_COLUMN = "mx-auto w-[min(80%,768px)]";
 // turns it back into a hard line break. Only the user's own prompt needs this:
 // assistant text is model-authored markdown, where soft-break collapsing is
 // what makes wrapped paragraphs read as one paragraph.
-const PROMPT_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
+// A custom remarkPlugins list replaces Streamdown's defaults, so start from
+// them: they carry gfm and codeMeta (```js startLine=10 / noLineNumbers).
+const PROMPT_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkBreaks];
 // #466 (spec docs/superpowers/specs/2026-09-22-web-session-state-design.md,
 // "`SessionChat`"): this component takes the thread's id, never a row. The
 // row comes from the store -- the window's only copy -- and every change to
