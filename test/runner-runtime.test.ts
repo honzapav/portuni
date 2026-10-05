@@ -492,11 +492,11 @@ describe("session runtime: resume by writing (#378)", () => {
     const { runs, lastStart, resumeMode } = await profileResume({ transcript: false });
     assert.equal(runs.length, 2);
     assert.equal(lastStart?.resume, null);
-    assert.match(lastStart?.orientation ?? "", /Handoff \(resumed from a summary\)/);
+    assert.match(lastStart?.orientation ?? "", /Handoff \(the previous conversation was not resumed\)/);
     assert.equal(resumeMode, "handoff");
   });
 
-  it("a resume without the conversation gets a summary built from the transcript then (#497)", async () => {
+  it("a resume without the conversation gets the whole transcript built then, and the chat is told (#497)", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
 
@@ -505,7 +505,10 @@ describe("session runtime: resume by writing (#378)", () => {
     const firstAdapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
     const registry = { getAdapter: (id: string) => (id === "fake" ? firstAdapter : null) };
     const runtime = createSessionRuntime({ store, content, registry, provision: stubProvision() });
-    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    // Digital Support 1218987479165349: a drafted e-mail whose body the old
+    // first-line summary dropped on exactly this path.
+    const brief = "Subject: Team update\nHello team,\nThis is the approved email body.";
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief, runner: "fake" });
     await runtime.checkIdleRunsOnce(0, Date.now() + 1);
     const suspended = await store.getSession(session.id);
     assert.equal(suspended?.state, "suspended");
@@ -551,11 +554,21 @@ describe("session runtime: resume by writing (#378)", () => {
     await runtime.sendMessage(session.id, "keep going");
 
     assert.ok(capturedOrientation);
-    assert.match(capturedOrientation!, /Handoff \(resumed from a summary\)/);
-    assert.match(capturedOrientation!, /## Recent messages/); // the summary content itself
-    // Built from this device's transcript at resume: the first run's brief.
-    assert.match(capturedOrientation!, /\*\*User:\*\* x/);
+    assert.match(capturedOrientation!, /Handoff \(the previous conversation was not resumed\)/);
+    assert.match(capturedOrientation!, /## Conversation/); // the transcript, not the first-line preview
+    // Built from this device's transcript at resume: the first run's brief,
+    // every line of it.
+    assert.ok(capturedOrientation!.includes(`**User:**\n${brief}`), "the whole message survives");
     assert.equal((await content.getContent(session.id))?.handoff_inline ?? null, null, "and nothing is stored");
+    // The chat learns the agent continued from a handoff, not the live
+    // conversation: the new run's run_started says so, and that is the
+    // event the web renders its marker from (deriveTranscriptRows).
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs.length, 2);
+    const started = (await content.listEvents(session.id)).filter((e) => e.kind === "run_started");
+    assert.equal(started.length, 2);
+    assert.equal(JSON.parse(started[1].payload).resume, "handoff");
+    assert.equal(started[1].run_id, runs[1].id);
   });
 });
 
@@ -623,7 +636,7 @@ describe("session runtime: writing into a closed thread reopens it (#498)", () =
     }
   });
 
-  it("without the conversation starts from a summary of this device's transcript", async () => {
+  it("without the conversation starts from this device's whole transcript", async () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const adapter = new FakeRunnerAdapter({ script: [TURN_DONE, { wait: "message" }] });
@@ -637,8 +650,8 @@ describe("session runtime: writing into a closed thread reopens it (#498)", () =
     assert.equal((await store.listRuns(session.id)).length, 2);
     const start = adapter.getLastRunStart();
     assert.equal(start?.resume, null);
-    assert.match(start?.orientation ?? "", /Handoff \(resumed from a summary\)/);
-    assert.match(start?.orientation ?? "", /\*\*User:\*\* první zadání/);
+    assert.match(start?.orientation ?? "", /Handoff \(the previous conversation was not resumed\)/);
+    assert.match(start?.orientation ?? "", /\*\*User:\*\*\nprvní zadání/);
     assert.equal(start?.brief, "pokračuj");
   });
 

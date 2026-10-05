@@ -332,6 +332,34 @@ describe("deriveTranscriptRows", () => {
     assert.equal((next[next.length - 1] as ActivityRow).live, true);
   });
 
+  // Digital Support 1218987479165349: a resume that could not reopen the
+  // CLI conversation used to look exactly like one that did. The run_started
+  // that says `resume: "handoff"` is the one event that tells them apart.
+  it("a run started from a handoff gets a marker; a conversation resume and a fresh start do not", () => {
+    const fromHandoff = deriveTranscriptRows(
+      [
+        ev(1, "user_message", { text: "pokračuj", source: "chat" }),
+        ev(2, "run_started", { run_id: "R2", runner: "claude", instance_id: null, resume: "handoff" }),
+        ev(3, "assistant_message", { text: "ok" }),
+      ],
+      null,
+    );
+    assert.deepEqual(
+      fromHandoff.map((r) => r.kind),
+      ["prompt", "resumed_from_handoff", "answer"],
+    );
+    for (const resume of [null, "conversation"] as const) {
+      const rows = deriveTranscriptRows(
+        [ev(1, "run_started", { run_id: "R2", runner: "claude", instance_id: null, resume }), ev(2, "assistant_message", { text: "ok" })],
+        null,
+      );
+      assert.deepEqual(
+        rows.map((r) => r.kind),
+        ["answer"],
+      );
+    }
+  });
+
   it("question, compaction and handoff keep their markers", () => {
     const rows = deriveTranscriptRows(
       [

@@ -1022,6 +1022,8 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
       );
     case "summary":
       return <SystemMarker>{t(($) => $.transcript.summary_saved)}</SystemMarker>;
+    case "resumed_from_handoff":
+      return <SystemMarker>{t(($) => $.transcript.resumed_from_handoff)}</SystemMarker>;
     case "interrupted":
       return <SystemMarker>{t(($) => $.transcript.interrupted)}</SystemMarker>;
     case "run_ended":
