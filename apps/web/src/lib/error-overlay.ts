@@ -13,6 +13,7 @@
 // so the on-screen overlay is the primary channel.
 
 import { i18n } from "../i18n";
+import { uiTrail } from "./ui-trail";
 
 let installed = false;
 let overlayEl: HTMLDivElement | null = null;
@@ -70,6 +71,8 @@ function ensureOverlay(): HTMLDivElement {
 }
 
 export function reportError(label: string, err: unknown, extra?: string): void {
+  // The trail entry flushes the recent steps to sidecar.log (#573).
+  uiTrail.record({ kind: "error", label, error: err });
   try {
     // eslint-disable-next-line no-console
     console.error(`[portuni:${label}]`, err, extra ?? "");

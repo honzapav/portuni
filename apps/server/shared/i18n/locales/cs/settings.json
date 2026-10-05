@@ -176,6 +176,13 @@
       "person": "Lidé"
     }
   },
+  "diagnostics": {
+    "copied": "Diagnostika je ve schránce.",
+    "copy": "Kopírovat diagnostiku",
+    "copy_failed": "Kopírování selhalo: {{error}}",
+    "description": "Zkopíruje verzi aplikace, druh a ID workspace a poslední kroky v aplikaci (zobrazení, volání API se stavem a ID požadavku, chyby) jako prostý text pro hlášení problému. Žádný obsah ani těla požadavků; nic se nikam neodesílá.",
+    "title": "Nahlášení problému"
+  },
   "mcp": {
     "actions": {
       "install_claude": "Přidat do Claude Code (~/.claude.json)",

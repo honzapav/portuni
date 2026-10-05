@@ -176,6 +176,13 @@
       "person": "People"
     }
   },
+  "diagnostics": {
+    "copied": "Diagnostics copied to the clipboard.",
+    "copy": "Copy diagnostics",
+    "copy_failed": "Copying failed: {{error}}",
+    "description": "Copies the app version, the workspace kind and id and the last steps in the app (views, API calls with their status and request id, errors) as plain text, to paste into a problem report. No content, no request bodies; nothing is sent anywhere.",
+    "title": "Reporting a problem"
+  },
   "mcp": {
     "actions": {
       "install_claude": "Add to Claude Code (~/.claude.json)",

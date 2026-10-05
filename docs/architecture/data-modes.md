@@ -253,6 +253,9 @@ sync agent and a personal workspace's server (#531):
 - REST and the agent router: `{ error, code, params?, request_id? }`, written
   by `respondApiError` or, for a thrown error, `respondError`
   (`http/middleware.ts`). A handler that knows the answer throws `ApiError`.
+  `request_id` is the request's `X-Portuni-Request-Id` (the caller's or
+  one the server minted, echoed in the response header), the id in the
+  server's log line for it (#573, `desktop-shell.md`).
 - The live channel: `{ id, type: "error", payload: { code, message, params? } }`.
 
 `code` is a member of `apps/server/shared/error-codes.ts`, the one list a new

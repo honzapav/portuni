@@ -71,6 +71,7 @@ import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import { loadOpenNodes, saveOpenNodes } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
 import { lazyWithNamespaces, syncAccountLocale } from "./i18n";
+import { recordView } from "./lib/ui-trail-sink";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
 // Náhled by default; everything else starts in the source editor.
@@ -243,6 +244,7 @@ export default function App() {
       url.searchParams.delete("node");
     }
     window.history.replaceState(null, "", url.toString());
+    recordView(url);
   }, [selectedId]);
 
   // Sync URL with current view. Default "overview" is omitted from the URL
@@ -262,6 +264,7 @@ export default function App() {
       url.searchParams.delete("settingsTab");
     }
     window.history.replaceState(null, "", url.toString());
+    recordView(url);
   }, [view]);
 
   // Load detail when selection changes. The cancelled flag matters: without

@@ -75,7 +75,7 @@ pub(crate) fn ensure_device_token(
     // command, or spawn_blocking), never inside an async context.
     let token = tauri::async_runtime::block_on(async move {
         let body = serde_json::json!({ "label": "Sync agent" });
-        let resp = do_central_request_raw(&server_url, "POST", "/device-tokens", Some(&body), &jwt)
+        let resp = do_central_request_raw(&server_url, "POST", "/device-tokens", Some(&body), &jwt, None)
             .await?;
         if resp.status != 201 {
             return Err(format!(
@@ -620,7 +620,7 @@ pub async fn central_request(
 
     let jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id).ok_or(CmdError::NotLoggedIn)?;
 
-    let resp = do_central_request(&config.server_url, &method, &path, body.as_ref(), &jwt).await?;
+    let resp = do_central_request(&config.server_url, &method, &path, body.as_ref(), &jwt, None).await?;
 
     if resp.status == 401 {
         // Try silent refresh once. Same window, so the same workspace.
@@ -635,7 +635,7 @@ pub async fn central_request(
                 let new_jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id)
                     .ok_or(CmdError::NotLoggedIn)?;
                 return Ok(
-                    do_central_request(&config.server_url, &method, &path, body.as_ref(), &new_jwt)
+                    do_central_request(&config.server_url, &method, &path, body.as_ref(), &new_jwt, None)
                         .await?,
                 );
             }
@@ -659,8 +659,41 @@ pub async fn do_central_request_raw(
     path: &str,
     body: Option<&Value>,
     jwt: &str,
+    request_id: Option<&str>,
 ) -> Result<CentralResponse, String> {
-    do_central_request(server_url, method, path, body, jwt).await
+    do_central_request(server_url, method, path, body, jwt, request_id).await
+}
+
+/// One webview request to the central server with the silent 401 refresh
+/// (api_request's central branch). On a 401 `refresh` runs once and answers
+/// the new JWT (`Some(Ok)`), an error to return (`Some(Err)`), or `None`
+/// when the refresh itself failed, which hands the original 401 back to the
+/// webview. The retry carries the same request id as the first attempt
+/// (#573), so both land under one id in the central server's log.
+pub async fn central_request_with_refresh<R, RF>(
+    server_url: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    jwt: &str,
+    request_id: Option<&str>,
+    refresh: R,
+) -> Result<CentralResponse, String>
+where
+    R: FnOnce() -> RF,
+    RF: std::future::Future<Output = Option<Result<String, String>>>,
+{
+    let resp = do_central_request(server_url, method, path, body, jwt, request_id).await?;
+    if resp.status != 401 {
+        return Ok(resp);
+    }
+    match refresh().await {
+        None => Ok(resp),
+        Some(Err(e)) => Err(e),
+        Some(Ok(new_jwt)) => {
+            do_central_request(server_url, method, path, body, &new_jwt, request_id).await
+        }
+    }
 }
 
 async fn do_central_request(
@@ -669,6 +702,7 @@ async fn do_central_request(
     path: &str,
     body: Option<&Value>,
     jwt: &str,
+    request_id: Option<&str>,
 ) -> Result<CentralResponse, String> {
     let url = format!(
         "{}/{}",
@@ -690,6 +724,9 @@ async fn do_central_request(
         .request(method_parsed, &url)
         .timeout(CENTRAL_REQUEST_TIMEOUT)
         .header("Authorization", format!("Bearer {jwt}"));
+    if let Some(id) = request_id {
+        req = req.header(crate::REQUEST_ID_HEADER, id);
+    }
     if let Some(b) = body {
         req = req.json(b);
     }
@@ -723,6 +760,77 @@ mod tests {
         assert_eq!(url_decode("hello%20world"), "hello world");
         assert_eq!(url_decode("a+b"), "a b");
         assert_eq!(url_decode("no_encoding"), "no_encoding");
+    }
+
+    /// A loopback HTTP server answering `statuses` in order, one connection
+    /// each (`Connection: close`), and handing back every request's head.
+    fn canned_server(statuses: Vec<u16>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut heads = Vec::new();
+            for status in statuses {
+                let (mut sock, _) = listener.accept().unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = sock.read(&mut chunk).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                heads.push(String::from_utf8_lossy(&buf).to_lowercase());
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                );
+                sock.write_all(reply.as_bytes()).unwrap();
+            }
+            heads
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn central_request_forwards_the_request_id_and_keeps_it_on_the_401_retry() {
+        let (url, server) = canned_server(vec![401, 200]);
+        let resp = tauri::async_runtime::block_on(central_request_with_refresh(
+            &url,
+            "GET",
+            "/nodes",
+            None,
+            "old-jwt",
+            Some("01JREQUESTID"),
+            || async { Some(Ok("new-jwt".to_string())) },
+        ))
+        .unwrap();
+        assert_eq!(resp.status, 200);
+        let heads = server.join().unwrap();
+        assert_eq!(heads.len(), 2);
+        assert!(heads[0].contains("authorization: bearer old-jwt"));
+        assert!(heads[1].contains("authorization: bearer new-jwt"));
+        for head in &heads {
+            assert!(head.contains("x-portuni-request-id: 01jrequestid"), "{head}");
+        }
+    }
+
+    #[test]
+    fn central_request_hands_back_the_401_when_the_refresh_fails() {
+        let (url, server) = canned_server(vec![401]);
+        let resp = tauri::async_runtime::block_on(central_request_with_refresh(
+            &url,
+            "GET",
+            "/nodes",
+            None,
+            "old-jwt",
+            None,
+            || async { None },
+        ))
+        .unwrap();
+        assert_eq!(resp.status, 401);
+        let heads = server.join().unwrap();
+        assert!(!heads[0].contains("x-portuni-request-id"));
     }
 
     #[test]

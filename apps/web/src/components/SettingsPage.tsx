@@ -13,6 +13,7 @@ import AccountSection from "./AccountSection";
 import WorkspacesSection from "./WorkspacesSection";
 import RunnersSection from "./RunnersSection";
 import UpdateSection from "./UpdateSection";
+import DiagnosticsSection from "./DiagnosticsSection";
 import { fetchAccessRequestCount, fetchMe } from "../api";
 import { isTauri } from "../lib/backend-url";
 import { showtimeInstalled } from "../lib/showtime";
@@ -20,6 +21,7 @@ import type { AppUpdate } from "../lib/updater";
 import { lazyWithNamespaces } from "../i18n";
 import { useDataMode } from "../lib/central";
 import { showsSyncSurfaces } from "../lib/sync-visibility";
+import { recordView } from "../lib/ui-trail-sink";
 
 // Settings › Sync reads the `files` namespace; it loads with the chunk.
 const SyncSection = lazyWithNamespaces(() => import("./SyncSection"), ["files"]);
@@ -57,6 +59,7 @@ export default function SettingsPage({ appUpdate }: Props) {
     if (tab === "general") url.searchParams.delete("settingsTab");
     else url.searchParams.set("settingsTab", tab);
     window.history.replaceState(null, "", url.toString());
+    recordView(url);
   }, [tab]);
 
   // Uzivatele tab is admin-only, Zadosti o pristup is manage+. fetchMe()
@@ -201,6 +204,8 @@ export default function SettingsPage({ appUpdate }: Props) {
             <UpdateSection appUpdate={appUpdate} />
 
             <McpServerSection />
+
+            <DiagnosticsSection />
 
             <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
               <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">

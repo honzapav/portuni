@@ -61,6 +61,36 @@ Starting with 0.8.0, the app checks for updates itself — no more manual DMG do
 - **Restart behaviour.** Installing an update replaces `Portuni.app` on disk, but the running process keeps executing the old version until you click „Restartovat" (footer or Settings). „Restartovat" runs the same guards as ⌘Q — it warns about a dirty editor or unsynced files before proceeding — then stops all sidecars and relaunches the app, which now runs the new version. If you quit without restarting, the next launch runs the new version regardless.
 - **Versions before 0.8.0** have no updater: download the DMG from [GitHub releases](https://github.com/honzapav/portuni/releases) and drag-replace `Portuni.app` in `/Applications/` one last time to get onto 0.8.0 or later. From then on, updates happen in-app. Your settings, database (local SQLite or Turso), and mirror folders are unaffected either way.
 
+## Reporting a problem
+
+When something in the app breaks, two things help whoever looks at it: the
+log files and the trail of what you did right before.
+
+- **Logs.** The app writes `~/Library/Logs/<bundle_id>/sidecar.log` (five
+  files of 10 MB are kept) and one `sidecar-<workspace>.log` per workspace
+  next to it. When something fails in a window -- an error on screen, a
+  server error, a request that never got an answer -- the window writes its
+  recent steps into `sidecar.log` under the `ui` target.
+- **Copy diagnostics** (Settings → General → Reporting a problem) copies to
+  the clipboard as plain text: the app version, the workspace kind
+  (personal or team) and the workspace id, and the last 300 steps in the
+  window: the views you opened (view, node id, settings tab), each API call
+  with its method, its path without the query string, its status, how long
+  it took, its request id and the error code, and every error the app
+  reported. It holds no node titles, no message text and no request or
+  response body.
+- **Request id.** Every API call carries one id (`X-Portuni-Request-Id`)
+  from the window through the app to the server that answers it; the
+  server echoes it and writes it into its error lines, and an "Internal
+  server error" message shows it. The same id in the copied diagnostics,
+  in `sidecar.log` and in the server's log ties one click to what happened
+  on the server -- on this Mac in a personal workspace, on the central
+  server in a team workspace (including calls the sync agent makes there
+  on the window's behalf).
+
+Nothing is sent anywhere: the trail lives in the window's memory and in the
+log files on this Mac, and leaves it only when you paste it somewhere.
+
 ## Connecting external MCP clients to the app's sidecar
 
 The desktop app and an external MCP client (Claude Code, Codex CLI, Gemini CLI, Mistral Vibe) can share the same backend:

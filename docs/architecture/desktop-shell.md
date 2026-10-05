@@ -353,8 +353,8 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   - personal workspace: proxies to `http://127.0.0.1:<port><path>` on the
     workspace's sidecar with its bearer token (`sidecar_port_and_token`);
   - team workspace: sends the request to `server_url` with the session
-    JWT (`auth::do_central_request_raw`), retrying once after a silent
-    refresh on 401, **unless** `is_device_local_path(path)` is true; then it
+    JWT (`auth::central_request_with_refresh`), retrying once after a
+    silent refresh on 401 with the same request id, **unless** `is_device_local_path(path)` is true; then it
     proxies to the local sync agent exactly as a personal workspace would.
 - The device-local list is the set of routes the device must serve itself
   (mirrors, sync status and runs, file content and file lifecycle, runner
@@ -379,6 +379,46 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs…`,
   `/sessions/record`), `GET /nodes/:id/sessions`, `/overview`,
   `GET /sync/watch`.
+
+## UI trail and request id (#573)
+
+- **Trail.** `apps/web/src/lib/ui-trail.ts` keeps the last 300 entries in
+  memory only (`TRAIL_CAPACITY`): `view` (the URL state `App.tsx` and
+  `SettingsPage.tsx` write with `history.replaceState`, recorded by
+  `recordView`), `api` (method, path without query string, status or
+  `network-error`, duration, request id, the error body's `code`; recorded
+  by `apiFetch`) and `error` (label, error name and message, first stack
+  frame; recorded by `reportError` in `lib/error-overlay.ts`). An entry has
+  only those fields: no request or response body, no title, no message
+  text (`test/ui-trail.test.ts`).
+- **Flush.** An `error` entry, an `api` entry with status >= 500 and a
+  network failure each send the entries added since the last flush to the
+  flusher `main.tsx` installs (`lib/ui-trail-sink.ts`): in the desktop app
+  the `log_ui_trail` command, which writes each line through
+  `tauri_plugin_log` under target `ui`, prefixed with the window label, so
+  they land in `sidecar.log`; in the browser build `console.error`. The
+  command caps a flush at 300 lines of 2000 characters and turns control
+  characters into spaces, so a line cannot forge another. A failed flush
+  goes to the console only and never records an error itself.
+- **Request id.** `apiFetch` mints a ULID per call and sends it as
+  `X-Portuni-Request-Id`. `api_request` reads it (`request_id_from_headers`,
+  the same well-formedness rule as the server: 1 to 64 of
+  `[A-Za-z0-9_-]`) and sets it on both branches: the local proxy and
+  `auth::central_request_with_refresh` (over `do_central_request_raw`),
+  whose retry after a silent 401 refresh carries the same id. A 5xx is
+  logged by the host with the path (no query) and the id.
+  `http/server.ts` runs every request inside its id
+  (`infra/request-context.ts`, `AsyncLocalStorage`): the caller's, else a
+  fresh ULID (MCP clients, the CLI); it echoes it in the response header,
+  ends the `PORTUNI_LOG_REQUESTS` access line with `id=<id>` (the line
+  keeps its `[req] ` prefix, which `is_sidecar_access_log` keys on), and
+  `respondError` / every 5xx `respondApiError` logs `[req:<id>]` and
+  returns it as `request_id`. The sync agent's `createHttpCentralClient`
+  forwards the id of the request it serves (`currentRequestId()`); a call
+  no request caused (a watcher tick) mints its own, and its retry keeps it.
+- **Copy diagnostics** (Settings → General, `DiagnosticsSection`) copies
+  `formatDiagnostics`: app version, workspace kind (personal / team),
+  workspace id, then the trail. Nothing is sent anywhere.
 
 ## Live-channel bridge
 
