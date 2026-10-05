@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.26.0](https://github.com/honzapav/portuni/compare/v0.25.1...v0.26.0) (2026-10-05)
+
+
+### Features
+
+* **runner,web,server,desktop:** a stable device id; a personal workspace hides everything about syncing; the live channel never fails silently ([#580](https://github.com/honzapav/portuni/issues/580)) ([5c44324](https://github.com/honzapav/portuni/commit/5c443242695fe4edbc5f99380581ef6c1b043b50))
+* **runner,web:** Pokračovat v nové session on a closed or archived thread ([#577](https://github.com/honzapav/portuni/issues/577)) ([2748232](https://github.com/honzapav/portuni/commit/27482321cd68717b4647b5ee91c12ad56c471758))
+
+
+### Bug Fixes
+
+* **desktop:** login shell PATH probe as interactive, so nvm's PATH hook applies ([#570](https://github.com/honzapav/portuni/issues/570)) ([13c2732](https://github.com/honzapav/portuni/commit/13c27325bdd69f078bbd8dd6238017269deb380d))
+* **desktop:** resolve login shell PATH as interactive, so nvm's PATH hook applies ([13c2732](https://github.com/honzapav/portuni/commit/13c27325bdd69f078bbd8dd6238017269deb380d))
+* **runner:** keep the full transcript and tell the user when a resume falls back to a handoff ([#571](https://github.com/honzapav/portuni/issues/571)) ([e6c5b81](https://github.com/honzapav/portuni/commit/e6c5b814a4a93128e15be8dfb1a4b5a2232fda9f))
+* **web:** chat links open via the Tauri opener, not Streamdown's window.open ([#572](https://github.com/honzapav/portuni/issues/572)) ([75fc3da](https://github.com/honzapav/portuni/commit/75fc3da129bd399264c61aef480aa3e2f0f057ad))
+* **web:** preserve Shift+Enter line breaks in chat prompt ([#568](https://github.com/honzapav/portuni/issues/568)) ([fe4a457](https://github.com/honzapav/portuni/commit/fe4a4573b277d36ad5357c370aeb2a4fecd6737e))
+* **web:** style the chat confirmation panel like a proper card ([#569](https://github.com/honzapav/portuni/issues/569)) ([86aa6b7](https://github.com/honzapav/portuni/commit/86aa6b7f5991cecde94e4d70e7d82e14b1b3342c))
+
 ## [0.25.1](https://github.com/honzapav/portuni/compare/v0.25.0...v0.25.1) (2026-09-28)
 
 
