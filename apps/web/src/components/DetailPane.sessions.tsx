@@ -10,12 +10,13 @@ import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, X } from "lucide-react";
-import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionSummary } from "../types";
+import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, Redo2, X } from "lucide-react";
+import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionState, SessionSummary } from "../types";
 import {
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
   closePersistentSession,
+  continueSession,
   deleteDraftSession,
   renamePersistentSession,
   startSessionFromHandoff,
@@ -25,6 +26,7 @@ import {
   hostDisplayName,
   mergeLiveSessionStates,
   sessionRowChip,
+  sessionRowContinues,
   sessionRowOpensChat,
   threadCloseAction,
 } from "../lib/session-views";
@@ -149,6 +151,28 @@ export function SessionsSection({
     }
   };
 
+  // "Pokračovat v nové session" on a done row (closed or archived): the same
+  // POST /sessions/:id/continue as the chat header's -- this thread keeps
+  // its state and lends its summary to a new, running thread on the node,
+  // which the app then shows (onSessionStarted, as Navázat na handoff).
+  // One at a time: every row's action is disabled while a request is on
+  // the wire, so no click can start a second successor. The state the row
+  // showed goes with the request: the server refuses when the thread was
+  // reopened meanwhile, instead of ending the run that reopened it.
+  const [continuingId, setContinuingId] = useState<string | null>(null);
+  const handleContinue = async (id: string, state: SessionState) => {
+    setContinuingId(id);
+    setError(null);
+    try {
+      const { session, run } = await continueSession(id, state);
+      onSessionStarted?.({ session, run });
+    } catch (e) {
+      setError(displayError(e));
+    } finally {
+      setContinuingId(null);
+    }
+  };
+
   // #460 "Navázat na handoff": the handoff files of this node, whoever
   // wrote them -- a file another machine's thread wrote arrives here as an
   // ordinary tracked file, which is exactly the point.
@@ -241,6 +265,9 @@ export function SessionsSection({
               key={s.id}
               session={s}
               onRenamed={updateOne}
+              onContinue={onSessionStarted ? () => void handleContinue(s.id, s.state) : undefined}
+              continuing={continuingId === s.id}
+              continueDisabled={continuingId !== null}
               onClose={() => {
                 // #506: a draft is deleted outright, the same deletion as
                 // the sidebar's ×; this list is its own copy, so the row
@@ -270,12 +297,20 @@ export function SessionsSection({
 function SessionRow({
   session,
   onRenamed,
+  onContinue,
+  continuing,
+  continueDisabled,
   onClose,
   onOpenChat,
   onOpenHandoff,
 }: {
   session: SessionSummary;
   onRenamed: (updated: SessionSummary) => void;
+  // "Pokračovat v nové session" on a closed or archived row; absent where
+  // the caller has no chat surface to show the new thread in.
+  onContinue?: () => void;
+  continuing?: boolean;
+  continueDisabled?: boolean;
   onClose: () => void;
   onOpenChat?: (sessionId: string) => void;
   onOpenHandoff?: () => void;
@@ -331,11 +366,13 @@ function SessionRow({
   // Row actions are icon buttons on the right of the title line, shown on
   // hover or keyboard focus (the list stays quiet); rename is one of them.
   // Uzavřít sits last behind a separator. #498: a closed thread opens its
-  // chat like a suspended one -- writing into it reopens it, so there is no
-  // Navázat anymore.
+  // chat like a suspended one -- writing into it reopens it. A done row
+  // (closed or archived) also offers Pokračovat v nové session: a new
+  // thread seeded with this one's summary, this one left as it is.
   // #457: the list carries the caller's own threads only, so every action
   // here is the owner's and nothing is gated beyond the state.
   const showChat = sessionRowOpensChat(session.state) && !!onOpenChat;
+  const showContinue = sessionRowContinues(session) && !!onContinue;
   // #506: a draft gets the same Uzavřít, which deletes it without asking.
   const showClose = threadCloseAction(session.state) !== null;
 
@@ -403,6 +440,16 @@ function SessionRow({
               <RowIcon onClick={() => setEditing(true)} title={t(($) => $.sessions.row.rename)}>
                 <Pencil />
               </RowIcon>
+              {showContinue && (
+                <RowIcon
+                  onClick={onContinue!}
+                  disabled={continueDisabled}
+                  title={continuing ? t(($) => $.sessions.row.continuing) : t(($) => $.sessions.row.continue)}
+                  className="text-[var(--color-accent)]"
+                >
+                  <Redo2 />
+                </RowIcon>
+              )}
               {showClose && <span aria-hidden className="mx-1 h-3.5 w-px bg-[var(--color-border)]" />}
               {showClose && (
                 <RowIcon

@@ -127,6 +127,12 @@ function requestCases(post: Post, ids: () => { sessionId: string; nodeId: string
     assert.deepEqual(lastCall("continueSession").args, [ids().sessionId, { locale: "en" }]);
   });
 
+  it("Pokračovat v nové session hands the state it was offered on to the runtime", async () => {
+    const res = await post(`/sessions/${ids().sessionId}/continue`, { locale: "cs", expect_state: "closed" });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.deepEqual(lastCall("continueSession").args, [ids().sessionId, { locale: "cs", expectState: "closed" }]);
+  });
+
   it("Předat hands the locale to the runtime", async () => {
     const res = await post(`/sessions/${ids().sessionId}/handoff`, { locale: "cs" });
     assert.equal(res.statusCode, 200, res.body);

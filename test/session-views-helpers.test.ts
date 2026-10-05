@@ -17,6 +17,8 @@ import {
   threadAcceptsMessages,
   composerStatePlaceholder,
   sessionRowOpensChat,
+  sessionRowContinues,
+  threadCanContinue,
   isOpenableChatState,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
@@ -298,6 +300,21 @@ describe("the composer and the Relace row for a closed thread (#498)", () => {
     assert.equal(sessionRowOpensChat("closed"), true);
     assert.equal(sessionRowOpensChat("archived"), false);
     assert.equal(sessionRowOpensChat("draft"), false);
+  });
+
+  it("Pokračovat v nové session: the header offers it on every thread but a draft, the row on a done thread with a runner", () => {
+    assert.equal(threadCanContinue("running"), true);
+    assert.equal(threadCanContinue("suspended"), true);
+    assert.equal(threadCanContinue("closed"), true);
+    assert.equal(threadCanContinue("archived"), true);
+    assert.equal(threadCanContinue("draft"), false);
+
+    assert.equal(sessionRowContinues({ state: "closed", runner: "claude" }), true);
+    assert.equal(sessionRowContinues({ state: "archived", runner: "claude" }), true);
+    assert.equal(sessionRowContinues({ state: "running", runner: "claude" }), false, "a list click never ends a live run");
+    assert.equal(sessionRowContinues({ state: "suspended", runner: "claude" }), false);
+    assert.equal(sessionRowContinues({ state: "draft", runner: "claude" }), false);
+    assert.equal(sessionRowContinues({ state: "closed", runner: null }), false, "a hand-opened CLI session has no runner to continue under");
   });
 
   it("a closed thread can be shown as chat, an archived one cannot", () => {
