@@ -355,19 +355,22 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
 // sessions_connect is retried with backoff until it succeeds. A frame whose
 // sessions_send failed waits in `held` for that success (the client cancels
 // one it reports as failed -- before or after the failure arrives -- and
-// resubscribes on the next open). A send that
-// fails while a sessions_connect is in flight waits for that attempt rather
-// than starting another: every sessions_connect replaces Rust's socket, so
-// a second one would drop the socket the first just opened.
+// resubscribes on the next open). A send that fails while a sessions_connect
+// is in flight waits for that attempt rather than starting another: every
+// sessions_connect replaces Rust's socket, so a second one would drop the
+// socket the first just opened.
 //
-// Every sessions_connect also replaces Rust's outbox (connect_for_ws), and
-// with it every frame sent while the socket was down and waiting there for
-// the next open. So a frame is sent only once no sessions_connect is in
-// flight, and the frames Rust holds for the next open (`queued`) go back
-// through `held` to the connection the next sessions_connect creates: the
-// chat's Reconnect during an outage must not lose the message typed during
-// it, whose promise would otherwise never settle (the open that follows
-// takes its timeout, trusting the open to have flushed it).
+// A frame sessions_send accepted is Rust's from then on: it waits in Rust's
+// outbox while the socket is down, and a sessions_connect carries that
+// outbox over to the connection it creates (SessionsWsState::register), so
+// the chat's Reconnect during an outage delivers the message typed during
+// it. Nothing here mirrors Rust's outbox; `held` holds only what Rust
+// refused. The answer to a sessions_send can arrive late -- after the
+// client cancelled the request, or after a later sessions_connect succeeded
+// -- and a late answer must not act on the connection that exists now: a
+// cancelled frame's outcome is dropped whole, and a rejection from before
+// the current connect hands the frame to that connect instead of reporting
+// a failure of the connection it never touched.
 export interface TauriTransportDeps {
   invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
   listen?: <T>(event: string, cb: (ev: { payload: T }) => void) => Promise<() => void>;
@@ -391,23 +394,22 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
   let stopped = true;
   let backoffMs = minBackoffMs;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  // Frames Rust refused (sessions_send rejected) or that arrived while a
+  // sessions_connect was in flight: handed to the connection the next
+  // successful sessions_connect creates, in order. Never a frame Rust took.
   const held: Array<{ id: string; text: string }> = [];
   // Frame ids whose sessions_send is awaiting its answer. A cancel removes
-  // the id, so a rejection that arrives for a frame the client already
-  // settled (the first failed send took the channel down and the client
-  // reported every request lost) drops the frame instead of holding it: a
-  // frame held past its own failure report is delivered by the next open,
-  // and the user's resend then executes the action twice.
+  // the id, so an answer that arrives for a frame the client already settled
+  // (the socket dropped and the client reported every request lost) is
+  // dropped whole: a frame held past its own failure report is delivered by
+  // the next open and the user's resend then executes the action twice, and
+  // a failure reported for it takes down a connection it never touched.
   const inFlight = new Set<string>();
-  // Frames sessions_send accepted while the socket was down: Rust holds
-  // them in its outbox for the next open, which clears this. A cancel takes
-  // one out, as it does in Rust.
-  const queued: Array<{ id: string; text: string }> = [];
   // A sessions_connect is awaiting its answer; it flushes `held` when it
   // succeeds.
   let connecting = false;
-  // Bumped on every sessions_connect that succeeded: a send that failed
-  // before the latest one was asked for an outbox that exists now.
+  // Bumped on every sessions_connect that succeeded: the answer to a send
+  // asked for before the latest one is about a connection that is gone.
   let connectEpoch = 0;
   let lastStatus: ConnectionStatus = "closed";
 
@@ -438,11 +440,7 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
       frameListeners.emit(ev.payload.frame);
     });
     const offStatus = await listen<{ status: ConnectionStatus }>("session-connection", (ev) => {
-      if (ev.payload.status === "open") {
-        backoffMs = minBackoffMs;
-        // The loop drains its outbox right after it says open.
-        queued.length = 0;
-      }
+      if (ev.payload.status === "open") backoffMs = minBackoffMs;
       lastStatus = ev.payload.status;
       emitStatus(ev.payload.status);
     });
@@ -461,9 +459,6 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
   async function attempt(gen: number): Promise<void> {
     if (stopped || gen !== generation) return;
     connecting = true;
-    // The outbox this sessions_connect replaces goes with its frames; they
-    // are handed to the new one below, after what a failed send left behind.
-    held.push(...queued.splice(0));
     try {
       if (!(await listenOnce(gen))) return;
       await call("sessions_connect");
@@ -475,8 +470,8 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
     }
     if (gen !== generation) return;
     connectEpoch += 1;
-    // Rust holds a live outbox again: hand it what a failed send left
-    // behind, in order.
+    // Rust holds a live outbox again (with everything the replaced one still
+    // had): hand it what Rust refused before, in order.
     for (const entry of held.splice(0)) sendNow(entry);
   }
 
@@ -485,22 +480,24 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
     inFlight.add(entry.id);
     call("sessions_send", { frame: entry.text }).then(
       () => {
-        const wanted = inFlight.delete(entry.id);
-        // Rust took the frame; with the socket down it waits in the outbox.
-        if (wanted && lastStatus !== "open") queued.push(entry);
+        // Rust took the frame: on the wire now, or in the outbox for the next
+        // open, which a reconnect in between carries over. Nothing to track.
+        inFlight.delete(entry.id);
       },
       (err: unknown) => {
         // Cancelled while in flight: the client settled this request already
-        // and nothing of it may reach the server later.
+        // and nothing of it may reach the server later -- and nothing of its
+        // failure concerns the connection that exists now.
         const wanted = inFlight.delete(entry.id);
-        if (stopped) return;
-        if (wanted && connectEpoch !== epoch) {
-          // A sessions_connect succeeded after this send was asked for: its
-          // outbox takes the frame.
+        if (!wanted || stopped) return;
+        if (connectEpoch !== epoch) {
+          // A sessions_connect succeeded after this send was asked for: Rust
+          // refused the frame for a connection that is gone; the one that
+          // exists now takes it. No failure to report for it.
           sendNow(entry);
           return;
         }
-        if (wanted) held.push(entry);
+        held.push(entry);
         if (connecting) return;
         fail("sessions_send", err);
       },
@@ -510,17 +507,16 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
   return {
     send(frame) {
       const entry = { id: frame.id, text: JSON.stringify(frame) };
-      // Sent now, the frame may land in the outbox the in-flight
-      // sessions_connect is about to replace; it waits for the new one.
+      // Sent during an in-flight sessions_connect, the frame would race the
+      // connect into Rust and be refused when there is no connection yet; it
+      // waits for the connect instead.
       if (connecting) held.push(entry);
       else sendNow(entry);
     },
     cancel(id) {
       inFlight.delete(id);
-      for (const list of [held, queued]) {
-        const index = list.findIndex((entry) => entry.id === id);
-        if (index !== -1) list.splice(index, 1);
-      }
+      const index = held.findIndex((entry) => entry.id === id);
+      if (index !== -1) held.splice(index, 1);
       // Same import-then-invoke chain as send (lib/tauri-invoke.ts awaits one
       // shared module promise), so a cancel issued after a send reaches Rust
       // after it: both continuations run in order. With no connection there
@@ -543,7 +539,8 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
       retryTimer = null;
       backoffMs = minBackoffMs;
       // A fresh sessions_connect replaces Rust's loop too, so a socket
-      // sleeping out a 30 s backoff there tries again now.
+      // sleeping out a 30 s backoff there tries again now -- with the
+      // frames that waited for it.
       void attempt(generation);
     },
     disconnect() {
@@ -554,7 +551,6 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = null;
       held.length = 0;
-      queued.length = 0;
       inFlight.clear();
       unlisten?.();
       unlisten = null;

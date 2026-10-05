@@ -79,6 +79,11 @@ fn encode_session_event(frame: serde_json::Value) -> SessionEventPayload {
 // cancels it, and a failed request must never be delivered afterwards (a
 // resend would reach the agent twice). A frame already written is out of
 // reach; cancelling it is a no-op.
+//
+// A frame sessions_send took is never dropped by a later sessions_connect:
+// the connection that replaces this one starts with every frame still
+// waiting here (SessionsWsState::register), so the webview has nothing to
+// mirror or resend across a reconnect.
 #[derive(Default)]
 struct Outbox {
     queue: Mutex<VecDeque<(Option<String>, String)>>,
@@ -87,6 +92,14 @@ struct Outbox {
 }
 
 impl Outbox {
+    fn with_frames(frames: VecDeque<(Option<String>, String)>) -> Self {
+        Outbox {
+            queue: Mutex::new(frames),
+            notify: Notify::new(),
+            closed: AtomicBool::new(false),
+        }
+    }
+
     fn push(&self, frame: String) {
         let id = frame_id(&frame);
         if let Ok(mut queue) = self.queue.lock() {
@@ -109,6 +122,26 @@ impl Outbox {
     fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.notify.notify_one();
+    }
+
+    // Closes the outbox and takes every frame still waiting in it, for the
+    // connection that replaces this one. Both happen under the queue lock,
+    // so the old loop finds the outbox closed or empty, never a frame it
+    // could still write to the socket being retired: a frame that is
+    // carried over goes out once, on the new socket.
+    fn close_and_take(&self) -> VecDeque<(Option<String>, String)> {
+        let taken = match self.queue.lock() {
+            Ok(mut queue) => {
+                self.closed.store(true, Ordering::SeqCst);
+                std::mem::take(&mut *queue)
+            }
+            Err(_) => {
+                self.closed.store(true, Ordering::SeqCst);
+                VecDeque::new()
+            }
+        };
+        self.notify.notify_one();
+        taken
     }
 
     fn is_closed(&self) -> bool {
@@ -148,14 +181,91 @@ pub struct SessionsWsState {
     next_generation: AtomicU64,
 }
 
+// What SessionsWsState::register hands the connection loop a
+// sessions_connect starts.
+struct Registered {
+    outbox: Arc<Outbox>,
+    generation: u64,
+    // An entry for the window existed and was replaced: the socket that went
+    // with it is gone, which the webview has to hear as `reconnecting`.
+    replaced: bool,
+}
+
+// The registry behind the commands, kept free of the AppHandle so its
+// bookkeeping is testable without a Tauri runtime (state_tests below).
+impl SessionsWsState {
+    // Registers the connection a sessions_connect creates for `ws_id`.
+    // Replacing an existing entry (a second sessions_connect for the same
+    // window: a remount, the chat's Reconnect button) closes its outbox,
+    // which is exactly the signal the old background task needs to close its
+    // socket and stop instead of running alongside the new one -- and moves
+    // every frame still waiting in that outbox to the new one, ahead of
+    // anything sent later. A frame the webview handed to sessions_send while
+    // the socket was down is therefore never dropped by the reconnect that
+    // is meant to deliver it (#580 review).
+    fn register(&self, ws_id: &str) -> Result<Registered, String> {
+        let mut conns = self.connections.lock().map_err(|e| e.to_string())?;
+        let generation = self.next_generation.fetch_add(1, Ordering::SeqCst);
+        let carried = conns
+            .get(ws_id)
+            .map(|old| old.outbox.close_and_take())
+            .unwrap_or_default();
+        let replaced = conns.contains_key(ws_id);
+        let outbox = Arc::new(Outbox::with_frames(carried));
+        conns.insert(
+            ws_id.to_string(),
+            Connection {
+                outbox: outbox.clone(),
+                generation,
+            },
+        );
+        Ok(Registered {
+            outbox,
+            generation,
+            replaced,
+        })
+    }
+
+    // Removes the window's entry; its outbox closes, which wakes the
+    // background task to close the socket and exit for good rather than
+    // reconnect. The frames still waiting go with it: a disconnect is the
+    // webview saying it wants nothing delivered anymore.
+    fn remove(&self, ws_id: &str) {
+        if let Ok(mut conns) = self.connections.lock() {
+            if let Some(conn) = conns.remove(ws_id) {
+                conn.outbox.close();
+            }
+        }
+    }
+
+    fn push(&self, ws_id: &str, frame: String) -> Result<(), String> {
+        let conns = self.connections.lock().map_err(|e| e.to_string())?;
+        let conn = conns
+            .get(ws_id)
+            .ok_or_else(|| "sessions_send: not connected".to_string())?;
+        conn.outbox.push(frame);
+        Ok(())
+    }
+
+    fn cancel(&self, ws_id: &str, id: &str) -> Result<(), String> {
+        let conns = self.connections.lock().map_err(|e| e.to_string())?;
+        if let Some(conn) = conns.get(ws_id) {
+            conn.outbox.cancel(id);
+        }
+        Ok(())
+    }
+
+    fn current_generation(&self, ws_id: &str) -> Option<u64> {
+        let conns = self.connections.lock().ok()?;
+        conns.get(ws_id).map(|c| c.generation)
+    }
+}
+
 fn is_current_generation(app: &AppHandle, ws_id: &str, generation: u64) -> bool {
     let Some(state) = app.try_state::<SessionsWsState>() else {
         return false;
     };
-    let Ok(conns) = state.connections.lock() else {
-        return false;
-    };
-    conns.get(ws_id).map(|c| c.generation) == Some(generation)
+    state.current_generation(ws_id) == Some(generation)
 }
 
 // A loop that a newer sessions_connect or a disconnect superseded says
@@ -211,32 +321,21 @@ pub(crate) async fn sessions_connect(app: AppHandle, window: tauri::Window) -> R
 }
 
 fn connect_for_ws(app: &AppHandle, ws_id: &str) -> Result<(), CmdError> {
-    let outbox = Arc::new(Outbox::default());
-    let generation = {
-        let state = app.state::<SessionsWsState>();
-        let mut conns = state.connections.lock().map_err(|e| e.to_string())?;
-        // Replacing an existing entry (a second sessions_connect for the
-        // same window, e.g. a remount) closes its outbox, which is exactly
-        // the signal the old background task needs to close its socket and
-        // stop instead of running alongside the new one. The webview hears
-        // `reconnecting` for it here, before the new loop can say `open`:
-        // the old socket's subscriptions are gone with it, and the next
-        // `open` is what makes the webview subscribe again.
-        let generation = state.next_generation.fetch_add(1, Ordering::SeqCst);
-        if let Some(old) = conns.insert(
-            ws_id.to_string(),
-            Connection {
-                outbox: outbox.clone(),
-                generation,
-            },
-        ) {
-            old.outbox.close();
-            emit_connection_status(app, ws_id, "reconnecting");
-        }
-        generation
-    };
-
-    tauri::async_runtime::spawn(run_connection_loop(app.clone(), ws_id.to_string(), generation, outbox));
+    let registered = app.state::<SessionsWsState>().register(ws_id)?;
+    // The webview hears `reconnecting` for the replaced socket here, before
+    // the new loop can say `open`: the old socket's subscriptions are gone
+    // with it, and the next `open` is what makes the webview subscribe again.
+    // The frames that waited for the old socket are in the new outbox already
+    // and go out with that open.
+    if registered.replaced {
+        emit_connection_status(app, ws_id, "reconnecting");
+    }
+    tauri::async_runtime::spawn(run_connection_loop(
+        app.clone(),
+        ws_id.to_string(),
+        registered.generation,
+        registered.outbox,
+    ));
     Ok(())
 }
 
@@ -252,14 +351,7 @@ pub(crate) fn sessions_disconnect(app: AppHandle, window: tauri::Window) -> Resu
 // task holding a live socket open.
 pub(crate) fn disconnect_for_ws(app: &AppHandle, ws_id: &str) {
     if let Some(state) = app.try_state::<SessionsWsState>() {
-        if let Ok(mut conns) = state.connections.lock() {
-            // Closing the entry's outbox wakes the background task, which
-            // is its own signal to close the socket and exit for good
-            // rather than reconnect.
-            if let Some(conn) = conns.remove(ws_id) {
-                conn.outbox.close();
-            }
-        }
+        state.remove(ws_id);
     }
     emit_connection_status(app, ws_id, "closed");
 }
@@ -271,12 +363,7 @@ pub(crate) fn sessions_send(app: AppHandle, window: tauri::Window, frame: String
 }
 
 fn push_for_ws(app: &AppHandle, ws_id: &str, frame: String) -> Result<(), CmdError> {
-    let state = app.state::<SessionsWsState>();
-    let conns = state.connections.lock().map_err(|e| e.to_string())?;
-    let conn = conns
-        .get(ws_id)
-        .ok_or_else(|| "sessions_send: not connected".to_string())?;
-    conn.outbox.push(frame);
+    app.state::<SessionsWsState>().push(ws_id, frame)?;
     Ok(())
 }
 
@@ -285,11 +372,7 @@ fn push_for_ws(app: &AppHandle, ws_id: &str, frame: String) -> Result<(), CmdErr
 #[tauri::command]
 pub(crate) fn sessions_cancel(app: AppHandle, window: tauri::Window, id: String) -> Result<(), CmdError> {
     let ws_id = crate::ws_of(&window)?;
-    let state = app.state::<SessionsWsState>();
-    let conns = state.connections.lock().map_err(|e| e.to_string())?;
-    if let Some(conn) = conns.get(&ws_id) {
-        conn.outbox.cancel(&id);
-    }
+    app.state::<SessionsWsState>().cancel(&ws_id, &id)?;
     Ok(())
 }
 
@@ -592,5 +675,110 @@ mod outbox_tests {
         assert!(!outbox.is_closed());
         outbox.close();
         assert!(outbox.is_closed());
+    }
+
+    #[test]
+    fn close_and_take_leaves_the_outbox_closed_and_empty() {
+        let outbox = Outbox::default();
+        outbox.push(r#"{"id":"a","type":"message","payload":{}}"#.to_string());
+        outbox.push(r#"{"type":"unsubscribe","payload":{}}"#.to_string());
+        let taken = outbox.close_and_take();
+        assert_eq!(taken.len(), 2);
+        assert_eq!(taken[0].0.as_deref(), Some("a"));
+        assert!(outbox.is_closed());
+        assert!(outbox.pop().is_none(), "the retired loop finds nothing left to write");
+    }
+}
+
+// The registry a sessions_connect/send/cancel/disconnect goes through,
+// exercised without a Tauri runtime: what the webview handed to sessions_send
+// survives the sessions_connect that replaces the connection (#580 review).
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    fn frame(id: &str) -> String {
+        format!(r#"{{"id":"{id}","type":"message","payload":{{}}}}"#)
+    }
+
+    fn ids(outbox: &Outbox) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(f) = outbox.pop() {
+            out.push(frame_id(&f).expect("test frames carry an id"));
+        }
+        out
+    }
+
+    #[test]
+    fn the_first_connect_for_a_window_replaces_nothing() {
+        let state = SessionsWsState::default();
+        let first = state.register("w1").expect("register");
+        assert!(!first.replaced);
+        assert!(!first.outbox.is_closed());
+        assert!(first.outbox.pop().is_none());
+        assert_eq!(state.current_generation("w1"), Some(first.generation));
+    }
+
+    #[test]
+    fn a_second_connect_carries_the_waiting_frames_over_in_order_and_retires_the_old_loop() {
+        let state = SessionsWsState::default();
+        let first = state.register("w1").expect("register");
+        state.push("w1", frame("a")).expect("push");
+        state.push("w1", frame("b")).expect("push");
+
+        let second = state.register("w1").expect("register again");
+        assert!(second.replaced);
+        assert!(second.generation > first.generation);
+        assert_eq!(state.current_generation("w1"), Some(second.generation));
+        // The old loop stops and has nothing left to write.
+        assert!(first.outbox.is_closed());
+        assert!(first.outbox.pop().is_none());
+        // The new loop delivers what waited, then what came after.
+        state.push("w1", frame("c")).expect("push");
+        assert!(!second.outbox.is_closed());
+        assert_eq!(ids(&second.outbox), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_cancel_after_the_carry_over_takes_the_carried_frame_out() {
+        let state = SessionsWsState::default();
+        let _first = state.register("w1").expect("register");
+        state.push("w1", frame("a")).expect("push");
+        state.push("w1", frame("b")).expect("push");
+        let second = state.register("w1").expect("register again");
+        state.cancel("w1", "a").expect("cancel");
+        assert_eq!(ids(&second.outbox), ["b"]);
+    }
+
+    #[test]
+    fn windows_do_not_share_an_outbox() {
+        let state = SessionsWsState::default();
+        let w1 = state.register("w1").expect("register");
+        let w2 = state.register("w2").expect("register");
+        state.push("w1", frame("a")).expect("push");
+        let w1_again = state.register("w1").expect("register again");
+        assert!(!w2.outbox.is_closed());
+        assert!(w2.outbox.pop().is_none());
+        assert!(w1.outbox.is_closed());
+        assert_eq!(ids(&w1_again.outbox), ["a"]);
+    }
+
+    #[test]
+    fn a_disconnect_drops_the_entry_and_a_send_after_it_is_refused() {
+        let state = SessionsWsState::default();
+        let first = state.register("w1").expect("register");
+        state.push("w1", frame("a")).expect("push");
+        state.remove("w1");
+        assert!(first.outbox.is_closed());
+        assert_eq!(state.current_generation("w1"), None);
+        assert!(state.push("w1", frame("b")).is_err());
+        // Cancelling for a window without an entry is a no-op, not an error.
+        state.cancel("w1", "a").expect("cancel");
+        // A connect after the disconnect starts clean: nothing from before it
+        // is delivered.
+        let next = state.register("w1").expect("register");
+        assert!(!next.replaced);
+        assert!(next.outbox.pop().is_none());
+        assert!(next.generation > first.generation);
     }
 }

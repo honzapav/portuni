@@ -688,6 +688,11 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
     connectFailures: Error[] = [];
     // How many of the next sessions_send calls fail and drop the connection.
     sendFailures = 0;
+    // While set, sessions_send takes (or refuses) the frame at once, as Rust
+    // does, but its answer reaches the webview only when the test calls
+    // settleDeferredSends(): the IPC reply racing a reconnect.
+    deferSends: "accept" | "reject" | null = null;
+    private readonly deferredSends: Array<() => void> = [];
     connectCalls = 0;
     readonly sent: Frame[] = [];
     // Several per event, each unlisten removing its own, as Tauri does.
@@ -700,11 +705,17 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
         if (failure) throw failure;
         this.connected = true;
         this.socketOpen = false;
-        this.outbox = [];
+        // The frames waiting for the next open stay (sessions_ws.rs carries
+        // the outbox over to the connection that replaces the old one).
         if (this.autoOpen) queueMicrotask(() => this.open());
         return undefined;
       }
       if (cmd === "sessions_send") {
+        if (this.deferSends === "reject") {
+          return new Promise((_resolve, reject) => {
+            this.deferredSends.push(() => reject(new DesktopError("UNKNOWN_DETAIL", "sessions_send: not connected")));
+          });
+        }
         if (!this.connected || this.sendFailures > 0) {
           this.sendFailures = Math.max(0, this.sendFailures - 1);
           this.connected = false;
@@ -713,6 +724,11 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
         const frame = JSON.parse(String(args?.frame)) as Frame;
         if (this.socketOpen) this.deliver(frame);
         else this.outbox.push(frame);
+        if (this.deferSends === "accept") {
+          return new Promise((resolve) => {
+            this.deferredSends.push(() => resolve(undefined));
+          });
+        }
         return undefined;
       }
       if (cmd === "sessions_cancel") {
@@ -740,6 +756,11 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
     drop(): void {
       this.socketOpen = false;
       this.emit("session-connection", { status: "reconnecting" });
+    }
+
+    // The held-back sessions_send answers reach the webview now, in order.
+    settleDeferredSends(): void {
+      for (const settle of this.deferredSends.splice(0)) settle();
     }
 
     listen = async <T,>(event: string, cb: (ev: { payload: T }) => void): Promise<() => void> => {
@@ -932,6 +953,90 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
     } finally {
       mock.timers.reset();
     }
+  });
+
+  // Review of #580 (round 3): Rust had taken the message into its outbox,
+  // but the sessions_send answer saying so was still on its way when the
+  // Reconnect button's sessions_connect ran. The outbox is Rust's to carry
+  // over; the webview's late answer must change nothing.
+  it("a message Rust took during the outage goes out on reconnect()'s connection even when its sessions_send answers after the connect", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const host = new FakeTauriHost();
+      const client = clientOn(host, 3_600_000);
+      client.connect();
+      await nextStatus(client, "open");
+
+      host.drop();
+      host.autoOpen = false;
+      host.deferSends = "accept";
+      const sent = client.message("S1", "hello");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(host.outbox.map((f) => f.type), ["message"], "Rust took the frame into its outbox");
+
+      client.reconnect();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(host.connectCalls, 2);
+      host.deferSends = null;
+      // The old send's answer arrives after the new connection exists.
+      host.settleDeferredSends();
+      await new Promise((resolve) => setImmediate(resolve));
+      host.open();
+      await new Promise((resolve) => setImmediate(resolve));
+      // Nothing is left waiting for a timeout: the message is on the wire
+      // and its reply settles it.
+      mock.timers.tick(60_000);
+      await sent;
+      assert.deepEqual(
+        host.sent.filter((f) => f.type === "message").map((f) => f.payload.text),
+        ["hello"],
+      );
+      assert.equal(client.connectionState().status, "open");
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  // Review of #580 (round 3): the socket dropped while a sessions_send was
+  // unanswered, so the client reported that message lost and cancelled it;
+  // then Reconnect opened a healthy connection. The late rejection of the
+  // cancelled send is nobody's business: it must not take the new connection
+  // down, reject the requests on it, or open yet another one.
+  it("a late rejection of a sessions_send the client already cancelled leaves the new connection alone", async () => {
+    const host = new FakeTauriHost();
+    // A 1 ms backoff: a retry the late rejection wrongly scheduled shows up
+    // as a third sessions_connect right away.
+    const client = clientOn(host);
+    client.connect();
+    await nextStatus(client, "open");
+
+    host.deferSends = "reject";
+    const old = client.message("S1", "old");
+    await new Promise((resolve) => setImmediate(resolve));
+    host.deferSends = null;
+    host.drop();
+    await assert.rejects(old, (e: Error) => errorCode(e) === "DISCONNECTED");
+
+    client.reconnect();
+    await nextStatus(client, "open");
+    assert.equal(host.connectCalls, 2);
+    const fresh = client.message("S1", "new");
+    await fresh;
+
+    const statuses: ConnectionStatus[] = [];
+    client.onConnectionStatus((status) => statuses.push(status));
+    host.settleDeferredSends();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(statuses, [], "the late rejection changed no status");
+    assert.equal(client.connectionState().status, "open");
+    assert.equal(host.connectCalls, 2, "no third sessions_connect");
+    await client.message("S1", "after");
+    assert.deepEqual(
+      host.sent.filter((f) => f.type === "message").map((f) => f.payload.text),
+      ["new", "after"],
+    );
+    client.disconnect();
   });
 
   it("a superseded connect (StrictMode's mount, unmount, mount) leaves one pair of listeners and one subscribe", async () => {
