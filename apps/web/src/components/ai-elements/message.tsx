@@ -35,6 +35,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { renderMarkdownLink } from "@/lib/markdown-link";
 import { useStreamdownPlugins } from "@/lib/streamdown-plugins";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
@@ -351,7 +352,7 @@ export const MessageBranchPage = ({
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => {
+  ({ className, components, ...props }: MessageResponseProps) => {
     const plugins = useStreamdownPlugins();
     const translations = useStreamdownTranslations();
     return (
@@ -362,6 +363,13 @@ export const MessageResponse = memo(
         )}
         plugins={plugins}
         translations={translations}
+        // Streamdown's own link handling opens via `window.open`, a silent
+        // no-op in the Tauri webview (see lib/backend-url.ts) -- route
+        // through the same opener DetailPane/MarkdownPreview use.
+        components={{
+          a: ({ href, children }) => renderMarkdownLink(href, children),
+          ...components,
+        }}
         {...props}
       />
     );
