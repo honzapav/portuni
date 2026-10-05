@@ -55,11 +55,20 @@
     "title": "Myšlenkový postup"
   },
   "composer": {
+    "default_source": {
+      "account": "Výchozí model účtu",
+      "env": "Nastavuje proměnná prostředí {{name}}",
+      "instance": "Výchozí hodnota instance runneru",
+      "model": "Výchozí hodnota modelu",
+      "settings": "Nastaveno v {{path}}"
+    },
     "effort": {
+      "default": "Úsilí: {{level}} (výchozí)",
       "placeholder": "Úsilí (výchozí)",
       "title": "Úsilí uvažování — projeví se od příštího běhu"
     },
     "model": {
+      "default": "Výchozí: {{model}}",
       "placeholder": "Model (výchozí)",
       "title": "Model"
     },

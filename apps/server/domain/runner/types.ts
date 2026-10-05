@@ -67,6 +67,28 @@ export interface RunnerModel {
   description_code?: ModelDescriptionCode;
   supportsEffort: boolean;
   effortLevels: readonly EffortLevel[];
+  // The full model id an alias row stands for ("default" -> the account's
+  // default model), when the provider says so.
+  resolvedModel?: string;
+}
+
+// What a thread runs on when it names no model or effort of its own, and
+// where that value comes from (GET /runners/:runner/defaults). `detail`
+// names the environment variable or the settings file; `value` is null
+// when the runner cannot tell.
+export type DefaultModelSource = "instance" | "env" | "settings" | "account";
+export type DefaultEffortSource = "instance" | "env" | "settings" | "model";
+export interface RunnerDefaults {
+  model: { value: string | null; source: DefaultModelSource; detail: string | null };
+  effort: { value: EffortLevel | null; source: DefaultEffortSource; detail: string | null };
+}
+
+export interface RunnerDefaultsInput {
+  // The thread's own model; the effort default is the one of the model the
+  // thread runs on. null means the default model.
+  model: string | null;
+  instanceEnv: Readonly<Record<string, string>>;
+  instanceDefaults: { model?: string; effort?: EffortLevel } | null;
 }
 
 export interface RunStart {
@@ -149,4 +171,8 @@ export interface RunnerAdapter {
   // documented fallback (aliases plus free text) rather than throwing or
   // blocking.
   models(): Promise<RunnerModel[]>;
+  // The defaults a thread without its own model/effort runs on. Unlike
+  // models(), this may start the runner once to ask for its list: the
+  // account's default model is known only to the runner itself.
+  defaults?(input: RunnerDefaultsInput): Promise<RunnerDefaults>;
 }

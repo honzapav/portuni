@@ -12,7 +12,7 @@
 import { execFile as nodeExecFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
-import { access, stat } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
@@ -33,6 +33,7 @@ import { isPortuniEnvKey } from "../../../shared/runner-env.js";
 import type { ChatEventParams, DenyCode, RunErrorCode } from "../../../shared/chat-event-codes.js";
 import { askUserQuestionAnswers, decidePermission } from "../permissions.js";
 import { isProcessAlive } from "../process-liveness.js";
+import { type ClaudeUserSettings, resolveClaudeDefaults } from "../claude-defaults.js";
 import { RunEndedError } from "../types.js";
 import type {
   CanonicalEvent,
@@ -43,13 +44,16 @@ import type {
   RunStart,
   RunnerAdapter,
   RunnerAvailability,
+  RunnerDefaults,
+  RunnerDefaultsInput,
   RunnerModel,
   ToolCallCategory,
 } from "../types.js";
 
 // #376: before this process has ever run a live query, there is nothing to
 // ask supportedModels() -- and starting a throwaway process just to build a
-// picker is explicitly ruled out. These are the documented aliases the SDK
+// picker is explicitly ruled out (defaults() is the one caller that probes:
+// the account's default model is known only to the CLI). These are the documented aliases the SDK
 // accepts as a bare `model` string; "sonnet" first since it's the sensible
 // everyday default. Effort support is left false/[] here (deliberately
 // conservative -- the real per-model answer only exists once
@@ -101,6 +105,34 @@ export interface CreateClaudeAdapterDeps {
   // Origins of this Portuni, for switching off inherited claude.ai
   // connectors to it; defaults to PORTUNI_CENTRAL_URL / PORTUNI_PUBLIC_URL.
   portuniOrigins?: () => string[];
+  // Reads a Claude Code settings file for defaults(); null when it is
+  // missing or not JSON. Tests inject the file's content.
+  readSettings?: (path: string) => Promise<ClaudeUserSettings | null>;
+  // How long defaults() waits for the runner's list before answering
+  // without it.
+  modelsProbeTimeoutMs?: number;
+}
+
+const DEFAULT_MODELS_PROBE_TIMEOUT_MS = 20_000;
+
+async function readSettingsFile(path: string): Promise<ClaudeUserSettings | null> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    return parsed && typeof parsed === "object" ? (parsed as ClaudeUserSettings) : null;
+  } catch {
+    return null;
+  }
+}
+
+function toRunnerModels(list: Awaited<ReturnType<Query["supportedModels"]>>): RunnerModel[] {
+  return list.map((m) => ({
+    id: m.value,
+    displayName: m.displayName,
+    description: m.description,
+    supportsEffort: m.supportsEffort ?? false,
+    effortLevels: m.supportedEffortLevels ?? [],
+    ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}),
+  }));
 }
 
 // `signal` lets a caller cancel a still-pending sleep the instant it no
@@ -897,6 +929,60 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     return modelsCache ?? [...CLAUDE_ALIAS_MODELS];
   }
 
+  const readSettings = deps.readSettings ?? readSettingsFile;
+  const modelsProbeTimeoutMs = deps.modelsProbeTimeoutMs ?? DEFAULT_MODELS_PROBE_TIMEOUT_MS;
+  let modelsProbe: Promise<void> | null = null;
+
+  // The runner's own list before any run of this process: a query with no
+  // prompt, asked for supportedModels() (the CLI's initialize answer, no
+  // model call) and closed. One probe at a time; a failed or timed-out
+  // probe leaves the cache empty and the next defaults() tries again.
+  function probeModels(env: Readonly<Record<string, string>>): Promise<void> {
+    if (modelsCache !== null) return Promise.resolve();
+    if (modelsProbe) return modelsProbe;
+    modelsProbe = (async () => {
+      const executable = await resolveExecutable();
+      const prompt = createPushQueue<SDKUserMessage>();
+      const q: Query = query({
+        prompt,
+        options: {
+          cwd: process.env.HOME ?? process.cwd(),
+          ...(executable !== null ? { pathToClaudeCodeExecutable: executable } : {}),
+          settingSources: ["user"],
+          env: buildEnv(env),
+        },
+      });
+      const stop = new AbortController();
+      try {
+        const list = await Promise.race([
+          Promise.resolve().then(() => q.supportedModels()),
+          sleep(modelsProbeTimeoutMs, stop.signal).then(() => null),
+        ]);
+        if (list && modelsCache === null) modelsCache = toRunnerModels(list);
+      } catch {
+        // No list: defaults() answers without the account's default.
+      } finally {
+        stop.abort();
+        prompt.end();
+        q.close();
+        modelsProbe = null;
+      }
+    })();
+    return modelsProbe;
+  }
+
+  async function defaults(input: RunnerDefaultsInput): Promise<RunnerDefaults> {
+    await probeModels(input.instanceEnv);
+    const configDir = input.instanceEnv.CLAUDE_CONFIG_DIR?.trim() || join(process.env.HOME ?? "", ".claude");
+    const settingsPath = join(configDir, "settings.json");
+    return resolveClaudeDefaults({
+      ...input,
+      settings: await readSettings(settingsPath),
+      settingsPath,
+      models: modelsCache ?? [],
+    });
+  }
+
   async function runExec(executable: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
     return new Promise((resolve) => {
       exec(executable, args, { timeout: DETECT_TIMEOUT_MS }, (err, stdout) => {
@@ -1206,13 +1292,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       void Promise.resolve()
         .then(() => q.supportedModels())
         .then((list) => {
-          modelsCache = list.map((m) => ({
-            id: m.value,
-            displayName: m.displayName,
-            description: m.description,
-            supportsEffort: m.supportsEffort ?? false,
-            effortLevels: m.supportedEffortLevels ?? [],
-          }));
+          modelsCache = toRunnerModels(list);
         })
         .catch(() => undefined);
     }
@@ -1498,5 +1578,5 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     return handle;
   }
 
-  return { id: "claude", detect, start, models };
+  return { id: "claude", detect, start, models, defaults };
 }

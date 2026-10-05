@@ -8,10 +8,10 @@
 
 import type { TFunction } from "i18next";
 import { jsonRequest } from "../api";
-import type { RunnerInfo, RunnerInstanceSummary, RunnerModel } from "../../../server/shared/api-types";
+import type { RunnerDefaults, RunnerInfo, RunnerInstanceSummary, RunnerModel } from "../../../server/shared/api-types";
 import { isPortuniEnvKey, isSecretShapedEnvKey } from "../../../server/shared/runner-env";
 
-export type { RunnerInfo, RunnerInstanceSummary, RunnerModel };
+export type { RunnerDefaults, RunnerInfo, RunnerInstanceSummary, RunnerModel };
 export { isPortuniEnvKey, isSecretShapedEnvKey };
 
 export async function listRunners(): Promise<RunnerInfo[]> {
@@ -25,6 +25,26 @@ export async function listRunners(): Promise<RunnerInfo[]> {
 export async function fetchRunnerModels(runner: string): Promise<RunnerModel[]> {
   const res = await jsonRequest<{ models: RunnerModel[] }>("GET", `/runners/${encodeURIComponent(runner)}/models`);
   return res.models;
+}
+
+// What a thread on `instanceId` runs on without its own model or effort,
+// with where each value comes from -- GET /runners/:runner/defaults. `model`
+// is the thread's own model; the effort default follows it. null when the
+// runner cannot tell.
+export async function fetchRunnerDefaults(
+  runner: string,
+  instanceId: string | null,
+  model: string | null,
+): Promise<RunnerDefaults | null> {
+  const params = new URLSearchParams();
+  if (instanceId) params.set("instance", instanceId);
+  if (model) params.set("model", model);
+  const query = params.toString();
+  const res = await jsonRequest<{ defaults: RunnerDefaults | null }>(
+    "GET",
+    `/runners/${encodeURIComponent(runner)}/defaults${query ? `?${query}` : ""}`,
+  );
+  return res.defaults;
 }
 
 export async function listRunnerInstances(): Promise<RunnerInstanceSummary[]> {

@@ -112,3 +112,35 @@ export function modelDescriptionText(
   if (isModelDescriptionCode(model.description_code)) return MODEL_DESCRIPTIONS[model.description_code](t);
   return model.description === "" ? undefined : model.description;
 }
+
+// The composer's default model and effort (GET /runners/:runner/defaults):
+// the model's name from the runner's list when it has one, otherwise its id.
+// The account's default resolves to a full id; the "default" row itself is
+// not the name.
+export function defaultModelName(
+  value: string,
+  models: readonly { id: string; displayName: string; resolvedModel?: string }[],
+): string {
+  const named = models.find((m) => m.id === value) ?? models.find((m) => m.id !== "default" && m.resolvedModel === value);
+  return named?.displayName ?? value;
+}
+
+// Where a default comes from, for the picker's tooltip.
+export function defaultSourceText(
+  source: "instance" | "env" | "settings" | "account" | "model",
+  detail: string | null,
+  t: ChatT,
+): string {
+  switch (source) {
+    case "instance":
+      return t(($) => $.composer.default_source.instance, { ns: "chat" });
+    case "env":
+      return t(($) => $.composer.default_source.env, { ns: "chat", name: detail ?? "-" });
+    case "settings":
+      return t(($) => $.composer.default_source.settings, { ns: "chat", path: detail ?? "-" });
+    case "account":
+      return t(($) => $.composer.default_source.account, { ns: "chat" });
+    case "model":
+      return t(($) => $.composer.default_source.model, { ns: "chat" });
+  }
+}

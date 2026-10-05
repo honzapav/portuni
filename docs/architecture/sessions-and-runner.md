@@ -670,6 +670,27 @@ human verification.
   answered carries the provider's own `description` and no code).
   `GET /runners/:runner/models` just calls it.
   `FakeRunnerAdapter.models()` returns its constructor's `models` option.
+- **`defaults()` may start one probe.** `GET /runners/:runner/defaults
+  ?instance=&model=` (device-local, `read`) answers what a thread without
+  its own model or effort runs on, each value with its `source` and
+  `detail` (env var name or settings path); a runner without the method
+  answers `defaults: null`. The Claude adapter's `defaults()` fills an
+  empty `modelsCache` first with a probe: a `query()` with an empty prompt
+  queue, the instance's env and `settingSources: ["user"]`, asked for
+  `supportedModels()` (the CLI's initialize answer, no model call) and
+  closed; one probe at a time, `modelsProbeTimeoutMs` (20 s), and a failed
+  one is retried on the next call. The list rows keep `resolvedModel`.
+  `resolveClaudeDefaults` (`domain/runner/claude-defaults.ts`, pure) then
+  follows Claude Code's order: model = instance `defaults.model` ->
+  `ANTHROPIC_MODEL` -> `model` in `<CLAUDE_CONFIG_DIR or ~/.claude>/
+  settings.json` -> `ANTHROPIC_DEFAULT_MODEL` -> the `default` row's
+  `resolvedModel` (`account`); effort, for the thread's own model or that
+  default = instance `defaults.effort` -> `CLAUDE_CODE_EFFORT_LEVEL` ->
+  `modelSettings[<model>].effortLevel` -> `effortLevel` -> the model's own
+  default (`claudeModelDefaultEffort`: medium for Opus/Sonnet 5.5, xhigh
+  for Opus 4.7, high otherwise; null for an unresolved alias or a model
+  without effort). Not read: managed settings and an organisation's
+  default effort, which only the CLI sees.
 
 - **The runner's own text in the chat is a code (#532).** Codes live in
   `shared/chat-event-codes.ts`; the web renders them with

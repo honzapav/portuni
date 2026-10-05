@@ -824,6 +824,15 @@ export type RunnerModel = {
   description_code?: ModelDescriptionCode;
   supportsEffort: boolean;
   effortLevels: readonly string[];
+  resolvedModel?: string;
+};
+
+// GET /runners/:runner/defaults -- what a thread without its own model or
+// effort runs on, and where it comes from. Mirrors domain/runner/types.ts's
+// RunnerDefaults.
+export type RunnerDefaults = {
+  model: { value: string | null; source: "instance" | "env" | "settings" | "account"; detail: string | null };
+  effort: { value: string | null; source: "instance" | "env" | "settings" | "model"; detail: string | null };
 };
 
 // GET/POST/PATCH /runners/instances -- provider instances (today's desktop
