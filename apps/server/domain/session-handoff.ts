@@ -231,8 +231,24 @@ export interface SummaryEvent {
   payload: unknown;
 }
 
+// The two shapes of the messages section. "preview" is the handoff file
+// Předat and Pokračovat v nové session write: the last few messages, first
+// line each -- a note for a person, short enough to travel and to be
+// edited. "transcript" is what a resume that cannot reopen the CLI
+// conversation hands the agent instead (resumeByWriting -> resumeSummary):
+// every message whole, oldest first. Digital Support 1218987479165349: the
+// preview kept only the subject line of a drafted e-mail, and the agent
+// continued without its body.
+export type SummaryMessages = "preview" | "transcript";
+
 const MAX_SUMMARY_MESSAGES = 6;
 const MAX_MESSAGE_PREVIEW_LENGTH = 200;
+// The transcript's cap: the same 1 MB the agent gets inline from
+// portuni_read_file (read-node-file.ts MAX_READ_BYTES), well past what a
+// context window holds and far below what would wedge a system prompt.
+// Over it, the oldest messages are dropped whole until the rest fits (the
+// newest always stays), and the section says how many were left out.
+export const MAX_TRANSCRIPT_BYTES = 1_000_000;
 
 function isTextPayload(payload: unknown): payload is { text: string } {
   return typeof payload === "object" && payload !== null && typeof (payload as { text?: unknown }).text === "string";
@@ -273,6 +289,8 @@ export function buildRunSummaryContent(input: {
   // Pokračovat v nové session, a message resuming the thread). Missing
   // means English; nothing here reads it from process state.
   locale?: Locale;
+  // "preview" (the default) or "transcript"; see SummaryMessages.
+  messages?: SummaryMessages;
 }): string {
   const locale = input.locale ?? DEFAULT_LOCALE;
   const t = getFixedT(locale, "server");
@@ -280,16 +298,27 @@ export function buildRunSummaryContent(input: {
   // would mangle node names and message text.
   const raw = { interpolation: { escapeValue: false } } as const;
 
-  const messages = input.events
+  const textMessages = input.events
     .filter((e) => (e.kind === "user_message" || e.kind === "assistant_message") && isTextPayload(e.payload))
-    .slice(-MAX_SUMMARY_MESSAGES)
-    .map((e) => {
-      const text = (e.payload as { text: string }).text;
-      const firstLine = text.split("\n")[0].slice(0, MAX_MESSAGE_PREVIEW_LENGTH);
-      return e.kind === "user_message"
-        ? t(($) => $.handoff.message_user, { text: firstLine, ...raw })
-        : t(($) => $.handoff.message_agent, { text: firstLine, ...raw });
-    });
+    .map((e) => ({ user: e.kind === "user_message", text: (e.payload as { text: string }).text }));
+
+  const messagesSection =
+    input.messages === "transcript"
+      ? transcriptSection(textMessages, t, raw)
+      : [
+          t(($) => $.handoff.heading.messages),
+          textMessages.length > 0
+            ? textMessages
+                .slice(-MAX_SUMMARY_MESSAGES)
+                .map((m) => {
+                  const firstLine = m.text.split("\n")[0].slice(0, MAX_MESSAGE_PREVIEW_LENGTH);
+                  return m.user
+                    ? t(($) => $.handoff.message_user, { text: firstLine, ...raw })
+                    : t(($) => $.handoff.message_agent, { text: firstLine, ...raw });
+                })
+                .join("\n")
+            : t(($) => $.handoff.none.messages),
+        ];
 
   const filesChanged = new Map<string, string>();
   for (const e of input.events) {
@@ -313,8 +342,7 @@ export function buildRunSummaryContent(input: {
       : t(($) => $.handoff.node_line_none),
     t(($) => $.handoff.last_active_line, { when: formatHandoffTimestamp(input.lastActiveAt, locale), ...raw }),
     "",
-    t(($) => $.handoff.heading.messages),
-    messages.length > 0 ? messages.join("\n") : t(($) => $.handoff.none.messages),
+    ...messagesSection,
     "",
     t(($) => $.handoff.heading.files),
     filesChanged.size > 0
@@ -332,6 +360,35 @@ export function buildRunSummaryContent(input: {
     "",
     t(($) => $.handoff.footer),
   ].join("\n");
+}
+
+// The "transcript" messages section: every message whole, oldest first, a
+// speaker line over each (a list item cannot hold a multi-line message).
+// Measured from the newest backwards so the cap drops the oldest ones.
+function transcriptSection(
+  messages: readonly { user: boolean; text: string }[],
+  t: ReturnType<typeof getFixedT<"server">>,
+  raw: { interpolation: { escapeValue: false } },
+): string[] {
+  const heading = t(($) => $.handoff.heading.conversation);
+  if (messages.length === 0) return [heading, t(($) => $.handoff.none.messages)];
+  const blocks = messages.map((m) =>
+    [m.user ? t(($) => $.handoff.transcript.user) : t(($) => $.handoff.transcript.agent), m.text].join("\n"),
+  );
+  const kept: string[] = [];
+  let bytes = 0;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const size = Buffer.byteLength(blocks[i], "utf8") + 2;
+    if (kept.length > 0 && bytes + size > MAX_TRANSCRIPT_BYTES) break;
+    kept.unshift(blocks[i]);
+    bytes += size;
+  }
+  const leftOut = blocks.length - kept.length;
+  return [
+    heading,
+    ...(leftOut > 0 ? [t(($) => $.handoff.transcript.left_out, { leftOut: String(leftOut), ...raw }), ""] : []),
+    kept.join("\n\n"),
+  ];
 }
 
 // Per-locale formatter cache: a summary is written per Předat, not per
@@ -458,8 +515,15 @@ export type SuspendServerSide = (
 // (summarize). Every other suspend writes nothing.
 export interface SessionHandoffs {
   suspend: SuspendServerSide;
-  // The summary of the thread as this device's transcript has it now.
-  summarize(session: SessionRow, reason: ServerHandoffReason, locale?: Locale): Promise<string>;
+  // The summary of the thread as this device's transcript has it now --
+  // the preview a handoff file carries, or, for a resume that cannot
+  // reopen the conversation, the whole transcript (SummaryMessages).
+  summarize(
+    session: SessionRow,
+    reason: ServerHandoffReason,
+    locale?: Locale,
+    messages?: SummaryMessages,
+  ): Promise<string>;
   // Writes `summary` as the thread's handoff file into this device's mirror
   // of its node and tracks it. Null when there is no mirror here. Touches
   // no record: the caller records the path with whatever else it writes.
@@ -475,7 +539,7 @@ export interface HandoffFileWritten {
 export function createSessionHandoffs(deps: SuspendServerSideDeps): SessionHandoffs {
   return {
     suspend: createSuspendServerSide(deps),
-    summarize: (session, reason, locale) => buildSuspendSummary(deps, session, reason, locale),
+    summarize: (session, reason, locale, messages) => buildSuspendSummary(deps, session, reason, locale, messages),
     writeFile: async (session, summary) => {
       const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
       if (!mirrorRoot || !session.node_id) return null;
@@ -619,6 +683,7 @@ async function buildSuspendSummary(
   session: SessionRow,
   reason: ServerHandoffReason,
   locale?: Locale,
+  messages?: SummaryMessages,
 ): Promise<string> {
   const sessionId = session.id;
   // A scope read that fails must not cost the session its suspend: the
@@ -638,6 +703,7 @@ async function buildSuspendSummary(
     readSet: scope.read_set,
     lastActiveAt: session.last_active_at,
     locale,
+    messages,
   });
 }
 
