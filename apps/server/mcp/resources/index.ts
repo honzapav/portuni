@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   ARCHITECTURE_MD,
   SYNC_MODEL_MD,
+  SYNC_MODEL_PERSONAL_MD,
   SCOPE_RULES_MD,
   ENUMS_MD,
 } from "./resources-text.js";
@@ -49,8 +50,22 @@ const RESOURCES: readonly ResourceDef[] = [
   },
 ];
 
-export function registerResources(server: McpServer): void {
-  for (const r of RESOURCES) {
+// portuni://sync-model in a personal workspace (#575): it has no remote
+// (#310), so the model it gets never offers a remote operation.
+const PERSONAL_SYNC_MODEL: Pick<ResourceDef, "text" | "title" | "description"> = {
+  text: SYNC_MODEL_PERSONAL_MD,
+  title: "Portuni file model",
+  description:
+    "Local mirrors, sync_key paths, local file states, confirm-first patterns, data-safety defaults.",
+};
+
+export function registerResources(
+  server: McpServer,
+  opts: { personalWorkspace?: boolean } = {},
+): void {
+  for (const def of RESOURCES) {
+    const r =
+      opts.personalWorkspace && def.name === "sync-model" ? { ...def, ...PERSONAL_SYNC_MODEL } : def;
     server.registerResource(
       r.name,
       r.uri,

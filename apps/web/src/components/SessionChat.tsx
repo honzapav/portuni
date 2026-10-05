@@ -37,6 +37,7 @@ import {
   threadCanContinue,
   threadCloseAction,
 } from "../lib/session-views";
+import { useLocalHost } from "../lib/use-local-host";
 import type { SessionRunRow, SessionSummary } from "../types";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
@@ -85,6 +86,8 @@ import {
 } from "../lib/session-chat";
 import { HandoffRefusedError } from "../lib/handoff-refusal";
 import { useNowTick } from "../lib/use-now-tick";
+import { useLiveChannel } from "../lib/use-live-channel";
+import LiveChannelNotice from "./LiveChannelNotice";
 import { contextRingState, latestContextUsage } from "../lib/context-ring";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -201,6 +204,7 @@ export default function SessionChat({
   const { t } = useTranslation("chat");
   const { t: tCommon } = useTranslation("common");
   const locale = useLocale();
+  const liveChannel = useLiveChannel(sessionsClient);
   const session = useSessionStore(
     sessionStore,
     useCallback((store: SessionStore) => selectSession(store, sessionId), [sessionId]),
@@ -415,6 +419,7 @@ export default function SessionChat({
   // #492: one answer per question -- a second click or Enter while the
   // first is on its way is dropped, not sent into a NO_PENDING_QUESTION.
   const [answerGate] = useState(createAnswerGate);
+  const localHost = useLocalHost();
 
   // Every hook has run; from here the record is what the component reads.
   // It is missing only in the moment between its removal from the store (a
@@ -424,7 +429,7 @@ export default function SessionChat({
   // and half a record would render a nameless header.
   if (!session || session.partial) return null;
 
-  const host = hostDisplayName(session);
+  const host = hostDisplayName(session, localHost);
   const startRename = () => {
     setNameDraft(session.name);
     setRenaming(true);
@@ -786,9 +791,21 @@ export default function SessionChat({
         </div>
       )}
 
+      {/* #590: a channel down after the conversation loaded; while it
+          loads, the notice stands in for the loading line below. */}
+      {liveChannel.down && !loading && (
+        <LiveChannelNotice
+          channel={liveChannel}
+          onReconnect={() => sessionsClient.reconnect()}
+          className={`${THREAD_COLUMN} mt-2`}
+        />
+      )}
+
       <Conversation>
         <ConversationContent className={`${THREAD_COLUMN} gap-5`}>
-          {loading ? (
+          {loading && liveChannel.down ? (
+            <LiveChannelNotice channel={liveChannel} onReconnect={() => sessionsClient.reconnect()} />
+          ) : loading ? (
             <Shimmer duration={1.5}>{t(($) => $.conversation.loading)}</Shimmer>
           ) : elsewhere ? (
             <ConversationEmptyState title={elsewhere.title} description={elsewhere.hint} />

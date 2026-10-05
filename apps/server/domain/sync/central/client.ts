@@ -154,6 +154,10 @@ export interface CentralClient {
   // (domain/session-handoff.ts's createSuspendServerSide, #458) fills its
   // summary's scope sections from here instead of leaving them empty.
   sessionScopeRecord(sessionId: string): Promise<SessionScopeRecord>;
+  // POST /hosts/claim (#578): this device's records under its previous host
+  // ids (the hostname slug before the id lived in the data dir) are
+  // rewritten to its current id -- only the caller's own. Idempotent.
+  claimHost(input: { host_id: string; previous_host_ids: string[] }): Promise<{ sessions: number; runs: number }>;
   // GET /nodes/:id/orientation: what buildOrientationHint would render
   // locally, computed by the central server (which has the real graph db)
   // instead of the agent-mode sidecar (which does not).
@@ -508,6 +512,13 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       const r = await request("GET", p);
       if (r.status !== 200) throwFor(r.status, p, r.json);
       return r.json as SessionScopeRecord;
+    },
+
+    async claimHost(input) {
+      const p = "/hosts/claim";
+      const r = await request("POST", p, input);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as { sessions: number; runs: number };
     },
 
     async orientation(nodeId) {

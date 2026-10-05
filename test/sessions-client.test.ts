@@ -10,10 +10,14 @@ import type { AddressInfo } from "node:net";
 import {
   createSessionsClient,
   createDirectWsTransport,
+  createTauriTransport,
+  type ConnectionStatus,
   type Transport,
   type WebSocketInstance,
 } from "../apps/web/src/lib/sessions-client.js";
 import { ApiError, errorCode } from "../apps/web/src/lib/api-error.js";
+import { DesktopError } from "../apps/web/src/lib/tauri-invoke.js";
+import { liveChannelDown, msUntilLiveChannelDown } from "../apps/web/src/lib/live-channel.js";
 import { createSessionStore } from "../apps/web/src/lib/session-store.js";
 import { selectMountedThreads, selectNodeRecordIds } from "../apps/web/src/lib/session-selectors.js";
 import type { SessionState, SessionSummary } from "../apps/web/src/types.js";
@@ -640,6 +644,7 @@ describe("sessions-client: a timed-out or dropped request is never delivered lat
           return noop;
         },
         connect: noop,
+        reconnect: noop,
         disconnect: noop,
       };
       const client = createSessionsClient({ transport });
@@ -655,5 +660,523 @@ describe("sessions-client: a timed-out or dropped request is never delivered lat
     } finally {
       mock.timers.reset();
     }
+  });
+});
+
+// #590: the Tauri transport must never swallow a failed command. A fake host
+// stands in for apps/desktop/src/sessions_ws.rs: sessions_connect opens the
+// channel (and emits `open`), sessions_send queues a frame and the host
+// answers a subscribe, and either can be told to fail the way Rust does
+// before the window or the sidecar is registered. Like connect_for_ws, every
+// sessions_connect starts a fresh outbox: a frame sent while the socket is
+// down waits in the outbox for the next open, and a new sessions_connect
+// replaces the outbox, frames included.
+describe("sessions-client: the Tauri transport retries a failed command (#590)", () => {
+  type Frame = { id?: string; type: string; payload: { session_id?: string; text?: string; after?: number } };
+
+  class FakeTauriHost {
+    connected = false;
+    // The socket behind the connection is open: a frame goes straight out.
+    // Otherwise it waits in the outbox for open() (sessions_ws.rs's loop
+    // drains the outbox right after it emits `open`).
+    socketOpen = false;
+    // Whether sessions_connect opens the socket by itself; off, the test
+    // calls open() when the loop would have connected.
+    autoOpen = true;
+    outbox: Frame[] = [];
+    // Errors the next sessions_connect calls reject with, in order.
+    connectFailures: Error[] = [];
+    // How many of the next sessions_send calls fail and drop the connection.
+    sendFailures = 0;
+    // While set, sessions_send takes (or refuses) the frame at once, as Rust
+    // does, but its answer reaches the webview only when the test calls
+    // settleDeferredSends(): the IPC reply racing a reconnect.
+    deferSends: "accept" | "reject" | null = null;
+    private readonly deferredSends: Array<() => void> = [];
+    connectCalls = 0;
+    readonly sent: Frame[] = [];
+    // Several per event, each unlisten removing its own, as Tauri does.
+    private readonly listeners = new Map<string, Set<(ev: { payload: unknown }) => void>>();
+
+    invoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+      if (cmd === "sessions_connect") {
+        this.connectCalls += 1;
+        const failure = this.connectFailures.shift();
+        if (failure) throw failure;
+        this.connected = true;
+        this.socketOpen = false;
+        // The frames waiting for the next open stay (sessions_ws.rs carries
+        // the outbox over to the connection that replaces the old one).
+        if (this.autoOpen) queueMicrotask(() => this.open());
+        return undefined;
+      }
+      if (cmd === "sessions_send") {
+        if (this.deferSends === "reject") {
+          return new Promise((_resolve, reject) => {
+            this.deferredSends.push(() => reject(new DesktopError("UNKNOWN_DETAIL", "sessions_send: not connected")));
+          });
+        }
+        if (!this.connected || this.sendFailures > 0) {
+          this.sendFailures = Math.max(0, this.sendFailures - 1);
+          this.connected = false;
+          throw new DesktopError("UNKNOWN_DETAIL", "sessions_send: not connected");
+        }
+        const frame = JSON.parse(String(args?.frame)) as Frame;
+        if (this.socketOpen) this.deliver(frame);
+        else this.outbox.push(frame);
+        if (this.deferSends === "accept") {
+          return new Promise((resolve) => {
+            this.deferredSends.push(() => resolve(undefined));
+          });
+        }
+        return undefined;
+      }
+      if (cmd === "sessions_cancel") {
+        this.outbox = this.outbox.filter((f) => f.id !== args?.id);
+        return undefined;
+      }
+      return undefined;
+    };
+
+    private deliver(frame: Frame): void {
+      this.sent.push(frame);
+      if (frame.id) {
+        queueMicrotask(() => this.emit("session-event", { frame: { id: frame.id, type: "reply", payload: { ok: true } } }));
+      }
+    }
+
+    // The loop connected: `open`, then the outbox goes out.
+    open(): void {
+      this.socketOpen = true;
+      this.emit("session-connection", { status: "open" });
+      for (const frame of this.outbox.splice(0)) this.deliver(frame);
+    }
+
+    // The socket died; the loop is backing off before its next attempt.
+    drop(): void {
+      this.socketOpen = false;
+      this.emit("session-connection", { status: "reconnecting" });
+    }
+
+    // The held-back sessions_send answers reach the webview now, in order.
+    settleDeferredSends(): void {
+      for (const settle of this.deferredSends.splice(0)) settle();
+    }
+
+    listen = async <T,>(event: string, cb: (ev: { payload: T }) => void): Promise<() => void> => {
+      const set = this.listeners.get(event) ?? new Set();
+      this.listeners.set(event, set);
+      const listener = cb as (ev: { payload: unknown }) => void;
+      set.add(listener);
+      return () => set.delete(listener);
+    };
+
+    emit(event: string, payload: unknown): void {
+      for (const cb of this.listeners.get(event) ?? []) cb({ payload });
+    }
+
+    subscribes(sessionId: string): Frame[] {
+      return this.sent.filter((f) => f.type === "subscribe" && f.payload.session_id === sessionId);
+    }
+  }
+
+  function clientOn(host: FakeTauriHost, minBackoffMs = 1) {
+    const transport = createTauriTransport({ invoke: host.invoke, listen: host.listen, minBackoffMs, maxBackoffMs: minBackoffMs });
+    const client = createSessionsClient({ transport, autoConnect: false });
+    clients.push(client);
+    return client;
+  }
+
+  function nextStatus(client: ReturnType<typeof createSessionsClient>, wanted: ConnectionStatus) {
+    return new Promise<unknown>((resolve) => {
+      const off = client.onConnectionStatus((status, error) => {
+        if (status !== wanted) return;
+        off();
+        resolve(error);
+      });
+    });
+  }
+
+  it("sessions_connect rejecting goes to reconnecting with its reason, and the retry sends the waiting subscribe", async () => {
+    const host = new FakeTauriHost();
+    host.connectFailures.push(new DesktopError("DESKTOP_BACKEND_NOT_READY", "backend not ready"));
+    const client = clientOn(host);
+    const failed = nextStatus(client, "reconnecting");
+    const opened = nextStatus(client, "open");
+    // Asked for before the channel exists, as SessionChat does at start-up.
+    const loaded = client.subscribe("S1", 0);
+    client.connect();
+
+    // The first reconnecting is the client's own on connect(); the one
+    // carrying the rejection follows.
+    let reason = await failed;
+    if (reason === undefined) reason = await nextStatus(client, "reconnecting");
+    assert.equal(errorCode(reason), "DESKTOP_BACKEND_NOT_READY");
+    assert.equal(errorCode(client.connectionState().error), "DESKTOP_BACKEND_NOT_READY");
+
+    await opened;
+    await loaded;
+    assert.equal(host.connectCalls, 2);
+    assert.equal(host.subscribes("S1").length, 1);
+    assert.equal(client.connectionState().status, "open");
+    assert.equal(client.connectionState().error, undefined);
+    client.disconnect();
+  });
+
+  it("sessions_send rejecting a subscribe repeats the subscribe after the next open instead of losing it", async () => {
+    const host = new FakeTauriHost();
+    const client = clientOn(host);
+    const opened = nextStatus(client, "open");
+    client.connect();
+    await opened;
+
+    host.sendFailures = 1;
+    const lost = nextStatus(client, "reconnecting");
+    const reopened = nextStatus(client, "open");
+    const loaded = client.subscribe("S1", 0);
+    const reason = await lost;
+    assert.ok(reason instanceof DesktopError);
+
+    await reopened;
+    await loaded;
+    assert.equal(host.connectCalls, 2, "sessions_connect retried after the failed send");
+    // The failed frame was cancelled, not flushed alongside the resubscribe.
+    assert.equal(host.subscribes("S1").length, 1);
+    client.disconnect();
+  });
+
+  it("a send rejected after the client already reported its request lost is not held for the next open", async () => {
+    const host = new FakeTauriHost();
+    const client = clientOn(host);
+    client.connect();
+    await nextStatus(client, "open");
+
+    // Two messages in flight; both sessions_send reject. The first rejection
+    // takes the channel down, which reports both requests as lost and
+    // cancels both frames; the second rejection arrives for a frame that is
+    // already cancelled.
+    host.sendFailures = 2;
+    const reopened = nextStatus(client, "open");
+    const results = await Promise.allSettled([client.message("S1", "first"), client.message("S2", "second")]);
+    assert.deepEqual(
+      results.map((r) => (r.status === "rejected" ? errorCode(r.reason) : "fulfilled")),
+      ["DISCONNECTED", "DISCONNECTED"],
+    );
+
+    await reopened;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(host.connectCalls, 2, "sessions_connect retried after the failed sends");
+    // Neither message reaches the server after the caller was told it failed:
+    // a resend by the user must not execute the action twice.
+    assert.deepEqual(
+      host.sent.filter((f) => f.type === "message").map((f) => f.payload.session_id),
+      [],
+    );
+    client.disconnect();
+  });
+
+  it("reconnect() retries at once instead of waiting out the backoff", async () => {
+    const host = new FakeTauriHost();
+    host.connectFailures.push(new DesktopError("DESKTOP_NOT_WORKSPACE_WINDOW", "not a workspace window"));
+    // A backoff no test would wait out: only reconnect() can open it.
+    const client = clientOn(host, 3_600_000);
+    const opened = nextStatus(client, "open");
+    const failed = new Promise<void>((resolve) => {
+      const off = client.onConnectionStatus((_status, error) => {
+        if (error === undefined) return;
+        off();
+        resolve();
+      });
+    });
+    client.connect();
+    await failed;
+    client.reconnect();
+    await opened;
+    assert.equal(host.connectCalls, 2);
+    client.disconnect();
+    assert.equal(client.connectionState().status, "closed");
+  });
+
+  // Review of #580: a message sent while Rust is reconnecting waits in its
+  // outbox; the Reconnect button's sessions_connect replaced that outbox and
+  // the message with it, and the open that followed took the message's
+  // timeout away, so its promise never settled and the composer stayed
+  // disabled.
+  it("a message sent during the outage goes out on the connection reconnect() opens", async () => {
+    const host = new FakeTauriHost();
+    const client = clientOn(host, 3_600_000);
+    client.connect();
+    await nextStatus(client, "open");
+
+    host.drop();
+    host.autoOpen = false;
+    const sent = client.message("S1", "hello");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(host.outbox.map((f) => f.type), ["message"], "the frame waits in Rust's outbox for the next open");
+
+    client.reconnect();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(host.connectCalls, 2);
+    host.open();
+    await sent;
+    assert.deepEqual(
+      host.sent.filter((f) => f.type === "message").map((f) => f.payload.text),
+      ["hello"],
+    );
+    client.disconnect();
+  });
+
+  it("a message that timed out during the outage is not sent by the connection reconnect() opens", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const host = new FakeTauriHost();
+      const client = clientOn(host, 3_600_000);
+      client.connect();
+      await nextStatus(client, "open");
+
+      host.drop();
+      host.autoOpen = false;
+      const sent = client.message("S1", "hello");
+      await new Promise((resolve) => setImmediate(resolve));
+      mock.timers.tick(30_000);
+      await assert.rejects(sent, (e: Error) => errorCode(e) === "REQUEST_TIMEOUT");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(host.outbox, [], "the timed-out frame was cancelled out of the outbox");
+
+      client.reconnect();
+      await new Promise((resolve) => setImmediate(resolve));
+      host.open();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(host.connectCalls, 2);
+      assert.deepEqual(host.sent.filter((f) => f.type === "message"), []);
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  // Review of #580 (round 3): Rust had taken the message into its outbox,
+  // but the sessions_send answer saying so was still on its way when the
+  // Reconnect button's sessions_connect ran. The outbox is Rust's to carry
+  // over; the webview's late answer must change nothing.
+  it("a message Rust took during the outage goes out on reconnect()'s connection even when its sessions_send answers after the connect", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const host = new FakeTauriHost();
+      const client = clientOn(host, 3_600_000);
+      client.connect();
+      await nextStatus(client, "open");
+
+      host.drop();
+      host.autoOpen = false;
+      host.deferSends = "accept";
+      const sent = client.message("S1", "hello");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(host.outbox.map((f) => f.type), ["message"], "Rust took the frame into its outbox");
+
+      client.reconnect();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(host.connectCalls, 2);
+      host.deferSends = null;
+      // The old send's answer arrives after the new connection exists.
+      host.settleDeferredSends();
+      await new Promise((resolve) => setImmediate(resolve));
+      host.open();
+      await new Promise((resolve) => setImmediate(resolve));
+      // Nothing is left waiting for a timeout: the message is on the wire
+      // and its reply settles it.
+      mock.timers.tick(60_000);
+      await sent;
+      assert.deepEqual(
+        host.sent.filter((f) => f.type === "message").map((f) => f.payload.text),
+        ["hello"],
+      );
+      assert.equal(client.connectionState().status, "open");
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  // Review of #580 (round 3): the socket dropped while a sessions_send was
+  // unanswered, so the client reported that message lost and cancelled it;
+  // then Reconnect opened a healthy connection. The late rejection of the
+  // cancelled send is nobody's business: it must not take the new connection
+  // down, reject the requests on it, or open yet another one.
+  it("a late rejection of a sessions_send the client already cancelled leaves the new connection alone", async () => {
+    const host = new FakeTauriHost();
+    // A 1 ms backoff: a retry the late rejection wrongly scheduled shows up
+    // as a third sessions_connect right away.
+    const client = clientOn(host);
+    client.connect();
+    await nextStatus(client, "open");
+
+    host.deferSends = "reject";
+    const old = client.message("S1", "old");
+    await new Promise((resolve) => setImmediate(resolve));
+    host.deferSends = null;
+    host.drop();
+    await assert.rejects(old, (e: Error) => errorCode(e) === "DISCONNECTED");
+
+    client.reconnect();
+    await nextStatus(client, "open");
+    assert.equal(host.connectCalls, 2);
+    const fresh = client.message("S1", "new");
+    await fresh;
+
+    const statuses: ConnectionStatus[] = [];
+    client.onConnectionStatus((status) => statuses.push(status));
+    host.settleDeferredSends();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(statuses, [], "the late rejection changed no status");
+    assert.equal(client.connectionState().status, "open");
+    assert.equal(host.connectCalls, 2, "no third sessions_connect");
+    await client.message("S1", "after");
+    assert.deepEqual(
+      host.sent.filter((f) => f.type === "message").map((f) => f.payload.text),
+      ["new", "after"],
+    );
+    client.disconnect();
+  });
+
+  it("a superseded connect (StrictMode's mount, unmount, mount) leaves one pair of listeners and one subscribe", async () => {
+    const host = new FakeTauriHost();
+    const transport = createTauriTransport({ invoke: host.invoke, listen: host.listen, minBackoffMs: 1, maxBackoffMs: 1 });
+    const client = createSessionsClient({ transport, autoConnect: false });
+    clients.push(client);
+    const events: number[] = [];
+    client.onEvents("S1", (batch) => events.push(...batch.map((e) => e.seq)));
+    client.connect();
+    client.disconnect();
+    const opened = nextStatus(client, "open");
+    client.connect();
+    await opened;
+    await client.subscribe("S1", 0);
+    host.emit("session-event", { frame: { type: "events", payload: { session_id: "S1", events: [{ kind: "x", payload: {}, seq: 1 }] } } });
+    assert.deepEqual(events, [1]);
+    assert.equal(host.subscribes("S1").length, 1);
+    client.disconnect();
+  });
+});
+
+// #590 review: Rust replaces its socket on every sessions_connect, and the
+// replaced socket takes its subscriptions with it. This host keeps one
+// socket per sessions_connect, as sessions_ws.rs does; the replaced loop
+// says nothing (the worst case), so only the client can notice.
+describe("sessions-client: the Tauri transport never replaces a live socket by accident (#590)", () => {
+  type Frame = { id?: string; type: string; payload: { session_id?: string } };
+  const flushAll = () => new Promise((resolve) => setImmediate(resolve));
+
+  class ReplacingTauriHost {
+    connectCalls = 0;
+    // Subscriptions per socket; the last one is the live socket.
+    readonly sockets: string[][] = [];
+    private readonly listeners = new Map<string, Set<(ev: { payload: unknown }) => void>>();
+
+    invoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+      if (cmd === "sessions_connect") {
+        this.connectCalls += 1;
+        this.sockets.push([]);
+        queueMicrotask(() => this.emit("session-connection", { status: "open" }));
+        return undefined;
+      }
+      if (cmd === "sessions_send") {
+        const live = this.sockets[this.sockets.length - 1];
+        if (!live) throw new DesktopError("UNKNOWN_DETAIL", "sessions_send: not connected");
+        const frame = JSON.parse(String(args?.frame)) as Frame;
+        if (frame.type === "subscribe" && frame.payload.session_id) live.push(frame.payload.session_id);
+        if (frame.id) {
+          queueMicrotask(() => this.emit("session-event", { frame: { id: frame.id, type: "reply", payload: { ok: true } } }));
+        }
+      }
+      return undefined;
+    };
+
+    listen = async <T,>(event: string, cb: (ev: { payload: T }) => void): Promise<() => void> => {
+      const set = this.listeners.get(event) ?? new Set();
+      this.listeners.set(event, set);
+      const listener = cb as (ev: { payload: unknown }) => void;
+      set.add(listener);
+      return () => set.delete(listener);
+    };
+
+    emit(event: string, payload: unknown): void {
+      for (const cb of this.listeners.get(event) ?? []) cb({ payload });
+    }
+
+    live(): string[] | undefined {
+      return this.sockets[this.sockets.length - 1];
+    }
+  }
+
+  function clientOn(host: ReplacingTauriHost) {
+    const transport = createTauriTransport({ invoke: host.invoke, listen: host.listen, minBackoffMs: 1, maxBackoffMs: 1 });
+    const client = createSessionsClient({ transport, autoConnect: false });
+    clients.push(client);
+    return client;
+  }
+
+  it("a send that fails while sessions_connect is in flight waits for it instead of connecting again", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const host = new ReplacingTauriHost();
+      const client = clientOn(host);
+      client.connect();
+      // A thread switch while the channel is still being opened.
+      client.unsubscribe("OLD");
+      await client.subscribe("S1", 0);
+      // Any retry the failed unsubscribe scheduled is due now.
+      mock.timers.tick(1_000);
+      await flushAll();
+      assert.equal(host.connectCalls, 1);
+      assert.deepEqual(host.live(), ["S1"]);
+      assert.equal(client.connectionState().status, "open");
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("reconnect() while open keeps the live socket", async () => {
+    const host = new ReplacingTauriHost();
+    const client = clientOn(host);
+    client.connect();
+    await client.subscribe("S1", 0);
+    client.reconnect();
+    await flushAll();
+    assert.equal(host.connectCalls, 1);
+    assert.deepEqual(host.live(), ["S1"]);
+    client.disconnect();
+  });
+
+  it("an open while open is a new socket and gets every subscription again", async () => {
+    const host = new ReplacingTauriHost();
+    const client = clientOn(host);
+    client.connect();
+    await client.subscribe("S1", 0);
+    // Rust replaced the socket (a sessions_connect from elsewhere) and the
+    // new loop reports open.
+    host.sockets.push([]);
+    host.emit("session-connection", { status: "open" });
+    await flushAll();
+    assert.deepEqual(host.live(), ["S1"]);
+    assert.equal(client.connectionState().status, "open");
+    client.disconnect();
+  });
+});
+
+describe("live-channel: when the chat says the channel is down (#590)", () => {
+  it("a channel out of open counts as down only after the grace period", () => {
+    const since = 10_000;
+    assert.equal(liveChannelDown({ status: "reconnecting", since }, since + 2_999, 3_000), false);
+    assert.equal(liveChannelDown({ status: "reconnecting", since }, since + 3_000, 3_000), true);
+    assert.equal(liveChannelDown({ status: "closed", since }, since + 5_000, 3_000), true);
+    assert.equal(liveChannelDown({ status: "open", since }, since + 60_000, 3_000), false);
+  });
+
+  it("the wait until down is null while open and never negative", () => {
+    assert.equal(msUntilLiveChannelDown({ status: "open", since: 0 }, 5_000, 3_000), null);
+    assert.equal(msUntilLiveChannelDown({ status: "reconnecting", since: 0 }, 1_000, 3_000), 2_000);
+    assert.equal(msUntilLiveChannelDown({ status: "reconnecting", since: 0 }, 9_000, 3_000), 0);
   });
 });

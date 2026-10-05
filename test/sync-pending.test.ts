@@ -57,6 +57,19 @@ describe("computeSyncPending", () => {
     assert.ok(r.total >= 1);
   });
 
+  it("answers empty in a personal workspace, untracked file or not (#575)", async () => {
+    delete process.env.PORTUNI_AGENT_MODE;
+    const shared = await makeSharedDb();
+    setDbForTesting(shared.db);
+    const mirror = join(workspace, "mirror-personal");
+    await mkdir(join(mirror, "wip"), { recursive: true });
+    await writeFile(join(mirror, "wip", "draft.md"), "# local only\n");
+    await registerMirror(SOLO_USER, shared.nodeId, mirror);
+
+    const r = await computeSyncPending(shared.db, adminIdentity());
+    assert.deepEqual(r, { nodes: [], total: 0, decisions: 0 });
+  });
+
   it("returns an empty aggregate when nothing is pending", async () => {
     const shared = await makeSharedDb();
     setDbForTesting(shared.db);

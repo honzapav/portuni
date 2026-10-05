@@ -16,7 +16,7 @@ import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { registerFileTools } from "../apps/server/mcp/tools/files.js";
+import { registerFileTools, registerRemoteFileTools } from "../apps/server/mcp/tools/files.js";
 import type { Elicitor, ElicitOutcome } from "../apps/server/mcp/elicit.js";
 import type { SessionCtx } from "../apps/server/mcp/server.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
@@ -74,6 +74,7 @@ async function connect(dialogOutcome: ElicitOutcome | null): Promise<Harness> {
   const ctx: SessionCtx = { scope, identity: ident, elicit, spillSessionId: "test-spill" };
   const server = new McpServer({ name: "store-precondition-test", version: "0.0.1" }, {});
   registerFileTools(server, ctx);
+  registerRemoteFileTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   const client = new McpClient(
     { name: "store-precondition-test-client", version: "0.0.1" },

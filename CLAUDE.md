@@ -64,9 +64,18 @@ The server never starts without `PORTUNI_AUTH_TOKEN` (#521); the dev token
 lives in the Keychain entry `mcp.portuni-dev.auth-token`, never in
 `.env.schema`, and your shell exports the same value as `PORTUNI_MCP_TOKEN`
 for Claude Code in mirror dirs.
-Logs at `/tmp/portuni-mcp.log` and in the tmux pane. This loop is a local
-workspace; set `PORTUNI_WATCH_MIRRORS=1` for the watcher. The central half of
-a change is proven against the fake `CentralClient` in the tests, not here.
+Logs at `/tmp/portuni-mcp.log` and in the tmux pane. This loop is a personal
+workspace and **runs without the mirror watcher**, on purpose: with the
+defaults (`PORTUNI_WORKSPACE_ROOT` from `.env.schema`, the desktop's default
+workspace root) it shares `~/Workspaces/portuni` and its `.portuni/sync.db`
+with the installed `Portuni.app`, whose sidecar already watches them, while
+its graph db (`./portuni.db`) is a different file. Two watchers would
+reconcile the same `sync.db` twice, against two graph dbs. New files in
+mirrors therefore stay `new_local` here until the app (or `portuni_store`)
+registers them. With the app quit, run the watcher here by adding
+`PORTUNI_WATCH_MIRRORS=1` in front of `varlock run` in the command above.
+The central half of a change is proven against the fake `CentralClient` in
+the tests, not here.
 
 ### Frontend (Vite, port 4010)
 
@@ -193,7 +202,12 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `LocalModeNoRemoteError` (`LOCAL_MODE_NO_REMOTE`, REST 409) from
   `upsertRemote`/`setupRemoteService`/`setRoutingPolicyService`, and from
   `storeFile`/`pullFile`/`runNodeSync`/`snapshotService`, checked before any
-  other work. Web hides (never merely disables) what cannot exist there.
+  other work. Web hides (never merely disables) what cannot exist there:
+  every sync surface (footer pills, quit guard, Overview's Unsynced counter
+  and `sync_issues`, the Unsynced dialog, Settings → Synchronization, file
+  sync badges and dots, Drive link, conflict/restore actions); a file row
+  keeps only "untracked" and "missing". `GET /sync/pending` answers empty
+  and MCP registers no store/pull/remote/snapshot tool there (#575).
 - A team-workspace sidecar has no graph db. A graph read in code that runs on
   the device goes through a `CentralClient` method or an injected resolver
   whose local default is the direct query; never a swallowed failure.

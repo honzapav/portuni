@@ -154,6 +154,13 @@
     "rename": "Přejmenovat",
     "save_name": "Uložit název"
   },
+  "live_channel": {
+    "closed": "Živé spojení je uzavřené.",
+    "reason": "Důvod: {{reason}}",
+    "reason_unknown": "backend zatím není dostupný",
+    "reconnect": "Připojit znovu",
+    "reconnecting": "Živé spojení s konverzací není navázané. Zkouším to znovu…"
+  },
   "loader": {
     "title": "Načítání"
   },

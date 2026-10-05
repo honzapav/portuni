@@ -46,6 +46,10 @@ type Props = {
   // /sync/pending, and where each counter leads -- Práce for the first two,
   // Graf for attention, the Nesynchronizováno dialog for the last.
   unsyncedCount: number;
+  // #575: false in a personal workspace (no remote) and while the data mode
+  // is unknown -- no Unsynced counter, no sync issues in the Attention card,
+  // and so no way into the Unsynced dialog.
+  showSync: boolean;
   onOpenWorkspace: () => void;
   onOpenGraph: () => void;
   onOpenSyncOverview: () => void;
@@ -56,6 +60,7 @@ export default function OverviewView({
   onOpenSession,
   liveStates,
   unsyncedCount,
+  showSync,
   onOpenWorkspace,
   onOpenGraph,
   onOpenSyncOverview,
@@ -88,6 +93,8 @@ export default function OverviewView({
     void load();
   }, [load, liveStamp]);
 
+  const syncIssues = showSync && data ? data.attention.sync_issues : [];
+
   if (loading && !data) {
     return (
       <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
@@ -118,12 +125,12 @@ export default function OverviewView({
             counters={overviewCounters(
               liveStates ? mergeLiveSessionStates(data.sessions.running, liveStates) : data.sessions.running,
               liveStates ? mergeLiveSessionStates(data.sessions.suspended, liveStates) : data.sessions.suspended,
-              data.attention.nodes.length + data.attention.access_requests.length + data.attention.sync_issues.length,
+              data.attention.nodes.length + data.attention.access_requests.length + syncIssues.length,
               unsyncedCount,
             )}
             onOpenWorkspace={onOpenWorkspace}
             onOpenGraph={onOpenGraph}
-            onOpenSyncOverview={onOpenSyncOverview}
+            onOpenSyncOverview={showSync ? onOpenSyncOverview : null}
           />
         )}
 
@@ -139,7 +146,7 @@ export default function OverviewView({
             <AttentionCard
               nodes={data.attention.nodes}
               accessRequests={data.attention.access_requests}
-              syncIssues={data.attention.sync_issues}
+              syncIssues={syncIssues}
               onSelectNode={onSelectNode}
             />
             <ActivityCard
@@ -189,7 +196,8 @@ function CounterStrip({
   counters: { waiting: number; running: number; attention: number; unsynced: number };
   onOpenWorkspace: () => void;
   onOpenGraph: () => void;
-  onOpenSyncOverview: () => void;
+  // Null drops the Unsynced counter (a personal workspace, #575).
+  onOpenSyncOverview: (() => void) | null;
 }) {
   const { t } = useTranslation("common");
   // `id` is the React key: a label is translated text and never a key.
@@ -209,10 +217,17 @@ function CounterStrip({
       tone: "var(--color-status-active)",
     },
     { id: "attention", label: t(($) => $.overview.counter.attention), value: counters.attention, onClick: onOpenGraph },
-    { id: "unsynced", label: t(($) => $.overview.counter.unsynced), value: counters.unsynced, onClick: onOpenSyncOverview },
   ];
+  if (onOpenSyncOverview) {
+    items.push({
+      id: "unsynced",
+      label: t(($) => $.overview.counter.unsynced),
+      value: counters.unsynced,
+      onClick: onOpenSyncOverview,
+    });
+  }
   return (
-    <div className="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+    <div className={`mb-4 grid grid-cols-2 gap-4 ${items.length === 4 ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
       {items.map((item) => (
         <button
           key={item.id}

@@ -132,6 +132,13 @@
     "rename": "Rename",
     "save_name": "Save name"
   },
+  "live_channel": {
+    "closed": "The live channel is closed.",
+    "reason": "Reason: {{reason}}",
+    "reason_unknown": "the backend is not reachable yet",
+    "reconnect": "Reconnect",
+    "reconnecting": "Not connected to this conversation's live channel. Retrying…"
+  },
   "loader": {
     "title": "Loading"
   },

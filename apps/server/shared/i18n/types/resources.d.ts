@@ -123,6 +123,13 @@ export default interface Resources {
       "rename": "Rename",
       "save_name": "Save name"
     },
+    "live_channel": {
+      "closed": "The live channel is closed.",
+      "reason": "Reason: {{reason}}",
+      "reason_unknown": "the backend is not reachable yet",
+      "reconnect": "Reconnect",
+      "reconnecting": "Not connected to this conversation's live channel. Retrying…"
+    },
     "loader": {
       "title": "Loading"
     },
@@ -345,6 +352,12 @@ export default interface Resources {
       "title": "Portuni hit an error (this panel replaces a blank white screen). Copy the text below."
     },
     "footer": {
+      "live_channel": {
+        "label_closed": "live ×",
+        "label_reconnecting": "live…",
+        "reason_unknown": "the backend is not reachable yet",
+        "title": "The live channel to the backend is not connected ({{reason}}). Click to reconnect."
+      },
       "mcp": {
         "label_down": "mcp ×",
         "label_loading": "mcp…",
@@ -902,6 +915,7 @@ export default interface Resources {
       "drive_link_none": "The file is not on Drive yet",
       "keep_local": "Keep local",
       "keep_local_title": "Push the local version to the remote",
+      "missing_title": "The file is registered but no longer on disk.",
       "not_editable": "This file cannot be edited",
       "open_in_editor": "Open in the editor",
       "open_on_disk": "Show on disk",
@@ -991,7 +1005,6 @@ export default interface Resources {
       "central": "File sync to Google Drive is managed by the central server <server>{{server}}</server>.",
       "heading": "Sync",
       "more_errors": "… and {{count}} more." | "… and {{count}} more.",
-      "personal": "This is a personal workspace – files are stored on this computer only and are not shared. Sharing files needs a team workspace (joining a team).",
       "watcher_errors_nodes": "File watching reports {{count}} error in {{nodes}} nodes." | "File watching reports {{count}} errors in {{nodes}} nodes.",
       "watcher_errors_one_node": "File watching reports {{count}} error in 1 node." | "File watching reports {{count}} errors in 1 node."
     },

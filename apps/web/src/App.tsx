@@ -7,6 +7,7 @@ import OverviewView from "./components/OverviewView";
 import EditorFullscreen from "./components/EditorFullscreen";
 import EditorPane from "./components/EditorPane";
 import StatusFooter from "./components/StatusFooter";
+import { useLiveChannel } from "./lib/use-live-channel";
 import CreateNodeModal from "./components/CreateNodeModal";
 import {
   fetchGraph,
@@ -40,6 +41,8 @@ import { isTauri } from "./lib/backend-url";
 import { invoke } from "./lib/tauri-invoke";
 import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
+import { useDataMode } from "./lib/central";
+import { showsSyncSurfaces } from "./lib/sync-visibility";
 import { pullNodeCount } from "./lib/remote-watch-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -534,6 +537,7 @@ export default function App() {
     sessionsClient.connect();
     return () => sessionsClient.disconnect();
   }, [sessionsClient]);
+  const liveChannel = useLiveChannel(sessionsClient);
 
   // #343: the latest session_state frame per session -- sent for every
   // session the caller can see the moment sessionsClient connects, and
@@ -694,11 +698,20 @@ export default function App() {
     editorDirtyRef.current = editorDirty;
   }, [editorDirty]);
 
+  // A personal workspace has no remote (#575): no unsynced poll, footer
+  // pills, Overview counter, Unsynced dialog or quit guard. Hidden while the
+  // mode is still unknown, like every other data-mode-gated surface.
+  const dataMode = useDataMode();
+  const showSync = showsSyncSurfaces(dataMode?.mode);
+  const showSyncRef = useRef(showSync);
+  useEffect(() => {
+    showSyncRef.current = showSync;
+  }, [showSync]);
   const {
     pending: syncPending,
     refresh: refreshSyncPending,
     applyRun: applySyncRun,
-  } = useSyncPending();
+  } = useSyncPending(showSync);
   const [syncOverviewOpen, setSyncOverviewOpen] = useState(false);
 
   const syncPendingRef = useRef(syncPending.total);
@@ -798,7 +811,7 @@ export default function App() {
             if (editorDirtyRef.current) {
               event.preventDefault();
               setEditorGuard({ kind: "quit" });
-            } else if (syncPendingRef.current > 0) {
+            } else if (showSyncRef.current && syncPendingRef.current > 0) {
               event.preventDefault();
               setSyncQuitGuard({ count: syncPendingRef.current });
             }
@@ -1075,6 +1088,7 @@ export default function App() {
             onOpenSession={openSessionChat}
             liveStates={liveSessionStates}
             unsyncedCount={syncPending.total}
+            showSync={showSync}
             onOpenWorkspace={() => setView("workspace")}
             onOpenGraph={() => setView("graph")}
             onOpenSyncOverview={() => setSyncOverviewOpen(true)}
@@ -1192,10 +1206,13 @@ export default function App() {
         onOpenSettings={openSettingsView}
         sessionCount={runningSessionCount}
         onOpenWorkspace={openWorkspaceView}
+        showSync={showSync}
         pendingCount={syncPending.total}
         pullNodeCount={pullNodeCount(syncPending.nodes)}
         onOpenSyncOverview={() => setSyncOverviewOpen(true)}
         appUpdate={appUpdate}
+        liveChannel={liveChannel}
+        onReconnectLiveChannel={() => sessionsClient.reconnect()}
       />
       {createModalOpen && graph && (
         <CreateNodeModal
@@ -1289,7 +1306,7 @@ export default function App() {
           </DialogContent>
         </Dialog>
       )}
-      {syncOverviewOpen && (
+      {showSync && syncOverviewOpen && (
         <Suspense fallback={null}>
         <SyncOverview
           pending={syncPending}
@@ -1306,7 +1323,7 @@ export default function App() {
         />
         </Suspense>
       )}
-      {syncQuitGuard && (
+      {showSync && syncQuitGuard && (
         <Dialog
           open
           onOpenChange={(open) => {

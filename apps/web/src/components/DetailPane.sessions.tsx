@@ -22,6 +22,7 @@ import {
   startSessionFromHandoff,
 } from "../api";
 import { handoffFileEntries, type HandoffFileEntry } from "../lib/handoff-files";
+import { useLocalHost } from "../lib/use-local-host";
 import {
   hostDisplayName,
   mergeLiveSessionStates,
@@ -176,7 +177,11 @@ export function SessionsSection({
   // #460 "Navázat na handoff": the handoff files of this node, whoever
   // wrote them -- a file another machine's thread wrote arrives here as an
   // ordinary tracked file, which is exactly the point.
-  const handoffs = useMemo(() => handoffFileEntries(files ?? [], sessions), [files, sessions]);
+  const localHost = useLocalHost();
+  const handoffs = useMemo(
+    () => handoffFileEntries(files ?? [], sessions, localHost),
+    [files, sessions, localHost],
+  );
   const [startingHandoff, setStartingHandoff] = useState<string | null>(null);
   const handleStartFromHandoff = async (entry: HandoffFileEntry) => {
     setStartingHandoff(entry.relative_path);
@@ -318,6 +323,7 @@ function SessionRow({
   const { t } = useTranslation("node");
   const { t: tCommon } = useTranslation("common");
   const locale = useLocale();
+  const localHost = useLocalHost();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name);
   const [saving, setSaving] = useState(false);
@@ -361,7 +367,7 @@ function SessionRow({
   };
 
   const chip = sessionRowChip(session.state, session.waiting_since, tCommon);
-  const host = hostDisplayName(session);
+  const host = hostDisplayName(session, localHost);
 
   // Row actions are icon buttons on the right of the title line, shown on
   // hover or keyboard focus (the list stays quiet); rename is one of them.

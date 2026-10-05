@@ -130,96 +130,6 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
   );
 
   server.tool(
-    "portuni_store",
-    "Register a file with Portuni AND upload it to the routed remote (a deliberate push): copies into the node's local mirror if needed, uploads, and creates/updates the files row. New files in a mirror are normally registered automatically (without upload) by the desktop watcher, so reach for portuni_store when you explicitly want to push a file to the remote -- or to register+upload in an environment without the watcher (files there surface as new_local from portuni_status). For files surfaced as new_remote (created elsewhere, already on the remote), use portuni_adopt_files instead. Uses sync_key-based paths so renaming nodes does not break remote storage. See portuni://sync-model.",
-    {
-      node_id: z.string().describe("Target node ID"),
-      local_path: z.string().describe("Absolute path of the source file on this device"),
-      status: z
-        .enum(["wip", "output"])
-        .optional()
-        .describe("Section routing (wip or outputs)"),
-      subpath: z
-        .string()
-        .nullable()
-        .optional()
-        .describe("Optional subfolder within the section"),
-    },
-    async (args) => {
-      // Before the write guard, so a session with no local sync.db (a
-      // connector session on central) fails with the same error
-      // portuni_status gives instead of waiting minutes on a confirmation
-      // dialog for an upload that could never start (#409).
-      requireLocalSyncDb();
-      const db = getDb();
-      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
-        return NODE_NOT_FOUND;
-      }
-      const storeWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
-      if (storeWriteGuard.kind === "error") return storeWriteGuard.response;
-      const result = await storeFile(db, {
-        userId: ctx.identity.userId,
-        nodeId: args.node_id,
-        localPath: args.local_path,
-        status: args.status,
-        subpath: args.subpath ?? null,
-      });
-      // local_path intentionally excluded: the audit log lives in Turso
-      // and absolute machine paths should not leave the device.
-      await logAudit(ctx.identity.userId, "portuni_store", "file", result.file_id, {
-        file_id: result.file_id,
-        remote_name: result.remote_name,
-        remote_path: result.remote_path,
-        hash: result.hash,
-      });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-      };
-    },
-  );
-
-  server.tool(
-    "portuni_pull",
-    "Two modes selected by which argument you pass. With file_id: download the remote version into the mirror and refresh the local hash cache — use to restore a deleted local copy or pull a teammate's update. With node_id: classify each file (unchanged/updated/conflict/remote_missing/remote_error/native) without modifying anything — use as a preview before pulling. Exactly one of file_id or node_id must be provided.",
-    {
-      file_id: z.string().optional().describe("File ID (ULID). Download mode — fetches the remote version into the mirror."),
-      node_id: z.string().optional().describe("Node ID (ULID). Preview mode — classifies each file without modifying anything."),
-      force: z.boolean().optional().describe("Download mode only: overwrite the local file even when it has unpushed local changes. Default false — such pulls are refused to protect local edits."),
-    },
-    async (args) => {
-      if (!args.file_id && !args.node_id) {
-        throw new Error("portuni_pull requires either file_id or node_id");
-      }
-      const db = getDb();
-      if (args.file_id) {
-        // Download mode writes into this device's mirror, so it needs the
-        // local sync.db -- fail fast for the same reason portuni_store does
-        // (#409). Preview mode (node_id) is remote-only and left alone.
-        requireLocalSyncDb();
-        const nodeId = await fileNodeId(db, args.file_id);
-        if (nodeId) {
-          if (!(await nodeVisibleTo(db, ctx.identity, nodeId))) {
-            return NODE_NOT_FOUND;
-          }
-          const pullWriteGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
-          if (pullWriteGuard.kind === "error") return pullWriteGuard.response;
-        }
-        const r = await pullFile(db, { userId: ctx.identity.userId, fileId: args.file_id, force: args.force });
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }],
-        };
-      }
-      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id!))) {
-        return NODE_NOT_FOUND;
-      }
-      const p = await previewNode(db, { userId: ctx.identity.userId, nodeId: args.node_id! });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(p, null, 2) }],
-      };
-    },
-  );
-
-  server.tool(
     "portuni_list_files",
     "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result), except for connector (interactive_chat) sessions, which have no scope set and see every file on nodes visible to them — see portuni://scope-rules.",
     {
@@ -467,6 +377,103 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         confirmed: args.confirmed,
       });
       return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+    },
+  );
+}
+
+// The two tools that move bytes to or from a remote (#575): registered only
+// where a remote can exist, never in a personal workspace (#310), where
+// they could only ever fail with LOCAL_MODE_NO_REMOTE.
+export function registerRemoteFileTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
+
+  server.tool(
+    "portuni_store",
+    "Register a file with Portuni AND upload it to the routed remote (a deliberate push): copies into the node's local mirror if needed, uploads, and creates/updates the files row. New files in a mirror are normally registered automatically (without upload) by the desktop watcher, so reach for portuni_store when you explicitly want to push a file to the remote -- or to register+upload in an environment without the watcher (files there surface as new_local from portuni_status). For files surfaced as new_remote (created elsewhere, already on the remote), use portuni_adopt_files instead. Uses sync_key-based paths so renaming nodes does not break remote storage. See portuni://sync-model.",
+    {
+      node_id: z.string().describe("Target node ID"),
+      local_path: z.string().describe("Absolute path of the source file on this device"),
+      status: z
+        .enum(["wip", "output"])
+        .optional()
+        .describe("Section routing (wip or outputs)"),
+      subpath: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("Optional subfolder within the section"),
+    },
+    async (args) => {
+      // Before the write guard, so a session with no local sync.db (a
+      // connector session on central) fails with the same error
+      // portuni_status gives instead of waiting minutes on a confirmation
+      // dialog for an upload that could never start (#409).
+      requireLocalSyncDb();
+      const db = getDb();
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return NODE_NOT_FOUND;
+      }
+      const storeWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+      if (storeWriteGuard.kind === "error") return storeWriteGuard.response;
+      const result = await storeFile(db, {
+        userId: ctx.identity.userId,
+        nodeId: args.node_id,
+        localPath: args.local_path,
+        status: args.status,
+        subpath: args.subpath ?? null,
+      });
+      // local_path intentionally excluded: the audit log lives in Turso
+      // and absolute machine paths should not leave the device.
+      await logAudit(ctx.identity.userId, "portuni_store", "file", result.file_id, {
+        file_id: result.file_id,
+        remote_name: result.remote_name,
+        remote_path: result.remote_path,
+        hash: result.hash,
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "portuni_pull",
+    "Two modes selected by which argument you pass. With file_id: download the remote version into the mirror and refresh the local hash cache — use to restore a deleted local copy or pull a teammate's update. With node_id: classify each file (unchanged/updated/conflict/remote_missing/remote_error/native) without modifying anything — use as a preview before pulling. Exactly one of file_id or node_id must be provided.",
+    {
+      file_id: z.string().optional().describe("File ID (ULID). Download mode — fetches the remote version into the mirror."),
+      node_id: z.string().optional().describe("Node ID (ULID). Preview mode — classifies each file without modifying anything."),
+      force: z.boolean().optional().describe("Download mode only: overwrite the local file even when it has unpushed local changes. Default false — such pulls are refused to protect local edits."),
+    },
+    async (args) => {
+      if (!args.file_id && !args.node_id) {
+        throw new Error("portuni_pull requires either file_id or node_id");
+      }
+      const db = getDb();
+      if (args.file_id) {
+        // Download mode writes into this device's mirror, so it needs the
+        // local sync.db -- fail fast for the same reason portuni_store does
+        // (#409). Preview mode (node_id) is remote-only and left alone.
+        requireLocalSyncDb();
+        const nodeId = await fileNodeId(db, args.file_id);
+        if (nodeId) {
+          if (!(await nodeVisibleTo(db, ctx.identity, nodeId))) {
+            return NODE_NOT_FOUND;
+          }
+          const pullWriteGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
+          if (pullWriteGuard.kind === "error") return pullWriteGuard.response;
+        }
+        const r = await pullFile(db, { userId: ctx.identity.userId, fileId: args.file_id, force: args.force });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }],
+        };
+      }
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id!))) {
+        return NODE_NOT_FOUND;
+      }
+      const p = await previewNode(db, { userId: ctx.identity.userId, nodeId: args.node_id! });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(p, null, 2) }],
+      };
     },
   );
 }

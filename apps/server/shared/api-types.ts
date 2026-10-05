@@ -482,6 +482,16 @@ export type AccessRequest = {
 // exclude it). The first message promotes it to "running".
 export type SessionState = "running" | "suspended" | "closed" | "archived" | "draft";
 
+// GET /hosts/local (#578): the device that answers -- its id and its
+// display label. Device-local, so in a team workspace the sync agent
+// answers it, and the web labels its own threads from it: the central
+// server never loaded this device's identity, so a summary it builds
+// carries the id and no label.
+export type LocalHostInfo = {
+  host_id: string;
+  host_label: string | null;
+};
+
 // The record half of a thread (#461): everything below is a column of
 // `sessions` on the central server. The content -- the first message, the
 // transcript, the inline handoff summary -- is the device's, served by

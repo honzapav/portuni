@@ -43,6 +43,15 @@ import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { getMirrorPath, registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
+import {
+  loadDeviceIdentity,
+  localHostId,
+  resetDeviceIdentityForTests,
+  resolveHostLabel,
+  setMachineNameForTests,
+} from "../apps/server/domain/runner/hosts.js";
+import { hostDisplayName } from "../apps/web/src/lib/session-views.js";
+import { claimHostRecordsCentral } from "../apps/server/boot/host-identity.js";
 import { isAllowedSessionTransition } from "../apps/server/domain/sessions.js";
 import { installTestContentDb } from "./helpers/content-db.js";
 import { createInstance } from "../apps/server/domain/runner/instances.js";
@@ -228,6 +237,26 @@ class FakeCentral implements CentralClient {
 
   async orientation(): Promise<OrientationSummary | null> {
     return this.orientationValue;
+  }
+
+  // #578: what POST /hosts/claim does on the central server, for the one
+  // user this sidecar authenticates as.
+  async claimHost(input: { host_id: string; previous_host_ids: string[] }): Promise<{ sessions: number; runs: number }> {
+    const previous = new Set(input.previous_host_ids.filter((id) => id !== input.host_id));
+    let sessions = 0;
+    let runs = 0;
+    for (const row of this.sessions.values()) {
+      if (row.user_id !== SOLO_USER || !row.host_id || !previous.has(row.host_id)) continue;
+      this.sessions.set(row.id, { ...row, host_id: input.host_id });
+      sessions += 1;
+    }
+    for (const run of this.runs.values()) {
+      if (!run.host_id || !previous.has(run.host_id)) continue;
+      if (this.sessions.get(run.session_id)?.user_id !== SOLO_USER) continue;
+      this.runs.set(run.id, { ...run, host_id: input.host_id });
+      runs += 1;
+    }
+    return { sessions, runs };
   }
 
   // #427: the session scope the suspend fallback reads instead of writing
@@ -1028,6 +1057,92 @@ describe("agent-router: sessions/tasks", () => {
     const again = await authFetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
     assert.equal(again.status, 200);
     assert.equal(((await again.json()) as { handoff_path: string }).handoff_path, body.handoff_path);
+  });
+
+  // #578: a thread this device ran before the machine was renamed carries
+  // the old hostname slug; the boot claim on central makes it this device's
+  // again, and Předat and Pokračovat v nové session go through.
+  it("after the boot claim, Předat and continue work on a thread recorded under the old host id", async () => {
+    stubScript([{ wait: "message" }]);
+    const start = await authFetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    // The machine is renamed: every record of this thread names the old id.
+    fake.sessions.set(session.id, { ...fake.sessions.get(session.id)!, host_id: "stary-mac" });
+    for (const run of fake.runs.values()) {
+      if (run.session_id === session.id) fake.runs.set(run.id, { ...run, host_id: "stary-mac" });
+    }
+    const refused = await authFetch(`${base}/sessions/${session.id}/continue`, { method: "POST" });
+    assert.equal(refused.status, 409);
+    assert.equal(((await refused.json()) as { code: string }).code, "SESSION_TRANSCRIPT_ELSEWHERE");
+
+    await claimHostRecordsCentral(fake, { host_id: localHostId(), previous_host_ids: ["stary-mac"] });
+    assert.equal(fake.sessions.get(session.id)?.host_id, localHostId());
+    assert.ok([...fake.runs.values()].filter((r) => r.session_id === session.id).every((r) => r.host_id === localHostId()));
+
+    fake.sessions.set(session.id, { ...fake.sessions.get(session.id)!, state: "suspended" });
+    const handedOver = await authFetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" });
+    assert.equal(handedOver.status, 200);
+    fake.sessions.set(session.id, { ...fake.sessions.get(session.id)!, state: "closed" });
+    const continued = await authFetch(`${base}/sessions/${session.id}/continue`, { method: "POST" });
+    assert.equal(continued.status, 200);
+    const { session: next } = (await continued.json()) as { session: SessionRow };
+    assert.equal(fake.sessions.get(next.id)?.state, "running");
+    await authFetch(`${base}/sessions/${next.id}/close`, { method: "POST" });
+  });
+
+  // #578: the central server never loads this device's identity, so the
+  // summary it builds for a thread run here carries the device's ULID and no
+  // label. The sync agent answers GET /hosts/local with its id and the
+  // hostname, and the web names its own threads from that.
+  it("GET /hosts/local names this device, so a thread it ran shows the hostname in a team workspace", async () => {
+    const savedHostId = process.env.PORTUNI_HOST_ID;
+    const savedLabel = process.env.PORTUNI_HOST_LABEL;
+    delete process.env.PORTUNI_HOST_ID;
+    delete process.env.PORTUNI_HOST_LABEL;
+    const dataDir = await mkdtemp(join(tmpdir(), "portuni-agent-host-"));
+    try {
+      setMachineNameForTests(() => "Case-Mac.local");
+      const identity = loadDeviceIdentity(dataDir);
+      assert.ok(identity);
+
+      stubScript([{ wait: "message" }]);
+      const start = await authFetch(`${base}/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+      });
+      const { session } = (await start.json()) as { session: SessionRow };
+      assert.equal(fake.sessions.get(session.id)?.host_id, identity.host_id);
+
+      const local = await authFetch(`${base}/hosts/local`);
+      assert.equal(local.status, 200);
+      const host = (await local.json()) as { host_id: string; host_label: string | null };
+      assert.deepEqual(host, { host_id: identity.host_id, host_label: "Case-Mac" });
+
+      // What the central server answers for this thread: it loaded no
+      // identity, so it cannot name the device.
+      resetDeviceIdentityForTests();
+      const centralSummary = { host_id: identity.host_id, host_label: resolveHostLabel(identity.host_id) };
+      assert.equal(centralSummary.host_label, null);
+      assert.equal(hostDisplayName(centralSummary, host), "Case-Mac");
+      // A teammate's device still shows as its id.
+      assert.equal(hostDisplayName({ host_id: "01TEAMMATE", host_label: null }, host), "01TEAMMATE");
+
+      await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+    } finally {
+      setMachineNameForTests(null);
+      resetDeviceIdentityForTests();
+      if (savedHostId === undefined) delete process.env.PORTUNI_HOST_ID;
+      else process.env.PORTUNI_HOST_ID = savedHostId;
+      if (savedLabel === undefined) delete process.env.PORTUNI_HOST_LABEL;
+      else process.env.PORTUNI_HOST_LABEL = savedLabel;
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("POST /sessions/:id/handoff 409s on a draft", async () => {

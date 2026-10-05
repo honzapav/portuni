@@ -18,6 +18,8 @@ import { isTauri } from "../lib/backend-url";
 import { showtimeInstalled } from "../lib/showtime";
 import type { AppUpdate } from "../lib/updater";
 import { lazyWithNamespaces } from "../i18n";
+import { useDataMode } from "../lib/central";
+import { showsSyncSurfaces } from "../lib/sync-visibility";
 
 // Settings › Sync reads the `files` namespace; it loads with the chunk.
 const SyncSection = lazyWithNamespaces(() => import("./SyncSection"), ["files"]);
@@ -102,6 +104,16 @@ export default function SettingsPage({ appUpdate }: Props) {
     if (canManage) refreshPendingCount();
   }, [canManage, refreshPendingCount]);
 
+  // Synchronizace exists only in a team workspace (#575); a personal one has
+  // no remote, and its watcher errors show in each node's Files tab. Like
+  // the scope-gated tabs, a ?settingsTab=sync link waits for the mode and
+  // is bounced to "general" once it is known to be personal.
+  const dataMode = useDataMode();
+  const showSyncTab = showsSyncSurfaces(dataMode?.mode);
+  useEffect(() => {
+    if (tab === "sync" && dataMode && !showSyncTab) setTab("general");
+  }, [tab, dataMode, showSyncTab]);
+
   const isGeneralTab = tab === "general";
 
   const [showtimeEnabled, setShowtimeEnabled] = useState(loadShowtimeEnabled);
@@ -140,7 +152,9 @@ export default function SettingsPage({ appUpdate }: Props) {
               <TabsTrigger value="account">{t(($) => $.page.tabs.account)}</TabsTrigger>
               <TabsTrigger value="workspaces">{t(($) => $.page.tabs.workspaces)}</TabsTrigger>
               <TabsTrigger value="runners">{t(($) => $.page.tabs.runners)}</TabsTrigger>
-              <TabsTrigger value="sync">{t(($) => $.page.tabs.sync)}</TabsTrigger>
+              {showSyncTab && (
+                <TabsTrigger value="sync">{t(($) => $.page.tabs.sync)}</TabsTrigger>
+              )}
               {canManage && (
                 <TabsTrigger value="access-requests">
                   {t(($) => $.page.tabs.access_requests)}
@@ -164,7 +178,7 @@ export default function SettingsPage({ appUpdate }: Props) {
 
         {tab === "runners" && <RunnersSection />}
 
-        {tab === "sync" && (
+        {tab === "sync" && showSyncTab && (
           <Suspense fallback={null}>
             <SyncSection />
           </Suspense>

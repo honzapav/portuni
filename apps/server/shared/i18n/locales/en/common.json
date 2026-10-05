@@ -123,6 +123,12 @@
     "title": "Portuni hit an error (this panel replaces a blank white screen). Copy the text below."
   },
   "footer": {
+    "live_channel": {
+      "label_closed": "live ×",
+      "label_reconnecting": "live…",
+      "reason_unknown": "the backend is not reachable yet",
+      "title": "The live channel to the backend is not connected ({{reason}}). Click to reconnect."
+    },
     "mcp": {
       "label_down": "mcp ×",
       "label_loading": "mcp…",

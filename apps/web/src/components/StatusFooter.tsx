@@ -7,6 +7,8 @@ import { ArrowDown } from "lucide-react";
 import { useMcpStatus } from "../lib/use-mcp-status";
 import { useTranslation } from "react-i18next";
 import type { AppUpdate } from "../lib/updater";
+import type { LiveChannel } from "../lib/use-live-channel";
+import { displayError } from "../errors";
 import { Button } from "@/components/ui/button";
 
 type Props = {
@@ -17,12 +19,19 @@ type Props = {
   // counts too.
   sessionCount: number;
   onOpenWorkspace: () => void;
+  // #575: false in a personal workspace (no remote) and while the data mode
+  // is unknown -- the unsynced and to-pull pills are not rendered at all.
+  showSync: boolean;
   pendingCount: number;
   // #339: how many nodes hold records the remote watcher registered on
   // central and this device has not pulled yet. 0 renders nothing.
   pullNodeCount: number;
   onOpenSyncOverview: () => void;
   appUpdate: AppUpdate;
+  // #590: the session live channel. A pill only while it is down (out of
+  // `open` past the grace period); clicking it reconnects now.
+  liveChannel: LiveChannel;
+  onReconnectLiveChannel: () => void;
 };
 
 // Every footer indicator is a clickable pill: a small ghost Button keeping
@@ -33,10 +42,13 @@ export default function StatusFooter({
   onOpenSettings,
   sessionCount,
   onOpenWorkspace,
+  showSync,
   pendingCount,
   pullNodeCount,
   onOpenSyncOverview,
   appUpdate,
+  liveChannel,
+  onReconnectLiveChannel,
 }: Props) {
   const { t } = useTranslation("common");
   const status = useMcpStatus();
@@ -69,6 +81,22 @@ export default function StatusFooter({
         <span aria-hidden="true" className={`inline-block h-2 w-2 rounded-full ${dotColor}`} />
         <span className="font-mono">{label}</span>
       </Button>
+      {liveChannel.down && (
+        <Button
+          variant="ghost"
+          size="xs"
+          className={`ml-3 ${PILL}`}
+          title={t(($) => $.footer.live_channel.title, {
+            reason: liveChannel.error === undefined ? t(($) => $.footer.live_channel.reason_unknown) : displayError(liveChannel.error),
+          })}
+          onClick={onReconnectLiveChannel}
+        >
+          <span aria-hidden="true" className={`inline-block h-2 w-2 rounded-full ${liveChannel.status === "closed" ? "bg-red-500" : "bg-amber-400"}`} />
+          <span className="font-mono">
+            {liveChannel.status === "closed" ? t(($) => $.footer.live_channel.label_closed) : t(($) => $.footer.live_channel.label_reconnecting)}
+          </span>
+        </Button>
+      )}
       {sessionCount > 0 && (
         <Button
           variant="ghost"
@@ -81,7 +109,7 @@ export default function StatusFooter({
           <span className="font-mono">{t(($) => $.footer.threads.label, { count: sessionCount })}</span>
         </Button>
       )}
-      {pendingCount > 0 && (
+      {showSync && pendingCount > 0 && (
         <Button
           variant="ghost"
           size="xs"
@@ -93,7 +121,7 @@ export default function StatusFooter({
           <span className="font-mono">{t(($) => $.footer.unsynced.label, { pendingCount })}</span>
         </Button>
       )}
-      {pullNodeCount > 0 && (
+      {showSync && pullNodeCount > 0 && (
         <Button
           variant="ghost"
           size="xs"

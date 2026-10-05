@@ -27,7 +27,7 @@ use rand::rand_core::UnwrapErr;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
-use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -171,6 +171,10 @@ fn advance_quit(app: &AppHandle) {
 // answers -- a crashed/hung webview -- Portuni must not block Cmd+Q/quit
 // forever. This is a safety net now, not the normal path: a healthy
 // window answers via decline_exit or an actual close well within 5s.
+// The app log (sidecar.log): see the tauri_plugin_log builder in run().
+const LOG_FILE_MAX_BYTES: u128 = 10 * 1024 * 1024;
+const LOG_FILES_KEPT: usize = 5;
+
 const EXIT_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 // Generation counter making the fallback timer cancellable (#221): a
@@ -2496,6 +2500,14 @@ fn rotate_ws_log(p: &std::path::Path) {
     let _ = std::fs::rename(p, &rotated);
 }
 
+// The sidecar's one-line-per-request access log (PORTUNI_LOG_REQUESTS=1,
+// apps/server/http/server.ts) goes to stderr. It stays in sidecar-<ws>.log
+// only: forwarded into the app log, a day of polling would fill the app
+// log's whole retention with requests (#590).
+fn is_sidecar_access_log(line: &str) -> bool {
+    line.starts_with("[req] ")
+}
+
 fn append_ws_log(path: &Option<std::path::PathBuf>, line: &str) {
     if let Some(p) = path {
         if let Some(dir) = p.parent() {
@@ -2810,7 +2822,9 @@ fn spawn_sidecar_ws_with_token(
                     let line = String::from_utf8_lossy(&line).into_owned();
                     let line = line.trim_end_matches(['\n', '\r']);
                     append_ws_log(&ws_log_path, line);
-                    warn!("sidecar[{ws}]:err: {line}");
+                    if !is_sidecar_access_log(line) {
+                        warn!("sidecar[{ws}]:err: {line}");
+                    }
                 }
                 CommandEvent::Terminated(payload) => {
                     error!("sidecar[{ws}] terminated: code={:?}", payload.code);
@@ -3202,6 +3216,12 @@ pub fn run() {
                     }),
                 ])
                 .level(log::LevelFilter::Info)
+                // The plugin's default is one 40 KB file, which the sidecar's
+                // own stdout rolls over in minutes (#590): a start-up failure
+                // was gone before anyone looked. 10 MB per file, five files
+                // kept, holds well over the last 24 h.
+                .max_file_size(LOG_FILE_MAX_BYTES)
+                .rotation_strategy(RotationStrategy::KeepSome(LOG_FILES_KEPT))
                 .build(),
         )
         .manage(SidecarState(Mutex::new(HashMap::new())))
@@ -4296,7 +4316,16 @@ mod expand_tilde_tests {
 
 #[cfg(test)]
 mod ws_log_rotation_tests {
-    use super::{append_ws_log, should_rotate_ws_log, WS_LOG_MAX_BYTES};
+    use super::{append_ws_log, is_sidecar_access_log, should_rotate_ws_log, WS_LOG_MAX_BYTES};
+
+    #[test]
+    fn only_the_request_access_log_stays_out_of_the_app_log() {
+        assert!(is_sidecar_access_log(
+            "[req] GET /sessions/ws origin=tauri://localhost host=127.0.0.1:4011 -> 101 2ms"
+        ));
+        assert!(!is_sidecar_access_log("[portuni] sessions-ws upgrade failed"));
+        assert!(!is_sidecar_access_log("Error: boom [req] inside"));
+    }
 
     #[test]
     fn rotates_only_at_or_past_the_cap() {

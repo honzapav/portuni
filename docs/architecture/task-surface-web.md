@@ -382,7 +382,20 @@ One typed client, two transports behind one `Transport` interface:
 - **Tauri**: invokes `sessions_connect` / `sessions_send` /
   `sessions_disconnect` and listens for `session-event` and
   `session-connection`. The socket lives in Rust; the webview never holds
-  the bearer.
+  the bearer. A command that rejects is never swallowed (#590): the
+  transport logs it, reports `reconnecting` with the rejection as the
+  reason, and retries `sessions_connect` with the same 1 s -> 30 s backoff
+  until it succeeds; a frame whose `sessions_send` failed waits for that
+  success (a failed subscribe is cancelled and resubscribed on the next
+  `open`, like any subscribe that a drop interrupted). Each `connect` and
+  `disconnect` bumps a generation, so a superseded connect (StrictMode)
+  leaves no second pair of listeners. Every `sessions_connect` replaces
+  Rust's socket, so the transport never asks for one it does not need:
+  `reconnect()` is a no-op while open or while a connect is in flight,
+  and a `sessions_send` that fails during an in-flight connect waits for
+  it instead of scheduling another. An `open` while already open means a
+  new socket: the client fails the old socket's requests and resubscribes
+  every session.
 - **Vite dev**: `createDirectWsTransport` opens a real `WebSocket` against
   `/api/sessions/ws`. `vite.config.ts` proxies it with `ws: true` and a
   `proxyReqWs` handler that injects the bearer, so the token still never
@@ -391,6 +404,16 @@ One typed client, two transports behind one `Transport` interface:
   `subscribe()` always races the handshake.
 
 Client rules:
+
+- The client tracks the channel's state (`connectionState()`: status,
+  reason, since when; `reconnecting` from `connect()` until the first
+  `open`) and `reconnect()` retries now. `useLiveChannel` turns it into
+  `down` once the channel stays out of `open` for `LIVE_CHANNEL_GRACE_MS`
+  (3 s, `lib/live-channel.ts`): `SessionChat` then shows
+  `LiveChannelNotice` (status, reason, Reconnect) in place of the loading
+  line, or above a loaded conversation, and the footer shows a `live`
+  pill that reconnects on click. A parked subscribe loads the replay by
+  itself once the channel opens.
 
 - Every request frame carries an id the server echoes; the caller awaits
   the reply. A request is delivered once, or reported as failed and never

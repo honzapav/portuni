@@ -81,7 +81,7 @@ import { displayError } from "../errors";
 import { errorCode } from "../lib/api-error";
 import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
-import { listWorkspaces } from "../lib/workspaces";
+import { fileRowBadges } from "../lib/sync-visibility";
 import { copyText } from "../lib/clipboard";
 import { summarizeSyncRun } from "../lib/sync-run-summary";
 import { syncBarState } from "../lib/sync-bar-state";
@@ -1026,7 +1026,8 @@ function FileTreeNode({
     );
   }
   const isCollapsed = collapsed.has(node.path);
-  const dot = aggregateFolderSync(node, syncStatus);
+  // No sync dots on folders and sections in a personal workspace (#575).
+  const dot = isCentralMode ? aggregateFolderSync(node, syncStatus) : null;
   const childCount = node.children ? node.children.size : 0;
   const isSection = isSectionRoot(node, depth);
   return (
@@ -1567,6 +1568,13 @@ function FileRow({
   };
 
   const sync = f.fileId ? syncStatus.get(f.fileId) : undefined;
+  // #575: a personal workspace keeps only the facts about this disk
+  // ("unregistered", "missing"); a team workspace the full sync badge.
+  const badges = fileRowBadges(
+    isCentralMode ? "central" : "local",
+    !!f.fileId,
+    sync?.sync_class,
+  );
   // A Showtime deck is binary, but with the integration on it opens in the
   // rendered preview the bundle carries (Settings -> Integrace).
   const showtimeDeck = isShowtimePath(f.relative_path) && loadShowtimeEnabled();
@@ -1694,7 +1702,7 @@ function FileRow({
               </Button>
             </span>
           )}
-          {f.fileId && (
+          {isCentralMode && f.fileId && (
             <span className="opacity-0 group-hover:opacity-100">
               <CopyDriveLinkButton nodeId={nodeId} fileId={f.fileId} />
             </span>
@@ -1712,10 +1720,27 @@ function FileRow({
             <PlanBadge kind="error" />
           ) : planned !== null ? (
             <PlanBadge kind="move" />
+          ) : badges.syncStatus && sync ? (
+            <SyncStatusBadge sync={sync} />
           ) : (
-            sync && <SyncStatusBadge sync={sync} />
+            badges.missing && (
+              <Badge
+                variant="outline"
+                title={t(($) => $.row.missing_title)}
+                className="font-mono text-[8.5px] uppercase tracking-wider"
+                style={{
+                  color: "var(--color-node-process)",
+                  background:
+                    "color-mix(in srgb, var(--color-node-process) 12%, transparent)",
+                  border:
+                    "1px solid color-mix(in srgb, var(--color-node-process) 25%, transparent)",
+                }}
+              >
+                {t(($) => $.sync_class.deleted_local)}
+              </Badge>
+            )
           )}
-          {!f.fileId && (
+          {badges.untracked && (
             <Badge
               variant="outline"
               title={t(($) => $.row.untracked_title)}
@@ -1765,7 +1790,7 @@ function FileRow({
               >
                 {confirmingDelete ? t(($) => $.row.delete_confirm) : t(($) => $.row.delete)}
               </Button>
-              {sync?.sync_class === "conflict" && (
+              {isCentralMode && sync?.sync_class === "conflict" && (
                 <>
                   <Button
                     variant="ghost"
@@ -1822,22 +1847,10 @@ function FileRow({
 // sync bar so it shows even on a node with zero files (where SyncBar is not
 // mounted). A personal workspace never holds a remote (#310), so this shows
 // unconditionally for one; a team workspace syncs through the central server
-// and never shows it.
-export function LocalWorkspaceFilesBanner() {
+// and never shows it. The caller decides from useDataMode() (#575), the same
+// source every other data-mode-gated surface reads.
+export function LocalWorkspaceFilesBanner({ show }: { show: boolean }) {
   const { t } = useTranslation("files");
-  const [show, setShow] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const ws = (await listWorkspaces()).find((w) => w.active);
-      if (alive && ws && ws.data_mode !== "central") setShow(true);
-    })().catch(() => {
-      /* workspace lookup failed; leave the banner hidden */
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
   if (!show) return null;
   return (
     <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">

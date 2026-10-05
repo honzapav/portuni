@@ -78,6 +78,7 @@ import {
   handleDeleteRunnerInstance,
   handleListRunnerInstances,
   handleListRunnerModels,
+  handleGetLocalHost,
   handleListRunners,
   handleSetRunnerInstanceOrgDefault,
   handleUpdateRunnerInstance,
@@ -442,6 +443,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     // proxy posture like every other REST write on the sync agent.
     if (pathname === "/runners" && method === "GET") {
       await handleListRunners(req, res);
+      return true;
+    }
+    // #578: this device's id and label -- the central server cannot name
+    // it, so the web labels its own threads from this answer.
+    if (pathname === "/hosts/local" && method === "GET") {
+      handleGetLocalHost(res);
       return true;
     }
     // #376: the model picker's list -- MUST match before the bare

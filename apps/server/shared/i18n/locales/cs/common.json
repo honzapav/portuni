@@ -125,6 +125,12 @@
     "title": "Portuni narazil na chybu (tento panel nahrazuje bílou obrazovku). Zkopíruj text níže."
   },
   "footer": {
+    "live_channel": {
+      "label_closed": "live ×",
+      "label_reconnecting": "live…",
+      "reason_unknown": "backend zatím není dostupný",
+      "title": "Živé spojení s backendem není navázané ({{reason}}). Kliknutím se připojíš znovu."
+    },
     "mcp": {
       "label_down": "mcp ×",
       "label_loading": "mcp…",

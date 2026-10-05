@@ -13,7 +13,7 @@ import { registerGetNodeTool } from "./tools/get-node.js";
 import { registerEdgeTools } from "./tools/edges.js";
 import { registerContextTools } from "./tools/context.js";
 import { registerMirrorTools } from "./tools/mirrors.js";
-import { registerFileTools } from "./tools/files.js";
+import { registerFileTools, registerRemoteFileTools } from "./tools/files.js";
 import { registerSyncStatusTools } from "./tools/sync-status.js";
 import { registerSyncRemoteTools } from "./tools/sync-remotes.js";
 import { registerSyncSnapshotTools } from "./tools/sync-snapshot.js";
@@ -28,15 +28,26 @@ import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
 import { getDb } from "../infra/db.js";
 import { LocalModeNoRemoteError } from "../domain/sync/types.js";
+import { isLocalWorkspace } from "../infra/server-config.js";
 
 // Top-level server brief. Kept short -- many MCP clients truncate this
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
 // that tool's description; deeper reference material lives in the
 // portuni:// resources, which the agent pulls on demand.
-export const INSTRUCTIONS = `Portuni is the organizational knowledge graph (POPP: organizations, projects, processes, areas, principles).
-Call portuni_get_context before starting work on a node; portuni_get_node for details and the local mirror path.
+const INSTRUCTIONS_INTRO = `Portuni is the organizational knowledge graph (POPP: organizations, projects, processes, areas, principles).
+Call portuni_get_context before starting work on a node; portuni_get_node for details and the local mirror path.`;
+
+export const INSTRUCTIONS = `${INSTRUCTIONS_INTRO}
 Portuni tracks file changes automatically (the desktop app watches each mirror): new files in wip/outputs/resources are registered and edits are reflected without any action from you -- you normally need neither portuni_store nor portuni_status.
 portuni_store uploads a file to the remote (a deliberate push); portuni_status forces a sync-state recompute. Reach for them only to push on purpose, or to inspect/repair state where automatic tracking is not active (portuni_status then lists unregistered files as new_local).
+For semantics, contracts, and enums fetch resources: portuni://architecture, portuni://sync-model, portuni://scope-rules, portuni://enums.`;
+
+// The brief in a personal workspace (#575): no remote exists there (#310),
+// so it never mentions uploading, and portuni_status speaks only the local
+// classes.
+const PERSONAL_INSTRUCTIONS = `${INSTRUCTIONS_INTRO}
+Portuni tracks file changes automatically (the desktop app watches each mirror): new files in wip/outputs/resources are registered and edits are reflected without any action from you.
+This is a personal workspace: files stay on this device and there is no remote. portuni_status lists files not registered yet (new_local) and registered files gone from disk (deleted_local).
 For semantics, contracts, and enums fetch resources: portuni://architecture, portuni://sync-model, portuni://scope-rules, portuni://enums.`;
 
 export interface SessionCtx {
@@ -229,9 +240,13 @@ export function createMcpServer(
             spawnSessionId,
             cli,
           );
+  // A personal workspace has no remote (#310): nothing that pushes, pulls
+  // or configures a remote is registered there, and the brief and the
+  // resources speak only of local files (#575).
+  const personal = isLocalWorkspace();
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
-    { instructions: INSTRUCTIONS },
+    { instructions: personal ? PERSONAL_INSTRUCTIONS : INSTRUCTIONS },
   );
   const ctx: SessionCtx = {
     scope,
@@ -240,7 +255,7 @@ export function createMcpServer(
     spillSessionId: transportSessionId ?? randomUUID(),
   };
   gateToolsByScope(server, identity);
-  registerResources(server);
+  registerResources(server, { personalWorkspace: personal });
   registerScopeTools(server, ctx);
   registerNodeTools(server, ctx);
   registerGetNodeTool(server, ctx);
@@ -249,9 +264,12 @@ export function createMcpServer(
   registerMirrorTools(server, ctx);
   registerFileTools(server, ctx);
   registerSyncStatusTools(server, ctx);
-  registerSyncRemoteTools(server, ctx);
-  registerSetupDriveRemotePrompt(server);
-  registerSyncSnapshotTools(server, ctx);
+  if (!personal) {
+    registerRemoteFileTools(server, ctx);
+    registerSyncRemoteTools(server, ctx);
+    registerSetupDriveRemotePrompt(server);
+    registerSyncSnapshotTools(server, ctx);
+  }
   registerEventTools(server, ctx);
   registerActorTools(server, ctx);
   registerResponsibilityTools(server, ctx);
