@@ -33,7 +33,7 @@ closed     ── 30 days ──────────────────
 | Action | Where | Available in | Effect | Transition |
 |---|---|---|---|---|
 | New task | Detail pane, `+` on a node in the Work sidebar | always | Creates an empty thread with the organisation's default runner and instance, composer focused. | → `draft` |
-| Send (Enter) | Composer | `draft`, `running`, `suspended`, `closed` | `draft`: names the thread from the message and starts the first run. `running`: delivers the message to the live run. `suspended`/`closed`: resumes the CLI conversation (`--resume`) while it exists, otherwise starts from a summary built from this device's transcript, or from the handoff file when one was written. | `draft`/`suspended`/`closed` → `running` |
+| Send (Enter) | Composer | `draft`, `running`, `suspended`, `closed` | `draft`: names the thread from the message and starts the first run. `running`: delivers the message to the live run. `suspended`/`closed`: resumes the CLI conversation (`--resume`) while it exists, otherwise starts from a handoff: the handoff file when one was written, else the thread's whole transcript as this device has it. The chat then shows a marker that the agent continued from a handoff, not the live conversation. | `draft`/`suspended`/`closed` → `running` |
 | Stop (Esc) | Composer, during a turn | `running` | Cancels the current turn only. The run stays, the next message is an ordinary one. | none |
 | Close thread | Chat header, Close on a Threads-tab row | `draft`, `running`, `suspended` | `draft`: deleted. Otherwise ends the live run. No dialog, no summary. | `draft` → deleted; → `closed` |
 | `×` on a thread | Work sidebar, both arrangements | `draft`, `running`, `suspended` | Same as Close thread. | same as Close thread |

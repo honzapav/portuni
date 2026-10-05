@@ -798,11 +798,16 @@ human verification.
   tasks there.
 - **Resume is writing.** `resumeByWriting` uses `checkConversationResumable`
   to continue the CLI's own conversation when still valid; otherwise it
-  starts a fresh run with a summary as orientation (`resume: "handoff"` on
-  `run_started`, `resumed_from_run_id` linking the runs). The summary
+  starts a fresh run with a handoff as orientation (`resume: "handoff"` on
+  `run_started`, `resumed_from_run_id` linking the runs; the web renders
+  that `run_started` as the "continued from a handoff" marker, so the
+  person sees the conversation was not resumed). The handoff
   (`resumeSummary`, #497) is the file at `handoff_path` when Předat wrote
   one and it is here; else it is built at that moment from this device's
-  transcript with the same builder a handoff uses, and stored nowhere;
+  transcript with the same builder a handoff file uses, in its
+  `"transcript"` shape (every message whole, oldest first, capped at
+  `MAX_TRANSCRIPT_BYTES` = 1 MB by dropping the oldest messages) rather
+  than the file's first-line preview, and stored nowhere;
   else, with no transcript here, a `handoff_inline` an older sidecar left.
   With none of them and no content of the thread on this device at all,
   the send is refused before any run is created, with Předat's errors:

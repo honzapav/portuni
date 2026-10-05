@@ -17,6 +17,8 @@ import {
   checkConversationResumable,
   claudeProjectSlug,
   extractHandoffTitle,
+  buildRunSummaryContent,
+  MAX_TRANSCRIPT_BYTES,
 } from "../apps/server/domain/session-handoff.js";
 import {
   createSession,
@@ -441,5 +443,63 @@ describe("checkConversationResumable: expired-conversation degradation to handof
     } finally {
       await rm(fakeHome, { recursive: true, force: true });
     }
+  });
+});
+
+// The messages section has two shapes: the preview a handoff file carries
+// (Předat, Pokračovat v nové session: the last few messages, first line
+// each) and the transcript a resume without the CLI conversation hands the
+// agent (Digital Support 1218987479165349: the preview kept only the
+// subject line of a drafted e-mail, and the agent continued without its
+// body).
+describe("buildRunSummaryContent: preview vs. transcript", () => {
+  const multiLine = "Subject: Team update\nHello team,\nThis is the approved email body.";
+  const base = {
+    nodeName: null,
+    sessionName: "Thread",
+    reason: "run_ended" as const,
+    writeSet: [],
+    readSet: [],
+    lastActiveAt: "2026-09-26 08:05:00",
+  };
+  const user = (text: string) => ({ kind: "user_message", payload: { text, source: "chat" } });
+  const agent = (text: string) => ({ kind: "assistant_message", payload: { text } });
+
+  it("the preview keeps the first line of each of the last messages, as the handoff file always did", () => {
+    const out = buildRunSummaryContent({ ...base, events: [user(multiLine), agent("Draft ready.")] });
+    assert.match(out, /^## Recent messages\n- \*\*User:\*\* Subject: Team update\n- \*\*Agent:\*\* Draft ready\.$/m);
+    assert.doesNotMatch(out, /approved email body/);
+  });
+
+  it("the transcript keeps every message whole, newlines included, and more than the preview's six", () => {
+    const events = [
+      ...Array.from({ length: 8 }, (_, i) => (i % 2 === 0 ? user(`message ${i + 1}`) : agent(`answer ${i + 1}`))),
+      agent("Draft ready."),
+      user(multiLine),
+    ];
+    const out = buildRunSummaryContent({ ...base, events, messages: "transcript" });
+    assert.ok(out.includes(`**User:**\n${multiLine}`), "the whole multi-line message, not its first line");
+    assert.match(out, /^## Conversation$/m);
+    assert.doesNotMatch(out, /## Recent messages/);
+    assert.match(out, /message 1/, "the oldest message is still there: no MAX_SUMMARY_MESSAGES window");
+    assert.ok(out.indexOf("message 1") < out.indexOf("Draft ready."), "oldest first");
+    assert.doesNotMatch(out, /left out/);
+  });
+
+  it("the transcript drops the oldest messages whole once it would pass the cap, and says how many", () => {
+    const big = "x".repeat(Math.floor(MAX_TRANSCRIPT_BYTES * 0.6));
+    const events = [user(big), agent("the middle answer"), user(big), agent("the latest answer")];
+    const out = buildRunSummaryContent({ ...base, events, messages: "transcript" });
+    assert.ok(Buffer.byteLength(out, "utf8") < MAX_TRANSCRIPT_BYTES + 4096, "bounded by the cap plus the headings");
+    assert.equal(out.split(big).length - 1, 1, "one of the two big messages fits, the older one is gone");
+    assert.match(out, /the middle answer/);
+    assert.match(out, /the latest answer/);
+    assert.match(out, /Earlier messages left out to fit the 1 MB cap: 1/);
+  });
+
+  it("the transcript in Czech", () => {
+    const out = buildRunSummaryContent({ ...base, events: [user(multiLine)], messages: "transcript", locale: "cs" });
+    assert.match(out, /^## Konverzace$/m);
+    assert.ok(out.includes(`**Uživatel:**\n${multiLine}`));
   });
 });
