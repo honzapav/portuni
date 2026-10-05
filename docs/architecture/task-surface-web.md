@@ -463,7 +463,9 @@ which also deduplicates a replay against a frame that raced it.
   ends), a neutral `interrupted` row for `interrupted`, and a `run_ended`
   row (`runEndedText(reason, t)`, one message per reason) in the danger
   colour for `error`, `limit` and `host_lost`. Rows carry codes, never
-  text; `run_started`,
+  text; a `run_started` with `resume: "handoff"` is a
+  `resumed_from_handoff` marker (the agent continued from a handoff, not the
+  live conversation); every other `run_started`,
   `state_changed` and `context_usage` render nothing. `collapseToolCalls` runs inside, so a
   `started` and its `completed`/`failed` are one item.
 - **The activity group** (`ActivityGroupRow`) is a `ChainOfThought` whose
