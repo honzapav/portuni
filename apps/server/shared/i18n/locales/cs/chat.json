@@ -183,6 +183,7 @@
   },
   "question": {
     "answer_placeholder": "Odpověď…",
+    "node_id_hint": "ID uzlu",
     "send": "Odeslat"
   },
   "reasoning": {
