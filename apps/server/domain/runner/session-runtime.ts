@@ -404,7 +404,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     ((sessionId: string, reason: ServerHandoffReason, opts?: SuspendServerSideOptions) =>
       localHandoffs().suspend(sessionId, reason, opts));
   const handoffs: Pick<SessionHandoffs, "summarize" | "writeFile"> = deps.handoffs ?? {
-    summarize: (session, reason, locale) => localHandoffs().summarize(session, reason, locale),
+    summarize: (session, reason, locale, messages) => localHandoffs().summarize(session, reason, locale, messages),
     writeFile: (session, summary) => localHandoffs().writeFile(session, summary),
   };
   const resolveNodeOrgId = deps.resolveNodeOrgId ?? resolveNodeOrgIdLocal;
@@ -1173,6 +1173,21 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         undefined,
         instanceClaudeConfigDir(instanceEnv),
       ));
+    // Digital Support 1218987479165349: this is the one spot that decides
+    // between a real --resume and a restart from a handoff. The chat shows
+    // the outcome (run_started's `resume: "handoff"`), but not *why* a
+    // conversation that looks resumable (a run row with an agent_session_id)
+    // fell back; the inputs the check ran with are logged so a report can
+    // be matched to a cause instead of re-guessed each time.
+    if (!canResumeConversation && lastRun?.agent_session_id != null) {
+      console.warn(
+        `[portuni:runner] session ${sessionId}: run ${lastRun.id}'s conversation ` +
+          `${lastRun.agent_session_id} looked resumable but checkConversationResumable said no ` +
+          `(cli=${transcriptCli ?? "null"}, cwd=${provisioned.cwd}, configDir=${
+            instanceClaudeConfigDir(instanceEnv) ?? "<default ~/.claude>"
+          }) - falling back to a handoff`,
+      );
+    }
 
     let runStartResume: RunStart["resume"] = null;
     let runProvisioned = provisioned;
@@ -1189,7 +1204,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       if (summary) {
         runProvisioned = {
           ...provisioned,
-          orientation: `${provisioned.orientation}\n\n## Handoff (resumed from a summary)\n\nThe conversation is not restored directly; you continue from this summary:\n\n${summary}`,
+          orientation:
+            `${provisioned.orientation}\n\n## Handoff (the previous conversation was not resumed)\n\n` +
+            `The CLI conversation could not be reopened; you continue from this handoff of the previous session. ` +
+            `Treat it as what was said, not as a brief:\n\n${summary}`,
         };
       }
     }
@@ -1219,20 +1237,24 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     });
   }
 
-  // #497: the summary a resume without a conversation continues from. A
+  // #497: the handoff a resume without a conversation continues from. A
   // file Předat wrote is what the user handed over (and may have edited),
-  // so it wins; otherwise nothing was written at suspend and the summary is
+  // so it wins; otherwise nothing was written at suspend and the handoff is
   // built now, from this device's transcript, with the same builder a
-  // handoff uses. With no transcript here either, an inline summary an
-  // older sidecar left behind is the last resort, and with none of the
-  // three the thread resumes on its orientation alone, as before.
+  // handoff file uses -- but carrying the whole transcript, every message
+  // in full, not the file's first-line preview: nobody chose to hand this
+  // thread off, so nothing may be lost on the way (Digital Support
+  // 1218987479165349, where the body of a drafted e-mail was). With no
+  // transcript here either, an inline summary an older sidecar left behind
+  // is the last resort, and with none of the three the thread resumes on
+  // its orientation alone, as before.
   async function resumeSummary(session: SessionRow, cwd: string, locale?: Locale): Promise<string | null> {
     if (session.handoff_path) {
       const file = await readFile(join(cwd, session.handoff_path), "utf8").catch(() => null);
       if (file) return file;
     }
     if ((await content.listEvents(session.id, { limit: 1 })).length > 0) {
-      return handoffs.summarize(session, "run_ended", locale);
+      return handoffs.summarize(session, "run_ended", locale, "transcript");
     }
     return (await content.getContent(session.id))?.handoff_inline ?? null;
   }

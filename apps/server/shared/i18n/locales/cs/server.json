@@ -2,6 +2,7 @@
   "handoff": {
     "footer": "Konverzace nebyla uložena; pokračuj z tohoto shrnutí.",
     "heading": {
+      "conversation": "## Konverzace",
       "files": "## Změněné soubory",
       "messages": "## Poslední zprávy",
       "question": "## Otevřená otázka",
@@ -19,6 +20,11 @@
       "question": "(žádná)",
       "read_scope": "(žádný)",
       "write_scope": "(žádný)"
+    },
+    "transcript": {
+      "agent": "**Agent:**",
+      "left_out": "Starší zprávy vynechané kvůli limitu 1 MB: {{leftOut}}",
+      "user": "**Uživatel:**"
     }
   },
   "oauth": {
