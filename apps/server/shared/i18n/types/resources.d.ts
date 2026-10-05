@@ -145,6 +145,7 @@ export default interface Resources {
     },
     "question": {
       "answer_placeholder": "Answer…",
+      "node_id_hint": "Node ID",
       "send": "Send"
     },
     "reasoning": {
