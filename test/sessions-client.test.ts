@@ -667,12 +667,23 @@ describe("sessions-client: a timed-out or dropped request is never delivered lat
 // stands in for apps/desktop/src/sessions_ws.rs: sessions_connect opens the
 // channel (and emits `open`), sessions_send queues a frame and the host
 // answers a subscribe, and either can be told to fail the way Rust does
-// before the window or the sidecar is registered.
+// before the window or the sidecar is registered. Like connect_for_ws, every
+// sessions_connect starts a fresh outbox: a frame sent while the socket is
+// down waits in the outbox for the next open, and a new sessions_connect
+// replaces the outbox, frames included.
 describe("sessions-client: the Tauri transport retries a failed command (#590)", () => {
-  type Frame = { id?: string; type: string; payload: { session_id?: string; after?: number } };
+  type Frame = { id?: string; type: string; payload: { session_id?: string; text?: string; after?: number } };
 
   class FakeTauriHost {
     connected = false;
+    // The socket behind the connection is open: a frame goes straight out.
+    // Otherwise it waits in the outbox for open() (sessions_ws.rs's loop
+    // drains the outbox right after it emits `open`).
+    socketOpen = false;
+    // Whether sessions_connect opens the socket by itself; off, the test
+    // calls open() when the loop would have connected.
+    autoOpen = true;
+    outbox: Frame[] = [];
     // Errors the next sessions_connect calls reject with, in order.
     connectFailures: Error[] = [];
     // How many of the next sessions_send calls fail and drop the connection.
@@ -688,7 +699,9 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
         const failure = this.connectFailures.shift();
         if (failure) throw failure;
         this.connected = true;
-        queueMicrotask(() => this.emit("session-connection", { status: "open" }));
+        this.socketOpen = false;
+        this.outbox = [];
+        if (this.autoOpen) queueMicrotask(() => this.open());
         return undefined;
       }
       if (cmd === "sessions_send") {
@@ -698,14 +711,36 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
           throw new DesktopError("UNKNOWN_DETAIL", "sessions_send: not connected");
         }
         const frame = JSON.parse(String(args?.frame)) as Frame;
-        this.sent.push(frame);
-        if (frame.id) {
-          queueMicrotask(() => this.emit("session-event", { frame: { id: frame.id, type: "reply", payload: { ok: true } } }));
-        }
+        if (this.socketOpen) this.deliver(frame);
+        else this.outbox.push(frame);
+        return undefined;
+      }
+      if (cmd === "sessions_cancel") {
+        this.outbox = this.outbox.filter((f) => f.id !== args?.id);
         return undefined;
       }
       return undefined;
     };
+
+    private deliver(frame: Frame): void {
+      this.sent.push(frame);
+      if (frame.id) {
+        queueMicrotask(() => this.emit("session-event", { frame: { id: frame.id, type: "reply", payload: { ok: true } } }));
+      }
+    }
+
+    // The loop connected: `open`, then the outbox goes out.
+    open(): void {
+      this.socketOpen = true;
+      this.emit("session-connection", { status: "open" });
+      for (const frame of this.outbox.splice(0)) this.deliver(frame);
+    }
+
+    // The socket died; the loop is backing off before its next attempt.
+    drop(): void {
+      this.socketOpen = false;
+      this.emit("session-connection", { status: "reconnecting" });
+    }
 
     listen = async <T,>(event: string, cb: (ev: { payload: T }) => void): Promise<() => void> => {
       const set = this.listeners.get(event) ?? new Set();
@@ -839,6 +874,64 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
     assert.equal(host.connectCalls, 2);
     client.disconnect();
     assert.equal(client.connectionState().status, "closed");
+  });
+
+  // Review of #580: a message sent while Rust is reconnecting waits in its
+  // outbox; the Reconnect button's sessions_connect replaced that outbox and
+  // the message with it, and the open that followed took the message's
+  // timeout away, so its promise never settled and the composer stayed
+  // disabled.
+  it("a message sent during the outage goes out on the connection reconnect() opens", async () => {
+    const host = new FakeTauriHost();
+    const client = clientOn(host, 3_600_000);
+    client.connect();
+    await nextStatus(client, "open");
+
+    host.drop();
+    host.autoOpen = false;
+    const sent = client.message("S1", "hello");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(host.outbox.map((f) => f.type), ["message"], "the frame waits in Rust's outbox for the next open");
+
+    client.reconnect();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(host.connectCalls, 2);
+    host.open();
+    await sent;
+    assert.deepEqual(
+      host.sent.filter((f) => f.type === "message").map((f) => f.payload.text),
+      ["hello"],
+    );
+    client.disconnect();
+  });
+
+  it("a message that timed out during the outage is not sent by the connection reconnect() opens", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const host = new FakeTauriHost();
+      const client = clientOn(host, 3_600_000);
+      client.connect();
+      await nextStatus(client, "open");
+
+      host.drop();
+      host.autoOpen = false;
+      const sent = client.message("S1", "hello");
+      await new Promise((resolve) => setImmediate(resolve));
+      mock.timers.tick(30_000);
+      await assert.rejects(sent, (e: Error) => errorCode(e) === "REQUEST_TIMEOUT");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(host.outbox, [], "the timed-out frame was cancelled out of the outbox");
+
+      client.reconnect();
+      await new Promise((resolve) => setImmediate(resolve));
+      host.open();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(host.connectCalls, 2);
+      assert.deepEqual(host.sent.filter((f) => f.type === "message"), []);
+      client.disconnect();
+    } finally {
+      mock.timers.reset();
+    }
   });
 
   it("a superseded connect (StrictMode's mount, unmount, mount) leaves one pair of listeners and one subscribe", async () => {

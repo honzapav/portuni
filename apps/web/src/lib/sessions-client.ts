@@ -359,6 +359,15 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
 // fails while a sessions_connect is in flight waits for that attempt rather
 // than starting another: every sessions_connect replaces Rust's socket, so
 // a second one would drop the socket the first just opened.
+//
+// Every sessions_connect also replaces Rust's outbox (connect_for_ws), and
+// with it every frame sent while the socket was down and waiting there for
+// the next open. So a frame is sent only once no sessions_connect is in
+// flight, and the frames Rust holds for the next open (`queued`) go back
+// through `held` to the connection the next sessions_connect creates: the
+// chat's Reconnect during an outage must not lose the message typed during
+// it, whose promise would otherwise never settle (the open that follows
+// takes its timeout, trusting the open to have flushed it).
 export interface TauriTransportDeps {
   invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
   listen?: <T>(event: string, cb: (ev: { payload: T }) => void) => Promise<() => void>;
@@ -390,6 +399,10 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
   // frame held past its own failure report is delivered by the next open,
   // and the user's resend then executes the action twice.
   const inFlight = new Set<string>();
+  // Frames sessions_send accepted while the socket was down: Rust holds
+  // them in its outbox for the next open, which clears this. A cancel takes
+  // one out, as it does in Rust.
+  const queued: Array<{ id: string; text: string }> = [];
   // A sessions_connect is awaiting its answer; it flushes `held` when it
   // succeeds.
   let connecting = false;
@@ -425,7 +438,11 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
       frameListeners.emit(ev.payload.frame);
     });
     const offStatus = await listen<{ status: ConnectionStatus }>("session-connection", (ev) => {
-      if (ev.payload.status === "open") backoffMs = minBackoffMs;
+      if (ev.payload.status === "open") {
+        backoffMs = minBackoffMs;
+        // The loop drains its outbox right after it says open.
+        queued.length = 0;
+      }
       lastStatus = ev.payload.status;
       emitStatus(ev.payload.status);
     });
@@ -444,6 +461,9 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
   async function attempt(gen: number): Promise<void> {
     if (stopped || gen !== generation) return;
     connecting = true;
+    // The outbox this sessions_connect replaces goes with its frames; they
+    // are handed to the new one below, after what a failed send left behind.
+    held.push(...queued.splice(0));
     try {
       if (!(await listenOnce(gen))) return;
       await call("sessions_connect");
@@ -465,7 +485,9 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
     inFlight.add(entry.id);
     call("sessions_send", { frame: entry.text }).then(
       () => {
-        inFlight.delete(entry.id);
+        const wanted = inFlight.delete(entry.id);
+        // Rust took the frame; with the socket down it waits in the outbox.
+        if (wanted && lastStatus !== "open") queued.push(entry);
       },
       (err: unknown) => {
         // Cancelled while in flight: the client settled this request already
@@ -487,12 +509,18 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
 
   return {
     send(frame) {
-      sendNow({ id: frame.id, text: JSON.stringify(frame) });
+      const entry = { id: frame.id, text: JSON.stringify(frame) };
+      // Sent now, the frame may land in the outbox the in-flight
+      // sessions_connect is about to replace; it waits for the new one.
+      if (connecting) held.push(entry);
+      else sendNow(entry);
     },
     cancel(id) {
       inFlight.delete(id);
-      const index = held.findIndex((entry) => entry.id === id);
-      if (index !== -1) held.splice(index, 1);
+      for (const list of [held, queued]) {
+        const index = list.findIndex((entry) => entry.id === id);
+        if (index !== -1) list.splice(index, 1);
+      }
       // Same import-then-invoke chain as send (lib/tauri-invoke.ts awaits one
       // shared module promise), so a cancel issued after a send reaches Rust
       // after it: both continuations run in order. With no connection there
@@ -526,6 +554,7 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = null;
       held.length = 0;
+      queued.length = 0;
       inFlight.clear();
       unlisten?.();
       unlisten = null;
