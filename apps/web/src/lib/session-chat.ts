@@ -128,6 +128,20 @@ export function approvalChoices(options: readonly string[] | null, t: ChatT): Ap
   return options.map((label, i) => ({ key: `option-${i}`, label, value: label, content: true }));
 }
 
+// A scope-consent detail (mcp/scope.ts's nodeConsentPrompt) puts the node's
+// ULID on its own trailing line -- kept as a locator for whoever needs to
+// look the node up, not as the sentence's identity (test/scope.test.ts:
+// "the dialog prompt is written for the human, not the agent"). The panel
+// renders that line apart from the sentence so it reads as a small
+// technical footer instead of a second, unformatted sentence.
+const TRAILING_NODE_ID = /\n([0-9A-HJKMNP-TV-Z]{26})$/;
+
+export function splitTrailingNodeId(detail: string): { text: string; nodeId: string | null } {
+  const m = detail.match(TRAILING_NODE_ID);
+  if (!m) return { text: detail, nodeId: null };
+  return { text: detail.slice(0, m.index), nodeId: m[1] };
+}
+
 // --- Input questions (AskUserQuestion, #492) ---------------------------------
 
 // The dotazy of an input question. A row written before `questions` existed
