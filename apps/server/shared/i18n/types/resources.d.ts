@@ -205,6 +205,7 @@ export default interface Resources {
       "compaction": "Context compacted",
       "interrupted": "Interrupted",
       "question": "Question: <title>{{title}}</title>",
+      "resumed_from_handoff": "The agent continued from a handoff of the previous conversation; the live CLI conversation could not be resumed.",
       "run_ended": {
         "error": "The run ended with an error.",
         "host_lost": "The run ended: its process was orphaned.",
@@ -1358,6 +1359,7 @@ export default interface Resources {
     "handoff": {
       "footer": "The conversation was not saved; continue from this summary.",
       "heading": {
+        "conversation": "## Conversation",
         "files": "## Changed files",
         "messages": "## Recent messages",
         "question": "## Open question",
@@ -1375,6 +1377,11 @@ export default interface Resources {
         "question": "(none)",
         "read_scope": "(none)",
         "write_scope": "(none)"
+      },
+      "transcript": {
+        "agent": "**Agent:**",
+        "left_out": "Earlier messages left out to fit the 1 MB cap: {{leftOut}}",
+        "user": "**User:**"
       }
     },
     "oauth": {

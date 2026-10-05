@@ -319,6 +319,11 @@ export type TranscriptRow =
   | { kind: "question"; key: string; title: string; code?: QuestionCode; params?: ChatEventParams }
   | { kind: "compaction"; key: string }
   | { kind: "summary"; key: string }
+  // A run that continued from a handoff of the previous conversation, not
+  // the live CLI conversation (run_started with `resume: "handoff"`): the
+  // agent has every message, not the live session's tool results and
+  // reasoning, and the person should know that before reading its answer.
+  | { kind: "resumed_from_handoff"; key: string }
   | { kind: "interrupted"; key: string }
   // A run that ended other than completed, suspended or interrupted; the
   // renderer words it from the catalog (runEndedText).
@@ -346,7 +351,9 @@ export function runEndedText(reason: string, t: ChatT): string {
 // the last answer) is marked live, so the renderer keeps it expanded on
 // the running tool -- but only while a turn is in flight (#495). After a
 // turn_ended (a Stop mid-tool or mid-reasoning included) the run is still
-// open and waiting for the next message, and nothing in it is working. run_started and state_changed yield nothing. A
+// open and waiting for the next message, and nothing in it is working. run_started yields nothing, except the
+// one that says `resume: "handoff"` -- the marker that the agent continued
+// from a handoff rather than the live conversation; state_changed yields nothing. A
 // run_ended yields nothing for `completed` and `suspended` (the ordinary
 // ends -- the notice bar already says the process is gone), an
 // `interrupted` row for `interrupted`, and a `run_ended` row for `error`,
@@ -389,6 +396,7 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
       case "run_started":
         currentRun = event.payload.run_id;
         close();
+        if (event.payload.resume === "handoff") rows.push({ kind: "resumed_from_handoff", key: `e${seq}` });
         break;
       case "run_ended":
         close();

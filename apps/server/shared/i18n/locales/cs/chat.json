@@ -239,6 +239,7 @@
     "compaction": "Komprese kontextu",
     "interrupted": "Přerušeno",
     "question": "Otázka: <title>{{title}}</title>",
+    "resumed_from_handoff": "Agent navázal na předání z předchozí konverzace; živou konverzaci CLI nešlo obnovit.",
     "run_ended": {
       "error": "Běh skončil: chyba",
       "host_lost": "Běh skončil: proces osiřel",
