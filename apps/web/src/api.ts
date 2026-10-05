@@ -20,6 +20,7 @@ import type {
   DirectoryGroup,
   AccountUser,
   UserAdmin,
+  SessionState,
   SessionSummary,
   SessionResumeInfo,
   SessionRunRow,
@@ -428,17 +429,23 @@ export function deleteDraftSession(id: string): void {
 }
 
 // POST /sessions/:id/continue (#378) -- closes this session (its summary
-// seeds the new one, not a fresh suspend) and starts a new, running one on
-// the same node. "Pokračovat v nové session" (offered any time) and
-// "Navázat" (a closed thread, same call minus the prior close) both call
+// seeds the new one, not a fresh suspend; a closed or archived one keeps
+// its state) and starts a new, running one on the same node. "Pokračovat v
+// nové session" in the chat header and on a done Relace row both call
 // this; the new session becomes the active thread. Owner-only ("resume"
 // tier) -- a plain REST wrapper (not sessionsClient) so a caller with no
 // live-channel client (DetailPane.sessions.tsx's Relace tab) can use it too.
-export function continueSession(id: string): Promise<{ session: SessionSummary; run: SessionRunRow }> {
+// `expectState` is the state the action was offered on: the server refuses
+// (SESSION_STATE_CHANGED) when the thread has moved on since -- a closed
+// row's click never ends a run that reopened the thread meanwhile.
+export function continueSession(
+  id: string,
+  expectState?: SessionState,
+): Promise<{ session: SessionSummary; run: SessionRunRow }> {
   return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>(
     "POST",
     `/sessions/${encodeURIComponent(id)}/continue`,
-    { locale: requestLocale() },
+    { locale: requestLocale(), ...(expectState ? { expect_state: expectState } : {}) },
   ).then((r) => {
     sessionStore?.put(r.session);
     return r;

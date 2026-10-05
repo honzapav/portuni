@@ -843,9 +843,28 @@ human verification.
   file fails (logged; the old run is already ended by then), the summary
   goes into the orientation only. The new run is provisioned before the
   old thread is touched. It answers `{session, run}` (the WS reply carries `toSummary`'s
-  `SessionSummary`). Web label: "Pokračovat v nové session" on a running
-  or suspended thread; a closed thread has no Navázat (#498), writing
-  into it reopens it.
+  `SessionSummary`). A closed or archived thread is continued the same
+  way and keeps its state: the summary and the file are all it lends (no
+  `state_changed`, `closed_at` untouched; an archived record has no
+  transition to closed). The summary is this device's transcript, so a
+  thread with no live run here whose latest run is another device's is
+  refused `SESSION_TRANSCRIPT_ELSEWHERE` even when older events are still
+  here (a thread resumed elsewhere from its file), and one that ran here
+  with neither events nor an inline summary on this device
+  `HANDOFF_NO_CONTENT` -- both before anything is provisioned. A thread
+  with no events here but an inline summary (Předat on a device with no
+  mirror) is continued from that summary, which is also what the file
+  written now holds. The body's optional `expect_state`
+  (`ContinueSessionOptions.expectState`) is the state the caller offered
+  the action on; a thread that has moved on since is refused
+  `SESSION_STATE_CHANGED` under the same lock, so a Relace row's click on
+  a thread another window reopened meanwhile ends nothing. The central
+  record route (`POST /sessions/record`) keeps the `model`/`effort` the
+  continued thread carries over, as the local store does. Web label:
+  "Pokračovat v nové session" in the
+  chat header of a running, suspended or closed thread, and on a closed or
+  archived Relace row; writing into a closed thread reopens it instead
+  (#498).
 - No context-usage ring exists: `RunEndedEvent.payload.usage` is
   adapter-reported and untyped, so nothing tracks tokens per thread.
 

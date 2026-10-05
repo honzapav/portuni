@@ -209,6 +209,7 @@ export default function WorkspaceView({
                 sessionStore={sessionStore}
                 sessionsClient={sessionsClient}
                 onOpenFile={session.node_id ? (relPath) => onOpenFile(session.node_id!, relPath) : undefined}
+                onContinued={onSessionStarted}
               />
             </div>
           );

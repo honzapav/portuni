@@ -14,6 +14,8 @@ suspended  ── write ──────────────────�
 suspended  ── Close, ×, Continue in a new thread ► closed
 closed     ── write ─────────────────────────────► running
 closed     ── 30 days ───────────────────────────► archived
+closed     ── Continue in a new thread ──────────► (stays closed; new thread running)
+archived   ── Continue in a new thread ──────────► (stays archived; new thread running)
 ```
 
 ## States
@@ -26,7 +28,7 @@ closed     ── 30 days ──────────────────
 | `closed` | Done / Closed | Open. Writing reopens the thread. | Node's Threads tab only. |
 | `archived` | Archived / Archived | None ("This thread is archived."). | Node's Threads tab, behind "Show archived". |
 
-`archived` is the only state with no way back.
+`archived` is the only state with no way back. Its transcript is kept, so Continue in a new thread still works from it.
 
 ## What you do
 
@@ -38,7 +40,7 @@ closed     ── 30 days ──────────────────
 | Close thread | Chat header, Close on a Threads-tab row | `draft`, `running`, `suspended` | `draft`: deleted. Otherwise ends the live run. No dialog, no summary. | `draft` → deleted; → `closed` |
 | `×` on a thread | Work sidebar, both arrangements | `draft`, `running`, `suspended` | Same as Close thread. | same as Close thread |
 | `×` on a node | Work sidebar | always | Removes the node from the open list. Its threads keep running. | none |
-| Continue in a new thread | Chat header (accent colour from 80 % of the context window) | `running`, `suspended` | Closes this thread and starts a new one on the same node whose agent gets a summary of this one. Writes `wip/sessions/<id>-handoff.md` when the node has a mirror here. | old → `closed`, new → `running` |
+| Continue in a new thread | Chat header (accent colour from 80 % of the context window); Threads-tab row of a closed or archived thread | `running`, `suspended`, `closed`, `archived`, with the transcript on this device | Starts a new thread on the same node whose agent gets a summary of this one; a running or suspended thread is closed, a closed or archived one keeps its state. Writes `wip/sessions/<id>-handoff.md` when the node has a mirror here. Refused on a device that does not hold the transcript. | `running`/`suspended` → `closed`; new → `running` |
 | Hand off to another device | Chat header | `running`, `suspended`, with a mirror of the node and the transcript on this device | Ends the run and writes `wip/sessions/<id>-handoff.md` for another machine to continue from. | `running` → `suspended` |
 | Continue from handoff | Node's Threads tab, "Handoffs to continue from" | a handoff file synced to this device | Starts a new thread from the file. The source thread is untouched. | new → `running` |
 | Rename | Chat header, double-click in the sidebar, Threads-tab row | all but `archived` | Saves the name; summaries no longer rename the thread. | none |

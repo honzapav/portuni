@@ -63,6 +63,7 @@ import {
   SetSessionModelBody,
   StartSessionBody,
   MessageBody,
+  ContinueSessionBody,
   SessionLocaleBody,
   sessionResumeInfoPayload,
 } from "./sessions.js";
@@ -678,10 +679,13 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     if (sessionContinueMatch && method === "POST") {
       const sessionId = decodeURIComponent(sessionContinueMatch[1]);
       if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
-      const body = await parseJsonBody(req, res, SessionLocaleBody);
+      const body = await parseJsonBody(req, res, ContinueSessionBody);
       if (!body) return true;
       try {
-        const { session, run } = await sessionRuntime.continueSession(sessionId, { locale: body.locale });
+        const { session, run } = await sessionRuntime.continueSession(sessionId, {
+          locale: body.locale,
+          ...(body.expect_state ? { expectState: body.expect_state } : {}),
+        });
         respondJson(res, 200, { session, run });
       } catch (err) {
         if (respondSessionRefusal(res, err)) return true;

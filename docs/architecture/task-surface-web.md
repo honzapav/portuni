@@ -182,8 +182,14 @@ and lives in the device's `content.db`, so `SessionSummary` has no `brief`
 to show (#461) and the row names the thread instead. There is no owner
 column either -- every row is the caller's own (#457). Actions: "Otevřít
 chat" (`onOpenChat`) on a running, suspended or closed row
-(`sessionRowOpensChat`, #498 -- a closed thread has a composer, so there is
-no Navázat), and "Uzavřít" without a dialog. Above the rows
+(`sessionRowOpensChat`, #498 -- a closed thread has a composer, writing
+into it reopens it), "Pokračovat v nové session" on a closed or archived
+row with a runner (`sessionRowContinues`; `continueSession` with the
+row's state as `expect_state`, so the server refuses
+`SESSION_STATE_CHANGED` instead of ending a run that reopened the
+thread meanwhile; then `onSessionStarted` shows the new thread; every
+row's action is disabled while one request is on the wire, so one click
+means one successor), and "Uzavřít" without a dialog. Above the rows
 the tab lists the node's handoff files (`lib/handoff-files.ts`), each with
 **Navázat na handoff** (#460): `startSessionFromHandoff`, which is
 `POST /sessions` with the file's node-relative path. There is no live
@@ -597,8 +603,14 @@ which also deduplicates a replay against a frame that raced it.
   record leaves the store at once (so the row leaves every selector and a
   chat showing the draft closes), then `DELETE /sessions/:id`. The Relace
   tab also drops the row from its own fetched list.
-- **Continue**: "Pokračovat v nové session" (running or suspended thread)
-  calls `continueSession`; the caller switches to the returned session.
+- **Continue**: "Pokračovat v nové session" (chat header: any thread but
+  a draft, `threadCanContinue`, hidden while the transcript is elsewhere;
+  Relace row: closed or archived, `sessionRowContinues`) calls
+  `continueSession`; the caller hands the returned session to
+  `registerSessionStarted`, which puts the record, makes it the node's
+  requested thread and drops the node's `openedClosedChatByNode` entry --
+  a closed source thread stays closed and would otherwise stay pinned as
+  the shown thread.
 - **A closed thread** (#498) is not in the Práce sidebar
   (`isChatSessionState`), but Relace's Otevřít chat shows it: `App.tsx`
   records it in `openedClosedChatByNode` when the record is closed at the
