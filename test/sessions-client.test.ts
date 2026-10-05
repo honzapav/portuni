@@ -789,6 +789,36 @@ describe("sessions-client: the Tauri transport retries a failed command (#590)",
     client.disconnect();
   });
 
+  it("a send rejected after the client already reported its request lost is not held for the next open", async () => {
+    const host = new FakeTauriHost();
+    const client = clientOn(host);
+    client.connect();
+    await nextStatus(client, "open");
+
+    // Two messages in flight; both sessions_send reject. The first rejection
+    // takes the channel down, which reports both requests as lost and
+    // cancels both frames; the second rejection arrives for a frame that is
+    // already cancelled.
+    host.sendFailures = 2;
+    const reopened = nextStatus(client, "open");
+    const results = await Promise.allSettled([client.message("S1", "first"), client.message("S2", "second")]);
+    assert.deepEqual(
+      results.map((r) => (r.status === "rejected" ? errorCode(r.reason) : "fulfilled")),
+      ["DISCONNECTED", "DISCONNECTED"],
+    );
+
+    await reopened;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(host.connectCalls, 2, "sessions_connect retried after the failed sends");
+    // Neither message reaches the server after the caller was told it failed:
+    // a resend by the user must not execute the action twice.
+    assert.deepEqual(
+      host.sent.filter((f) => f.type === "message").map((f) => f.payload.session_id),
+      [],
+    );
+    client.disconnect();
+  });
+
   it("reconnect() retries at once instead of waiting out the backoff", async () => {
     const host = new FakeTauriHost();
     host.connectFailures.push(new DesktopError("DESKTOP_NOT_WORKSPACE_WINDOW", "not a workspace window"));

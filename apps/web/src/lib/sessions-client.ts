@@ -354,7 +354,8 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
 // status goes to `reconnecting` with the error as its reason, and
 // sessions_connect is retried with backoff until it succeeds. A frame whose
 // sessions_send failed waits in `held` for that success (the client cancels
-// one it reports as failed, and resubscribes on the next open). A send that
+// one it reports as failed -- before or after the failure arrives -- and
+// resubscribes on the next open). A send that
 // fails while a sessions_connect is in flight waits for that attempt rather
 // than starting another: every sessions_connect replaces Rust's socket, so
 // a second one would drop the socket the first just opened.
@@ -382,6 +383,13 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
   let backoffMs = minBackoffMs;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   const held: Array<{ id: string; text: string }> = [];
+  // Frame ids whose sessions_send is awaiting its answer. A cancel removes
+  // the id, so a rejection that arrives for a frame the client already
+  // settled (the first failed send took the channel down and the client
+  // reported every request lost) drops the frame instead of holding it: a
+  // frame held past its own failure report is delivered by the next open,
+  // and the user's resend then executes the action twice.
+  const inFlight = new Set<string>();
   // A sessions_connect is awaiting its answer; it flushes `held` when it
   // succeeds.
   let connecting = false;
@@ -454,18 +462,27 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
 
   function sendNow(entry: { id: string; text: string }): void {
     const epoch = connectEpoch;
-    call("sessions_send", { frame: entry.text }).catch((err: unknown) => {
-      if (stopped) return;
-      if (connectEpoch !== epoch) {
-        // A sessions_connect succeeded after this send was asked for: its
-        // outbox takes the frame.
-        sendNow(entry);
-        return;
-      }
-      held.push(entry);
-      if (connecting) return;
-      fail("sessions_send", err);
-    });
+    inFlight.add(entry.id);
+    call("sessions_send", { frame: entry.text }).then(
+      () => {
+        inFlight.delete(entry.id);
+      },
+      (err: unknown) => {
+        // Cancelled while in flight: the client settled this request already
+        // and nothing of it may reach the server later.
+        const wanted = inFlight.delete(entry.id);
+        if (stopped) return;
+        if (wanted && connectEpoch !== epoch) {
+          // A sessions_connect succeeded after this send was asked for: its
+          // outbox takes the frame.
+          sendNow(entry);
+          return;
+        }
+        if (wanted) held.push(entry);
+        if (connecting) return;
+        fail("sessions_send", err);
+      },
+    );
   }
 
   return {
@@ -473,6 +490,7 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
       sendNow({ id: frame.id, text: JSON.stringify(frame) });
     },
     cancel(id) {
+      inFlight.delete(id);
       const index = held.findIndex((entry) => entry.id === id);
       if (index !== -1) held.splice(index, 1);
       // Same import-then-invoke chain as send (lib/tauri-invoke.ts awaits one
@@ -508,6 +526,7 @@ export function createTauriTransport(deps: TauriTransportDeps = {}): Transport {
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = null;
       held.length = 0;
+      inFlight.clear();
       unlisten?.();
       unlisten = null;
       call("sessions_disconnect").catch(() => undefined);
