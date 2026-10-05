@@ -2,6 +2,7 @@
   "handoff": {
     "footer": "The conversation was not saved; continue from this summary.",
     "heading": {
+      "conversation": "## Conversation",
       "files": "## Changed files",
       "messages": "## Recent messages",
       "question": "## Open question",
@@ -19,6 +20,11 @@
       "question": "(none)",
       "read_scope": "(none)",
       "write_scope": "(none)"
+    },
+    "transcript": {
+      "agent": "**Agent:**",
+      "left_out": "Earlier messages left out to fit the 1 MB cap: {{leftOut}}",
+      "user": "**User:**"
     }
   },
   "oauth": {
