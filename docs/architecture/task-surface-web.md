@@ -500,9 +500,11 @@ which also deduplicates a replay against a frame that raced it.
   title, the danger colour with the failed count when a call failed. The
   verb table (`TOOL_VERBS`) covers Claude's tool names; anything else shows
   as "N × <tool>". Expanded, one `ChainOfThoughtStep` per item with the
-  `Tool` card inside; a historical group expands by hand, per mount; the
-  live run's trailing group (`live: true`) stays open on the tool that is
-  running. `live` needs a turn in flight (`turnInFlight`), not just the
+  `Tool` card inside; a historical group starts collapsed; the live run's
+  trailing group (`live: true`) starts open on the tool that is running.
+  The header toggles both, per mount (`activityGroupView`): the first
+  click on a live group collapses it, the next expands it to every call,
+  and a click always wins over `live`. `live` needs a turn in flight (`turnInFlight`), not just the
   live run: after `turn_ended` (a Stop mid-tool or mid-reasoning
   included) the run is idle and no group looks live.
 - **The working row** (`WorkingRow`, `workingPhase`): while a turn is in

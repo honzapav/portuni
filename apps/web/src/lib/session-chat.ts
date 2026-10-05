@@ -530,6 +530,19 @@ export function activitySummary(items: readonly ActivityItem[], t: ChatT): { tex
   return { text: parts.join(" · "), failed };
 }
 
+// How an activity group shows. `userOpen` is the header's last click, null
+// until the first one. Without a click a live group is open on its running
+// tool and a historical one is collapsed; a click always wins, so the
+// header collapses a live group too and expands it to every call.
+export function activityGroupView(
+  live: boolean,
+  userOpen: boolean | null,
+  hasRunning: boolean,
+): { open: boolean; runningOnly: boolean } {
+  const open = userOpen ?? live;
+  return { open, runningOnly: open && userOpen === null && hasRunning };
+}
+
 // Whether the thread has a live run for the UI's purposes (working row,
 // stop button, composer). The replayed log says "a run_started with no
 // run_ended yet"; the server's own state says whether the session is

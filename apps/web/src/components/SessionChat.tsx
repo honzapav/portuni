@@ -66,6 +66,7 @@ import {
   deltaBuffersAfter,
   createDeltaCoalescer,
   deriveTranscriptRows,
+  activityGroupView,
   activitySummary,
   workingPhase,
   runIsLiveFor,
@@ -1058,16 +1059,18 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
 
 // One turn's activity: collapsed to its sentence, expanded to a
 // ChainOfThought with one Tool per call. The live group (the current
-// run's open one) stays expanded on the tool that is running; a
-// historical group expands only by hand, per mount.
+// run's open one) starts expanded on the tool that is running; a
+// historical group starts collapsed. The header toggles both, per mount
+// (`activityGroupView`).
 function ActivityGroupRow({ row, onOpenFile }: { row: ActivityRow; onOpenFile?: (relPath: string) => void }) {
   const { t } = useTranslation("chat");
-  const [open, setOpen] = useState(false);
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const running = row.live ? row.items.find((i) => i.kind === "tool" && i.call.status === "started") : undefined;
+  const view = activityGroupView(row.live, userOpen, running !== undefined);
   const summary = activitySummary(row.items, t);
   const headerText = summary.text || (row.live ? t(($) => $.activity.working) : t(($) => $.activity.fallback));
   return (
-    <ChainOfThought open={row.live || open} onOpenChange={setOpen} className="text-[12.5px]">
+    <ChainOfThought open={view.open} onOpenChange={setUserOpen} className="text-[12.5px]">
       <ChainOfThoughtHeader
         className="text-[12.5px]"
         style={summary.failed > 0 ? { color: "var(--color-danger)" } : undefined}
@@ -1075,7 +1078,7 @@ function ActivityGroupRow({ row, onOpenFile }: { row: ActivityRow; onOpenFile?: 
         {row.live ? <Shimmer duration={1.5}>{headerText}</Shimmer> : headerText}
       </ChainOfThoughtHeader>
       <ChainOfThoughtContent>
-        {row.live && !open && running ? (
+        {view.runningOnly && running ? (
           <ToolStep item={running} onOpenFile={onOpenFile} />
         ) : (
           row.items.map((item) => <ToolStep key={item.seq} item={item} onOpenFile={onOpenFile} />)

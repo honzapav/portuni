@@ -12,6 +12,7 @@ import {
   deltaBuffersAfter,
   collapseToolCalls,
   deriveTranscriptRows,
+  activityGroupView,
   activitySummary,
   workingPhase,
   turnInFlight,
@@ -455,6 +456,27 @@ describe("activitySummary", () => {
       items(Array.from({ length: n }, () => ["Bash", status] as ["Bash", "completed" | "failed"]));
     assert.equal(activitySummary([...bash(2, "failed"), ...bash(3, "completed")], tChatCs).text, "5 příkazů · 2 selhaly");
     assert.equal(activitySummary([reasoning(1, 300), ...bash(1, "completed")], tChatCs).text, "1 příkaz · uvažoval 1 s");
+  });
+});
+
+describe("activityGroupView", () => {
+  it("opens a live group on its running tool until the header is clicked", () => {
+    assert.deepEqual(activityGroupView(true, null, true), { open: true, runningOnly: true });
+    assert.deepEqual(activityGroupView(true, null, false), { open: true, runningOnly: false });
+  });
+
+  it("collapses a live group when the header is clicked", () => {
+    assert.deepEqual(activityGroupView(true, false, true), { open: false, runningOnly: false });
+  });
+
+  it("expands a live group to every call on a second click", () => {
+    assert.deepEqual(activityGroupView(true, true, true), { open: true, runningOnly: false });
+  });
+
+  it("keeps a historical group collapsed until it is clicked", () => {
+    assert.deepEqual(activityGroupView(false, null, false), { open: false, runningOnly: false });
+    assert.deepEqual(activityGroupView(false, true, false), { open: true, runningOnly: false });
+    assert.deepEqual(activityGroupView(false, false, false), { open: false, runningOnly: false });
   });
 });
 
