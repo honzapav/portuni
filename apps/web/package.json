@@ -38,6 +38,7 @@
     "react-dom": "^19.3.0",
     "react-i18next": "^17.0.15",
     "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "shiki": "^4.4.3",
     "streamdown": "2.6.0",
