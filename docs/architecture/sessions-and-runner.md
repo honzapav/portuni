@@ -641,14 +641,16 @@ human verification.
 - **A subagent's frames are not the thread's (#499).** An assistant,
   user or stream_event message with `parent_tool_use_id` set was produced
   inside a subagent the main agent started (Agent/Task tool);
-  `isSubagentFrame` drops it before translation. None of it becomes an
-  `assistant_message`, `reasoning`, `tool_call`, `file_change`,
-  `context_usage` or a delta, and it never sets `state.model`, so the ring
-  and the window lookup in `modelUsage` follow the main agent only. The
-  main agent's own Task `tool_use` and its `tool_result` are top-level
-  frames and translate as any tool. What the subagent does in the
-  background stays the agent's business; Portuni neither shows nor
-  watches it.
+  `subagentParent` names that Task call. Only the subagent's tool calls
+  translate: each `tool_call` (started, then completed/failed) carries
+  `parent_tool_use_id`, the main agent's Task `tool_use_id`, and the chat
+  nests it under that call. Nothing else of it becomes an
+  `assistant_message`, `reasoning`, `file_change`, `context_usage` or a
+  delta, and it never sets `state.model`, so the ring and the window
+  lookup in `modelUsage` follow the main agent only. The main agent's own
+  Task `tool_use` and its `tool_result` are top-level frames and translate
+  as any tool. Portuni shows what the subagent does; it does not steer or
+  watch it.
 - **An API error is reported once, by its `result` (#500).** An API
   failure (model unavailable, overloaded after retries, prompt too long,
   a limit) arrives as a synthetic assistant message -- `error` set,

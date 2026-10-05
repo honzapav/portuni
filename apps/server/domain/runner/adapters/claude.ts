@@ -397,6 +397,8 @@ interface PendingToolCall {
   // matching tool_result never carries the original arguments back, so a
   // completed file_change event needs this snapshot to name the file.
   path: string | null;
+  // Set for a subagent's call: the main agent's Task call it runs under.
+  parentToolUseId?: string;
 }
 
 interface PendingPermission {
@@ -711,13 +713,50 @@ function translateCompactBoundary(
   return events;
 }
 
-// A frame produced inside a subagent started by a tool_use of the main
-// agent (sdk.d.ts: "parent_tool_use_id is non-null when the message was
-// produced inside a subagent started by that tool_use").
-function isSubagentFrame(msg: SDKMessage): boolean {
-  if (msg.type !== "assistant" && msg.type !== "user" && msg.type !== "stream_event") return false;
+// The tool_use of the main agent that started the subagent a frame comes
+// from, null for the main agent's own frames (sdk.d.ts: "parent_tool_use_id
+// is non-null when the message was produced inside a subagent started by
+// that tool_use").
+function subagentParent(msg: SDKMessage): string | null {
+  if (msg.type !== "assistant" && msg.type !== "user" && msg.type !== "stream_event") return null;
   const parent = (msg as { parent_tool_use_id?: unknown }).parent_tool_use_id;
-  return typeof parent === "string" && parent !== "";
+  return typeof parent === "string" && parent !== "" ? parent : null;
+}
+
+// A subagent's assistant frame yields its tool calls only, each naming the
+// main agent's call it runs under. Its text and reasoning are no reply of
+// this thread, and its model and usage describe another context (#499).
+async function translateSubagentAssistantMessage(
+  msg: Extract<SDKMessage, { type: "assistant" }>,
+  parentToolUseId: string,
+  state: RunTranslationState,
+  cwd: string,
+  sink: EventSink,
+): Promise<void> {
+  const blocks = (msg.message as { content?: unknown }).content;
+  if (!Array.isArray(blocks)) return;
+  for (const block of blocks) {
+    if (block.type !== "tool_use") continue;
+    const input = (block.input ?? {}) as Record<string, unknown>;
+    const category = categorizeTool(block.name);
+    const writeOp = await resolveWriteOp(block.name, input, cwd);
+    const path = typeof input.file_path === "string" ? input.file_path : null;
+    state.pendingToolCalls.set(block.id, { tool: block.name, category, writeOp, path, parentToolUseId });
+    sink({
+      kind: "tool_call",
+      payload: {
+        tool_use_id: block.id,
+        tool: block.name,
+        category,
+        title: toolTitle(block.name, input),
+        input_summary: JSON.stringify(input),
+        status: "started",
+        output_excerpt: null,
+        truncated: false,
+        parent_tool_use_id: parentToolUseId,
+      },
+    });
+  }
 }
 
 // #500: an API failure (model unavailable, overloaded after retries, prompt
@@ -830,8 +869,12 @@ function translateUserMessage(
         output_excerpt: excerptFromToolResultContent(result.content),
         truncated: false,
         ...(isError && denied ? { output_code: denied.code, output_params: denied.params } : {}),
+        ...(pending.parentToolUseId ? { parent_tool_use_id: pending.parentToolUseId } : {}),
       },
     });
+    // A subagent's write shows as its nested call; the thread's own file
+    // changes stay the main agent's (#499).
+    if (pending.parentToolUseId) continue;
     if (!isError && pending.category === "file_change" && pending.writeOp && pending.path) {
       sink({ kind: "file_change", payload: { path: pending.path, op: pending.writeOp } });
     }
@@ -1238,12 +1281,22 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       // #499: a subagent's own frames (Agent/Task tool; parent_tool_use_id
-      // set) are not the main agent's: its text is no reply, its tools no
-      // activity of this thread, and its model and usage describe another
-      // context -- translating them overwrote state.model and drove the
-      // ring to the subagent's window. The main agent's Task tool_use and
-      // its tool_result are top-level frames and still translate.
-      if (isSubagentFrame(msg)) return;
+      // set) are not the main agent's: its text is no reply, and its model
+      // and usage describe another context -- translating them overwrote
+      // state.model and drove the ring to the subagent's window. Only its
+      // tool calls translate, nested under the main agent's Task call
+      // (`parent_tool_use_id`), so the chat shows what the subagent does.
+      // The main agent's Task tool_use and its tool_result are top-level
+      // frames and translate as before.
+      const subagentParentId = subagentParent(msg);
+      if (subagentParentId !== null) {
+        if (msg.type === "assistant" && !isSyntheticErrorMessage(msg)) {
+          await translateSubagentAssistantMessage(msg, subagentParentId, state, run.cwd, sink);
+        } else if (msg.type === "user") {
+          translateUserMessage(msg, state, sink);
+        }
+        return;
+      }
       if (msg.type === "assistant" && isSyntheticErrorMessage(msg)) return;
       if (msg.type === "assistant") {
         await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);

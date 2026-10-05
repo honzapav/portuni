@@ -307,8 +307,10 @@ export function threadNameFromFirstMessage(text: string): string {
 
 export type ActivityItem =
   | { kind: "reasoning"; seq: number; summary: string; durationMs: number | null }
-  | { kind: "tool"; seq: number; call: ToolCallEvent["payload"] }
+  | { kind: "tool"; seq: number; call: ToolCallEvent["payload"]; subcalls: ActivityToolItem[] }
   | { kind: "file_change"; seq: number; path: string; op: FileChangeOp };
+
+export type ActivityToolItem = Extract<ActivityItem, { kind: "tool" }>;
 
 export type ActivityRow = { kind: "activity"; key: string; runId: string | null; items: ActivityItem[]; live: boolean };
 
@@ -367,6 +369,9 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
   const close = (): void => {
     group.open = null;
   };
+  // Every tool item by its tool_use_id, so a subagent's call finds the
+  // main agent's Task call it runs under, in whichever group that sits.
+  const toolItems = new Map<string, ActivityToolItem>();
   const push = (item: ActivityItem): void => {
     if (!group.open) {
       group.open = { kind: "activity", key: `a${item.seq}`, runId: currentRun, items: [], live: false };
@@ -387,9 +392,14 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
       case "reasoning":
         push({ kind: "reasoning", seq, summary: event.payload.summary, durationMs: event.payload.duration_ms ?? null });
         break;
-      case "tool_call":
-        push({ kind: "tool", seq, call: event.payload });
+      case "tool_call": {
+        const item: ActivityToolItem = { kind: "tool", seq, call: event.payload, subcalls: [] };
+        toolItems.set(event.payload.tool_use_id, item);
+        const parent = event.payload.parent_tool_use_id ? toolItems.get(event.payload.parent_tool_use_id) : undefined;
+        if (parent) parent.subcalls.push(item);
+        else push(item);
         break;
+      }
       case "file_change":
         push({ kind: "file_change", seq, path: event.payload.path, op: event.payload.op });
         break;
