@@ -53,6 +53,7 @@ import {
   sessionStatusChip,
   latestQuestionEvent,
   approvalChoices,
+  splitTrailingNodeId,
   askPrompts,
   togglePick,
   picksComplete,
@@ -1169,10 +1170,14 @@ function QuestionConfirmation({
       if (value !== null) onAnswer(value);
     }
   };
+  const detailIsContent = questionDetailIsContent(question.payload);
+  const detail = detailIsContent
+    ? splitTrailingNodeId(questionDetailText(question.payload, t))
+    : { text: questionDetailText(question.payload, t), nodeId: null };
   return (
     <div className="border-t border-[var(--color-border)]">
       <div className={`${THREAD_COLUMN} py-2.5`}>
-      <Confirmation state="requested" className="border-none bg-[var(--color-surface)] p-0">
+      <Confirmation state="requested" className="bg-[var(--color-surface)]">
         <ConfirmationTitle
           className="text-[13px] font-medium text-[var(--color-text)]"
           translate={question.payload.code ? undefined : "no"}
@@ -1180,20 +1185,28 @@ function QuestionConfirmation({
           {questionTitleText(question.payload, t)}
         </ConfirmationTitle>
         {question.payload.detail && !perQuestion && (
-          <p
-            className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]"
-            translate={questionDetailIsContent(question.payload) ? "no" : undefined}
-          >
-            {questionDetailText(question.payload, t)}
-          </p>
+          <>
+            <p
+              className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]"
+              translate={detailIsContent ? "no" : undefined}
+            >
+              {detail.text}
+            </p>
+            {detail.nodeId && (
+              <p className="font-mono text-[10.5px] text-[var(--color-text-dim)] opacity-70" title={t(($) => $.question.node_id_hint)}>
+                {detail.nodeId}
+              </p>
+            )}
+          </>
         )}
         <ConfirmationRequest>
           {question.payload.type === "approval" ? (
             <ConfirmationActions>
-              {approvalChoices(question.payload.options, t).map((choice) => (
+              {approvalChoices(question.payload.options, t).map((choice, i) => (
                 <ConfirmationAction
                   key={choice.key}
                   translate={choice.content ? "no" : undefined}
+                  variant={typeof choice.value === "boolean" ? (choice.value ? "default" : "outline") : i === 0 ? "default" : "outline"}
                   onClick={() => onAnswer(choice.value)}
                 >
                   {choice.label}
