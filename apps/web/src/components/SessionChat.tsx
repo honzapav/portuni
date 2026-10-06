@@ -162,7 +162,7 @@ import {
   listRunners,
   type RunnerInfo,
   type RunnerInstanceSummary,
-  type RunnerDefaults,
+  type RunnerDefaultsInfo,
   type RunnerModel,
 } from "../lib/runners";
 import { useLocale } from "../lib/use-locale";
@@ -304,7 +304,7 @@ export default function SessionChat({
   // instance or own model changes (the effort default follows the model).
   // The first answer may follow a probe of the runner, so the models list
   // is re-read with it.
-  const [defaults, setDefaults] = useState<RunnerDefaults | null>(null);
+  const [defaults, setDefaults] = useState<RunnerDefaultsInfo | null>(null);
   const instanceId = session?.instance_id ?? null;
   const ownModel = session?.model ?? null;
   useEffect(() => {

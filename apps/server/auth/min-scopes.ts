@@ -256,10 +256,9 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/sessions\/[^/]+\/runs\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   // --- Runners (adapter registry, provider instances; #319) ---
   if (pathname === "/runners" && m === "GET") return "read";
-  // #376: the model picker's list -- MUST be checked before the (unrelated)
+  // #376: the model picker's list and its defaults -- MUST be checked before the (unrelated)
   // /runners/instances rules below since both start with /runners/.
-  if (/^\/runners\/[^/]+\/models$/.test(pathname) && m === "GET") return "read";
-  if (/^\/runners\/[^/]+\/defaults$/.test(pathname) && m === "GET") return "read";
+  if (/^\/runners\/[^/]+\/(models|defaults)$/.test(pathname) && m === "GET") return "read";
   if (pathname === "/runners/instances" && m === "GET") return "read";
   if (pathname === "/runners/instances" && m === "POST") return "write";
   if (/^\/runners\/instances\/[^/]+\/org-default$/.test(pathname) && m === "PUT") return "write";

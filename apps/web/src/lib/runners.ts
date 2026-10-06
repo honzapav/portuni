@@ -8,10 +8,10 @@
 
 import type { TFunction } from "i18next";
 import { jsonRequest } from "../api";
-import type { RunnerDefaults, RunnerInfo, RunnerInstanceSummary, RunnerModel } from "../../../server/shared/api-types";
+import type { RunnerDefaultsInfo, RunnerInfo, RunnerInstanceSummary, RunnerModel } from "../../../server/shared/api-types";
 import { isPortuniEnvKey, isSecretShapedEnvKey } from "../../../server/shared/runner-env";
 
-export type { RunnerDefaults, RunnerInfo, RunnerInstanceSummary, RunnerModel };
+export type { RunnerDefaultsInfo, RunnerInfo, RunnerInstanceSummary, RunnerModel };
 export { isPortuniEnvKey, isSecretShapedEnvKey };
 
 export async function listRunners(): Promise<RunnerInfo[]> {
@@ -35,12 +35,12 @@ export async function fetchRunnerDefaults(
   runner: string,
   instanceId: string | null,
   model: string | null,
-): Promise<RunnerDefaults | null> {
+): Promise<RunnerDefaultsInfo | null> {
   const params = new URLSearchParams();
   if (instanceId) params.set("instance", instanceId);
   if (model) params.set("model", model);
   const query = params.toString();
-  const res = await jsonRequest<{ defaults: RunnerDefaults | null }>(
+  const res = await jsonRequest<{ defaults: RunnerDefaultsInfo | null }>(
     "GET",
     `/runners/${encodeURIComponent(runner)}/defaults${query ? `?${query}` : ""}`,
   );

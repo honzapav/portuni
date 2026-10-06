@@ -830,7 +830,7 @@ export type RunnerModel = {
 // GET /runners/:runner/defaults -- what a thread without its own model or
 // effort runs on, and where it comes from. Mirrors domain/runner/types.ts's
 // RunnerDefaults.
-export type RunnerDefaults = {
+export type RunnerDefaultsInfo = {
   model: { value: string | null; source: "instance" | "env" | "settings" | "account"; detail: string | null };
   effort: { value: string | null; source: "instance" | "env" | "settings" | "model"; detail: string | null };
 };

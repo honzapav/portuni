@@ -35,7 +35,7 @@ import {
   setOrgDefault,
   updateInstance,
 } from "../domain/runner/instances.js";
-import type { LocalHostInfo, RunnerDefaults, RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
+import type { LocalHostInfo, RunnerDefaultsInfo, RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
 
 function respondInstanceError(res: ServerResponse, ctx: string, err: unknown): void {
   if (err instanceof InstanceEnvKeyRefusedError || err instanceof InstanceDefaultsKeyRefusedError) {
@@ -112,7 +112,7 @@ export async function handleGetRunnerDefaults(
     const model = url.searchParams.get("model") || null;
     const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
     const instanceDefaults = instanceId ? await getInstanceDefaults(instanceId) : null;
-    const defaults: RunnerDefaults = await adapter.defaults({ model, instanceEnv, instanceDefaults });
+    const defaults: RunnerDefaultsInfo = await adapter.defaults({ model, instanceEnv, instanceDefaults });
     respondJson(res, 200, { defaults });
   } catch (err) {
     respondError(res, `${req.method} /runners/${runnerId}/defaults`, err);
