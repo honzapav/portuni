@@ -99,6 +99,32 @@ describe("resolveClaudeDefaults", () => {
     });
   });
 
+  it("a top-level effortLevel in the user settings does not count for Opus 5.5 and Sonnet 5.5; it still does for older models", () => {
+    const settings = { effortLevel: "high" };
+    assert.deepEqual(resolveClaudeDefaults({ ...base, settings }).effort, { value: "medium", source: "model", detail: null });
+    assert.deepEqual(resolveClaudeDefaults({ ...base, model: "claude-sonnet-5-5", settings }).effort, {
+      value: "medium",
+      source: "model",
+      detail: null,
+    });
+    assert.deepEqual(resolveClaudeDefaults({ ...base, model: "sonnet", settings }).effort, {
+      value: "high",
+      source: "settings",
+      detail: "/home/u/.claude/settings.json",
+    });
+    // The level saved for the model itself still applies to Opus 5.5.
+    const perModel = { effortLevel: "high", modelSettings: { "claude-opus-5-5": { effortLevel: "low" } } };
+    assert.deepEqual(resolveClaudeDefaults({ ...base, settings: perModel }).effort.value, "low");
+  });
+
+  it("with the model unknown, the top-level effortLevel is not claimed", () => {
+    assert.deepEqual(resolveClaudeDefaults({ ...base, models: [], settings: { effortLevel: "high" } }).effort, {
+      value: null,
+      source: "model",
+      detail: null,
+    });
+  });
+
   it("values of the wrong shape count as unset", () => {
     const d = resolveClaudeDefaults({ ...base, instanceEnv: { CLAUDE_CODE_EFFORT_LEVEL: "unset" }, settings: { model: 3, effortLevel: "huge" } });
     assert.deepEqual(d.model.source, "account");
@@ -144,12 +170,15 @@ describe("Claude adapter defaults()", () => {
     const first = await adapter.defaults?.(input);
     assert.deepEqual(first, {
       model: { value: "claude-opus-5-5", source: "account", detail: null },
-      effort: { value: "high", source: "settings", detail: "/cfg/work/settings.json" },
+      effort: { value: "medium", source: "model", detail: null },
     });
     assert.deepEqual(reads, ["/cfg/work/settings.json"]);
     assert.equal(fake.calls.length, 1);
     assert.equal(fake.calls[0].env?.CLAUDE_CONFIG_DIR, "/cfg/work");
-    assert.deepEqual(fake.calls[0].settingSources, ["user"]);
+    // No settings file and no hooks: reading the defaults never runs a
+    // SessionStart (or any other) hook of the user's.
+    assert.deepEqual(fake.calls[0].settingSources, []);
+    assert.deepEqual(fake.calls[0].settings, { disableAllHooks: true });
     assert.equal(fake.closed(), 1);
     await adapter.defaults?.(input);
     assert.equal(fake.calls.length, 1, "the list is cached after the first answer");
@@ -166,6 +195,59 @@ describe("Claude adapter defaults()", () => {
     await adapter.defaults?.(input);
     assert.equal(fake.calls.length, 2);
     assert.equal(fake.closed(), 2);
+  });
+
+  it("each account (CLAUDE_CONFIG_DIR) gets its own probe and its own default model", async () => {
+    const byDir: Record<string, string> = { "/accountA": "claude-opus-5-5", "/accountB": "claude-sonnet-5" };
+    const calls: Options[] = [];
+    const query = ((params: { prompt: unknown; options?: Options }) => {
+      calls.push(params.options ?? {});
+      const resolvedModel = byDir[params.options?.env?.CLAUDE_CONFIG_DIR ?? ""];
+      return {
+        supportedModels: async () => [
+          { value: "default", displayName: "Default", description: "", resolvedModel, supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"] },
+        ],
+        close: () => undefined,
+      } as unknown as Query;
+    }) as unknown as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    const adapter = createClaudeAdapter({ query, resolveExecutable: async () => null, readSettings: async () => null });
+    const a = await adapter.defaults?.({ model: null, instanceEnv: { CLAUDE_CONFIG_DIR: "/accountA" }, instanceDefaults: null });
+    const b = await adapter.defaults?.({ model: null, instanceEnv: { CLAUDE_CONFIG_DIR: "/accountB" }, instanceDefaults: null });
+    assert.deepEqual(a?.model.value, "claude-opus-5-5");
+    assert.deepEqual(a?.effort.value, "medium");
+    assert.deepEqual(b?.model.value, "claude-sonnet-5");
+    assert.deepEqual(b?.effort.value, "high");
+    assert.equal(calls.length, 2);
+    await adapter.defaults?.({ model: null, instanceEnv: { CLAUDE_CONFIG_DIR: "/accountA" }, instanceDefaults: null });
+    assert.equal(calls.length, 2, "each account's list is cached");
+  });
+
+  it("a probe whose start throws, or whose executable lookup fails, is tried again next time", async () => {
+    let calls = 0;
+    const query = (() => {
+      calls++;
+      throw new Error("spawn failed");
+    }) as unknown as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    const adapter = createClaudeAdapter({ query, resolveExecutable: async () => null, readSettings: async () => null });
+    const input = { model: null, instanceEnv: {}, instanceDefaults: null };
+    assert.deepEqual((await adapter.defaults?.(input))?.model, { value: null, source: "account", detail: null });
+    assert.deepEqual((await adapter.defaults?.(input))?.model, { value: null, source: "account", detail: null });
+    assert.equal(calls, 2);
+
+    let lookups = 0;
+    const fake = probeQuery(async () => []);
+    const noExecutable = createClaudeAdapter({
+      query: fake.query,
+      resolveExecutable: async () => {
+        lookups++;
+        throw new Error("lookup failed");
+      },
+      readSettings: async () => null,
+    });
+    assert.equal((await noExecutable.defaults?.(input))?.model.value, null);
+    assert.equal((await noExecutable.defaults?.(input))?.model.value, null);
+    assert.equal(lookups, 2);
+    assert.equal(fake.calls.length, 0);
   });
 
   it("a probe that does not answer in time is closed and answered without it", async () => {

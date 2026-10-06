@@ -931,44 +931,62 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
   const readSettings = deps.readSettings ?? readSettingsFile;
   const modelsProbeTimeoutMs = deps.modelsProbeTimeoutMs ?? DEFAULT_MODELS_PROBE_TIMEOUT_MS;
-  let modelsProbe: Promise<void> | null = null;
+  // The account's default model is per account, and an instance's
+  // CLAUDE_CONFIG_DIR is what selects the account (buildEnv), so the list
+  // defaults() reads is kept per config dir; "" is the default login.
+  const accountModels = new Map<string, RunnerModel[]>();
+  const accountProbes = new Map<string, Promise<void>>();
+  const accountKey = (env: Readonly<Record<string, string>>): string => buildEnv(env).CLAUDE_CONFIG_DIR ?? "";
 
-  // The runner's own list before any run of this process: a query with no
+  // The runner's own list before any run on this account: a query with no
   // prompt, asked for supportedModels() (the CLI's initialize answer, no
-  // model call) and closed. One probe at a time; a failed or timed-out
-  // probe leaves the cache empty and the next defaults() tries again.
+  // model call) and closed. No settings file is loaded and hooks are off,
+  // so a read of the defaults cannot start a SessionStart (or any other)
+  // hook. One probe per account at a time; a probe that fails, throws or
+  // times out leaves that account's list empty and the next defaults()
+  // tries again.
   function probeModels(env: Readonly<Record<string, string>>): Promise<void> {
-    if (modelsCache !== null) return Promise.resolve();
-    if (modelsProbe) return modelsProbe;
-    modelsProbe = (async () => {
-      const executable = await resolveExecutable();
+    const key = accountKey(env);
+    if (accountModels.has(key)) return Promise.resolve();
+    const running = accountProbes.get(key);
+    if (running) return running;
+    const probe = (async () => {
       const prompt = createPushQueue<SDKUserMessage>();
-      const q: Query = query({
-        prompt,
-        options: {
-          cwd: process.env.HOME ?? process.cwd(),
-          ...(executable !== null ? { pathToClaudeCodeExecutable: executable } : {}),
-          settingSources: ["user"],
-          env: buildEnv(env),
-        },
-      });
       const stop = new AbortController();
+      let q: Query | null = null;
       try {
+        const executable = await resolveExecutable();
+        q = query({
+          prompt,
+          options: {
+            cwd: process.env.HOME ?? process.cwd(),
+            ...(executable !== null ? { pathToClaudeCodeExecutable: executable } : {}),
+            settingSources: [],
+            settings: { disableAllHooks: true },
+            env: buildEnv(env),
+          },
+        });
+        const started = q;
         const list = await Promise.race([
-          Promise.resolve().then(() => q.supportedModels()),
+          Promise.resolve().then(() => started.supportedModels()),
           sleep(modelsProbeTimeoutMs, stop.signal).then(() => null),
         ]);
-        if (list && modelsCache === null) modelsCache = toRunnerModels(list);
+        if (list) {
+          const listed = toRunnerModels(list);
+          accountModels.set(key, listed);
+          if (modelsCache === null) modelsCache = listed;
+        }
       } catch {
         // No list: defaults() answers without the account's default.
       } finally {
         stop.abort();
         prompt.end();
-        q.close();
-        modelsProbe = null;
+        q?.close();
+        accountProbes.delete(key);
       }
     })();
-    return modelsProbe;
+    accountProbes.set(key, probe);
+    return probe;
   }
 
   async function defaults(input: RunnerDefaultsInput): Promise<RunnerDefaults> {
@@ -979,7 +997,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       ...input,
       settings: await readSettings(settingsPath),
       settingsPath,
-      models: modelsCache ?? [],
+      models: accountModels.get(accountKey(input.instanceEnv)) ?? [],
     });
   }
 
@@ -1288,11 +1306,15 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     // rather than calling q.supportedModels() directly, so a query mock
     // that doesn't implement it (an older SDK, or a test double) rejects
     // instead of throwing synchronously past the .catch below.
-    if (modelsCache === null) {
+    // The same answer is this run's account's list for defaults().
+    const runAccount = accountKey(run.instance.env);
+    if (modelsCache === null || !accountModels.has(runAccount)) {
       void Promise.resolve()
         .then(() => q.supportedModels())
         .then((list) => {
-          modelsCache = toRunnerModels(list);
+          const listed = toRunnerModels(list);
+          if (modelsCache === null) modelsCache = listed;
+          if (!accountModels.has(runAccount)) accountModels.set(runAccount, listed);
         })
         .catch(() => undefined);
     }

@@ -7,7 +7,8 @@
 // environment, the user settings file (the adapter loads `settingSources:
 // ["user"]` only) and the defaults the CLI holds itself. An organisation's
 // default effort and managed settings are not read; the CLI's own list is
-// the only view of the account.
+// the only view of the account. A top-level effortLevel in that file does
+// not apply to Opus 5.5 and Sonnet 5.5 (legacyEffortApplies).
 
 import { EFFORT_LEVELS, type EffortLevel, type RunnerDefaults, type RunnerDefaultsInput, type RunnerModel } from "./types.js";
 
@@ -44,6 +45,16 @@ export function claudeModelDefaultEffort(modelId: string): EffortLevel | null {
   if (/^claude-(opus|sonnet)-5-5\b/.test(modelId)) return "medium";
   if (/^claude-opus-4-7\b/.test(modelId)) return "xhigh";
   return "high";
+}
+
+// A top-level effortLevel in the user settings file is the older form
+// /effort wrote; per the same page it "doesn't count for Opus 5.5", which
+// starts at its own default unless a level is set for it. Sonnet 5.5 is
+// treated the same (its default is Opus 5.5's). An unknown model gives
+// false: whether the key applies cannot be told.
+function legacyEffortApplies(modelId: string | null): boolean {
+  if (!modelId?.startsWith("claude-")) return false;
+  return !/^claude-(opus|sonnet)-5-5\b/.test(modelId);
 }
 
 function findModel(models: readonly RunnerModel[], id: string): RunnerModel | undefined {
@@ -85,7 +96,7 @@ export function resolveClaudeDefaults(input: ResolveClaudeDefaultsInput): Runner
       return entry && typeof entry === "object" ? effortLevel((entry as { effortLevel?: unknown }).effortLevel) : null;
     })
     .find((e) => e !== null);
-  const settingsEffort = effortLevel(settings?.effortLevel);
+  const settingsEffort = legacyEffortApplies(fullId) ? effortLevel(settings?.effortLevel) : null;
   if (instanceEffort) effort = { value: instanceEffort, source: "instance", detail: null };
   else if (envEffort) effort = { value: envEffort, source: "env", detail: "CLAUDE_CODE_EFFORT_LEVEL" };
   else if (perModelEffort) effort = { value: perModelEffort, source: "settings", detail: settingsPath };

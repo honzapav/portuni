@@ -674,19 +674,25 @@ human verification.
   ?instance=&model=` (device-local, `read`) answers what a thread without
   its own model or effort runs on, each value with its `source` and
   `detail` (env var name or settings path); a runner without the method
-  answers `defaults: null`. The Claude adapter's `defaults()` fills an
-  empty `modelsCache` first with a probe: a `query()` with an empty prompt
-  queue, the instance's env and `settingSources: ["user"]`, asked for
-  `supportedModels()` (the CLI's initialize answer, no model call) and
-  closed; one probe at a time, `modelsProbeTimeoutMs` (20 s), and a failed
-  one is retried on the next call. The list rows keep `resolvedModel`.
+  answers `defaults: null`. The Claude adapter keeps the list `defaults()`
+  reads per account (the instance's `CLAUDE_CONFIG_DIR`, unset for the
+  default login): a run fills its account's, and an account with none yet
+  gets a probe: a `query()` with an empty prompt queue, the instance's env,
+  `settingSources: []` and `settings: { disableAllHooks: true }` (a read
+  never runs a hook of the user's), asked for `supportedModels()` (the
+  CLI's initialize answer, no model call) and closed; one probe per account
+  at a time, `modelsProbeTimeoutMs` (20 s), and a probe that fails, throws
+  or times out is retried on the next call. The list rows keep
+  `resolvedModel`.
   `resolveClaudeDefaults` (`domain/runner/claude-defaults.ts`, pure) then
   follows Claude Code's order: model = instance `defaults.model` ->
   `ANTHROPIC_MODEL` -> `model` in `<CLAUDE_CONFIG_DIR or ~/.claude>/
   settings.json` -> `ANTHROPIC_DEFAULT_MODEL` -> the `default` row's
   `resolvedModel` (`account`); effort, for the thread's own model or that
   default = instance `defaults.effort` -> `CLAUDE_CODE_EFFORT_LEVEL` ->
-  `modelSettings[<model>].effortLevel` -> `effortLevel` -> the model's own
+  `modelSettings[<model>].effortLevel` -> top-level `effortLevel` (the
+  older form, which per the same page does not count for Opus 5.5; treated
+  so for Sonnet 5.5 too, and not claimed for an unknown model) -> the model's own
   default (`claudeModelDefaultEffort`: medium for Opus/Sonnet 5.5, xhigh
   for Opus 4.7, high otherwise; null for an unresolved alias or a model
   without effort). Not read: managed settings and an organisation's
