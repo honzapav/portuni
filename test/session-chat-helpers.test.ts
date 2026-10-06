@@ -29,6 +29,8 @@ import {
   togglePick,
   picksComplete,
   askAnswer,
+  askOptionValue,
+  askSelectedValues,
   createAnswerGate,
 } from "../apps/web/src/lib/session-chat.js";
 import { createI18n } from "../apps/server/shared/i18n/create.js";
@@ -780,6 +782,17 @@ describe("input questions (#492)", () => {
     assert.equal(askAnswer([multi], picks, "a ještě d"), "a, c, a ještě d");
     assert.equal(askAnswer([multi], picks, ""), "a, c");
     assert.equal(askAnswer([multi], {}, "jen text"), "jen text");
+  });
+
+  it("the panel's selected values keep the same label of two dotazy apart", () => {
+    const again = { question: "Dry run again?", options: ["yes", "no"], multi_select: false };
+    const picks = togglePick({}, dry, "yes");
+    assert.deepEqual(askSelectedValues([dry, again], picks), [askOptionValue(0, "yes")]);
+    assert.ok(!askSelectedValues([dry, again], picks).includes(askOptionValue(1, "yes")));
+    const multi = { question: "Which features?", options: ["a", "b", "c"], multi_select: true };
+    const both = togglePick(togglePick(picks, multi, "c"), multi, "a");
+    assert.deepEqual(askSelectedValues([dry, multi], both), ["0:yes", "1:c", "1:a"]);
+    assert.deepEqual(askSelectedValues([], both), []);
   });
 
   it("a second submit of the same question is dropped; a failed one can be retried", () => {
