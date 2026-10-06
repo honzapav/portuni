@@ -163,6 +163,18 @@ export function togglePick(picks: AskPicks, prompt: AskPrompt, label: string): A
   return { ...picks, [prompt.question]: next };
 }
 
+// The panel's `Question` form holds every dotaz's options in one list of
+// selected values, so an option's value carries its dotaz's index: two
+// dotazy may offer the same label ("yes"), and picking one must not mark
+// the other.
+export function askOptionValue(index: number, label: string): string {
+  return `${index}:${label}`;
+}
+
+export function askSelectedValues(prompts: readonly AskPrompt[], picks: AskPicks): string[] {
+  return prompts.flatMap((p, i) => (picks[p.question] ?? []).map((label) => askOptionValue(i, label)));
+}
+
 // A click on an option answers at once when it settles everything: every
 // dotaz single-choice and picked. Otherwise the user finishes with Odeslat.
 export function picksComplete(prompts: readonly AskPrompt[], picks: AskPicks): boolean {
