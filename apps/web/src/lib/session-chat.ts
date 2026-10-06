@@ -364,12 +364,19 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
   // narrows to `null` for the reader after the loop.
   const group: { open: ActivityRow | null } = { open: null };
   let currentRun: string | null = null;
+  // A collapsed tool call carries its latest event's seq, so the group is
+  // keyed on the call's first event: its key (and the React row behind it,
+  // with the header's click) survives the call completing.
+  const firstToolSeq = new Map<string, number>();
+  for (const { seq, event } of events)
+    if (event.kind === "tool_call" && !firstToolSeq.has(event.payload.tool_use_id)) firstToolSeq.set(event.payload.tool_use_id, seq);
   const close = (): void => {
     group.open = null;
   };
   const push = (item: ActivityItem): void => {
     if (!group.open) {
-      group.open = { kind: "activity", key: `a${item.seq}`, runId: currentRun, items: [], live: false };
+      const keySeq = item.kind === "tool" ? (firstToolSeq.get(item.call.tool_use_id) ?? item.seq) : item.seq;
+      group.open = { kind: "activity", key: `a${keySeq}`, runId: currentRun, items: [], live: false };
       rows.push(group.open);
     }
     group.open.items.push(item);
@@ -528,6 +535,19 @@ export function activitySummary(items: readonly ActivityItem[], t: ChatT): { tex
   if (failed) parts.push(t(($) => $.activity.failed, { ns: "chat", count: failed }));
   if (parts.length === 0 && items.some((i) => i.kind === "reasoning")) parts.push(t(($) => $.activity.thought, { ns: "chat" }));
   return { text: parts.join(" · "), failed };
+}
+
+// How an activity group shows. `userOpen` is the header's last click, null
+// until the first one. Without a click a live group is open on its running
+// tool and a historical one is collapsed; a click always wins, so the
+// header collapses a live group too and expands it to every call.
+export function activityGroupView(
+  live: boolean,
+  userOpen: boolean | null,
+  hasRunning: boolean,
+): { open: boolean; runningOnly: boolean } {
+  const open = userOpen ?? live;
+  return { open, runningOnly: open && userOpen === null && hasRunning };
 }
 
 // Whether the thread has a live run for the UI's purposes (working row,

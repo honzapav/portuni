@@ -12,6 +12,7 @@ import {
   deltaBuffersAfter,
   collapseToolCalls,
   deriveTranscriptRows,
+  activityGroupView,
   activitySummary,
   workingPhase,
   turnInFlight,
@@ -22,6 +23,7 @@ import {
   workingLabel,
   type ActivityItem,
   type ActivityRow,
+  type TranscriptRow,
   type ChatEvent,
   askPrompts,
   togglePick,
@@ -355,6 +357,25 @@ describe("deriveTranscriptRows", () => {
     assert.equal((next[next.length - 1] as ActivityRow).live, true);
   });
 
+  // PR #593 Codex review: the group's key is its React key, and the
+  // header's click lives in that row's state. A first call completing must
+  // not re-key the group, or a collapsed live group springs open again.
+  it("a live group keeps its key when its first tool call completes", () => {
+    const events = [
+      runStarted(1),
+      ev(2, "user_message", { text: "hi", source: "chat" }),
+      toolEv(3, "t1", "Read", "started"),
+      toolEv(4, "t2", "Bash", "started"),
+    ];
+    const before = deriveTranscriptRows(events, "R1");
+    const after = deriveTranscriptRows([...events, toolEv(5, "t1", "Read", "completed")], "R1");
+    const group = (rows: TranscriptRow[]) => rows[rows.length - 1] as ActivityRow;
+    assert.equal(group(before).live, true);
+    assert.equal(group(after).live, true);
+    assert.equal(group(before).key, "a3");
+    assert.equal(group(after).key, "a3");
+  });
+
   // Digital Support 1218987479165349: a resume that could not reopen the
   // CLI conversation used to look exactly like one that did. The run_started
   // that says `resume: "handoff"` is the one event that tells them apart.
@@ -455,6 +476,27 @@ describe("activitySummary", () => {
       items(Array.from({ length: n }, () => ["Bash", status] as ["Bash", "completed" | "failed"]));
     assert.equal(activitySummary([...bash(2, "failed"), ...bash(3, "completed")], tChatCs).text, "5 příkazů · 2 selhaly");
     assert.equal(activitySummary([reasoning(1, 300), ...bash(1, "completed")], tChatCs).text, "1 příkaz · uvažoval 1 s");
+  });
+});
+
+describe("activityGroupView", () => {
+  it("opens a live group on its running tool until the header is clicked", () => {
+    assert.deepEqual(activityGroupView(true, null, true), { open: true, runningOnly: true });
+    assert.deepEqual(activityGroupView(true, null, false), { open: true, runningOnly: false });
+  });
+
+  it("collapses a live group when the header is clicked", () => {
+    assert.deepEqual(activityGroupView(true, false, true), { open: false, runningOnly: false });
+  });
+
+  it("expands a live group to every call on a second click", () => {
+    assert.deepEqual(activityGroupView(true, true, true), { open: true, runningOnly: false });
+  });
+
+  it("keeps a historical group collapsed until it is clicked", () => {
+    assert.deepEqual(activityGroupView(false, null, false), { open: false, runningOnly: false });
+    assert.deepEqual(activityGroupView(false, true, false), { open: true, runningOnly: false });
+    assert.deepEqual(activityGroupView(false, false, false), { open: false, runningOnly: false });
   });
 });
 
