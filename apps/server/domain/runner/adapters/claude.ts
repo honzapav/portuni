@@ -736,27 +736,41 @@ async function translateSubagentAssistantMessage(
   const blocks = (msg.message as { content?: unknown }).content;
   if (!Array.isArray(blocks)) return;
   for (const block of blocks) {
-    if (block.type !== "tool_use") continue;
-    const input = (block.input ?? {}) as Record<string, unknown>;
-    const category = categorizeTool(block.name);
-    const writeOp = await resolveWriteOp(block.name, input, cwd);
-    const path = typeof input.file_path === "string" ? input.file_path : null;
-    state.pendingToolCalls.set(block.id, { tool: block.name, category, writeOp, path, parentToolUseId });
-    sink({
-      kind: "tool_call",
-      payload: {
-        tool_use_id: block.id,
-        tool: block.name,
-        category,
-        title: toolTitle(block.name, input),
-        input_summary: JSON.stringify(input),
-        status: "started",
-        output_excerpt: null,
-        truncated: false,
-        parent_tool_use_id: parentToolUseId,
-      },
-    });
+    if (block.type === "tool_use") await startToolCall(block, parentToolUseId, state, cwd, sink);
   }
+}
+
+// A tool_use block becomes a started tool_call and a pending entry its
+// tool_result completes. parentToolUseId is the main agent's Task call a
+// subagent's call runs under, null for the main agent's own calls (whose
+// payload then carries no parent_tool_use_id, so older logs replay as is).
+async function startToolCall(
+  block: { id: string; name: string; input?: unknown },
+  parentToolUseId: string | null,
+  state: RunTranslationState,
+  cwd: string,
+  sink: EventSink,
+): Promise<void> {
+  const input = (block.input ?? {}) as Record<string, unknown>;
+  const category = categorizeTool(block.name);
+  const writeOp = await resolveWriteOp(block.name, input, cwd);
+  const path = typeof input.file_path === "string" ? input.file_path : null;
+  const parent = parentToolUseId === null ? {} : { parentToolUseId };
+  state.pendingToolCalls.set(block.id, { tool: block.name, category, writeOp, path, ...parent });
+  sink({
+    kind: "tool_call",
+    payload: {
+      tool_use_id: block.id,
+      tool: block.name,
+      category,
+      title: toolTitle(block.name, input),
+      input_summary: JSON.stringify(input),
+      status: "started",
+      output_excerpt: null,
+      truncated: false,
+      ...(parentToolUseId === null ? {} : { parent_tool_use_id: parentToolUseId }),
+    },
+  });
 }
 
 // #500: an API failure (model unavailable, overloaded after retries, prompt
@@ -797,24 +811,7 @@ async function translateAssistantMessage(
             : { summary: block.thinking, duration_ms: Math.max(0, now() - startedAt) },
       });
     } else if (block.type === "tool_use") {
-      const input = (block.input ?? {}) as Record<string, unknown>;
-      const category = categorizeTool(block.name);
-      const writeOp = await resolveWriteOp(block.name, input, cwd);
-      const path = typeof input.file_path === "string" ? input.file_path : null;
-      state.pendingToolCalls.set(block.id, { tool: block.name, category, writeOp, path });
-      sink({
-        kind: "tool_call",
-        payload: {
-          tool_use_id: block.id,
-          tool: block.name,
-          category,
-          title: toolTitle(block.name, input),
-          input_summary: JSON.stringify(input),
-          status: "started",
-          output_excerpt: null,
-          truncated: false,
-        },
-      });
+      await startToolCall(block, null, state, cwd, sink);
     }
   }
   sink(contextUsageFrom(runId, state, message.usage as Record<string, unknown> | undefined));
