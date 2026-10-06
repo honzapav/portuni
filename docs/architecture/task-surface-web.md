@@ -490,7 +490,12 @@ which also deduplicates a replay against a frame that raced it.
   `resumed_from_handoff` marker (the agent continued from a handoff, not the
   live conversation); every other `run_started`,
   `state_changed` and `context_usage` render nothing. `collapseToolCalls` runs inside, so a
-  `started` and its `completed`/`failed` are one item.
+  `started` and its `completed`/`failed` are one item. A `tool_call`
+  with `parent_tool_use_id` (a subagent's call) is no item of its own: it
+  lands in `subcalls` of the main agent's Task call it names, and
+  `ToolStep` renders it indented under that call, so the live group's
+  running Task shows what its subagent is doing. It counts in no
+  activity sentence.
 - **The activity group** (`ActivityGroupRow`) is a `ChainOfThought` whose
   header is `activitySummary(items, t)`: a list of counts, each a plural
   key of `chat` `activity.*` ("Read 3 files · edited 1 · 2 commands ·

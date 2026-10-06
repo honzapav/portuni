@@ -1137,7 +1137,7 @@ function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relP
   // A denial of the runner's own is shown in the UI language; any other
   // output is the tool's and stays as it came.
   const output = toolOutputText(p, t);
-  return (
+  const step = (
     <ChainOfThoughtStep label={p.title || p.tool} status={p.status === "started" ? "active" : "complete"}>
       <Tool defaultOpen={false} className="mb-0 bg-[var(--color-surface)]">
         <ToolHeader title={p.title || undefined} tool={p.tool} state={p.status} className="p-2.5" />
@@ -1151,6 +1151,18 @@ function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relP
         </ToolContent>
       </Tool>
     </ChainOfThoughtStep>
+  );
+  if (item.subcalls.length === 0) return step;
+  // A subagent's calls, under the main agent's Task call that started it.
+  return (
+    <>
+      {step}
+      <div className="ml-6 space-y-2 border-l border-[var(--color-border)] pl-3">
+        {item.subcalls.map((sub) => (
+          <ToolStep key={sub.seq} item={sub} onOpenFile={onOpenFile} />
+        ))}
+      </div>
+    </>
   );
 }
 

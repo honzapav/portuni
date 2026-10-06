@@ -84,6 +84,9 @@ export interface ToolCallEvent {
     // code; output_excerpt holds the English message the agent read.
     output_code?: DenyCode;
     output_params?: ChatEventParams;
+    // A call a subagent made: the tool_use_id of the main agent's Task call
+    // that started it. Absent for the main agent's own calls.
+    parent_tool_use_id?: string;
   };
 }
 

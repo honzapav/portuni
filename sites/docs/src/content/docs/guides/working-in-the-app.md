@@ -381,9 +381,9 @@ agent starts has a window of its own and never moves the ring); from 80 % it tur
 thread" becomes the primary button. While the agent works on a turn,
 the transcript always shows what is happening: streaming text, the tool
 that is running, or a "Starting… / Thinking… / Continuing…" line with a
-counter; between turns it shows nothing. A subagent's own messages and
-tools stay out of the transcript; the agent's call that started it shows as
-one tool call. Tool calls and reasoning fold into one line per turn ("Read
+counter; between turns it shows nothing. A subagent's own messages stay
+out of the transcript; its tool calls show nested under the agent's call
+that started it. Tool calls and reasoning fold into one line per turn ("Read
 3 files · 2 commands"); expand it to see each call. While a run
 is live the header also shows the restart indicator (run age, write/read-set
 size, scope expansions since the run started) as plain information — no

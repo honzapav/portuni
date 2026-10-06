@@ -703,8 +703,9 @@ describe("Claude adapter: message translation", () => {
   });
 
   // #499: frames with parent_tool_use_id come from a subagent the main
-  // agent started; none of them is the thread's reply, activity or context.
-  it("a subagent's frames stay out of the transcript, the model and the context ring", async () => {
+  // agent started; none of them is the thread's reply or context. Its tool
+  // calls show, nested under the main agent's Task call.
+  it("a subagent's frames stay out of the transcript, the model and the context ring; its tool calls nest under the Task call", async () => {
     const sub = { parent_tool_use_id: "task-1", session_id: "s1" };
     const script: SDKMessage[] = [
       {
@@ -800,8 +801,10 @@ describe("Claude adapter: message translation", () => {
     assert.deepEqual(texts, ["main reply"]);
     assert.equal(canonical.filter((e) => e.kind === "reasoning").length, 0);
     assert.equal(canonical.filter((e) => e.kind === "file_change").length, 0);
-    const tools = canonical.flatMap((e) => (e.kind === "tool_call" ? [`${e.payload.tool_use_id}:${e.payload.status}`] : []));
-    assert.deepEqual(tools, ["task-1:started", "task-1:completed"]);
+    const tools = canonical.flatMap((e) =>
+      e.kind === "tool_call" ? [`${e.payload.tool_use_id}:${e.payload.status}:${e.payload.parent_tool_use_id ?? "-"}`] : [],
+    );
+    assert.deepEqual(tools, ["task-1:started:-", "sub-w:started:task-1", "sub-w:completed:task-1", "task-1:completed:-"]);
     assert.equal(events.filter((e) => !("kind" in e)).length, 0, "no subagent delta reaches the chat");
     const usages = canonical.filter(
       (e): e is Extract<CanonicalEvent, { kind: "context_usage" }> => e.kind === "context_usage",

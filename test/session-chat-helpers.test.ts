@@ -23,6 +23,7 @@ import {
   workingLabel,
   type ActivityItem,
   type ActivityRow,
+  type ActivityToolItem,
   type TranscriptRow,
   type ChatEvent,
   askPrompts,
@@ -276,6 +277,38 @@ const runStarted = (seq: number, runId = "R1") =>
   ev(seq, "run_started", { run_id: runId, runner: "claude", instance_id: null, resume: null });
 
 describe("deriveTranscriptRows", () => {
+  it("a subagent's calls nest under the main agent's Task call and stay out of the group", () => {
+    const sub = (seq: number, id: string, status: "started" | "completed") => {
+      const e = toolEv(seq, id, "Read", status);
+      return { ...e, event: { ...e.event, payload: { ...e.event.payload, parent_tool_use_id: "task-1" } } } as ChatEvent;
+    };
+    const rows = deriveTranscriptRows(
+      [
+        ev(1, "user_message", { text: "hi", source: "chat" }),
+        runStarted(2),
+        toolEv(3, "task-1", "Task", "started"),
+        sub(4, "s1", "started"),
+        sub(5, "s1", "completed"),
+        sub(6, "s2", "started"),
+        toolEv(7, "task-1", "Task", "completed"),
+        ev(8, "assistant_message", { text: "done" }),
+      ],
+      null,
+    );
+    assert.deepEqual(
+      rows.map((r) => r.kind),
+      ["prompt", "activity", "answer"],
+    );
+    const group = rows[1] as ActivityRow;
+    assert.equal(group.items.length, 1);
+    const task = group.items[0] as ActivityToolItem;
+    assert.equal(task.call.status, "completed");
+    assert.deepEqual(
+      task.subcalls.map((c) => `${c.call.tool_use_id}:${c.call.status}`),
+      ["s1:completed", "s2:started"],
+    );
+  });
+
   it("a run with two answers yields two activity groups; bookkeeping yields nothing", () => {
     const rows = deriveTranscriptRows(
       [
@@ -428,6 +461,7 @@ describe("activitySummary", () => {
       kind: "tool" as const,
       seq: i,
       call: { tool_use_id: String(i), tool, category: "other" as const, title: tool, input_summary: "{}", status, output_excerpt: null, truncated: false },
+      subcalls: [],
     }));
 
   const reasoning = (seq: number, durationMs: number | null): ActivityItem => ({ kind: "reasoning", seq, summary: "…", durationMs });
