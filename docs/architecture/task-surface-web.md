@@ -505,9 +505,11 @@ which also deduplicates a replay against a frame that raced it.
   title, the danger colour with the failed count when a call failed. The
   verb table (`TOOL_VERBS`) covers Claude's tool names; anything else shows
   as "N × <tool>". Expanded, one `ChainOfThoughtStep` per item with the
-  `Tool` card inside; a historical group expands by hand, per mount; the
-  live run's trailing group (`live: true`) stays open on the tool that is
-  running. `live` needs a turn in flight (`turnInFlight`), not just the
+  `Tool` card inside; a historical group starts collapsed; the live run's
+  trailing group (`live: true`) starts open on the tool that is running.
+  The header toggles both, per mount (`activityGroupView`): the first
+  click on a live group collapses it, the next expands it to every call,
+  and a click always wins over `live`. `live` needs a turn in flight (`turnInFlight`), not just the
   live run: after `turn_ended` (a Stop mid-tool or mid-reasoning
   included) the run is idle and no group looks live.
 - **The working row** (`WorkingRow`, `workingPhase`): while a turn is in
@@ -537,8 +539,8 @@ which also deduplicates a replay against a frame that raced it.
   bridge forwards frames unchanged.
 - **AI Elements** supply the transcript chrome under
   `src/components/ai-elements/` (`conversation`, `message`, `reasoning`,
-  `tool` + `code-block`, `confirmation`, `prompt-input`, `shimmer`,
-  `checkpoint`, `loader`, `chain-of-thought`, `context`), pulled with
+  `tool` + `code-block`, `confirmation`, `question`, `prompt-input`,
+  `shimmer`, `checkpoint`, `loader`, `chain-of-thought`, `context`), pulled with
   `npx ai-elements@latest add <name>`; each file
   keeps its Apache-2.0 header naming the upstream version so a later `add`
   reads as a diff. shadcn/ui primitives live under `src/components/ui`
@@ -615,7 +617,13 @@ which also deduplicates a replay against a frame that raced it.
   whenever a new run starts).
 - **Question**: the latest `question` event renders as
   `QuestionConfirmation` above the composer while `isWaiting`; answers go
-  through `sessionsClient.answer`. `approvalChoices(options, t)`: the
+  through `sessionsClient.answer`. An approval renders as `Confirmation`,
+  an input question (options per dotaz and free text, #594) as the
+  `Question` form: one `QuestionOptions` group per dotaz with its own
+  `selectionMode` (the one change against upstream), option values
+  `askOptionValue(index, label)` so the same label in two dotazy stays
+  apart, picks kept as `AskPicks` and sent through `askAnswer`; Enter in
+  the textarea sends, Shift+Enter breaks the line. `approvalChoices(options, t)`: the
   default pair's labels are `chat` `approval.yes`/`no`, its values stay
   `true`/`false`; the agent's own options are shown and sent unchanged,
   and no React `key` carries translated text.
