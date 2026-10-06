@@ -534,8 +534,8 @@ which also deduplicates a replay against a frame that raced it.
   bridge forwards frames unchanged.
 - **AI Elements** supply the transcript chrome under
   `src/components/ai-elements/` (`conversation`, `message`, `reasoning`,
-  `tool` + `code-block`, `confirmation`, `prompt-input`, `shimmer`,
-  `checkpoint`, `loader`, `chain-of-thought`, `context`), pulled with
+  `tool` + `code-block`, `confirmation`, `question`, `prompt-input`,
+  `shimmer`, `checkpoint`, `loader`, `chain-of-thought`, `context`), pulled with
   `npx ai-elements@latest add <name>`; each file
   keeps its Apache-2.0 header naming the upstream version so a later `add`
   reads as a diff. shadcn/ui primitives live under `src/components/ui`
@@ -612,7 +612,13 @@ which also deduplicates a replay against a frame that raced it.
   whenever a new run starts).
 - **Question**: the latest `question` event renders as
   `QuestionConfirmation` above the composer while `isWaiting`; answers go
-  through `sessionsClient.answer`. `approvalChoices(options, t)`: the
+  through `sessionsClient.answer`. An approval renders as `Confirmation`,
+  an input question (options per dotaz and free text, #594) as the
+  `Question` form: one `QuestionOptions` group per dotaz with its own
+  `selectionMode` (the one change against upstream), option values
+  `askOptionValue(index, label)` so the same label in two dotazy stays
+  apart, picks kept as `AskPicks` and sent through `askAnswer`; Enter in
+  the textarea sends, Shift+Enter breaks the line. `approvalChoices(options, t)`: the
   default pair's labels are `chat` `approval.yes`/`no`, its values stay
   `true`/`false`; the agent's own options are shown and sent unchanged,
   and no React `key` carries translated text.
