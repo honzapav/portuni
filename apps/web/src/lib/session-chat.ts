@@ -293,6 +293,8 @@ export function collapseToolCalls(events: readonly ChatEvent[]): ChatEvent[] {
 
 // --- Naming (#374) -----------------------------------------------------------
 
+// The server copy below is deliberate (see the comment on the function).
+// fallow-ignore-next-line code-duplication
 const THREAD_NAME_MAX_LENGTH = 60;
 
 // A thread names itself from its first message: first line, trimmed,
