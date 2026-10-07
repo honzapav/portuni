@@ -689,13 +689,18 @@ human verification.
   `ANTHROPIC_MODEL` -> `model` in `<CLAUDE_CONFIG_DIR or ~/.claude>/
   settings.json` -> `ANTHROPIC_DEFAULT_MODEL` -> the `default` row's
   `resolvedModel` (`account`); effort, for the thread's own model or that
-  default = instance `defaults.effort` -> `CLAUDE_CODE_EFFORT_LEVEL` ->
+  default = `CLAUDE_CODE_EFFORT_LEVEL` (it overrides `--effort`) ->
+  instance `defaults.effort` ->
   `modelSettings[<model>].effortLevel` -> top-level `effortLevel` (the
   older form, which per the same page does not count for Opus 5.5; treated
   so for Sonnet 5.5 too, and not claimed for an unknown model) -> the model's own
   default (`claudeModelDefaultEffort`: medium for Opus/Sonnet 5.5, xhigh
   for Opus 4.7, high otherwise; null for an unresolved alias or a model
-  without effort). Not read: managed settings and an organisation's
+  without effort). The variables are the run's: the instance's env with
+  the settings file's `env` block written over it (an empty value there
+  unsets one); a value from that block has `source: "settings"`. The
+  instance's model is `--model`, which overrides `ANTHROPIC_MODEL`. Not
+  read: managed settings and an organisation's
   default effort, which only the CLI sees.
 
 - **The runner's own text in the chat is a code (#532).** Codes live in

@@ -72,8 +72,13 @@ describe("resolveClaudeDefaults", () => {
     });
   });
 
-  it("CLAUDE_CODE_EFFORT_LEVEL wins over the settings file; the instance's effort over both", () => {
+  it("the instance's effort wins over the settings file; CLAUDE_CODE_EFFORT_LEVEL wins over both, as it overrides --effort", () => {
     const settings = { effortLevel: "low" };
+    assert.deepEqual(resolveClaudeDefaults({ ...base, model: "sonnet", instanceDefaults: { effort: "high" }, settings }).effort, {
+      value: "high",
+      source: "instance",
+      detail: null,
+    });
     const env = { CLAUDE_CODE_EFFORT_LEVEL: "max" };
     assert.deepEqual(resolveClaudeDefaults({ ...base, instanceEnv: env, settings }).effort, {
       value: "max",
@@ -81,7 +86,30 @@ describe("resolveClaudeDefaults", () => {
       detail: "CLAUDE_CODE_EFFORT_LEVEL",
     });
     assert.deepEqual(resolveClaudeDefaults({ ...base, instanceEnv: env, instanceDefaults: { effort: "high" }, settings }).effort, {
-      value: "high",
+      value: "max",
+      source: "env",
+      detail: "CLAUDE_CODE_EFFORT_LEVEL",
+    });
+  });
+
+  it("the settings file's env block is the run's environment, over the instance's", () => {
+    const settings = { env: { ANTHROPIC_MODEL: "sonnet", CLAUDE_CODE_EFFORT_LEVEL: "low" } };
+    assert.deepEqual(resolveClaudeDefaults({ ...base, settings }), {
+      model: { value: "sonnet", source: "settings", detail: "/home/u/.claude/settings.json" },
+      effort: { value: "low", source: "settings", detail: "/home/u/.claude/settings.json" },
+    });
+    const instanceEnv = { ANTHROPIC_MODEL: "haiku", CLAUDE_CODE_EFFORT_LEVEL: "max" };
+    assert.deepEqual(resolveClaudeDefaults({ ...base, instanceEnv, settings }).model.value, "sonnet");
+    assert.deepEqual(resolveClaudeDefaults({ ...base, instanceEnv, settings }).effort.value, "low");
+    // An empty value in the block unsets the instance's variable.
+    const unset = resolveClaudeDefaults({ ...base, instanceEnv, settings: { env: { ANTHROPIC_MODEL: "", CLAUDE_CODE_EFFORT_LEVEL: "" } } });
+    assert.deepEqual(unset, {
+      model: { value: "claude-opus-5-5", source: "account", detail: null },
+      effort: { value: "medium", source: "model", detail: null },
+    });
+    // The instance's own model is --model, which overrides ANTHROPIC_MODEL wherever it is set.
+    assert.deepEqual(resolveClaudeDefaults({ ...base, instanceDefaults: { model: "opus" }, settings }).model, {
+      value: "opus",
       source: "instance",
       detail: null,
     });
