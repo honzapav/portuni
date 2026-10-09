@@ -1976,6 +1976,23 @@ fn showtime_preview_bytes(bundle: &std::path::Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Appended to every document the preview serves. The frame is sandboxed
+/// in an opaque origin, so its key events never reach the app window and
+/// the window Escape that stops the agent's turn would miss a focused
+/// preview; this hands that Escape up as a message. Same text as
+/// `ESCAPE_RELAY_SCRIPT` in apps/web/src/lib/html-preview-url.ts (the web
+/// build appends it to `srcDoc`), and the same rules as the app's own
+/// listener: a key the page handled, an IME composition and a form field
+/// keep their Escape. Appended after `</html>` it still runs (the parser
+/// puts it in the body) and, unlike a prefix, never knocks the page out of
+/// standards mode.
+const ESCAPE_RELAY_SCRIPT: &str = r#"<script>addEventListener("keydown",function(e){var t=e.target&&e.target.tagName;if(e.key!=="Escape"||e.defaultPrevented||e.isComposing||t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;parent.postMessage({portuni:"escape"},"*")});</script>"#;
+
+fn with_escape_relay(mut bytes: Vec<u8>) -> Vec<u8> {
+    bytes.extend_from_slice(ESCAPE_RELAY_SCRIPT.as_bytes());
+    bytes
+}
+
 /// Whether Showtime.app is installed, so the deck preview can offer to open
 /// the bundle in it. One `stat` per call; the webview asks once per session.
 #[tauri::command]
@@ -1991,7 +2008,8 @@ fn showtime_installed(app: tauri::AppHandle) -> bool {
 mod showtime_preview_tests {
     use super::{
         is_html_ext, is_previewable_ext, CmdError, is_showtime_ext, showtime_deck_path, showtime_new_dir,
-        showtime_new_url, showtime_open_url, showtime_preview_bytes, SHOWTIME_PREVIEW_ENTRY,
+        showtime_new_url, showtime_open_url, showtime_preview_bytes, with_escape_relay,
+        ESCAPE_RELAY_SCRIPT, SHOWTIME_PREVIEW_ENTRY,
     };
     use std::io::Write;
     use std::path::Path;
@@ -2020,6 +2038,14 @@ mod showtime_preview_tests {
         assert!(!is_previewable_ext(Path::new("/w/a.md")));
         assert!(is_showtime_ext(Path::new("/w/deck.showtime")));
         assert!(!is_showtime_ext(Path::new("/w/a.html")));
+    }
+
+    #[test]
+    fn served_documents_carry_the_escape_relay_at_the_end() {
+        let page = b"<!doctype html><html><body><button>Focus</button></body></html>".to_vec();
+        let served = with_escape_relay(page.clone());
+        assert!(served.starts_with(&page));
+        assert!(served.ends_with(ESCAPE_RELAY_SCRIPT.as_bytes()));
     }
 
     #[test]
@@ -3378,7 +3404,7 @@ pub fn run() {
                     // allow-same-origin) and isolated from the app, so the
                     // app CSP is intentionally NOT applied here.
                     .header("Content-Security-Policy", "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'")
-                    .body(bytes)
+                    .body(with_escape_relay(bytes))
                     .unwrap(),
                 Err(e) => {
                     error!("portuni-html read failed for {decoded}: {e}");

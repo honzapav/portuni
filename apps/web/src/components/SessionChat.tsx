@@ -38,6 +38,7 @@ import {
   threadCloseAction,
 } from "../lib/session-views";
 import { useLocalHost } from "../lib/use-local-host";
+import { isRelayedEscape } from "../lib/html-preview-url";
 import type { SessionRunRow, SessionSummary } from "../types";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
@@ -190,6 +191,18 @@ const THREAD_COLUMN = "mx-auto w-[min(80%,768px)]";
 // A custom remarkPlugins list replaces Streamdown's defaults, so start from
 // them: they carry gfm and codeMeta (```js startLine=10 / noLineNumbers).
 const PROMPT_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkBreaks];
+// What the Escape stop reads off a key event; a preview's relayed Escape
+// is one with nothing focused in the app and nothing to prevent.
+type EscapeKey = Parameters<typeof escapeStopsTurn>[0] & { preventDefault(): void };
+const RELAYED_ESCAPE: EscapeKey = {
+  key: "Escape",
+  defaultPrevented: false,
+  isComposing: false,
+  target: null,
+  // Nothing to prevent: the key went to the preview frame.
+  preventDefault: () => undefined,
+};
+
 // #466 (spec docs/superpowers/specs/2026-09-22-web-session-state-design.md,
 // "`SessionChat`"): this component takes the thread's id, never a row. The
 // row comes from the store -- the window's only copy -- and every change to
@@ -444,12 +457,23 @@ export default function SessionChat({
   // composer: focus on the transcript, a button or the file pane must not
   // swallow it (lib/session-chat.ts `escapeStopsTurn` says when it applies).
   // The listener is added once and calls whatever the latest render put in
-  // the ref -- that render knows the live turn and the stop action.
-  const escapeHandler = useRef<((e: KeyboardEvent) => void) | null>(null);
+  // the ref -- that render knows the live turn and the stop action. An HTML
+  // preview's sandboxed frame keeps its key events to itself; its Escape
+  // arrives as a message instead (lib/html-preview-url.ts).
+  const escapeHandler = useRef<((e: EscapeKey) => void) | null>(null);
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => escapeHandler.current?.(e);
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    const onKey = (e: KeyboardEvent) => escapeHandler.current?.(e);
+    const onMessage = (e: MessageEvent) => {
+      const frames = Array.from(document.querySelectorAll("iframe"), (f) => f.contentWindow);
+      if (!isRelayedEscape(e.data, e.source, frames)) return;
+      escapeHandler.current?.(RELAYED_ESCAPE);
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("message", onMessage);
+    };
   }, []);
 
   // Every hook has run; from here the record is what the component reads.
