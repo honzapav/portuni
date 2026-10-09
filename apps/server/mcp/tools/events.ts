@@ -4,7 +4,13 @@ import { getDb, type InValue } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
 import { EVENT_TYPES, EVENT_STATUSES } from "../../infra/schema.js";
 import { EventRow } from "../../shared/types.js";
-import { EventNotFoundError, supersedeEventInternal } from "../../domain/events.js";
+import {
+  EventNotFoundError,
+  InvalidEventUpdateError,
+  supersedeEventInternal,
+  updateEventInternal,
+  type UpdateEventResult,
+} from "../../domain/events.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../../auth/node-access.js";
@@ -190,7 +196,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_supersede",
-    "Replace an event with a corrected or updated version — use when an event's content needs to change after it was logged. The old event is marked superseded and the new one references it (refs=[old_event_id]). Prefer this over delete-then-create so the history chain stays intact.",
+    "Replace an event with a corrected or updated version — use when an event's content needs to change after it was logged. The old event is marked superseded and the new one references it (refs=[old_event_id]). Prefer this over delete-then-create so the history chain stays intact. For a correction of form that history need not keep (typo, shorter wording, wrong date), use portuni_update_event instead.",
     {
       event_id: z.string().describe("Event ID (ULID) to supersede"),
       new_content: z.string().describe("Content for the replacement event"),
@@ -245,6 +251,66 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
             text: JSON.stringify({ ...result, status: "active" }),
           },
         ],
+      };
+    },
+  );
+
+  server.tool(
+    "portuni_update_event",
+    "Edit an existing event in place: same id, same node, same logged_at. Use it for corrections of form that history does not need to keep -- a typo, a shorter or clearer wording, a wrong type or date, missing meta or refs -- and to change status (e.g. archive an event, or bring a superseded/archived one back to active). When the substance changes (a decision was revised, a fact turned out differently) use portuni_supersede instead, so the history chain records both versions. Pass only the fields to change; meta, refs and task_ref replace the stored value (null clears it).",
+    {
+      event_id: z.string().describe("Event ID (ULID) to edit"),
+      content: z.string().optional().describe("New content (must not be empty)"),
+      type: z.enum(EVENT_TYPES).optional().describe("New event type"),
+      status: z.enum(EVENT_STATUSES).optional().describe("New status: active, resolved, superseded or archived"),
+      created_at: z.string().optional().describe("New event date/time as an ISO string (e.g. 2024-01-15 or 2024-01-15T10:30:00Z)"),
+      meta: z.record(z.string(), z.unknown()).nullable().optional().describe("New metadata; replaces the stored meta, null clears it"),
+      refs: z.array(z.string()).nullable().optional().describe("New reference IDs; replaces the stored refs, null clears them"),
+      task_ref: z.string().nullable().optional().describe("New task reference; null clears it"),
+    },
+    async (args) => {
+      const db = getDb();
+
+      // Group-visibility first: a hidden event answers not-found before any
+      // gate or mutation, same as resolve and supersede.
+      const existing = await db.execute({
+        sql: "SELECT node_id FROM events WHERE id = ?",
+        args: [args.event_id],
+      });
+      const notFound = {
+        content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
+        isError: true,
+      };
+      if (existing.rows.length === 0) return notFound;
+      const { node_id: nodeId } = EventRow.pick({ node_id: true }).parse(existing.rows[0]);
+      if (!(await nodeVisibleTo(db, ctx.identity, nodeId))) return notFound;
+      const updateWriteGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
+      if (updateWriteGuard.kind === "error") return updateWriteGuard.response;
+
+      let result: UpdateEventResult;
+      try {
+        result = await updateEventInternal(db, ctx.identity.userId, args.event_id, {
+          content: args.content,
+          type: args.type,
+          status: args.status,
+          createdAt: args.created_at,
+          meta: args.meta,
+          refs: args.refs,
+          taskRef: args.task_ref,
+        });
+      } catch (e) {
+        if (e instanceof EventNotFoundError) return notFound;
+        if (e instanceof InvalidEventUpdateError) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${e.message}` }],
+            isError: true,
+          };
+        }
+        throw e;
+      }
+
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     },
   );
