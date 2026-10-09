@@ -16,6 +16,7 @@ import {
   activitySummary,
   workingPhase,
   turnInFlight,
+  escapeStopsTurn,
   runIsLiveFor,
   createDeltaCoalescer,
   transcriptElsewhere,
@@ -647,6 +648,38 @@ describe("createDeltaCoalescer", () => {
     c.clear();
     c.flush();
     assert.equal(delivered.length, 1);
+  });
+});
+
+describe("escapeStopsTurn", () => {
+  const key = (over: Partial<Parameters<typeof escapeStopsTurn>[0]> = {}) => ({
+    key: "Escape",
+    defaultPrevented: false,
+    isComposing: false,
+    target: { tagName: "BUTTON" } as unknown as EventTarget,
+    ...over,
+  });
+
+  it("stops the shown thread's turn from outside the composer", () => {
+    assert.equal(escapeStopsTurn(key(), true, true), true);
+    assert.equal(escapeStopsTurn(key({ target: { tagName: "DIV" } as unknown as EventTarget }), true, true), true);
+    assert.equal(escapeStopsTurn(key({ target: null }), true, true), true);
+  });
+
+  it("does nothing without a turn in flight or on a hidden thread", () => {
+    assert.equal(escapeStopsTurn(key(), false, true), false);
+    assert.equal(escapeStopsTurn(key(), true, false), false);
+  });
+
+  it("leaves other keys, handled events and IME composition alone", () => {
+    assert.equal(escapeStopsTurn(key({ key: "Enter" }), true, true), false);
+    assert.equal(escapeStopsTurn(key({ defaultPrevented: true }), true, true), false);
+    assert.equal(escapeStopsTurn(key({ isComposing: true }), true, true), false);
+  });
+
+  it("leaves form fields their own Escape", () => {
+    for (const tagName of ["INPUT", "TEXTAREA", "SELECT"])
+      assert.equal(escapeStopsTurn(key({ target: { tagName } as unknown as EventTarget }), true, true), false);
   });
 });
 

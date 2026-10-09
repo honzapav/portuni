@@ -73,6 +73,7 @@ import {
   workingPhase,
   runIsLiveFor,
   turnInFlight,
+  escapeStopsTurn,
   nextSentAt,
   transcriptElsewhere,
   runEndedText,
@@ -203,6 +204,7 @@ export default function SessionChat({
   sessionsClient,
   onOpenFile,
   onContinued,
+  shown = true,
 }: {
   sessionId: string;
   sessionStore: SessionStore;
@@ -213,6 +215,10 @@ export default function SessionChat({
   // on its own once closed; a closed one opened from Relace stays pinned
   // as the shown thread, so the switch has to be asked for.
   onContinued?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
+  // Whether this is the thread on screen. Every open thread stays mounted
+  // (WorkspaceView hides the rest), and only the shown one answers an Esc
+  // pressed outside its composer.
+  shown?: boolean;
 }) {
   const { t } = useTranslation("chat");
   const { t: tCommon } = useTranslation("common");
@@ -434,13 +440,28 @@ export default function SessionChat({
   const [answerGate] = useState(createAnswerGate);
   const localHost = useLocalHost();
 
+  // Esc stops the turn from anywhere in the app, not only from the
+  // composer: focus on the transcript, a button or the file pane must not
+  // swallow it (lib/session-chat.ts `escapeStopsTurn` says when it applies).
+  // The listener is added once and calls whatever the latest render put in
+  // the ref -- that render knows the live turn and the stop action.
+  const escapeHandler = useRef<((e: KeyboardEvent) => void) | null>(null);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => escapeHandler.current?.(e);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   // Every hook has run; from here the record is what the component reads.
   // It is missing only in the moment between its removal from the store (a
   // deleted draft) and the parent dropping this pane, so there is nothing
   // to show and nothing to say. A record known only from a live frame
   // (`partial`) is the same case: the parent never mounts a chat for one,
   // and half a record would render a nameless header.
-  if (!session || session.partial) return null;
+  if (!session || session.partial) {
+    escapeHandler.current = null;
+    return null;
+  }
 
   const host = hostDisplayName(session, localHost);
   const startRename = () => {
@@ -543,6 +564,12 @@ export default function SessionChat({
     }
   };
 
+  // The window Escape listener (added above) reads this render's state.
+  escapeHandler.current = (e) => {
+    if (!escapeStopsTurn(e, turnActive, shown) || actionPending !== null) return;
+    e.preventDefault();
+    void runAction("interrupt");
+  };
   // #459 "Předat": POST /sessions/:id/handoff ends the turn and the run and
   // writes the thread's summary into the node's mirror; api.ts puts the
   // suspended record into the store, so the header, the sidebar and Relace
