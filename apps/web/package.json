@@ -57,5 +57,8 @@
     "terser": "^5.51.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
+  },
+  "overrides": {
+    "katex": "^0.18.2"
   }
 }
