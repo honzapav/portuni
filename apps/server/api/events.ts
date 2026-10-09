@@ -5,10 +5,14 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb, type DbClient } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
-import { EVENT_TYPES, EVENT_STATUSES } from "../infra/schema.js";
+import { EVENT_TYPES } from "../infra/schema.js";
+import {
+  EventNotFoundError,
+  InvalidEventUpdateError,
+  updateEventInternal,
+} from "../domain/events.js";
 import {
   respondApiError,
-  parseBody,
   parseJsonBody,
   respondError,
   respondJson,
@@ -87,6 +91,19 @@ async function guardEventWrite(
   return guardRestNodeWrite(req, res, identity, eventNodeId);
 }
 
+// Body fields map 1:1 onto updateEventInternal; a field of the wrong JSON
+// type is a 400 here, value checks (enums, dates, empty content) are the
+// domain's.
+const UpdateEventBody = z.object({
+  content: z.string().optional(),
+  type: z.string().optional(),
+  status: z.string().optional(),
+  created_at: z.string().optional(),
+  meta: z.record(z.string(), z.unknown()).nullable().optional(),
+  refs: z.array(z.string()).nullable().optional(),
+  task_ref: z.string().nullable().optional(),
+});
+
 export async function handleUpdateEvent(
   req: IncomingMessage,
   res: ServerResponse,
@@ -94,73 +111,33 @@ export async function handleUpdateEvent(
   eventId: string,
 ): Promise<void> {
   try {
-    const body = (await parseBody(req)) as
-      | { content?: string; type?: string; status?: string; created_at?: string }
-      | undefined;
-    if (!body) {
-      respondApiError(res, 400, "INVALID_REQUEST", "body required");
-      return;
-    }
+    const body = await parseJsonBody(req, res, UpdateEventBody);
+    if (!body) return;
     const db = getDb();
     if (!(await guardEventWrite(req, res, identity, db, eventId))) return;
-    const updates: string[] = [];
-    const values: (string | null)[] = [];
-    if (typeof body.content === "string" && body.content.trim().length > 0) {
-      updates.push("content = ?");
-      values.push(body.content.trim());
-    }
-    if (typeof body.type === "string") {
-      if (!(EVENT_TYPES as readonly string[]).includes(body.type)) {
-        respondApiError(res, 400, "INVALID_REQUEST", `invalid type; must be one of ${EVENT_TYPES.join(", ")}`);
-        return;
+    const updated = await updateEventInternal(db, identity.userId, eventId, {
+      content: body.content,
+      type: body.type,
+      status: body.status,
+      createdAt: body.created_at,
+      meta: body.meta,
+      refs: body.refs,
+      taskRef: body.task_ref,
+    });
+    respondJson(res, 200, updated);
+  } catch (err) {
+    if (err instanceof InvalidEventUpdateError) {
+      if (err.field === "created_at") {
+        respondApiError(res, 400, "INVALID_EVENT_DATE", err.message);
+      } else {
+        respondApiError(res, 400, "INVALID_REQUEST", err.message);
       }
-      updates.push("type = ?");
-      values.push(body.type);
-    }
-    if (typeof body.status === "string") {
-      // Validate up front like `type` -- relying on the DB CHECK produced
-      // an opaque 409 instead of an actionable 400.
-      if (!(EVENT_STATUSES as readonly string[]).includes(body.status)) {
-        respondApiError(
-          res,
-          400,
-          "INVALID_REQUEST",
-          `invalid status; must be one of ${EVENT_STATUSES.join(", ")}`,
-        );
-        return;
-      }
-      updates.push("status = ?");
-      values.push(body.status);
-    }
-    if (typeof body.created_at === "string") {
-      const parsed = new Date(body.created_at);
-      if (Number.isNaN(parsed.getTime())) {
-        respondApiError(res, 400, "INVALID_EVENT_DATE", "invalid created_at; expected ISO datetime", {
-          value: body.created_at,
-        });
-        return;
-      }
-      updates.push("created_at = ?");
-      values.push(body.created_at);
-    }
-    if (updates.length === 0) {
-      respondApiError(res, 400, "INVALID_REQUEST", "no fields to update");
       return;
     }
-    values.push(eventId);
-    await db.execute({
-      sql: `UPDATE events SET ${updates.join(", ")} WHERE id = ?`,
-      args: values,
-    });
-    await logAudit(identity.userId, "update_event", "event", eventId, {
-      fields: Object.keys(body),
-    });
-    const updated = await db.execute({
-      sql: "SELECT id, type, content, status, created_at FROM events WHERE id = ?",
-      args: [eventId],
-    });
-    respondJson(res, 200, updated.rows[0]);
-  } catch (err) {
+    if (err instanceof EventNotFoundError) {
+      respondApiError(res, 404, "EVENT_NOT_FOUND", "event not found", { eventId });
+      return;
+    }
     respondError(res, `${req.method} /events/${eventId}`, err);
   }
 }

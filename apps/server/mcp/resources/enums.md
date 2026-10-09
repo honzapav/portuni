@@ -93,6 +93,8 @@ active (default), resolved, superseded, archived
 - `portuni_resolve` marks an event resolved.
 - `portuni_supersede` replaces an event with an updated version
   (the original moves to `superseded`).
+- `portuni_update_event` edits an event in place, status included
+  (archive, or bring a superseded event back to `active`).
 
 ## File statuses
 
