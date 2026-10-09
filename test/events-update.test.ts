@@ -37,6 +37,14 @@ async function seedEvent(db: DbClient, nodeId: string): Promise<string> {
   return id;
 }
 
+// SQLite hands back the stored ISO string; Postgres stores TIMESTAMPTZ and
+// pg-row-normalize renders it as "YYYY-MM-DD HH:MM:SS" (UTC). Compare the
+// instant, not the backend's text form.
+function instant(ts: string): string {
+  const hasZone = /(Z|[+-]\d\d:?\d\d)$/i.test(ts);
+  return new Date(hasZone ? ts : `${ts.replace(" ", "T")}Z`).toISOString();
+}
+
 describe("updateEventInternal", () => {
   it("rewrites only the given fields and keeps id, node and logged_at", async () => {
     const { db, nodeId } = await makeSharedDb();
@@ -53,8 +61,8 @@ describe("updateEventInternal", () => {
     assert.deepEqual(r.refs, ["R1"], "refs untouched");
     assert.equal(r.task_ref, "T-1", "task_ref untouched");
     assert.equal(r.type, "note");
-    assert.equal(r.created_at, "2026-01-10T09:00:00.000Z");
-    assert.equal(r.logged_at, "2026-01-10T09:00:00.000Z");
+    assert.equal(instant(r.created_at), "2026-01-10T09:00:00.000Z");
+    assert.equal(instant(r.logged_at), "2026-01-10T09:00:00.000Z");
     assert.deepEqual(r.updated_fields, ["content", "meta"]);
 
     const count = await db.execute({ sql: "SELECT COUNT(*) AS n FROM events", args: [] });
@@ -83,7 +91,7 @@ describe("updateEventInternal", () => {
     assert.equal(r.meta, null);
     assert.equal(r.refs, null);
     assert.equal(r.task_ref, null);
-    assert.equal(r.created_at, "2025-12-24T00:00:00.000Z");
+    assert.equal(instant(r.created_at), "2025-12-24T00:00:00.000Z");
     assert.equal(r.type, "decision");
   });
 
