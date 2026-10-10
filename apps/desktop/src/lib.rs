@@ -1976,6 +1976,87 @@ fn showtime_preview_bytes(bundle: &std::path::Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Appended to every document the preview serves. The frame is sandboxed
+/// in an opaque origin, so its key events never reach the app window and
+/// the window Escape that stops the agent's turn would miss a focused
+/// preview; this hands that Escape up as a message. Same text as
+/// `ESCAPE_RELAY_SCRIPT` in apps/web/src/lib/html-preview-url.ts (the web
+/// build appends it to `srcDoc`), and the same rules as the app's own
+/// listener: a key the page handled, an IME composition and a form field
+/// keep their Escape. Appended after `</html>` it still runs (the parser
+/// puts it in the body) and, unlike a prefix, never knocks the page out of
+/// standards mode.
+const ESCAPE_RELAY_SCRIPT: &str = r#"<script>addEventListener("keydown",function(e){var t=e.target&&e.target.tagName;if(e.key!=="Escape"||e.defaultPrevented||e.isComposing||t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;parent.postMessage({portuni:"escape"},"*")});</script>"#;
+
+/// A document's own `<meta http-equiv="Content-Security-Policy">` would
+/// block the appended relay, so it goes before the relay is added. What
+/// keeps a previewed page away from the app is the sandbox, never the
+/// page's own policy; without it the page runs under the permissive CSP
+/// this handler serves. Same rule as `withoutCspMeta` in
+/// apps/web/src/lib/html-preview-url.ts (the reasoning is written there).
+/// Works on bytes: a previewed file need not be UTF-8.
+fn without_csp_meta(bytes: &[u8]) -> Vec<u8> {
+    let lower = bytes.to_ascii_lowercase();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut pos = 0;
+    while let Some(found) = find_bytes(&lower[pos..], b"<meta") {
+        let start = pos + found;
+        let after_name = start + b"<meta".len();
+        let name_ends = lower
+            .get(after_name)
+            .map_or(true, |c| c.is_ascii_whitespace() || *c == b'/' || *c == b'>');
+        let Some(len) = find_bytes(&lower[start..], b">") else { break };
+        let end = start + len + 1;
+        out.extend_from_slice(&bytes[pos..start]);
+        if !(name_ends && is_csp_http_equiv(&lower[start..end])) {
+            out.extend_from_slice(&bytes[start..end]);
+        }
+        pos = end;
+    }
+    out.extend_from_slice(&bytes[pos..]);
+    out
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Whether a lowercased `<meta ...>` tag carries
+/// `http-equiv="content-security-policy"` (any quoting, any spacing).
+fn is_csp_http_equiv(tag: &[u8]) -> bool {
+    let mut from = 0;
+    while let Some(found) = find_bytes(&tag[from..], b"http-equiv") {
+        let at = from + found;
+        from = at + 1;
+        if at > 0 && (tag[at - 1].is_ascii_alphanumeric() || tag[at - 1] == b'-' || tag[at - 1] == b'_') {
+            continue;
+        }
+        let mut rest = skip_ascii_whitespace(&tag[at + b"http-equiv".len()..]);
+        let Some(r) = rest.strip_prefix(b"=") else { continue };
+        rest = skip_ascii_whitespace(r);
+        if let Some(r) = rest.strip_prefix(b"\"").or_else(|| rest.strip_prefix(b"'")) {
+            rest = skip_ascii_whitespace(r);
+        }
+        let Some(r) = rest.strip_prefix(b"content-security-policy") else { continue };
+        // The value ends here, not in `-report-only` or the like.
+        if r.first().map_or(true, |c| c.is_ascii_whitespace() || matches!(c, b'"' | b'\'' | b'/' | b'>')) {
+            return true;
+        }
+    }
+    false
+}
+
+fn skip_ascii_whitespace(bytes: &[u8]) -> &[u8] {
+    let n = bytes.iter().take_while(|c| c.is_ascii_whitespace()).count();
+    &bytes[n..]
+}
+
+fn with_escape_relay(bytes: Vec<u8>) -> Vec<u8> {
+    let mut bytes = without_csp_meta(&bytes);
+    bytes.extend_from_slice(ESCAPE_RELAY_SCRIPT.as_bytes());
+    bytes
+}
+
 /// Whether Showtime.app is installed, so the deck preview can offer to open
 /// the bundle in it. One `stat` per call; the webview asks once per session.
 #[tauri::command]
@@ -1991,7 +2072,8 @@ fn showtime_installed(app: tauri::AppHandle) -> bool {
 mod showtime_preview_tests {
     use super::{
         is_html_ext, is_previewable_ext, CmdError, is_showtime_ext, showtime_deck_path, showtime_new_dir,
-        showtime_new_url, showtime_open_url, showtime_preview_bytes, SHOWTIME_PREVIEW_ENTRY,
+        showtime_new_url, showtime_open_url, showtime_preview_bytes, with_escape_relay,
+        without_csp_meta, ESCAPE_RELAY_SCRIPT, SHOWTIME_PREVIEW_ENTRY,
     };
     use std::io::Write;
     use std::path::Path;
@@ -2020,6 +2102,51 @@ mod showtime_preview_tests {
         assert!(!is_previewable_ext(Path::new("/w/a.md")));
         assert!(is_showtime_ext(Path::new("/w/deck.showtime")));
         assert!(!is_showtime_ext(Path::new("/w/a.html")));
+    }
+
+    #[test]
+    fn served_documents_carry_the_escape_relay_at_the_end() {
+        let page = b"<!doctype html><html><body><button>Focus</button></body></html>".to_vec();
+        let served = with_escape_relay(page.clone());
+        assert!(served.starts_with(&page));
+        assert!(served.ends_with(ESCAPE_RELAY_SCRIPT.as_bytes()));
+    }
+
+    // Codex review of #606, round 2: a document with its own CSP meta
+    // (script-src 'none') blocked the appended relay.
+    #[test]
+    fn served_documents_lose_their_own_csp_meta() {
+        let strict = br#"<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src 'none'"></head><body><button>Focus</button></body></html>"#;
+        let served = with_escape_relay(strict.to_vec());
+        let mut expected =
+            b"<!doctype html><html><head></head><body><button>Focus</button></body></html>".to_vec();
+        expected.extend_from_slice(ESCAPE_RELAY_SCRIPT.as_bytes());
+        assert_eq!(served, expected);
+    }
+
+    #[test]
+    fn csp_meta_is_matched_however_it_is_written_and_only_it() {
+        for tag in [
+            r#"<META HTTP-EQUIV='content-security-policy' CONTENT="default-src 'self'">"#,
+            r#"<meta content="script-src 'none'" http-equiv=Content-Security-Policy>"#,
+            r#"<meta http-equiv = " Content-Security-Policy " content="script-src 'none'" />"#,
+        ] {
+            let page = format!("<head>{tag}<title>x</title></head>");
+            assert_eq!(without_csp_meta(page.as_bytes()), b"<head><title>x</title></head>", "{tag}");
+        }
+        for tag in [
+            r#"<meta charset="utf-8">"#,
+            r#"<meta name="description" content="about Content-Security-Policy">"#,
+            r#"<meta http-equiv="refresh" content="5">"#,
+            r#"<meta data-http-equiv="Content-Security-Policy">"#,
+            r#"<meta http-equiv="Content-Security-Policy-Report-Only" content="script-src 'none'">"#,
+            r#"<metadata http-equiv="Content-Security-Policy">"#,
+        ] {
+            let page = format!("<head>{tag}</head>");
+            assert_eq!(without_csp_meta(page.as_bytes()), page.as_bytes(), "{tag}");
+        }
+        // Not UTF-8 (windows-1250 "ž") passes through untouched.
+        assert_eq!(without_csp_meta(b"<p>\x9e</p>"), b"<p>\x9e</p>");
     }
 
     #[test]
@@ -3378,7 +3505,7 @@ pub fn run() {
                     // allow-same-origin) and isolated from the app, so the
                     // app CSP is intentionally NOT applied here.
                     .header("Content-Security-Policy", "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'")
-                    .body(bytes)
+                    .body(with_escape_relay(bytes))
                     .unwrap(),
                 Err(e) => {
                     error!("portuni-html read failed for {decoded}: {e}");

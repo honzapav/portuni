@@ -40,6 +40,7 @@ import {
   threadCloseAction,
 } from "../lib/session-views";
 import { useLocalHost } from "../lib/use-local-host";
+import { isRelayedEscape } from "../lib/html-preview-url";
 import type { SessionRunRow, SessionSummary } from "../types";
 import type { SessionStore } from "../lib/session-store";
 import { selectSession } from "../lib/session-selectors";
@@ -75,6 +76,7 @@ import {
   workingPhase,
   runIsLiveFor,
   turnInFlight,
+  escapeStopsTurn,
   nextSentAt,
   transcriptElsewhere,
   runEndedText,
@@ -193,6 +195,18 @@ const THREAD_COLUMN = "mx-auto w-[min(80%,768px)]";
 // A custom remarkPlugins list replaces Streamdown's defaults, so start from
 // them: they carry gfm and codeMeta (```js startLine=10 / noLineNumbers).
 const PROMPT_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkBreaks];
+// What the Escape stop reads off a key event; a preview's relayed Escape
+// is one with nothing focused in the app and nothing to prevent.
+type EscapeKey = Parameters<typeof escapeStopsTurn>[0] & { preventDefault(): void };
+const RELAYED_ESCAPE: EscapeKey = {
+  key: "Escape",
+  defaultPrevented: false,
+  isComposing: false,
+  target: null,
+  // Nothing to prevent: the key went to the preview frame.
+  preventDefault: () => undefined,
+};
+
 // #466 (spec docs/superpowers/specs/2026-09-22-web-session-state-design.md,
 // "`SessionChat`"): this component takes the thread's id, never a row. The
 // row comes from the store -- the window's only copy -- and every change to
@@ -207,6 +221,7 @@ export default function SessionChat({
   sessionsClient,
   onOpenFile,
   onContinued,
+  shown = true,
 }: {
   sessionId: string;
   sessionStore: SessionStore;
@@ -217,6 +232,10 @@ export default function SessionChat({
   // on its own once closed; a closed one opened from Relace stays pinned
   // as the shown thread, so the switch has to be asked for.
   onContinued?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
+  // Whether this is the thread on screen. Every open thread stays mounted
+  // (WorkspaceView hides the rest), and only the shown one answers an Esc
+  // pressed outside its composer.
+  shown?: boolean;
 }) {
   const { t } = useTranslation("chat");
   const { t: tCommon } = useTranslation("common");
@@ -464,13 +483,41 @@ export default function SessionChat({
   const [answerGate] = useState(createAnswerGate);
   const localHost = useLocalHost();
 
+  // Esc stops the turn from anywhere in the app, not only from the
+  // composer: focus on the transcript, a button or the file pane must not
+  // swallow it (lib/session-chat.ts `escapeStopsTurn` says when it applies).
+  // The listener is added once and calls whatever the latest render put in
+  // the ref -- that render knows the live turn and the stop action. An HTML
+  // preview's sandboxed frame keeps its key events to itself; its Escape
+  // arrives as a message instead, taken only while the focus is in that
+  // frame (lib/html-preview-url.ts `isRelayedEscape`).
+  const escapeHandler = useRef<((e: EscapeKey) => void) | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => escapeHandler.current?.(e);
+    const onMessage = (e: MessageEvent) => {
+      const active = document.activeElement;
+      const focusedFrame = active instanceof HTMLIFrameElement ? active.contentWindow : null;
+      if (!isRelayedEscape(e.data, e.source, focusedFrame, document.hasFocus())) return;
+      escapeHandler.current?.(RELAYED_ESCAPE);
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("message", onMessage);
+    };
+  }, []);
+
   // Every hook has run; from here the record is what the component reads.
   // It is missing only in the moment between its removal from the store (a
   // deleted draft) and the parent dropping this pane, so there is nothing
   // to show and nothing to say. A record known only from a live frame
   // (`partial`) is the same case: the parent never mounts a chat for one,
   // and half a record would render a nameless header.
-  if (!session || session.partial) return null;
+  if (!session || session.partial) {
+    escapeHandler.current = null;
+    return null;
+  }
 
   const host = hostDisplayName(session, localHost);
   const startRename = () => {
@@ -584,6 +631,12 @@ export default function SessionChat({
     }
   };
 
+  // The window Escape listener (added above) reads this render's state.
+  escapeHandler.current = (e) => {
+    if (!escapeStopsTurn(e, turnActive, shown) || actionPending !== null) return;
+    e.preventDefault();
+    void runAction("interrupt");
+  };
   // #459 "Předat": POST /sessions/:id/handoff ends the turn and the run and
   // writes the thread's summary into the node's mirror; api.ts puts the
   // suspended record into the store, so the header, the sidebar and Relace

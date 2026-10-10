@@ -210,6 +210,7 @@ export default function WorkspaceView({
                 sessionsClient={sessionsClient}
                 onOpenFile={session.node_id ? (relPath) => onOpenFile(session.node_id!, relPath) : undefined}
                 onContinued={onSessionStarted}
+                shown={visible}
               />
             </div>
           );

@@ -16,7 +16,7 @@ import { displayError } from "../errors";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { isTauri, openPathExternal } from "../lib/backend-url";
-import { protocolUrl } from "../lib/html-preview-url";
+import { protocolUrl, withEscapeRelay } from "../lib/html-preview-url";
 import { copyText } from "../lib/clipboard";
 import { openInShowtime, showtimeInstalled } from "../lib/showtime";
 import { Button } from "@/components/ui/button";
@@ -129,7 +129,7 @@ export default function HtmlPreview({
         sandbox="allow-scripts"
         {...(useProtocol
           ? { src: protocolUrl(localPath as string, version) }
-          : { srcDoc: content })}
+          : { srcDoc: withEscapeRelay(content) })}
         className="min-h-0 flex-1 border-0 bg-white"
       />
     </div>
