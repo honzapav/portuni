@@ -54,6 +54,7 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_log: "write",
   portuni_store: "write",
   portuni_supersede: "write",
+  portuni_update_event: "write",
   portuni_snapshot: "write",
   portuni_pull: "write",
   portuni_mirror: "write",

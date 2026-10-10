@@ -61,6 +61,8 @@ import {
   togglePick,
   picksComplete,
   askAnswer,
+  askOptionValue,
+  askSelectedValues,
   createAnswerGate,
   type AskPicks,
   type QuestionAnswer,
@@ -68,6 +70,7 @@ import {
   deltaBuffersAfter,
   createDeltaCoalescer,
   deriveTranscriptRows,
+  activityGroupView,
   activitySummary,
   workingPhase,
   runIsLiveFor,
@@ -113,6 +116,16 @@ import {
   ConfirmationRequest,
   ConfirmationTitle,
 } from "@/components/ai-elements/confirmation";
+import {
+  Question,
+  QuestionActions,
+  QuestionDescription,
+  QuestionInput,
+  QuestionOption,
+  QuestionOptions,
+  QuestionPrompt,
+  QuestionSubmit,
+} from "@/components/ai-elements/question";
 import { Checkpoint, CheckpointIcon } from "@/components/ai-elements/checkpoint";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Loader } from "@/components/ai-elements/loader";
@@ -1122,16 +1135,18 @@ function TranscriptRowView({ row, onOpenFile }: { row: TranscriptRow; onOpenFile
 
 // One turn's activity: collapsed to its sentence, expanded to a
 // ChainOfThought with one Tool per call. The live group (the current
-// run's open one) stays expanded on the tool that is running; a
-// historical group expands only by hand, per mount.
+// run's open one) starts expanded on the tool that is running; a
+// historical group starts collapsed. The header toggles both, per mount
+// (`activityGroupView`).
 function ActivityGroupRow({ row, onOpenFile }: { row: ActivityRow; onOpenFile?: (relPath: string) => void }) {
   const { t } = useTranslation("chat");
-  const [open, setOpen] = useState(false);
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const running = row.live ? row.items.find((i) => i.kind === "tool" && i.call.status === "started") : undefined;
+  const view = activityGroupView(row.live, userOpen, running !== undefined);
   const summary = activitySummary(row.items, t);
   const headerText = summary.text || (row.live ? t(($) => $.activity.working) : t(($) => $.activity.fallback));
   return (
-    <ChainOfThought open={row.live || open} onOpenChange={setOpen} className="text-[12.5px]">
+    <ChainOfThought open={view.open} onOpenChange={setUserOpen} className="text-[12.5px]">
       <ChainOfThoughtHeader
         className="text-[12.5px]"
         style={summary.failed > 0 ? { color: "var(--color-danger)" } : undefined}
@@ -1139,7 +1154,7 @@ function ActivityGroupRow({ row, onOpenFile }: { row: ActivityRow; onOpenFile?: 
         {row.live ? <Shimmer duration={1.5}>{headerText}</Shimmer> : headerText}
       </ChainOfThoughtHeader>
       <ChainOfThoughtContent>
-        {row.live && !open && running ? (
+        {view.runningOnly && running ? (
           <ToolStep item={running} onOpenFile={onOpenFile} />
         ) : (
           row.items.map((item) => <ToolStep key={item.seq} item={item} onOpenFile={onOpenFile} />)
@@ -1186,7 +1201,7 @@ function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relP
   // A denial of the runner's own is shown in the UI language; any other
   // output is the tool's and stays as it came.
   const output = toolOutputText(p, t);
-  return (
+  const step = (
     <ChainOfThoughtStep label={p.title || p.tool} status={p.status === "started" ? "active" : "complete"}>
       <Tool defaultOpen={false} className="mb-0 bg-[var(--color-surface)]">
         <ToolHeader title={p.title || undefined} tool={p.tool} state={p.status} className="p-2.5" />
@@ -1200,6 +1215,18 @@ function ToolStep({ item, onOpenFile }: { item: ActivityItem; onOpenFile?: (relP
         </ToolContent>
       </Tool>
     </ChainOfThoughtStep>
+  );
+  if (item.subcalls.length === 0) return step;
+  // A subagent's calls, under the main agent's Task call that started it.
+  return (
+    <>
+      {step}
+      <div className="ml-6 space-y-2 border-l border-[var(--color-border)] pl-3">
+        {item.subcalls.map((sub) => (
+          <ToolStep key={sub.seq} item={sub} onOpenFile={onOpenFile} />
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -1220,13 +1247,87 @@ function WorkingRow({ phase }: { phase: WorkingPhase }) {
   );
 }
 
-// The open-question interactive panel (spec: "the question panel becomes
-// Confirmation"). Only ever rendered for the current open question, while
-// the session is actually waiting on it -- a `question` event's own
-// history entry (EventRow above) stays a plain marker, since a persisted
-// event's `decision` never mutates in place (rule: "the canonical log is
-// append-only").
+// The open-question interactive panel. Only ever rendered for the current
+// open question, while the session is actually waiting on it -- a
+// `question` event's own history entry (EventRow above) stays a plain
+// marker, since a persisted event's `decision` never mutates in place
+// (rule: "the canonical log is append-only"). An approval (yes/no, scope
+// consent) is AI Elements' `Confirmation`; an input question (options per
+// dotaz and a free-text answer, #594) is its `Question` form.
 function QuestionConfirmation({
+  question,
+  onAnswer,
+}: {
+  question: Extract<CanonicalEvent, { kind: "question" }>;
+  onAnswer: (value: QuestionAnswer) => void;
+}) {
+  const { t } = useTranslation("chat");
+  return (
+    <div className="border-t border-[var(--color-border)]">
+      <div className={`${THREAD_COLUMN} py-2.5`}>
+        {question.payload.type === "approval" ? (
+          <Confirmation state="requested" className="bg-[var(--color-surface)]">
+            <ConfirmationTitle
+              className="text-[13px] font-medium text-[var(--color-text)]"
+              translate={question.payload.code ? undefined : "no"}
+            >
+              {questionTitleText(question.payload, t)}
+            </ConfirmationTitle>
+            <QuestionDetail question={question} />
+            <ConfirmationRequest>
+              <ConfirmationActions>
+                {approvalChoices(question.payload.options, t).map((choice, i) => (
+                  <ConfirmationAction
+                    key={choice.key}
+                    translate={choice.content ? "no" : undefined}
+                    variant={typeof choice.value === "boolean" ? (choice.value ? "default" : "outline") : i === 0 ? "default" : "outline"}
+                    onClick={() => onAnswer(choice.value)}
+                  >
+                    {choice.label}
+                  </ConfirmationAction>
+                ))}
+              </ConfirmationActions>
+            </ConfirmationRequest>
+          </Confirmation>
+        ) : (
+          <InputQuestion question={question} onAnswer={onAnswer} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The question's detail under its title, with a scope consent's trailing
+// node id as a small footer of its own.
+function QuestionDetail({ question }: { question: Extract<CanonicalEvent, { kind: "question" }> }) {
+  const { t } = useTranslation("chat");
+  if (!question.payload.detail) return null;
+  const detailIsContent = questionDetailIsContent(question.payload);
+  const detail = detailIsContent
+    ? splitTrailingNodeId(questionDetailText(question.payload, t))
+    : { text: questionDetailText(question.payload, t), nodeId: null };
+  return (
+    <>
+      <p
+        className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]"
+        translate={detailIsContent ? "no" : undefined}
+      >
+        {detail.text}
+      </p>
+      {detail.nodeId && (
+        <p className="font-mono text-[10.5px] text-[var(--color-text-dim)] opacity-70" title={t(($) => $.question.node_id_hint)}>
+          {detail.nodeId}
+        </p>
+      )}
+    </>
+  );
+}
+
+// An input question (AskUserQuestion, #492): every dotaz's options and one
+// free-text answer in one `Question` form. The picks stay this panel's own
+// (`AskPicks`, per dotaz), fed to the form as its controlled value so the
+// picked options read as picked; `askAnswer` turns them into the answer.
+function InputQuestion({
   question,
   onAnswer,
 }: {
@@ -1236,9 +1337,11 @@ function QuestionConfirmation({
   const { t } = useTranslation("chat");
   const [text, setText] = useState("");
   const [picks, setPicks] = useState<AskPicks>({});
-  const prompts = question.payload.type === "input" ? askPrompts(question.payload) : [];
+  const prompts = askPrompts(question.payload);
   // Several dotazy: each one's text stands where the detail does today.
   const perQuestion = prompts.length > 1;
+  // One single-choice dotaz answers on the click, like approval.
+  const answersOnClick = prompts.length === 1 && !prompts[0].multi_select;
   const submitText = () => {
     const value = askAnswer(prompts, picks, text);
     if (value !== null) onAnswer(value);
@@ -1251,102 +1354,65 @@ function QuestionConfirmation({
       if (value !== null) onAnswer(value);
     }
   };
-  const detailIsContent = questionDetailIsContent(question.payload);
-  const detail = detailIsContent
-    ? splitTrailingNodeId(questionDetailText(question.payload, t))
-    : { text: questionDetailText(question.payload, t), nodeId: null };
   return (
-    <div className="border-t border-[var(--color-border)]">
-      <div className={`${THREAD_COLUMN} py-2.5`}>
-      <Confirmation state="requested" className="bg-[var(--color-surface)]">
-        <ConfirmationTitle
-          className="text-[13px] font-medium text-[var(--color-text)]"
-          translate={question.payload.code ? undefined : "no"}
-        >
-          {questionTitleText(question.payload, t)}
-        </ConfirmationTitle>
-        {question.payload.detail && !perQuestion && (
-          <>
-            <p
-              className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]"
-              translate={detailIsContent ? "no" : undefined}
-            >
-              {detail.text}
-            </p>
-            {detail.nodeId && (
-              <p className="font-mono text-[10.5px] text-[var(--color-text-dim)] opacity-70" title={t(($) => $.question.node_id_hint)}>
-                {detail.nodeId}
-              </p>
-            )}
-          </>
-        )}
-        <ConfirmationRequest>
-          {question.payload.type === "approval" ? (
-            <ConfirmationActions>
-              {approvalChoices(question.payload.options, t).map((choice, i) => (
-                <ConfirmationAction
-                  key={choice.key}
-                  translate={choice.content ? "no" : undefined}
-                  variant={typeof choice.value === "boolean" ? (choice.value ? "default" : "outline") : i === 0 ? "default" : "outline"}
-                  onClick={() => onAnswer(choice.value)}
-                >
-                  {choice.label}
-                </ConfirmationAction>
-              ))}
-            </ConfirmationActions>
-          ) : (
-            <>
-              {prompts.map((prompt) => (
-                <Fragment key={prompt.question}>
-                  {perQuestion && (
-                    <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]" translate="no">
-                      {prompt.question}
-                    </p>
-                  )}
-                  {prompt.options.length > 0 && (
-                    <ConfirmationActions>
-                      {prompt.options.map((label) => (
-                        <ConfirmationAction
-                          key={label}
-                          translate="no"
-                          // One single-choice dotaz answers on the click,
-                          // like approval; otherwise a pick is shown until
-                          // the rest is answered.
-                          variant={
-                            (prompts.length === 1 && !prompt.multi_select) ||
-                            (picks[prompt.question] ?? []).includes(label)
-                              ? "default"
-                              : "outline"
-                          }
-                          onClick={() => pick(prompt, label)}
-                        >
-                          {label}
-                        </ConfirmationAction>
-                      ))}
-                    </ConfirmationActions>
-                  )}
-                </Fragment>
-              ))}
-              <ConfirmationActions className="w-full">
-                <Input
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => {
-                    // An IME composition's Enter confirms the composition,
-                    // it is not a send.
-                    if (e.key === "Enter" && !e.nativeEvent.isComposing) submitText();
-                  }}
-                  placeholder={t(($) => $.question.answer_placeholder)}
-                  className="min-w-0 flex-1"
-                />
-                <ConfirmationAction onClick={submitText}>{t(($) => $.question.send)}</ConfirmationAction>
-              </ConfirmationActions>
-            </>
+    <Question
+      className="space-y-2 bg-[var(--color-surface)] px-2.5 py-2"
+      selectionMode="multiple"
+      value={{ selectedValues: askSelectedValues(prompts, picks), text }}
+      onValueChange={(value) => setText(value.text)}
+      onSubmit={submitText}
+    >
+      <QuestionPrompt
+        className="text-[13px] text-[var(--color-text)]"
+        translate={question.payload.code ? undefined : "no"}
+      >
+        {questionTitleText(question.payload, t)}
+      </QuestionPrompt>
+      {!perQuestion && <QuestionDetail question={question} />}
+      {prompts.map((prompt, i) => (
+        <Fragment key={prompt.question}>
+          {perQuestion && (
+            <QuestionDescription className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]" translate="no">
+              {prompt.question}
+            </QuestionDescription>
           )}
-        </ConfirmationRequest>
-      </Confirmation>
-      </div>
-    </div>
+          {prompt.options.length > 0 && (
+            <QuestionOptions selectionMode={prompt.multi_select ? "multiple" : "single"} aria-label={prompt.question}>
+              {prompt.options.map((label) => (
+                <QuestionOption
+                  key={label}
+                  value={askOptionValue(i, label)}
+                  translate="no"
+                  className="min-h-8 px-3 text-sm"
+                  // An answer-on-click option is an action, never shown as
+                  // a pick; the rest read picked / not picked.
+                  variant={answersOnClick ? "default" : undefined}
+                  onClick={() => pick(prompt, label)}
+                >
+                  {label}
+                </QuestionOption>
+              ))}
+            </QuestionOptions>
+          )}
+        </Fragment>
+      ))}
+      <QuestionInput
+        onKeyDown={(e) => {
+          // Enter sends, Shift+Enter breaks the line; an IME
+          // composition's Enter confirms the composition, it is not a send.
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            e.currentTarget.form?.requestSubmit();
+          }
+        }}
+        placeholder={t(($) => $.question.answer_placeholder)}
+        className="min-h-9 text-[13px]"
+        rows={1}
+      />
+      <QuestionActions>
+        <QuestionSubmit className="h-8 px-3 text-sm">{t(($) => $.question.send)}</QuestionSubmit>
+      </QuestionActions>
+    </Question>
   );
 }
 

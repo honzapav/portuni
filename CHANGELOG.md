@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.28.0](https://github.com/honzapav/portuni/compare/v0.27.0...v0.28.0) (2026-10-06)
+
+
+### Features
+
+* **runner,web:** a subagent's tool calls show nested under the Task call ([#595](https://github.com/honzapav/portuni/issues/595)) ([883a07d](https://github.com/honzapav/portuni/commit/883a07d53111334166dad2916fb4c0152c15a128))
+* **web:** input questions use the AI Elements question form ([#594](https://github.com/honzapav/portuni/issues/594)) ([#599](https://github.com/honzapav/portuni/issues/599)) ([561383c](https://github.com/honzapav/portuni/commit/561383cbb81a85646420004872761360de157546))
+
+
+### Bug Fixes
+
+* **web:** the activity group header collapses and expands a live group ([#593](https://github.com/honzapav/portuni/issues/593)) ([fab6d6f](https://github.com/honzapav/portuni/commit/fab6d6f6829240a52af5b099c7ce9530c38d756e))
+
 ## [0.27.0](https://github.com/honzapav/portuni/compare/v0.26.0...v0.27.0) (2026-10-05)
 
 

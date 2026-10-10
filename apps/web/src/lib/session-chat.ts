@@ -163,6 +163,18 @@ export function togglePick(picks: AskPicks, prompt: AskPrompt, label: string): A
   return { ...picks, [prompt.question]: next };
 }
 
+// The panel's `Question` form holds every dotaz's options in one list of
+// selected values, so an option's value carries its dotaz's index: two
+// dotazy may offer the same label ("yes"), and picking one must not mark
+// the other.
+export function askOptionValue(index: number, label: string): string {
+  return `${index}:${label}`;
+}
+
+export function askSelectedValues(prompts: readonly AskPrompt[], picks: AskPicks): string[] {
+  return prompts.flatMap((p, i) => (picks[p.question] ?? []).map((label) => askOptionValue(i, label)));
+}
+
 // A click on an option answers at once when it settles everything: every
 // dotaz single-choice and picked. Otherwise the user finishes with Odeslat.
 export function picksComplete(prompts: readonly AskPrompt[], picks: AskPicks): boolean {
@@ -281,6 +293,8 @@ export function collapseToolCalls(events: readonly ChatEvent[]): ChatEvent[] {
 
 // --- Naming (#374) -----------------------------------------------------------
 
+// The server copy below is deliberate (see the comment on the function).
+// fallow-ignore-next-line code-duplication
 const THREAD_NAME_MAX_LENGTH = 60;
 
 // A thread names itself from its first message: first line, trimmed,
@@ -307,8 +321,10 @@ export function threadNameFromFirstMessage(text: string): string {
 
 export type ActivityItem =
   | { kind: "reasoning"; seq: number; summary: string; durationMs: number | null }
-  | { kind: "tool"; seq: number; call: ToolCallEvent["payload"] }
+  | { kind: "tool"; seq: number; call: ToolCallEvent["payload"]; subcalls: ActivityToolItem[] }
   | { kind: "file_change"; seq: number; path: string; op: FileChangeOp };
+
+export type ActivityToolItem = Extract<ActivityItem, { kind: "tool" }>;
 
 export type ActivityRow = { kind: "activity"; key: string; runId: string | null; items: ActivityItem[]; live: boolean };
 
@@ -364,12 +380,22 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
   // narrows to `null` for the reader after the loop.
   const group: { open: ActivityRow | null } = { open: null };
   let currentRun: string | null = null;
+  // A collapsed tool call carries its latest event's seq, so the group is
+  // keyed on the call's first event: its key (and the React row behind it,
+  // with the header's click) survives the call completing.
+  const firstToolSeq = new Map<string, number>();
+  for (const { seq, event } of events)
+    if (event.kind === "tool_call" && !firstToolSeq.has(event.payload.tool_use_id)) firstToolSeq.set(event.payload.tool_use_id, seq);
   const close = (): void => {
     group.open = null;
   };
+  // Every tool item by its tool_use_id, so a subagent's call finds the
+  // main agent's Task call it runs under, in whichever group that sits.
+  const toolItems = new Map<string, ActivityToolItem>();
   const push = (item: ActivityItem): void => {
     if (!group.open) {
-      group.open = { kind: "activity", key: `a${item.seq}`, runId: currentRun, items: [], live: false };
+      const keySeq = item.kind === "tool" ? (firstToolSeq.get(item.call.tool_use_id) ?? item.seq) : item.seq;
+      group.open = { kind: "activity", key: `a${keySeq}`, runId: currentRun, items: [], live: false };
       rows.push(group.open);
     }
     group.open.items.push(item);
@@ -387,9 +413,14 @@ export function deriveTranscriptRows(events: readonly ChatEvent[], liveRunId: st
       case "reasoning":
         push({ kind: "reasoning", seq, summary: event.payload.summary, durationMs: event.payload.duration_ms ?? null });
         break;
-      case "tool_call":
-        push({ kind: "tool", seq, call: event.payload });
+      case "tool_call": {
+        const item: ActivityToolItem = { kind: "tool", seq, call: event.payload, subcalls: [] };
+        toolItems.set(event.payload.tool_use_id, item);
+        const parent = event.payload.parent_tool_use_id ? toolItems.get(event.payload.parent_tool_use_id) : undefined;
+        if (parent) parent.subcalls.push(item);
+        else push(item);
         break;
+      }
       case "file_change":
         push({ kind: "file_change", seq, path: event.payload.path, op: event.payload.op });
         break;
@@ -528,6 +559,19 @@ export function activitySummary(items: readonly ActivityItem[], t: ChatT): { tex
   if (failed) parts.push(t(($) => $.activity.failed, { ns: "chat", count: failed }));
   if (parts.length === 0 && items.some((i) => i.kind === "reasoning")) parts.push(t(($) => $.activity.thought, { ns: "chat" }));
   return { text: parts.join(" · "), failed };
+}
+
+// How an activity group shows. `userOpen` is the header's last click, null
+// until the first one. Without a click a live group is open on its running
+// tool and a historical one is collapsed; a click always wins, so the
+// header collapses a live group too and expands it to every call.
+export function activityGroupView(
+  live: boolean,
+  userOpen: boolean | null,
+  hasRunning: boolean,
+): { open: boolean; runningOnly: boolean } {
+  const open = userOpen ?? live;
+  return { open, runningOnly: open && userOpen === null && hasRunning };
 }
 
 // Whether the thread has a live run for the UI's purposes (working row,
