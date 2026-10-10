@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.29.0](https://github.com/honzapav/portuni/compare/v0.28.0...v0.29.0) (2026-10-10)
+
+
+### Features
+
+* **mcp:** portuni_update_event edits an event in place ([#607](https://github.com/honzapav/portuni/issues/607)) ([7cdb8e9](https://github.com/honzapav/portuni/commit/7cdb8e994c47093bc5de7c2bc5f6fd1b9db4f0b1))
+* **runner,web:** the composer names the default model and effort before the first run ([#596](https://github.com/honzapav/portuni/issues/596)) ([7f2180f](https://github.com/honzapav/portuni/commit/7f2180ff2947e54fb96dd0ab4e884688413dbaba))
+
+
+### Bug Fixes
+
+* **deps:** patch rustls, katex and postcss-selector-parser advisories ([#605](https://github.com/honzapav/portuni/issues/605)) ([7c7d7f4](https://github.com/honzapav/portuni/commit/7c7d7f481014c06a35640fe1c5bcfe1c1636e27d))
+
 ## [0.28.0](https://github.com/honzapav/portuni/compare/v0.27.0...v0.28.0) (2026-10-06)
 
 
