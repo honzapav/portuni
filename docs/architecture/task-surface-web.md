@@ -664,7 +664,13 @@ Two rows under the textarea, inside the composer's border
 `GET /runners/:runner/models` for `session.runner ?? "claude"`. The effort
 `Select` appears only when the selected model's `supportsEffort` is true
 and offers that model's own `effortLevels`; its title says it applies from
-the next run. Both are gated on `access.canResume` and both call
+the next run. Without a thread model the picker reads "Default: <model>"
+and the effort picker "Effort: <level> (default)", from
+`fetchRunnerDefaults(runner, instance_id, session.model)` (`GET
+/runners/:runner/defaults`, asked again when any of the three changes);
+the tooltip says where the value comes from (`defaultSourceText`), and
+the effort picker shows when the default model's row supports effort.
+Both are gated on `access.canResume` and both call
 `patchSessionModelEffort` over an optimistic `store.put`, which the
 server's answer replaces and a refusal undoes ("Model se nepodařilo
 uložit: …"). `SessionSummary` carries `model` and `effort`, so no second

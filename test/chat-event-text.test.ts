@@ -13,6 +13,8 @@ import {
   RUN_ERROR_CODES,
 } from "../apps/server/shared/chat-event-codes.js";
 import {
+  defaultModelName,
+  defaultSourceText,
   modelDescriptionText,
   questionDetailIsContent,
   questionDetailText,
@@ -158,5 +160,28 @@ describe("chat event text (#532)", () => {
         [false, "Claude Code není na tomto zařízení přihlášený."],
       ],
     );
+  });
+});
+
+describe("composer defaults", () => {
+  const models = [
+    { id: "default", displayName: "Default (recommended)", resolvedModel: "claude-opus-5-5" },
+    { id: "opus", displayName: "Opus", resolvedModel: "claude-opus-5-5" },
+    { id: "sonnet", displayName: "Sonnet" },
+  ];
+
+  it("names the default model from the runner's list, never as the 'default' row; an unknown id stays an id", () => {
+    assert.equal(defaultModelName("claude-opus-5-5", models), "Opus");
+    assert.equal(defaultModelName("sonnet", models), "Sonnet");
+    assert.equal(defaultModelName("claude-haiku-4-5", models), "claude-haiku-4-5");
+    assert.equal(defaultModelName("claude-opus-5-5", [models[0]]), "claude-opus-5-5");
+  });
+
+  it("says where a default comes from, in both languages", () => {
+    assert.equal(defaultSourceText("settings", "/home/u/.claude/settings.json", tEn), "Set in /home/u/.claude/settings.json");
+    assert.equal(defaultSourceText("env", "ANTHROPIC_MODEL", tCs), "Nastavuje proměnná prostředí ANTHROPIC_MODEL");
+    assert.equal(defaultSourceText("account", null, tEn), "The account's default model");
+    assert.equal(defaultSourceText("model", null, tCs), "Výchozí hodnota modelu");
+    assert.equal(defaultSourceText("instance", null, tEn), "The runner instance's default");
   });
 });

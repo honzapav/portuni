@@ -10,6 +10,7 @@
     { "method": "GET", "pattern": "/runners", "example": "/runners" },
     { "method": "GET", "pattern": "/hosts/local", "example": "/hosts/local" },
     { "method": "GET", "pattern": "/runners/{runner}/models", "example": "/runners/claude/models" },
+    { "method": "GET", "pattern": "/runners/{runner}/defaults", "example": "/runners/fake/defaults" },
     { "method": "GET", "pattern": "/runners/instances", "example": "/runners/instances" },
     { "method": "POST", "pattern": "/runners/instances", "example": "/runners/instances" },
     { "method": "PATCH", "pattern": "/runners/instances/{id}", "example": "/runners/instances/01INST" },

@@ -3,6 +3,7 @@
 //
 //   GET    /runners                          read   -> detected adapters + availability
 //   GET    /runners/:runner/models            read   -> the picker's list (#376)
+//   GET    /runners/:runner/defaults          read   -> default model/effort and their source
 //   GET    /runners/instances                read   -> provider instances (no env values)
 //   POST   /runners/instances                write  -> create an instance
 //   PATCH  /runners/instances/:id            write  -> update (partial; empty env value = unchanged)
@@ -28,11 +29,13 @@ import {
   InstanceEnvKeyRefusedError,
   createInstance,
   deleteInstance,
+  getInstanceDefaults,
+  getInstanceEnv,
   listInstances,
   setOrgDefault,
   updateInstance,
 } from "../domain/runner/instances.js";
-import type { LocalHostInfo, RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
+import type { LocalHostInfo, RunnerDefaultsInfo, RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
 
 function respondInstanceError(res: ServerResponse, ctx: string, err: unknown): void {
   if (err instanceof InstanceEnvKeyRefusedError || err instanceof InstanceDefaultsKeyRefusedError) {
@@ -79,6 +82,40 @@ export async function handleListRunnerModels(
     respondJson(res, 200, { models });
   } catch (err) {
     respondError(res, `${req.method} /runners/${runnerId}/models`, err);
+  }
+}
+
+// GET /runners/:runner/defaults?instance=<id>&model=<id>: what a thread on
+// that instance runs on when it names no model or effort of its own, with
+// the source of each value -- the composer shows it before the first run.
+// `model` is the thread's own model (the effort default depends on it).
+// Device-local like the rest of /runners*: the instance env and the
+// runner's settings file are this device's. A runner without the method
+// answers `defaults: null`.
+export async function handleGetRunnerDefaults(
+  req: IncomingMessage,
+  res: ServerResponse,
+  runnerId: string,
+  url: URL,
+): Promise<void> {
+  try {
+    const adapter = getAdapter(runnerId);
+    if (!adapter) {
+      respondApiError(res, 404, "UNKNOWN_RUNNER", `unknown runner '${runnerId}'`, { runner: runnerId });
+      return;
+    }
+    if (!adapter.defaults) {
+      respondJson(res, 200, { defaults: null });
+      return;
+    }
+    const instanceId = url.searchParams.get("instance") || null;
+    const model = url.searchParams.get("model") || null;
+    const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
+    const instanceDefaults = instanceId ? await getInstanceDefaults(instanceId) : null;
+    const defaults: RunnerDefaultsInfo = await adapter.defaults({ model, instanceEnv, instanceDefaults });
+    respondJson(res, 200, { defaults });
+  } catch (err) {
+    respondError(res, `${req.method} /runners/${runnerId}/defaults`, err);
   }
 }
 

@@ -27,11 +27,20 @@ export default interface Resources {
       "title": "Chain of thought"
     },
     "composer": {
+      "default_source": {
+        "account": "The account's default model",
+        "env": "Set by the environment variable {{name}}",
+        "instance": "The runner instance's default",
+        "model": "The model's own default",
+        "settings": "Set in {{path}}"
+      },
       "effort": {
+        "default": "Effort: {{level}} (default)",
         "placeholder": "Effort (default)",
         "title": "Reasoning effort, takes effect from the next run"
       },
       "model": {
+        "default": "Default: {{model}}",
         "placeholder": "Model (default)",
         "title": "Model"
       },
