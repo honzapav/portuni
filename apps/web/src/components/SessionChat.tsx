@@ -459,13 +459,15 @@ export default function SessionChat({
   // The listener is added once and calls whatever the latest render put in
   // the ref -- that render knows the live turn and the stop action. An HTML
   // preview's sandboxed frame keeps its key events to itself; its Escape
-  // arrives as a message instead (lib/html-preview-url.ts).
+  // arrives as a message instead, taken only while the focus is in that
+  // frame (lib/html-preview-url.ts `isRelayedEscape`).
   const escapeHandler = useRef<((e: EscapeKey) => void) | null>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => escapeHandler.current?.(e);
     const onMessage = (e: MessageEvent) => {
-      const frames = Array.from(document.querySelectorAll("iframe"), (f) => f.contentWindow);
-      if (!isRelayedEscape(e.data, e.source, frames)) return;
+      const active = document.activeElement;
+      const focusedFrame = active instanceof HTMLIFrameElement ? active.contentWindow : null;
+      if (!isRelayedEscape(e.data, e.source, focusedFrame, document.hasFocus())) return;
       escapeHandler.current?.(RELAYED_ESCAPE);
     };
     window.addEventListener("keydown", onKey);

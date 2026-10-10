@@ -12,6 +12,7 @@ import {
   isRelayedEscape,
   protocolUrl,
   withEscapeRelay,
+  withoutCspMeta,
 } from "../apps/web/src/lib/html-preview-url.js";
 
 describe("protocolUrl", () => {
@@ -88,13 +89,58 @@ describe("Escape relay out of the HTML preview", () => {
     for (const tagName of ["INPUT", "TEXTAREA", "SELECT"]) assert.deepEqual(relayed({ key: "Escape", tagName }), []);
   });
 
-  it("takes the message only from one of the document's own frames", () => {
+  it("takes the message only from the frame that holds the focus", () => {
     const frame = {};
-    assert.equal(isRelayedEscape({ portuni: "escape" }, frame, [frame]), true);
-    assert.equal(isRelayedEscape({ portuni: "escape" }, {}, [frame]), false);
-    assert.equal(isRelayedEscape({ portuni: "escape" }, null, [null]), false);
-    assert.equal(isRelayedEscape({ portuni: "other" }, frame, [frame]), false);
-    assert.equal(isRelayedEscape("escape", frame, [frame]), false);
-    assert.equal(isRelayedEscape(null, frame, [frame]), false);
+    assert.equal(isRelayedEscape({ portuni: "escape" }, frame, frame, false), true);
+    assert.equal(isRelayedEscape({ portuni: "escape" }, {}, frame, false), false);
+    assert.equal(isRelayedEscape({ portuni: "escape" }, null, null, false), false);
+    assert.equal(isRelayedEscape({ portuni: "other" }, frame, frame, false), false);
+    assert.equal(isRelayedEscape("escape", frame, frame, false), false);
+    assert.equal(isRelayedEscape(null, frame, frame, false), false);
+  });
+
+  // Codex review of #606, round 2, blocking: a preview page could stop
+  // every turn on its own -- setInterval(() => parent.postMessage({portuni:
+  // "escape"}, "*"), 100) passed the old check, which only asked whether
+  // the sender was one of the document's frames.
+  it("ignores a page that posts the message without the user in it", () => {
+    const preview = {};
+    const tick = { portuni: "escape" };
+    // The user typed the next prompt: the app document has the focus.
+    assert.equal(isRelayedEscape(tick, preview, null, true), false);
+    // The user is in another window: nothing in the app has the focus.
+    assert.equal(isRelayedEscape(tick, preview, null, false), false);
+    // The focus is in a different frame than the one posting.
+    assert.equal(isRelayedEscape(tick, preview, {}, false), false);
+  });
+
+  // Codex review of #606, round 2, major: a document with its own CSP meta
+  // (script-src 'none') blocked the appended relay, so Escape inside it
+  // stopped nothing again. The meta goes before the relay is added.
+  it("drops the document's own CSP meta, so the relay can run", () => {
+    const strict =
+      '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src \'none\'"></head><body><button>Focus</button></body></html>';
+    const served = withEscapeRelay(strict);
+    assert.equal(
+      served,
+      `<!doctype html><html><head></head><body><button>Focus</button></body></html>${ESCAPE_RELAY_SCRIPT}`,
+    );
+  });
+
+  it("matches the CSP meta however it is written, and only that meta", () => {
+    for (const tag of [
+      "<META HTTP-EQUIV='content-security-policy' CONTENT=\"default-src 'self'\">",
+      "<meta content=\"script-src 'none'\" http-equiv=Content-Security-Policy>",
+      '<meta http-equiv = " Content-Security-Policy " content="script-src \'none\'" />',
+    ])
+      assert.equal(withoutCspMeta(`<head>${tag}<title>x</title></head>`), "<head><title>x</title></head>");
+    for (const tag of [
+      '<meta charset="utf-8">',
+      '<meta name="description" content="about Content-Security-Policy">',
+      '<meta http-equiv="refresh" content="5">',
+      '<meta data-http-equiv="Content-Security-Policy">',
+      '<meta http-equiv="Content-Security-Policy-Report-Only" content="script-src \'none\'">',
+    ])
+      assert.equal(withoutCspMeta(`<head>${tag}</head>`), `<head>${tag}</head>`);
   });
 });
