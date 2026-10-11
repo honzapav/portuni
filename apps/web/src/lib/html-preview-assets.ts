@@ -27,7 +27,7 @@ export const BLOCKED_URL = "about:invalid#portuni-preview-blocked";
 
 // Bounds on one document's inlining: total distinct files and how deep
 // stylesheets may @import each other (also the cycle guard's backstop).
-export const MAX_PREVIEW_ASSETS = 200;
+const MAX_PREVIEW_ASSETS = 200;
 const MAX_IMPORT_DEPTH = 4;
 
 // Base the references resolve against. Never fetched: it only lets the URL
@@ -411,7 +411,7 @@ export async function inlinePreviewAssets(
 // (src and srcset, also inside <picture>), video posters, SVG <image>,
 // <style> blocks and style attributes. Scripts, iframes and links are not
 // assets and stay as written.
-export function collectAssetSlots(doc: Document): AssetSlot[] {
+function collectAssetSlots(doc: Document): AssetSlot[] {
   const slots: AssetSlot[] = [];
   const attr = (sel: string, name: string, kind: "url" | "srcset") => {
     for (const el of Array.from(doc.querySelectorAll(sel))) {

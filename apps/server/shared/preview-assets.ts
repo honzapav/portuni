@@ -6,7 +6,7 @@
 // Shared by the server (GET /nodes/:id/file?as=preview-asset refuses other
 // types) and the web preview (which inlines what it loads as data: URLs, so
 // the content type here is the one the frame sees).
-export const PREVIEW_ASSET_MIME: Readonly<Record<string, string>> = {
+const PREVIEW_ASSET_MIME: Readonly<Record<string, string>> = {
   css: "text/css",
   woff2: "font/woff2",
   woff: "font/woff",
