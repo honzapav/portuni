@@ -2204,10 +2204,10 @@ mod showtime_preview_tests {
         // Not UTF-8 (windows-1250 "ž") passes through untouched.
         assert_eq!(without_csp_meta(b"<p>\x9e</p>"), b"<p>\x9e</p>");
         // UTF-8 around a removed meta stays as it was.
-        let page = format!("<head><title>Žluťoučký kůň</title>{csp}</head><body>ďábelské ódy</body>");
+        let page = format!("<head><title>日本語 Ωμέγα</title>{csp}</head><body>façade über</body>");
         assert_eq!(
             String::from_utf8(without_csp_meta(page.as_bytes())).unwrap(),
-            "<head><title>Žluťoučký kůň</title></head><body>ďábelské ódy</body>"
+            "<head><title>日本語 Ωμέγα</title></head><body>façade über</body>"
         );
     }
 
