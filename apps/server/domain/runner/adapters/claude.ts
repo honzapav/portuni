@@ -1337,19 +1337,28 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
     // When nothing sets this run's effort, the effort its turns report is
     // the account's default for the model -- the organization's, where it
-    // has one. Whether anything sets it depends on the model, and a run
-    // without a model of its own learns its model only from its init
-    // message: the decision waits for it (claudeEffortIsLearnable). Only
-    // the first turn's level is kept, per the model the init message
-    // names; a model switched (setModel), a slash command or a skill before
-    // it stops the learning, since each sets the turn's model or level.
+    // has one. The CLI reports only the level, never why (HookInput.effort),
+    // so the learning errs towards keeping nothing: a level kept wrongly
+    // outlives the setting that chose it. Whether anything sets it depends
+    // on the model, and a run without a model of its own learns its model
+    // only from its init message: the decision waits for it
+    // (claudeEffortIsLearnable). Only the first turn of a new session
+    // counts. Its Stop hook offers the level, and the turn's result keeps
+    // it: hooks are answered as they arrive, messages in order, so only at
+    // the result has every message of the turn been seen. A model switched
+    // (setModel, a fallback), a slash command, a skill or a main-thread
+    // agent before then stops the learning, since each sets the turn's
+    // model or level.
     const runAccountKey = accountKey(run.instance.env);
     let learnEffort: Promise<boolean> = Promise.resolve(false);
     let runModelId: string | null = null;
+    let offeredEffort: EffortLevel | null = null;
+    if (run.resume) learningStopped = true;
 
     function stopEffortLearning(): void {
       learningStopped = true;
       learnEffort = Promise.resolve(false);
+      offeredEffort = null;
     }
 
     function decideEffortLearning(initModel: unknown): void {
@@ -1362,17 +1371,30 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         .catch(() => false);
     }
 
+    // A model the turn ran on other than the init message's.
+    function checkTurnModel(model: unknown): void {
+      if (runModelId !== null && baseModelId(model) !== runModelId) stopEffortLearning();
+    }
+
     async function stopHook(input: HookInput): Promise<HookJSONOutput> {
       const level = (input as { effort?: { level?: unknown } }).effort?.level;
+      const offered = !learningStopped && input.agent_type === undefined && typeof level === "string" && (EFFORT_LEVELS as readonly string[]).includes(level);
+      if (offered) offeredEffort = level as EffortLevel;
+      else stopEffortLearning();
+      return {};
+    }
+
+    async function keepOfferedEffort(result: { subtype: string; modelUsage?: Record<string, unknown> }): Promise<void> {
       const model = runModelId;
+      const level = offeredEffort;
+      if (result.subtype !== "success") stopEffortLearning();
+      for (const used of Object.keys(result.modelUsage ?? {})) checkTurnModel(used);
       const learn = learnEffort;
       stopEffortLearning();
-      if (model !== null && typeof level === "string" && (EFFORT_LEVELS as readonly string[]).includes(level) && (await learn)) {
-        const known = accountEfforts.get(runAccountKey) ?? {};
-        known[model] = level as EffortLevel;
-        accountEfforts.set(runAccountKey, known);
-      }
-      return {};
+      if (model === null || level === null || !(await learn)) return;
+      const known = accountEfforts.get(runAccountKey) ?? {};
+      known[model] = level;
+      accountEfforts.set(runAccountKey, known);
     }
 
     async function preCompactHook(input: HookInput): Promise<HookJSONOutput> {
@@ -1490,6 +1512,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       }
       if (msg.type === "assistant" && isSyntheticErrorMessage(msg)) return;
       if (msg.type === "assistant") {
+        checkTurnModel(msg.message.model);
         if (msg.message.content.some((block) => block.type === "tool_use" && block.name === "Skill")) stopEffortLearning();
         await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);
         return;
@@ -1503,6 +1526,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       if (msg.type === "result") {
+        await keepOfferedEffort(msg as { subtype: string; modelUsage?: Record<string, unknown> });
         state.latestUsage = { usage: msg.usage, total_cost_usd: msg.total_cost_usd };
         // The window comes with the result's per-model usage; the ring
         // shows a bare count until the first one (spec, known gaps).

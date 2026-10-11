@@ -728,16 +728,22 @@ human verification.
   `claudeEffortIsLearnable` decides there: the init id must be a plain
   `claude-<family>-<version>` (the CLI matches `modelSettings` keys "with
   its dated, [1m], Bedrock and Vertex spellings", so on any other id the
-  run cannot tell); `claudeEffortIsAccountDefault` must hold for the
-  thread's model, the init model and the init model without its context
-  suffix (no `run.effort`, nothing in env or settings, or `auto`); no
-  per-model `effortLevel` key may name the model even in part; and a
-  top-level `effortLevel` in the user file counts as set except on Opus
-  5.5. Only the first turn's level is kept, per account and per the
-  init message's model (suffix stripped), for the process's lifetime; a
-  `setModel`, a prompt starting with `/` (`/effort`, `/model`, a skill)
-  or a `Skill` tool call before it stops the learning. Before such a
-  run, the documented default stands in.
+  run cannot tell); nothing may set the effort for the thread's model,
+  the init model or the init model without its context suffix (no
+  `run.effort`, nothing in env or settings, or `auto`); no per-model
+  `effortLevel` or `maxEffortLevel` key may name the model even in part;
+  no tier may set `maxEffortLevel`, `agent`, `ultracode` or
+  `fallbackModel`; and a top-level `effortLevel` in the user file counts
+  as set except on Opus 5.5. Only the first turn of a new session (no
+  `run.resume`) counts: its `Stop` hook offers the level and the turn's
+  `result` keeps it, since hooks are answered as they arrive and messages
+  in order. A `setModel`, a prompt starting with `/` (`/effort`,
+  `/model`, a skill), a `Skill` tool call, a main-thread agent
+  (`agent_type` on the hook), an assistant message or a `modelUsage`
+  entry on another model, or a result other than `success` stops the
+  learning. The level is kept per account and per the init message's
+  model (suffix stripped) for the process's lifetime. Before such a run,
+  the documented default stands in.
 
 - **The runner's own text in the chat is a code (#532).** Codes live in
   `shared/chat-event-codes.ts`; the web renders them with

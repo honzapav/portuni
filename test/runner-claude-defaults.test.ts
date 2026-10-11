@@ -423,22 +423,39 @@ describe("Claude adapter defaults()", () => {
 
   // A run that sets no effort reports, on its turns' hooks, the effort the
   // CLI applied: the organization's default for the model.
+  // The fake CLI's messages come in order, one emit() at a time; a hook
+  // is answered at once, as the SDK answers a control request.
   function runQuery(model: string, after: unknown[] = []) {
     let options: Options | undefined;
-    let initSeen!: () => void;
-    const initConsumed = new Promise<void>((resolve) => (initSeen = resolve));
-    let finish!: () => void;
-    const finished = new Promise<void>((resolve) => (finish = resolve));
+    const queue: Array<{ msg: unknown; consumed: () => void }> = [];
+    let wake: (() => void) | null = null;
+    let finished = false;
+    const emit = (msg: unknown) =>
+      new Promise<void>((consumed) => {
+        queue.push({ msg, consumed });
+        wake?.();
+      });
+    const finish = () => {
+      finished = true;
+      wake?.();
+    };
     const list = async () => [
       { value: "default", displayName: "Default", description: "", resolvedModel: "claude-opus-5-5", supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"] },
     ];
     const query = ((params: { prompt: unknown; options?: Options }) => {
       options = params.options;
       async function* gen(): AsyncGenerator<unknown, void> {
-        yield { type: "system", subtype: "init", session_id: "agent-1", model, tools: [], mcp_servers: [] };
-        for (const msg of after) yield msg;
-        initSeen();
-        await finished;
+        for (;;) {
+          const next = queue.shift();
+          if (next) {
+            yield next.msg;
+            next.consumed();
+            continue;
+          }
+          if (finished) return;
+          await new Promise<void>((resolve) => (wake = resolve));
+          wake = null;
+        }
       }
       const it = gen() as unknown as Query;
       Object.assign(it, {
@@ -450,13 +467,32 @@ describe("Claude adapter defaults()", () => {
       });
       return it;
     }) as unknown as typeof import("@anthropic-ai/claude-agent-sdk").query;
-    const stop = async (level: string) => {
-      const hook = options?.hooks?.Stop?.[0]?.hooks[0];
-      assert.ok(hook, "a run registers a Stop hook");
-      await hook({ hook_event_name: "Stop", effort: { level } } as never, undefined, { signal: new AbortController().signal });
+    const initConsumed = (async () => {
+      await emit({ type: "system", subtype: "init", session_id: "agent-1", model, tools: [], mcp_servers: [] });
+      for (const msg of after) await emit(msg);
+    })();
+    const hook = async (level: string, extra: Record<string, unknown> = {}) => {
+      const stopHook = options?.hooks?.Stop?.[0]?.hooks[0];
+      assert.ok(stopHook, "a run registers a Stop hook");
+      await stopHook({ hook_event_name: "Stop", effort: { level }, ...extra } as never, undefined, { signal: new AbortController().signal });
     };
-    return { query, initConsumed, finish, stop };
+    const result = (subtype = "success", modelUsage: Record<string, unknown> = { [model]: {} }) =>
+      emit({ type: "result", subtype, is_error: subtype !== "success", result: "", num_turns: 1, duration_ms: 0, session_id: "agent-1", uuid: "r-1", usage: {}, total_cost_usd: 0, modelUsage });
+    // A turn's end: its Stop hook, then its result.
+    const stop = async (level: string) => {
+      await hook(level);
+      await result();
+    };
+    return { query, initConsumed, finish, stop, hook, result, emit };
   }
+
+  const skillMessage = {
+    type: "assistant",
+    parent_tool_use_id: null,
+    session_id: "agent-1",
+    uuid: "u-1",
+    message: { id: "m1", role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: "t1", name: "Skill", input: { skill: "fast" } }], usage: {} },
+  };
 
   function runStart(effort: "low" | null, model: string | null = null, brief = "hi") {
     return {
@@ -555,6 +591,15 @@ describe("Claude adapter defaults()", () => {
     { name: "plain id, modelSettings under a dated spelling", model: null, initModel: "claude-opus-5-5", settings: { modelSettings: { "claude-opus-5-5-20261001": { effortLevel: "low" } } }, learned: false },
     { name: "plain id, managed modelSettings under a Bedrock spelling", model: null, initModel: "claude-opus-5-5", settings: null, managed: { modelSettings: { "us.anthropic.claude-opus-5-5-v1:0": { effortLevel: "low" } } }, learned: false },
     { name: "top-level effortLevel, Sonnet 5.5 (not exempt by the docs)", model: null, initModel: "claude-sonnet-5-5", settings: { effortLevel: "low" }, learned: false },
+    // A cap clamps "a model default" too; an agent, ultracode or a fallback
+    // model sets the turn's level or model (SDK Settings).
+    { name: "user maxEffortLevel", model: null, initModel: "claude-opus-4-7", settings: { maxEffortLevel: "low" }, learned: false },
+    { name: "managed maxEffortLevel", model: null, initModel: "claude-opus-4-7", settings: null, managed: { maxEffortLevel: "low" }, learned: false },
+    { name: "per-model maxEffortLevel", model: null, initModel: "claude-opus-4-7", settings: { modelSettings: { "claude-opus-4-7": { maxEffortLevel: "low" } } }, learned: false },
+    { name: "a main-thread agent in settings", model: null, initModel: "claude-opus-5-5", settings: { agent: "fast" }, learned: false },
+    { name: "ultracode in settings", model: null, initModel: "claude-opus-5-5", settings: { ultracode: true }, learned: false },
+    { name: "a fallback model in settings", model: null, initModel: "claude-opus-5-5", settings: { fallbackModel: ["claude-opus-4-7"] }, learned: false },
+    { name: "ultracode off and an empty agent", model: null, initModel: "claude-opus-5-5", settings: { ultracode: false, agent: "" }, learned: true },
   ];
   for (const c of learning) {
     it(`learning the organization's effort before any defaults(): ${c.name} -> ${c.learned ? "learned" : "not learned"}`, async () => {
@@ -611,14 +656,7 @@ describe("Claude adapter defaults()", () => {
   });
 
   it("a skill the agent runs sets the turn's level: nothing is learned", async () => {
-    const skill = {
-      type: "assistant",
-      parent_tool_use_id: null,
-      session_id: "agent-1",
-      uuid: "u-1",
-      message: { id: "m1", role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: "t1", name: "Skill", input: { skill: "fast" } }], usage: {} },
-    };
-    const fake = runQuery("claude-opus-5-5", [skill]);
+    const fake = runQuery("claude-opus-5-5", [skillMessage]);
     const adapter = learningAdapter(fake);
     const handle = await adapter.start(runStart(null), () => undefined);
     await fake.initConsumed;
@@ -627,6 +665,65 @@ describe("Claude adapter defaults()", () => {
     await handle.close();
     assert.deepEqual((await adapter.defaults?.(opusDefault))?.effort, { value: "medium", source: "model", detail: null });
   });
+
+  it("the Stop hook answered before the turn's messages are read: the result keeps the level only once they are", async () => {
+    const fake = runQuery("claude-opus-5-5");
+    const adapter = learningAdapter(fake);
+    const handle = await adapter.start(runStart(null), () => undefined);
+    await fake.initConsumed;
+    await fake.hook("low");
+    await fake.emit(skillMessage);
+    await fake.result();
+    fake.finish();
+    await handle.close();
+    assert.deepEqual((await adapter.defaults?.(opusDefault))?.effort, { value: "medium", source: "model", detail: null });
+  });
+
+  const turnEnds: Array<{ name: string; end: (fake: ReturnType<typeof runQuery>) => Promise<void>; resume?: boolean }> = [
+    {
+      name: "a main-thread agent (agent_type on the Stop hook)",
+      end: async (f) => {
+        await f.hook("low", { agent_type: "fast" });
+        await f.result();
+      },
+    },
+    {
+      name: "a fallback model in the turn's usage",
+      end: async (f) => {
+        await f.hook("low");
+        await f.result("success", { "claude-opus-5-5": {}, "claude-sonnet-5": {} });
+      },
+    },
+    {
+      name: "an assistant message on another model",
+      end: async (f) => {
+        await f.emit({ ...skillMessage, message: { ...skillMessage.message, model: "claude-sonnet-5", content: [{ type: "text", text: "hi" }] } });
+        await f.stop("low");
+      },
+    },
+    {
+      name: "a turn that did not succeed",
+      end: async (f) => {
+        await f.hook("low");
+        await f.result("error_during_execution");
+      },
+    },
+    { name: "a Stop hook with no result", end: async (f) => void (await f.hook("low")) },
+    { name: "a resumed session", end: async (f) => f.stop("low"), resume: true },
+  ];
+  for (const t of turnEnds) {
+    it(`nothing is learned from ${t.name}`, async () => {
+      const fake = runQuery("claude-opus-5-5");
+      const adapter = learningAdapter(fake);
+      const start = { ...runStart(null), ...(t.resume ? { resume: { agentSessionId: "agent-0" } } : {}) };
+      const handle = await adapter.start(start, () => undefined);
+      await fake.initConsumed;
+      await t.end(fake);
+      fake.finish();
+      await handle.close();
+      assert.deepEqual((await adapter.defaults?.(opusDefault))?.effort, { value: "medium", source: "model", detail: null });
+    });
+  }
 
   it("only the first turn's level is kept; a later turn's (after /effort in the chat) is not", async () => {
     const fake = runQuery("claude-opus-5-5");

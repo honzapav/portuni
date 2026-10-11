@@ -193,10 +193,23 @@ function withoutContextSuffix(id: string): string {
   return id.replace(/\[[^\]]*\]$/, "");
 }
 
+// Keys that change a turn's level or model besides the effort ones: a cap
+// ("anything above it ... a model default" is clamped), a main-thread
+// agent (whose definition may carry an effort), ultracode (xhigh) and a
+// fallback model (SDK Settings).
+const EFFORT_CHANGING_KEYS = ["maxEffortLevel", "agent", "ultracode", "fallbackModel"] as const;
+
+function setsAnything(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== false && value !== "";
+}
+
 function perModelEffortKeys(settings: ClaudeUserSettings): string[] {
   const map = settings.modelSettings && typeof settings.modelSettings === "object" ? (settings.modelSettings as Record<string, unknown>) : {};
   return Object.entries(map)
-    .filter(([, entry]) => entry && typeof entry === "object" && effortLevel((entry as { effortLevel?: unknown }).effortLevel) !== null)
+    .filter(([, entry]) => {
+      const e = entry && typeof entry === "object" ? (entry as { effortLevel?: unknown; maxEffortLevel?: unknown }) : null;
+      return e !== null && (setsAnything(e.effortLevel) || setsAnything(e.maxEffortLevel));
+    })
     .map(([key]) => key);
 }
 
@@ -210,14 +223,18 @@ function perModelEffortKeys(settings: ClaudeUserSettings): string[] {
 // context suffix); the CLI matches a modelSettings key "with its dated,
 // [1m], Bedrock and Vertex spellings" (SDK Settings.modelSettings), so the
 // init id must be a plain one and any per-model key that names it in part
-// counts as set; and a top-level effortLevel in the user settings file
-// counts as set except on Opus 5.5, the one model the docs exempt.
+// counts as set (an effortLevel or a maxEffortLevel); a cap, an agent,
+// ultracode or a fallback model in any tier counts as set; and a top-level
+// effortLevel in the user settings file counts as set except on Opus 5.5,
+// the one model the docs exempt.
 export function claudeEffortIsLearnable(input: ResolveClaudeDefaultsInput, threadModel: string | null, initModel: string): boolean {
   const id = withoutContextSuffix(initModel);
   if (!CANONICAL_MODEL_ID.test(id)) return false;
   if ([...new Set([threadModel, initModel, id])].some((model) => !claudeEffortIsAccountDefault({ ...input, model }))) return false;
   for (const settings of [input.managed?.settings, input.settings]) {
     if (!settings) continue;
+    const raw = settings as Record<string, unknown>;
+    if (EFFORT_CHANGING_KEYS.some((key) => setsAnything(raw[key]))) return false;
     const named = perModelEffortKeys(settings).some((k) => {
       const key = withoutContextSuffix(k);
       return key.includes(id) || id.includes(key);
