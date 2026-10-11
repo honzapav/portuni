@@ -180,7 +180,7 @@ export function resolveClaudeDefaults(input: ResolveClaudeDefaultsInput): Runner
 // Whether a run on `input` gets the effort the CLI holds for its model by
 // itself -- the case in which the effort a turn reports is the account's
 // default for that model.
-export function claudeEffortIsAccountDefault(input: ResolveClaudeDefaultsInput): boolean {
+function claudeEffortIsAccountDefault(input: ResolveClaudeDefaultsInput): boolean {
   return resolveEffort(input, resolveModel(input).value).modelDefault;
 }
 
