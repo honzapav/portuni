@@ -198,7 +198,10 @@ export function NewFileForm({
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") void submit();
-          if (e.key === "Escape") onCancel();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
         }}
         placeholder={t(($) => $.new_file.placeholder)}
         className="min-w-0 flex-1"
@@ -280,7 +283,10 @@ export function NewFolderForm({
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter") submit();
-          if (e.key === "Escape") onCancel();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
         }}
         placeholder={t(($) => $.new_folder.placeholder)}
         className="min-w-0 flex-1"
@@ -1339,7 +1345,10 @@ function FolderRow({
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") submitRename();
-              if (e.key === "Escape") cancelRename();
+              if (e.key === "Escape") {
+                e.preventDefault();
+                cancelRename();
+              }
             }}
             className="min-w-0 flex-1"
           />
@@ -1655,6 +1664,7 @@ function FileRow({
               onKeyDown={(e) => {
                 if (e.key === "Enter") void submitRename();
                 if (e.key === "Escape") {
+                  e.preventDefault();
                   setRenaming(false);
                   setDraft(f.filename);
                 }

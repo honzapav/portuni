@@ -1769,6 +1769,7 @@ function NodePicker({
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
+      e.preventDefault();
       setOpen(false);
       setFilter("");
     }

@@ -998,7 +998,10 @@ function EntryPicker({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
+              if (e.key === "Escape") {
+                e.preventDefault();
+                onClose();
+              }
             }}
             placeholder={t(($) => $.access.picker.search_placeholder)}
             className="flex-1 border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"

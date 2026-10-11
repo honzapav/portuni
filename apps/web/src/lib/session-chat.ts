@@ -583,6 +583,28 @@ export function runIsLiveFor(liveRunId: string | null, state: SessionState): boo
   return liveRunId !== null && state === "running";
 }
 
+// Whether an Escape anywhere in the app stops the shown thread's turn,
+// the same way the composer's stop button does -- Claude Code's Esc. A
+// window-level listener catches it wherever the focus is: the transcript,
+// a button, the file pane, a field that has no use for Escape (the answer
+// box of an agent's question). It stays out of the way of an Escape that
+// something already handled -- a popover or dialog closing (Radix), a
+// rename or a new file cancelled, the composer stopping the turn itself,
+// the editor collapsing its selection (CodeMirror) -- which every such
+// handler marks with preventDefault() (biome-plugins/escape-prevents-
+// default.grit checks the app's own handlers). Whether the focus is in a
+// form field says nothing: a field either handles Escape or it does not.
+// It also stays out of an IME composition and of a thread that is not the
+// shown one (every open thread stays mounted, hidden).
+export function escapeStopsTurn(
+  e: { key: string; defaultPrevented: boolean; isComposing: boolean },
+  turnActive: boolean,
+  shown: boolean,
+): boolean {
+  if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return false;
+  return turnActive && shown;
+}
+
 // Whether the live run still owes an answer: the working row, the stop
 // button and Escape apply only then. #490: a count, not "the newest of
 // user_message / turn_ended". A message written while the agent works

@@ -16,6 +16,7 @@ import {
   activitySummary,
   workingPhase,
   turnInFlight,
+  escapeStopsTurn,
   runIsLiveFor,
   createDeltaCoalescer,
   transcriptElsewhere,
@@ -647,6 +648,54 @@ describe("createDeltaCoalescer", () => {
     c.clear();
     c.flush();
     assert.equal(delivered.length, 1);
+  });
+});
+
+describe("escapeStopsTurn", () => {
+  const key = (over: Partial<Parameters<typeof escapeStopsTurn>[0]> = {}) => ({
+    key: "Escape",
+    defaultPrevented: false,
+    isComposing: false,
+    ...over,
+  });
+
+  // Every place the focus can be in the chat and the file pane, with what
+  // its own handling leaves on the Escape before it reaches the window
+  // listener: `handled` is defaultPrevented after the field's own handler
+  // ran. The app's handlers are held to preventDefault() by
+  // biome-plugins/escape-prevents-default.grit; Radix's DismissableLayer
+  // calls it on dismiss; CodeMirror calls it for a key its keymap handled.
+  // Codex review of #606 (head 8ac8089a): a blanket "form fields keep their
+  // own Escape" left the answer box of an agent's question -- a textarea
+  // that handles only Enter -- with an Escape that stopped nothing.
+  const fields: Array<{ field: string; handled: boolean; stops: boolean; why: string }> = [
+    { field: "answer box of an agent's question (QuestionInput)", handled: false, stops: true, why: "handles only Enter" },
+    { field: "composer", handled: true, stops: false, why: "stops the turn itself, so the window must not again" },
+    { field: "thread rename (chat header)", handled: true, stops: false, why: "Escape cancels the rename" },
+    { field: "session rename (Relace)", handled: true, stops: false, why: "Escape cancels the rename" },
+    { field: "file rename, file row and file view", handled: true, stops: false, why: "Escape cancels the rename" },
+    { field: "new file / new folder name", handled: true, stops: false, why: "Escape cancels the form" },
+    { field: "node rename (sidebar)", handled: true, stops: false, why: "Escape cancels the rename" },
+    { field: "person picker / filter search", handled: true, stops: false, why: "Escape closes the picker" },
+    { field: "access picker search, access request, token label", handled: true, stops: false, why: "Escape closes the form" },
+    { field: "open popover, dialog, select or menu (Radix)", handled: true, stops: false, why: "Escape closes the layer" },
+    { field: "Markdown editor with a selection (CodeMirror)", handled: true, stops: false, why: "Escape collapses the selection" },
+    { field: "Markdown editor, cursor only (CodeMirror)", handled: false, stops: true, why: "keymap has nothing to do" },
+    { field: "transcript, a tool step, a button", handled: false, stops: true, why: "nothing there uses Escape" },
+  ];
+  for (const { field, handled, stops, why } of fields)
+    it(`${field}: ${stops ? "stops" : "does not stop"} the turn (${why})`, () => {
+      assert.equal(escapeStopsTurn(key({ defaultPrevented: handled }), true, true), stops);
+    });
+
+  it("does nothing without a turn in flight or on a hidden thread", () => {
+    assert.equal(escapeStopsTurn(key(), false, true), false);
+    assert.equal(escapeStopsTurn(key(), true, false), false);
+  });
+
+  it("leaves other keys and IME composition alone", () => {
+    assert.equal(escapeStopsTurn(key({ key: "Enter" }), true, true), false);
+    assert.equal(escapeStopsTurn(key({ isComposing: true }), true, true), false);
   });
 });
 

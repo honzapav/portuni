@@ -94,7 +94,10 @@ export function RequestAccessControl({ nodeId }: { nodeId: string }) {
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") void send();
-            if (e.key === "Escape") setState({ kind: "idle" });
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setState({ kind: "idle" });
+            }
           }}
           disabled={busy}
           placeholder={t(($) => $.access_requests.request.message_placeholder)}
