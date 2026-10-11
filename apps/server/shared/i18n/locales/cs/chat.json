@@ -59,7 +59,10 @@
       "account": "Výchozí model účtu",
       "env": "Nastavuje proměnná prostředí {{name}}",
       "instance": "Výchozí hodnota instance runneru",
+      "managed": "Nastaveno ve spravovaném nastavení",
+      "managed_file": "Nastaveno ve spravovaném nastavení {{path}}",
       "model": "Výchozí hodnota modelu",
+      "organization": "Výchozí hodnota organizace pro tento model",
       "settings": "Nastaveno v {{path}}"
     },
     "effort": {

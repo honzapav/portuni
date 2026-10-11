@@ -160,6 +160,79 @@ describe("resolveClaudeDefaults", () => {
   });
 });
 
+describe("resolveClaudeDefaults: managed settings, auto, the organization's effort", () => {
+  const managedPath = "/etc/claude-code/managed-settings.json";
+
+  it("the managed tier's model wins over the user settings file and names its file; ANTHROPIC_MODEL still wins", () => {
+    const managed = { settings: { model: "claude-opus-4-7" }, path: managedPath };
+    assert.deepEqual(resolveClaudeDefaults({ ...base, settings: { model: "sonnet" }, managed }).model, {
+      value: "claude-opus-4-7",
+      source: "managed",
+      detail: managedPath,
+    });
+    assert.deepEqual(
+      resolveClaudeDefaults({ ...base, instanceEnv: { ANTHROPIC_MODEL: "haiku" }, managed }).model.source,
+      "env",
+    );
+  });
+
+  it("the managed env block is written over the user one; MDM has no file to name", () => {
+    const managed = { settings: { env: { ANTHROPIC_MODEL: "claude-opus-4-7", CLAUDE_CODE_EFFORT_LEVEL: "low" } }, path: null };
+    const d = resolveClaudeDefaults({
+      ...base,
+      settings: { env: { ANTHROPIC_MODEL: "sonnet", CLAUDE_CODE_EFFORT_LEVEL: "high" } },
+      instanceDefaults: { effort: "max" },
+      managed,
+    });
+    assert.deepEqual(d.model, { value: "claude-opus-4-7", source: "managed", detail: null });
+    assert.deepEqual(d.effort, { value: "low", source: "managed", detail: null });
+  });
+
+  it("the managed tier's effort wins over the user file's, per model and top-level alike", () => {
+    const perModel = resolveClaudeDefaults({
+      ...base,
+      settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "low" } } },
+      managed: { settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "xhigh" } } }, path: managedPath },
+    });
+    assert.deepEqual(perModel.effort, { value: "xhigh", source: "managed", detail: managedPath });
+    const legacy = resolveClaudeDefaults({
+      ...base,
+      model: "sonnet",
+      settings: { effortLevel: "low" },
+      managed: { settings: { effortLevel: "medium" }, path: managedPath },
+    });
+    assert.deepEqual(legacy.effort, { value: "medium", source: "managed", detail: managedPath });
+  });
+
+  it("CLAUDE_CODE_EFFORT_LEVEL=auto is the model's own default, and still wins over the instance and the settings", () => {
+    const d = resolveClaudeDefaults({
+      ...base,
+      instanceEnv: { CLAUDE_CODE_EFFORT_LEVEL: "auto" },
+      instanceDefaults: { effort: "max" },
+      settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "low" } } },
+    });
+    assert.deepEqual(d.effort, { value: "medium", source: "env", detail: "CLAUDE_CODE_EFFORT_LEVEL" });
+    const haiku = resolveClaudeDefaults({ ...base, model: "haiku", instanceEnv: { CLAUDE_CODE_EFFORT_LEVEL: "auto" } });
+    assert.equal(haiku.effort.value, null);
+  });
+
+  it("without the runner's list a Haiku model has no effort", () => {
+    const d = resolveClaudeDefaults({ ...base, models: [], model: "claude-haiku-4-5" });
+    assert.deepEqual(d.effort, { value: null, source: "model", detail: null });
+  });
+
+  it("the effort a run of the account got stands for the organization's default; anything set still wins", () => {
+    const accountEfforts = { "claude-opus-5-5": "high" as const };
+    assert.deepEqual(resolveClaudeDefaults({ ...base, accountEfforts }).effort, {
+      value: "high",
+      source: "organization",
+      detail: null,
+    });
+    assert.equal(resolveClaudeDefaults({ ...base, accountEfforts, model: "sonnet" }).effort.source, "model");
+    assert.equal(resolveClaudeDefaults({ ...base, accountEfforts, instanceDefaults: { effort: "low" } }).effort.source, "instance");
+  });
+});
+
 describe("claudeModelDefaultEffort", () => {
   it("follows Claude Code's documented defaults; an alias gives null", () => {
     assert.equal(claudeModelDefaultEffort("claude-opus-5-5"), "medium");
@@ -167,6 +240,7 @@ describe("claudeModelDefaultEffort", () => {
     assert.equal(claudeModelDefaultEffort("claude-opus-4-7"), "xhigh");
     assert.equal(claudeModelDefaultEffort("claude-sonnet-5"), "high");
     assert.equal(claudeModelDefaultEffort("opus"), null);
+    assert.equal(claudeModelDefaultEffort("claude-haiku-4-5"), null);
   });
 });
 
@@ -193,6 +267,7 @@ describe("Claude adapter defaults()", () => {
         reads.push(path);
         return { effortLevel: "high" };
       },
+      readManagedSettings: async () => null,
     });
     const input = { model: null, instanceEnv: { CLAUDE_CONFIG_DIR: "/cfg/work" }, instanceDefaults: null };
     const first = await adapter.defaults?.(input);
@@ -217,7 +292,8 @@ describe("Claude adapter defaults()", () => {
     const fake = probeQuery(async () => {
       throw new Error("not logged in");
     });
-    const adapter = createClaudeAdapter({ query: fake.query, resolveExecutable: async () => null, readSettings: async () => null });
+    const adapter = createClaudeAdapter({ query: fake.query, resolveExecutable: async () => null, readSettings: async () => null,
+      readManagedSettings: async () => null });
     const input = { model: null, instanceEnv: {}, instanceDefaults: null };
     assert.deepEqual((await adapter.defaults?.(input))?.model, { value: null, source: "account", detail: null });
     await adapter.defaults?.(input);
@@ -238,7 +314,8 @@ describe("Claude adapter defaults()", () => {
         close: () => undefined,
       } as unknown as Query;
     }) as unknown as typeof import("@anthropic-ai/claude-agent-sdk").query;
-    const adapter = createClaudeAdapter({ query, resolveExecutable: async () => null, readSettings: async () => null });
+    const adapter = createClaudeAdapter({ query, resolveExecutable: async () => null, readSettings: async () => null,
+      readManagedSettings: async () => null });
     const a = await adapter.defaults?.({ model: null, instanceEnv: { CLAUDE_CONFIG_DIR: "/accountA" }, instanceDefaults: null });
     const b = await adapter.defaults?.({ model: null, instanceEnv: { CLAUDE_CONFIG_DIR: "/accountB" }, instanceDefaults: null });
     assert.deepEqual(a?.model.value, "claude-opus-5-5");
@@ -256,7 +333,8 @@ describe("Claude adapter defaults()", () => {
       calls++;
       throw new Error("spawn failed");
     }) as unknown as typeof import("@anthropic-ai/claude-agent-sdk").query;
-    const adapter = createClaudeAdapter({ query, resolveExecutable: async () => null, readSettings: async () => null });
+    const adapter = createClaudeAdapter({ query, resolveExecutable: async () => null, readSettings: async () => null,
+      readManagedSettings: async () => null });
     const input = { model: null, instanceEnv: {}, instanceDefaults: null };
     assert.deepEqual((await adapter.defaults?.(input))?.model, { value: null, source: "account", detail: null });
     assert.deepEqual((await adapter.defaults?.(input))?.model, { value: null, source: "account", detail: null });
@@ -271,6 +349,7 @@ describe("Claude adapter defaults()", () => {
         throw new Error("lookup failed");
       },
       readSettings: async () => null,
+      readManagedSettings: async () => null,
     });
     assert.equal((await noExecutable.defaults?.(input))?.model.value, null);
     assert.equal((await noExecutable.defaults?.(input))?.model.value, null);
@@ -284,10 +363,148 @@ describe("Claude adapter defaults()", () => {
       query: fake.query,
       resolveExecutable: async () => null,
       readSettings: async () => null,
+      readManagedSettings: async () => null,
       modelsProbeTimeoutMs: 10,
     });
     const d = await adapter.defaults?.({ model: null, instanceEnv: {}, instanceDefaults: null });
     assert.equal(d?.model.value, null);
     assert.equal(fake.closed(), 1);
+  });
+
+  it("models() answers each account's own list once it has one", async () => {
+    const byDir: Record<string, boolean> = { "/accountA": false, "/accountB": true };
+    const query = ((params: { prompt: unknown; options?: Options }) =>
+      ({
+        supportedModels: async () => [
+          {
+            value: "default",
+            displayName: "Default",
+            description: "",
+            resolvedModel: "claude-opus-5-5",
+            supportsEffort: byDir[params.options?.env?.CLAUDE_CONFIG_DIR ?? ""],
+            supportedEffortLevels: [],
+          },
+        ],
+        close: () => undefined,
+      }) as unknown as Query) as unknown as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    const adapter = createClaudeAdapter({
+      query,
+      resolveExecutable: async () => null,
+      readSettings: async () => null,
+      readManagedSettings: async () => null,
+    });
+    const envA = { CLAUDE_CONFIG_DIR: "/accountA" };
+    const envB = { CLAUDE_CONFIG_DIR: "/accountB" };
+    await adapter.defaults?.({ model: null, instanceEnv: envA, instanceDefaults: null });
+    await adapter.defaults?.({ model: null, instanceEnv: envB, instanceDefaults: null });
+    assert.equal((await adapter.models({ instanceEnv: envA }))[0].supportsEffort, false);
+    assert.equal((await adapter.models({ instanceEnv: envB }))[0].supportsEffort, true);
+    assert.equal((await adapter.models())[0].supportsEffort, false, "without an account: the first list seen");
+  });
+
+  it("defaults() reads the managed tier", async () => {
+    const adapter = createClaudeAdapter({
+      query: probeQuery(async () => []).query,
+      resolveExecutable: async () => null,
+      readSettings: async () => ({ model: "sonnet" }),
+      readManagedSettings: async () => ({ settings: { model: "claude-opus-4-7" }, path: null }),
+    });
+    const d = await adapter.defaults?.({ model: null, instanceEnv: {}, instanceDefaults: null });
+    assert.deepEqual(d?.model, { value: "claude-opus-4-7", source: "managed", detail: null });
+    assert.deepEqual(d?.effort, { value: "xhigh", source: "model", detail: null });
+  });
+
+  // A run that sets no effort reports, on its turns' hooks, the effort the
+  // CLI applied: the organization's default for the model.
+  function runQuery(model: string) {
+    let options: Options | undefined;
+    let initSeen!: () => void;
+    const initConsumed = new Promise<void>((resolve) => (initSeen = resolve));
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => (finish = resolve));
+    const list = async () => [
+      { value: "default", displayName: "Default", description: "", resolvedModel: "claude-opus-5-5", supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"] },
+    ];
+    const query = ((params: { prompt: unknown; options?: Options }) => {
+      options = params.options;
+      async function* gen(): AsyncGenerator<unknown, void> {
+        yield { type: "system", subtype: "init", session_id: "agent-1", model, tools: [], mcp_servers: [] };
+        initSeen();
+        await finished;
+      }
+      const it = gen() as unknown as Query;
+      Object.assign(it, {
+        supportedModels: list,
+        mcpServerStatus: async () => [],
+        setModel: async () => undefined,
+        interrupt: async () => undefined,
+        close: () => finish(),
+      });
+      return it;
+    }) as unknown as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    const stop = async (level: string) => {
+      const hook = options?.hooks?.Stop?.[0]?.hooks[0];
+      assert.ok(hook, "a run registers a Stop hook");
+      await hook({ hook_event_name: "Stop", effort: { level } } as never, undefined, { signal: new AbortController().signal });
+    };
+    return { query, initConsumed, finish, stop };
+  }
+
+  function runStart(effort: "low" | null) {
+    return {
+      sessionId: "S1",
+      runId: "R1",
+      cwd: "/tmp",
+      brief: "hi",
+      resume: null,
+      orientation: "",
+      instance: { id: null, env: {} },
+      mcp: { url: "http://localhost/mcp", token: "t", homeNodeId: "N1", headers: {} },
+      policy: "default" as const,
+      portuniRoot: "/tmp",
+      mirrors: [],
+      model: null,
+      effort,
+    };
+  }
+
+  it("learns the account's default effort for a model from a run that set none", async () => {
+    const fake = runQuery("claude-opus-5-5[1m]");
+    const adapter = createClaudeAdapter({
+      query: fake.query,
+      resolveExecutable: async () => null,
+      readSettings: async () => null,
+      readManagedSettings: async () => null,
+      closeGraceMs: 0,
+      closeTermMs: 0,
+      closeTimeoutMs: 0,
+    });
+    const handle = await adapter.start(runStart(null), () => undefined);
+    await fake.initConsumed;
+    await fake.stop("high");
+    fake.finish();
+    await handle.close();
+    const d = await adapter.defaults?.({ model: null, instanceEnv: {}, instanceDefaults: null });
+    assert.deepEqual(d?.effort, { value: "high", source: "organization", detail: null });
+  });
+
+  it("a run whose effort was set teaches nothing", async () => {
+    const fake = runQuery("claude-opus-5-5");
+    const adapter = createClaudeAdapter({
+      query: fake.query,
+      resolveExecutable: async () => null,
+      readSettings: async () => null,
+      readManagedSettings: async () => null,
+      closeGraceMs: 0,
+      closeTermMs: 0,
+      closeTimeoutMs: 0,
+    });
+    const handle = await adapter.start(runStart("low"), () => undefined);
+    await fake.initConsumed;
+    await fake.stop("low");
+    fake.finish();
+    await handle.close();
+    const d = await adapter.defaults?.({ model: null, instanceEnv: {}, instanceDefaults: null });
+    assert.deepEqual(d?.effort, { value: "medium", source: "model", detail: null });
   });
 });

@@ -661,7 +661,8 @@ Two rows under the textarea, inside the composer's border
 (`PromptInputFooter` as a column).
 
 **Row 1 -- the run's choices; send/stop.** The model `Select` lists
-`GET /runners/:runner/models` for `session.runner ?? "claude"`. The effort
+`GET /runners/:runner/models?instance=` for `session.runner ?? "claude"`
+and the thread's instance (the account's own list). The effort
 `Select` appears only when the selected model's `supportsEffort` is true
 and offers that model's own `effortLevels`; its title says it applies from
 the next run. Without a thread model the picker reads "Default: <model>"

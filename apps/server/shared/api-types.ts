@@ -831,8 +831,12 @@ export type RunnerModel = {
 // effort runs on, and where it comes from. Mirrors domain/runner/types.ts's
 // RunnerDefaults.
 export type RunnerDefaultsInfo = {
-  model: { value: string | null; source: "instance" | "env" | "settings" | "account"; detail: string | null };
-  effort: { value: string | null; source: "instance" | "env" | "settings" | "model"; detail: string | null };
+  model: { value: string | null; source: "instance" | "env" | "settings" | "managed" | "account"; detail: string | null };
+  effort: {
+    value: string | null;
+    source: "instance" | "env" | "settings" | "managed" | "organization" | "model";
+    detail: string | null;
+  };
 };
 
 // GET/POST/PATCH /runners/instances -- provider instances (today's desktop

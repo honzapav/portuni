@@ -5,18 +5,24 @@
 // started by this adapter sees: the instance's defaults (passed as `model`
 // / `effort`, so the CLI takes them as an explicit choice), the instance's
 // environment, the user settings file (the adapter loads `settingSources:
-// ["user"]` only) and the defaults the CLI holds itself. An organisation's
-// default effort and managed settings are not read; the CLI's own list is
-// the only view of the account. A top-level effortLevel in that file does
-// not apply to Opus 5.5 and Sonnet 5.5 (legacyEffortApplies).
+// ["user"]` only), the managed settings (the policy tier the CLI always
+// reads: managed-settings.json, MDM, remote-cached) and the defaults the
+// CLI holds itself. Managed settings win over the user settings file, key
+// by key. The organization's default effort for a model is known only to
+// the CLI: the adapter learns it from a run's own turns (accountEfforts),
+// and before such a run the model's documented default stands in. A
+// top-level effortLevel in a settings file does not apply to Opus 5.5 and
+// Sonnet 5.5 (legacyEffortApplies).
 //
 // Environment variables are the run's: the instance's env with the
-// settings file's `env` block written over it, which is what the CLI does
-// for a session the SDK starts (settings-reference, "How env values
-// interact with your shell"); an empty value there unsets the variable.
-// CLAUDE_CODE_EFFORT_LEVEL overrides --effort (env-vars, "Precedence"), so
-// it wins over the instance's effort; --model overrides ANTHROPIC_MODEL, so
-// the instance's model wins over the variable.
+// settings files' `env` blocks written over it (the managed block over the
+// user one), which is what the CLI does for a session the SDK starts
+// (settings-reference, "How env values interact with your shell"); an
+// empty value there unsets the variable. CLAUDE_CODE_EFFORT_LEVEL
+// overrides --effort (env-vars, "Precedence"), so it wins over the
+// instance's effort, and its value `auto` means the model's own default
+// (which then also wins); --model overrides ANTHROPIC_MODEL, so the
+// instance's model wins over the variable.
 
 import { EFFORT_LEVELS, type EffortLevel, type RunnerDefaults, type RunnerDefaultsInput, type RunnerModel } from "./types.js";
 
@@ -32,6 +38,14 @@ export interface ClaudeUserSettings {
 export interface ResolveClaudeDefaultsInput extends RunnerDefaultsInput {
   settings: ClaudeUserSettings | null;
   settingsPath: string;
+  // The managed (policy) tier, merged; null when none applies. `path` is
+  // the managed-settings.json it came from, null for MDM or the
+  // remote-cached tier.
+  managed?: { settings: ClaudeUserSettings; path: string | null } | null;
+  // The effort a run of this account actually got for a model when
+  // nothing set one, keyed by the full model id: the organization's
+  // default where it has one, learned from the run (adapters/claude.ts).
+  accountEfforts?: Readonly<Record<string, EffortLevel>>;
   // The runner's own list; its "default" row names the account's default
   // model. Empty when the runner has not answered.
   models: readonly RunnerModel[];
@@ -49,14 +63,16 @@ function effortLevel(value: unknown): EffortLevel | null {
 // model that supports effort, except that Opus 5.5 and Sonnet 5.5 default
 // to medium, Opus 4.7 defaults to xhigh". Only a full model id is matched;
 // an alias the runner did not resolve gives null rather than a guess.
+// Haiku has no effort.
 export function claudeModelDefaultEffort(modelId: string): EffortLevel | null {
   if (!modelId.startsWith("claude-")) return null;
+  if (/^claude-haiku-/.test(modelId)) return null;
   if (/^claude-(opus|sonnet)-5-5\b/.test(modelId)) return "medium";
   if (/^claude-opus-4-7\b/.test(modelId)) return "xhigh";
   return "high";
 }
 
-// A top-level effortLevel in the user settings file is the older form
+// A top-level effortLevel in a settings file is the older form
 // /effort wrote; per the same page it "doesn't count for Opus 5.5", which
 // starts at its own default unless a level is set for it. Sonnet 5.5 is
 // treated the same (its default is Opus 5.5's). An unknown model gives
@@ -66,67 +82,101 @@ function legacyEffortApplies(modelId: string | null): boolean {
   return !/^claude-(opus|sonnet)-5-5\b/.test(modelId);
 }
 
-type EnvSource = { source: "env"; detail: string } | { source: "settings"; detail: string };
+type Source = { source: "env" | "settings" | "managed"; detail: string | null };
+
+function envBlock(settings: ClaudeUserSettings | null | undefined): Record<string, unknown> {
+  return settings?.env && typeof settings.env === "object" ? (settings.env as Record<string, unknown>) : {};
+}
 
 // A variable as the run sees it, and where it comes from.
-function envValue(
-  name: string,
-  instanceEnv: Readonly<Record<string, string>>,
-  settings: ClaudeUserSettings | null,
-  settingsPath: string,
-): { value: string | null } & EnvSource {
-  const block = settings?.env && typeof settings.env === "object" ? (settings.env as Record<string, unknown>) : {};
-  if (typeof block[name] === "string") return { value: nonEmpty(block[name]), source: "settings", detail: settingsPath };
-  return { value: nonEmpty(instanceEnv[name]), source: "env", detail: name };
+function envValue(name: string, input: ResolveClaudeDefaultsInput): { value: string | null } & Source {
+  const managed = envBlock(input.managed?.settings);
+  if (typeof managed[name] === "string") return { value: nonEmpty(managed[name]), source: "managed", detail: input.managed?.path ?? null };
+  const user = envBlock(input.settings);
+  if (typeof user[name] === "string") return { value: nonEmpty(user[name]), source: "settings", detail: input.settingsPath };
+  return { value: nonEmpty(input.instanceEnv[name]), source: "env", detail: name };
+}
+
+// A settings key as the run sees it: the managed tier's value, else the
+// user file's.
+function settingValue<T>(
+  input: ResolveClaudeDefaultsInput,
+  read: (settings: ClaudeUserSettings) => T | null,
+): ({ value: T } & Source) | null {
+  const managed = input.managed ? read(input.managed.settings) : null;
+  if (managed !== null) return { value: managed, source: "managed", detail: input.managed?.path ?? null };
+  const user = input.settings ? read(input.settings) : null;
+  if (user !== null) return { value: user, source: "settings", detail: input.settingsPath };
+  return null;
 }
 
 function findModel(models: readonly RunnerModel[], id: string): RunnerModel | undefined {
   return models.find((m) => m.id === id) ?? models.find((m) => m.resolvedModel === id);
 }
 
-export function resolveClaudeDefaults(input: ResolveClaudeDefaultsInput): RunnerDefaults {
-  const { instanceEnv: env, settings, settingsPath, models } = input;
-
-  let model: RunnerDefaults["model"];
-  const instanceModel = nonEmpty(input.instanceDefaults?.model);
-  const envModel = envValue("ANTHROPIC_MODEL", env, settings, settingsPath);
-  const settingsModel = nonEmpty(settings?.model);
-  const envDefaultModel = envValue("ANTHROPIC_DEFAULT_MODEL", env, settings, settingsPath);
-  if (instanceModel) model = { value: instanceModel, source: "instance", detail: null };
-  else if (envModel.value) model = { value: envModel.value, source: envModel.source, detail: envModel.detail };
-  else if (settingsModel) model = { value: settingsModel, source: "settings", detail: settingsPath };
-  else if (envDefaultModel.value) model = { value: envDefaultModel.value, source: envDefaultModel.source, detail: envDefaultModel.detail };
-  else {
-    const row = models.find((m) => m.id === "default");
-    model = { value: row?.resolvedModel ?? null, source: "account", detail: null };
-  }
-
-  const effortModel = input.model ?? model.value;
+// The effort a run gets, and whether it is the default the CLI holds for
+// the model (nothing set one, or CLAUDE_CODE_EFFORT_LEVEL=auto): only then
+// does a run's actual effort tell the account's default.
+function resolveEffort(
+  input: ResolveClaudeDefaultsInput,
+  modelValue: string | null,
+): { effort: RunnerDefaults["effort"]; modelDefault: boolean } {
+  const { models } = input;
+  const effortModel = input.model ?? modelValue;
   const row = effortModel ? findModel(models, effortModel) : undefined;
   const fullId = row?.resolvedModel ?? effortModel;
 
-  let effort: RunnerDefaults["effort"];
-  const instanceEffort = effortLevel(input.instanceDefaults?.effort);
-  const envEffortVar = envValue("CLAUDE_CODE_EFFORT_LEVEL", env, settings, settingsPath);
-  const envEffort = effortLevel(envEffortVar.value);
-  const perModel =
-    settings?.modelSettings && typeof settings.modelSettings === "object"
-      ? (settings.modelSettings as Record<string, unknown>)
-      : {};
-  const perModelEffort = [effortModel, fullId]
-    .filter((k): k is string => typeof k === "string")
-    .map((k) => {
-      const entry = perModel[k];
-      return entry && typeof entry === "object" ? effortLevel((entry as { effortLevel?: unknown }).effortLevel) : null;
-    })
-    .find((e) => e !== null);
-  const settingsEffort = legacyEffortApplies(fullId) ? effortLevel(settings?.effortLevel) : null;
-  if (envEffort) effort = { value: envEffort, source: envEffortVar.source, detail: envEffortVar.detail };
-  else if (instanceEffort) effort = { value: instanceEffort, source: "instance", detail: null };
-  else if (perModelEffort) effort = { value: perModelEffort, source: "settings", detail: settingsPath };
-  else if (settingsEffort) effort = { value: settingsEffort, source: "settings", detail: settingsPath };
-  else if (row && !row.supportsEffort) effort = { value: null, source: "model", detail: null };
-  else effort = { value: fullId ? claudeModelDefaultEffort(fullId) : null, source: "model", detail: null };
+  let own: RunnerDefaults["effort"];
+  const observed = fullId ? input.accountEfforts?.[fullId] : undefined;
+  if (row && !row.supportsEffort) own = { value: null, source: "model", detail: null };
+  else if (observed) own = { value: observed, source: "organization", detail: null };
+  else own = { value: fullId ? claudeModelDefaultEffort(fullId) : null, source: "model", detail: null };
 
-  return { model, effort };
+  const envVar = envValue("CLAUDE_CODE_EFFORT_LEVEL", input);
+  if (envVar.value === "auto") return { effort: { ...own, source: envVar.source, detail: envVar.detail }, modelDefault: true };
+  const envEffort = effortLevel(envVar.value);
+  if (envEffort) return { effort: { value: envEffort, source: envVar.source, detail: envVar.detail }, modelDefault: false };
+  const instanceEffort = effortLevel(input.instanceDefaults?.effort);
+  if (instanceEffort) return { effort: { value: instanceEffort, source: "instance", detail: null }, modelDefault: false };
+  const perModel = settingValue(input, (s) => {
+    const map = s.modelSettings && typeof s.modelSettings === "object" ? (s.modelSettings as Record<string, unknown>) : {};
+    return (
+      [effortModel, fullId]
+        .filter((k): k is string => typeof k === "string")
+        .map((k) => {
+          const entry = map[k];
+          return entry && typeof entry === "object" ? effortLevel((entry as { effortLevel?: unknown }).effortLevel) : null;
+        })
+        .find((e) => e !== null) ?? null
+    );
+  });
+  if (perModel) return { effort: perModel, modelDefault: false };
+  const legacy = legacyEffortApplies(fullId) ? settingValue(input, (s) => effortLevel(s.effortLevel)) : null;
+  if (legacy) return { effort: legacy, modelDefault: false };
+  return { effort: own, modelDefault: true };
+}
+
+function resolveModel(input: ResolveClaudeDefaultsInput): RunnerDefaults["model"] {
+  const instanceModel = nonEmpty(input.instanceDefaults?.model);
+  if (instanceModel) return { value: instanceModel, source: "instance", detail: null };
+  const envModel = envValue("ANTHROPIC_MODEL", input);
+  if (envModel.value) return { value: envModel.value, source: envModel.source, detail: envModel.detail };
+  const settingsModel = settingValue(input, (s) => nonEmpty(s.model));
+  if (settingsModel) return settingsModel;
+  const envDefaultModel = envValue("ANTHROPIC_DEFAULT_MODEL", input);
+  if (envDefaultModel.value) return { value: envDefaultModel.value, source: envDefaultModel.source, detail: envDefaultModel.detail };
+  const row = input.models.find((m) => m.id === "default");
+  return { value: row?.resolvedModel ?? null, source: "account", detail: null };
+}
+
+export function resolveClaudeDefaults(input: ResolveClaudeDefaultsInput): RunnerDefaults {
+  const model = resolveModel(input);
+  return { model, effort: resolveEffort(input, model.value).effort };
+}
+
+// Whether a run on `input` gets the effort the CLI holds for its model by
+// itself -- the case in which the effort a turn reports is the account's
+// default for that model.
+export function claudeEffortIsAccountDefault(input: ResolveClaudeDefaultsInput): boolean {
+  return resolveEffort(input, resolveModel(input).value).modelDefault;
 }
