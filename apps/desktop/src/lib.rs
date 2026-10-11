@@ -1976,120 +1976,6 @@ fn showtime_preview_bytes(bundle: &std::path::Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Appended to every document the preview serves. The frame is sandboxed
-/// in an opaque origin, so its key events never reach the app window and
-/// the window Escape that stops the agent's turn would miss a focused
-/// preview; this hands that Escape up as a message. Same text as
-/// `ESCAPE_RELAY_SCRIPT` in apps/web/src/lib/html-preview-url.ts (the web
-/// build appends it to `srcDoc`), and the same rules as the app's own
-/// listener: a key the page handled, an IME composition and a form field
-/// keep their Escape. Appended after `</html>` it still runs (the parser
-/// puts it in the body) and, unlike a prefix, never knocks the page out of
-/// standards mode.
-const ESCAPE_RELAY_SCRIPT: &str = r#"<script>addEventListener("keydown",function(e){var t=e.target&&e.target.tagName;if(e.key!=="Escape"||e.defaultPrevented||e.isComposing||t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;parent.postMessage({portuni:"escape"},"*")});</script>"#;
-
-/// A document's own `<meta http-equiv="Content-Security-Policy">` would
-/// block the appended relay, so it goes before the relay is added. What
-/// keeps a previewed page away from the app is the sandbox, never the
-/// page's own policy; without it the page runs under the permissive CSP
-/// this handler serves. Same rule as `withoutCspMeta` in
-/// apps/web/src/lib/html-preview-url.ts (the reasoning is written there).
-///
-/// Only the meta a browser applies goes: a real `<meta>` element that the
-/// tree builder puts in the head, with that http-equiv and a content. The
-/// same text in a script, a comment, an attribute or a `<textarea>`, or a
-/// meta in the body, stays. lol_html tokenizes the document and passes
-/// every byte it is not told to change through as it was; it builds no
-/// tree, so the head is followed here the way the standard's insertion
-/// modes do: it lasts until the first start tag that does not belong in a
-/// head, or the first text that is not whitespace (a `</head>` alone does
-/// not end it -- a meta after it still goes into the head). A document
-/// lol_html refuses (it cannot tell how to tokenize some foreign-content
-/// constructs without a tree) is served unchanged: the relay may then be
-/// blocked, the page never altered.
-fn without_csp_meta(bytes: &[u8]) -> Vec<u8> {
-    use lol_html::html_content::{Element, TextType};
-    use lol_html::{doc_text, element, HtmlRewriter, Settings};
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    // A `<template>` in the head holds a fragment of its own: nothing in it
-    // is a child of the head, and nothing in it ends the head.
-    fn enter_template(el: &mut Element, depth: &Rc<Cell<u32>>) {
-        depth.set(depth.get() + 1);
-        if let Some(handlers) = el.end_tag_handlers() {
-            let depth = Rc::clone(depth);
-            handlers.push(Box::new(move |_| {
-                depth.set(depth.get().saturating_sub(1));
-                Ok(())
-            }));
-        }
-    }
-
-    let in_head = Cell::new(true);
-    let template_depth = Rc::new(Cell::new(0u32));
-    let mut out = Vec::with_capacity(bytes.len());
-    let result = {
-        // x-user-defined maps every byte to its own character and back, so
-        // text lol_html decodes for the handlers is written out exactly as
-        // it came, whatever the file's real encoding (UTF-8 would turn a
-        // stray windows-1250 byte into U+FFFD). Only ASCII is ever compared.
-        let encoding = lol_html::AsciiCompatibleEncoding::new(encoding_rs::X_USER_DEFINED)
-            .expect("x-user-defined is ASCII-compatible");
-        let settings = Settings::new()
-            .with_encoding(encoding)
-            .append_element_content_handler(element!("*", |el| {
-                let name = el.tag_name().to_ascii_lowercase();
-                if template_depth.get() > 0 {
-                    if name == "template" {
-                        enter_template(el, &template_depth);
-                    }
-                    return Ok(());
-                }
-                if !in_head.get() {
-                    return Ok(());
-                }
-                match name.as_str() {
-                    "meta" => {
-                        let csp = el
-                            .get_attribute("http-equiv")
-                            .is_some_and(|v| v.eq_ignore_ascii_case("content-security-policy"));
-                        if csp && el.has_attribute("content") {
-                            el.remove();
-                        }
-                    }
-                    "template" => enter_template(el, &template_depth),
-                    "html" | "head" | "base" | "basefont" | "bgsound" | "link" | "title" | "noscript"
-                    | "noframes" | "style" | "script" => {}
-                    _ => in_head.set(false),
-                }
-                Ok(())
-            }))
-            .append_document_content_handler(doc_text!(|t| {
-                let text = t.as_str().bytes().any(|b| !matches!(b, b'\t' | b'\n' | 0x0c | b'\r' | b' '));
-                if text && t.text_type() == TextType::Data && template_depth.get() == 0 {
-                    in_head.set(false);
-                }
-                Ok(())
-            }));
-        let mut rewriter = HtmlRewriter::new(settings, |chunk: &[u8]| out.extend_from_slice(chunk));
-        rewriter.write(bytes).and_then(|()| rewriter.end())
-    };
-    match result {
-        Ok(()) => out,
-        Err(e) => {
-            error!("portuni-html served a document unchanged, lol_html refused it: {e}");
-            bytes.to_vec()
-        }
-    }
-}
-
-fn with_escape_relay(bytes: Vec<u8>) -> Vec<u8> {
-    let mut bytes = without_csp_meta(&bytes);
-    bytes.extend_from_slice(ESCAPE_RELAY_SCRIPT.as_bytes());
-    bytes
-}
-
 /// Whether Showtime.app is installed, so the deck preview can offer to open
 /// the bundle in it. One `stat` per call; the webview asks once per session.
 #[tauri::command]
@@ -2105,8 +1991,7 @@ fn showtime_installed(app: tauri::AppHandle) -> bool {
 mod showtime_preview_tests {
     use super::{
         is_html_ext, is_previewable_ext, CmdError, is_showtime_ext, showtime_deck_path, showtime_new_dir,
-        showtime_new_url, showtime_open_url, showtime_preview_bytes, with_escape_relay,
-        without_csp_meta, ESCAPE_RELAY_SCRIPT, SHOWTIME_PREVIEW_ENTRY,
+        showtime_new_url, showtime_open_url, showtime_preview_bytes, SHOWTIME_PREVIEW_ENTRY,
     };
     use std::io::Write;
     use std::path::Path;
@@ -2135,80 +2020,6 @@ mod showtime_preview_tests {
         assert!(!is_previewable_ext(Path::new("/w/a.md")));
         assert!(is_showtime_ext(Path::new("/w/deck.showtime")));
         assert!(!is_showtime_ext(Path::new("/w/a.html")));
-    }
-
-    #[test]
-    fn served_documents_carry_the_escape_relay_at_the_end() {
-        let page = b"<!doctype html><html><body><button>Focus</button></body></html>".to_vec();
-        let served = with_escape_relay(page.clone());
-        assert!(served.starts_with(&page));
-        assert!(served.ends_with(ESCAPE_RELAY_SCRIPT.as_bytes()));
-    }
-
-    // Codex review of #606, round 2: a document with its own CSP meta
-    // (script-src 'none') blocked the appended relay.
-    #[test]
-    fn served_documents_lose_their_own_csp_meta() {
-        let strict = br#"<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src 'none'"></head><body><button>Focus</button></body></html>"#;
-        let served = with_escape_relay(strict.to_vec());
-        let mut expected =
-            b"<!doctype html><html><head></head><body><button>Focus</button></body></html>".to_vec();
-        expected.extend_from_slice(ESCAPE_RELAY_SCRIPT.as_bytes());
-        assert_eq!(served, expected);
-    }
-
-    #[test]
-    fn csp_meta_goes_however_the_head_comes_to_be() {
-        let csp = r#"<META HTTP-EQUIV=content-security-policy CONTENT="default-src 'self'">"#;
-        let cases = [
-            // No <head> tag: the parser opens one for the meta.
-            (format!("{csp}<p>x</p>"), "<p>x</p>".to_string()),
-            // After </head>, before <body>: the parser puts it back in the head.
-            (format!("<head></head>\n{csp}<body></body>"), "<head></head>\n<body></body>".to_string()),
-            // Several, with other metas and text around them.
-            (
-                format!(r#"<head><meta charset="utf-8">{csp}<title>x</title>{csp}</head>"#),
-                r#"<head><meta charset="utf-8"><title>x</title></head>"#.to_string(),
-            ),
-        ];
-        for (page, expected) in cases {
-            assert_eq!(String::from_utf8(without_csp_meta(page.as_bytes())).unwrap(), expected, "{page}");
-        }
-    }
-
-    // Codex review of #606, round 3: the round-2 byte scan cut the meta
-    // text out of anything, a script included -- `const example = '<meta
-    // ...>'` became `const example = ''` and the page threw. Only a meta
-    // the browser applies goes; every other byte stays.
-    #[test]
-    fn csp_meta_text_stays_wherever_a_browser_would_not_apply_it() {
-        let csp = r#"<meta http-equiv="Content-Security-Policy" content="default-src none">"#;
-        let untouched = [
-            // The exact reproduction from the review.
-            format!(r#"<script>const example = '{csp}'; if (!example) throw new Error("missing template");</script>"#),
-            format!("<head><script>const example = '{csp}';</script></head>"),
-            format!("<head><!-- {csp} --></head>"),
-            format!("<html><head></head><body>{csp}</body></html>"),
-            format!("<p>x</p>{csp}"),
-            format!("<body><textarea>{csp}</textarea></body>"),
-            format!("<head><title>{csp}</title></head>"),
-            format!("<head><template>{csp}</template></head>"),
-            format!(r#"<head><meta name="description" content='{csp}'></head>"#),
-            r#"<head><meta http-equiv="Content-Security-Policy-Report-Only" content="script-src 'none'"></head>"#.to_string(),
-            r#"<head><meta http-equiv="Content-Security-Policy"></head>"#.to_string(),
-            r#"<head><meta charset="utf-8"><meta http-equiv="refresh" content="5"></head>"#.to_string(),
-        ];
-        for page in untouched {
-            assert_eq!(without_csp_meta(page.as_bytes()), page.as_bytes(), "{page}");
-        }
-        // Not UTF-8 (windows-1250 "ž") passes through untouched.
-        assert_eq!(without_csp_meta(b"<p>\x9e</p>"), b"<p>\x9e</p>");
-        // UTF-8 around a removed meta stays as it was.
-        let page = format!("<head><title>日本語 Ωμέγα</title>{csp}</head><body>façade über</body>");
-        assert_eq!(
-            String::from_utf8(without_csp_meta(page.as_bytes())).unwrap(),
-            "<head><title>日本語 Ωμέγα</title></head><body>façade über</body>"
-        );
     }
 
     #[test]
@@ -3567,7 +3378,7 @@ pub fn run() {
                     // allow-same-origin) and isolated from the app, so the
                     // app CSP is intentionally NOT applied here.
                     .header("Content-Security-Policy", "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'")
-                    .body(with_escape_relay(bytes))
+                    .body(bytes)
                     .unwrap(),
                 Err(e) => {
                     error!("portuni-html read failed for {decoded}: {e}");
