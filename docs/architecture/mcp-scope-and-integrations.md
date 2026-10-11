@@ -211,8 +211,10 @@ when the client declared the capability. Three invariants:
    a bare `Request timed out` (-32001) (#597).
 
 An unanswered dialog is a distinct outcome (`ElicitOutcome` `"timeout"`):
-`writeGuardError` answers `write_expansion_required` with
-`dialog_timed_out: true` and a retryable hint, not the
+`writeGuardError` answers `write_expansion_required` and the read gate
+(`guardNodeRead` -> `scopeExpansionError`) answers
+`scope_expansion_required`, both with `dialog_timed_out: true` and a
+retryable hint, not the
 `elicitation_supported: false` wording reserved for a client that has no
 dialogs at all.
 

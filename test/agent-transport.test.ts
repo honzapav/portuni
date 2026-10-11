@@ -26,6 +26,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createAgentMcpTransport } from "../apps/server/mcp/agent-transport.js";
 import { createElicitor, agentRelayElicitTimeoutMs } from "../apps/server/mcp/elicit.js";
+import { scopeExpansionError } from "../apps/server/mcp/scope.js";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
@@ -168,8 +169,9 @@ function startStubCentral(): Promise<StubCentral> {
       );
       // Stands in for central's scope gate (#597): opens a dialog through
       // the real elicitor (central's own outer deadline) and answers the way
-      // the gate does -- data on accept, the structured refusal with
-      // dialog_timed_out on an unanswered dialog.
+      // the gate does -- data on accept, the read gate's own structured
+      // refusal (scopeExpansionError, dialog_timed_out on an unanswered
+      // dialog) otherwise.
       mcp.tool(
         "portuni_test_scope_dialog",
         { node_id: z.string() },
@@ -178,11 +180,9 @@ function startStubCentral(): Promise<StubCentral> {
           const payload =
             outcome === "accept"
               ? { node_id: a.node_id, granted: true }
-              : {
-                  error: "scope_expansion_required",
-                  tool: "portuni_test_scope_dialog",
-                  ...(outcome === "timeout" ? { dialog_timed_out: true } : {}),
-                };
+              : scopeExpansionError(a.node_id, "expand scope first", {
+                  dialogTimedOut: outcome === "timeout",
+                });
           return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
         },
       );
