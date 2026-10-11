@@ -720,17 +720,24 @@ human verification.
   process's env), and an admin `policyHelper` is not run.
   The organization's default effort is visible only to the CLI: every
   run registers a `Stop` hook whose input carries the effort the CLI
-  applied to the turn (`effort.level`, after any clamp), and a run that
-  sets no effort keeps it. Whether it sets one depends on the model
-  (`modelSettings`, the top-level key), and a run without a model of its
-  own learns its model only from the init message, so the decision is
-  made there: `claudeEffortIsAccountDefault` must hold for the thread's
-  model, the init message's model and that model without its context
-  suffix (no `run.effort`, nothing in env or settings, or `auto`). The
-  level is kept per account and per the init message's model (suffix
-  stripped) for the process's lifetime; a `setModel` before or during the
-  run stops the learning. Before such a run, the documented default
-  stands in.
+  applied to the turn (`effort.level`, after any clamp), never why. The
+  adapter keeps it only when nothing set it, and errs towards not
+  keeping it (a level kept wrongly outlives the setting that chose it).
+  Whether anything sets it depends on the model, and a run without a
+  model of its own learns its model only from the init message, so
+  `claudeEffortIsLearnable` decides there: the init id must be a plain
+  `claude-<family>-<version>` (the CLI matches `modelSettings` keys "with
+  its dated, [1m], Bedrock and Vertex spellings", so on any other id the
+  run cannot tell); `claudeEffortIsAccountDefault` must hold for the
+  thread's model, the init model and the init model without its context
+  suffix (no `run.effort`, nothing in env or settings, or `auto`); no
+  per-model `effortLevel` key may name the model even in part; and a
+  top-level `effortLevel` in the user file counts as set except on Opus
+  5.5. Only the first turn's level is kept, per account and per the
+  init message's model (suffix stripped), for the process's lifetime; a
+  `setModel`, a prompt starting with `/` (`/effort`, `/model`, a skill)
+  or a `Skill` tool call before it stops the learning. Before such a
+  run, the documented default stands in.
 
 - **The runner's own text in the chat is a code (#532).** Codes live in
   `shared/chat-event-codes.ts`; the web renders them with

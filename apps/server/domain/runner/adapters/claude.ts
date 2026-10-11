@@ -36,7 +36,7 @@ import { isProcessAlive } from "../process-liveness.js";
 import {
   type ClaudeUserSettings,
   type ResolveClaudeDefaultsInput,
-  claudeEffortIsAccountDefault,
+  claudeEffortIsLearnable,
   resolveClaudeDefaults,
 } from "../claude-defaults.js";
 import { EFFORT_LEVELS, RunEndedError } from "../types.js";
@@ -1118,7 +1118,11 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     const promptQueue = createPushQueue<SDKUserMessage>();
     // #490: the brief is the run's first message and is counted like any
     // other -- the turn that answers it echoes this uuid back.
+    // Learning the organization's effort (below) stops for good on a
+    // slash command: /effort, /model or a skill sets the turn's level.
+    let learningStopped = false;
     const pushPrompt = (text: string): void => {
+      if (text.trimStart().startsWith("/")) learningStopped = true;
       const uuid = randomUUID();
       state.pendingSends.push(uuid);
       promptQueue.push(userMessage(text, uuid));
@@ -1333,39 +1337,37 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
     // When nothing sets this run's effort, the effort its turns report is
     // the account's default for the model -- the organization's, where it
-    // has one. Whether anything sets it depends on the model (modelSettings,
-    // the top-level effortLevel, a model without effort), and with no model
-    // of its own a run's model is known only from its init message: the
-    // decision waits for it. It holds only if every name the model goes by
-    // (the thread's, the init message's, without a context-window suffix)
-    // finds nothing set. Learned per model the init message names; a model
-    // switched mid-run stops the learning, since the turn's model is then
-    // unknown.
+    // has one. Whether anything sets it depends on the model, and a run
+    // without a model of its own learns its model only from its init
+    // message: the decision waits for it (claudeEffortIsLearnable). Only
+    // the first turn's level is kept, per the model the init message
+    // names; a model switched (setModel), a slash command or a skill before
+    // it stops the learning, since each sets the turn's model or level.
     const runAccountKey = accountKey(run.instance.env);
     let learnEffort: Promise<boolean> = Promise.resolve(false);
-    let learningStopped = false;
     let runModelId: string | null = null;
 
-    async function effortIsAccountDefault(names: ReadonlyArray<string | null>): Promise<boolean> {
-      try {
-        const input = await defaultsInput({ model: null, instanceEnv: run.instance.env, instanceDefaults: null });
-        return [...new Set(names)].every((model) => claudeEffortIsAccountDefault({ ...input, model }));
-      } catch {
-        return false;
-      }
+    function stopEffortLearning(): void {
+      learningStopped = true;
+      learnEffort = Promise.resolve(false);
     }
 
     function decideEffortLearning(initModel: unknown): void {
       if (run.effort !== null || learningStopped || runModelId !== null) return;
       runModelId = baseModelId(initModel);
       if (runModelId === null) return;
-      learnEffort = effortIsAccountDefault([run.model, initModel as string, runModelId]);
+      const model = initModel as string;
+      learnEffort = defaultsInput({ model: null, instanceEnv: run.instance.env, instanceDefaults: null })
+        .then((input) => claudeEffortIsLearnable(input, run.model, model))
+        .catch(() => false);
     }
 
     async function stopHook(input: HookInput): Promise<HookJSONOutput> {
       const level = (input as { effort?: { level?: unknown } }).effort?.level;
       const model = runModelId;
-      if (model !== null && typeof level === "string" && (EFFORT_LEVELS as readonly string[]).includes(level) && (await learnEffort)) {
+      const learn = learnEffort;
+      stopEffortLearning();
+      if (model !== null && typeof level === "string" && (EFFORT_LEVELS as readonly string[]).includes(level) && (await learn)) {
         const known = accountEfforts.get(runAccountKey) ?? {};
         known[model] = level as EffortLevel;
         accountEfforts.set(runAccountKey, known);
@@ -1488,6 +1490,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       }
       if (msg.type === "assistant" && isSyntheticErrorMessage(msg)) return;
       if (msg.type === "assistant") {
+        if (msg.message.content.some((block) => block.type === "tool_use" && block.name === "Skill")) stopEffortLearning();
         await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);
         return;
       }
@@ -1728,8 +1731,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       },
       async setModel(model: string | null): Promise<void> {
         if (state.ended) return;
-        learningStopped = true;
-        learnEffort = Promise.resolve(false);
+        stopEffortLearning();
         await q.setModel(model ?? undefined);
       },
       agentSessionId(): string | null {

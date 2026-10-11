@@ -423,7 +423,7 @@ describe("Claude adapter defaults()", () => {
 
   // A run that sets no effort reports, on its turns' hooks, the effort the
   // CLI applied: the organization's default for the model.
-  function runQuery(model: string) {
+  function runQuery(model: string, after: unknown[] = []) {
     let options: Options | undefined;
     let initSeen!: () => void;
     const initConsumed = new Promise<void>((resolve) => (initSeen = resolve));
@@ -436,6 +436,7 @@ describe("Claude adapter defaults()", () => {
       options = params.options;
       async function* gen(): AsyncGenerator<unknown, void> {
         yield { type: "system", subtype: "init", session_id: "agent-1", model, tools: [], mcp_servers: [] };
+        for (const msg of after) yield msg;
         initSeen();
         await finished;
       }
@@ -457,12 +458,12 @@ describe("Claude adapter defaults()", () => {
     return { query, initConsumed, finish, stop };
   }
 
-  function runStart(effort: "low" | null, model: string | null = null) {
+  function runStart(effort: "low" | null, model: string | null = null, brief = "hi") {
     return {
       sessionId: "S1",
       runId: "R1",
       cwd: "/tmp",
-      brief: "hi",
+      brief,
       resume: null,
       orientation: "",
       instance: { id: null, env: {} },
@@ -542,6 +543,18 @@ describe("Claude adapter defaults()", () => {
     { name: "top-level effortLevel, Opus 5.5 (does not count)", model: null, initModel: "claude-opus-5-5", settings: { effortLevel: "low" }, learned: true },
     { name: "modelSettings for another model only", model: null, initModel: "claude-opus-5-5", settings: { modelSettings: { "claude-sonnet-5": { effortLevel: "low" } } }, learned: true },
     { name: "nothing set", model: null, initModel: "claude-opus-5-5", settings: null, learned: true },
+    // The CLI matches a modelSettings key "with its dated, [1m], Bedrock and
+    // Vertex spellings" (SDK Settings.modelSettings): a run on such an id
+    // cannot tell what is set for it, and a key in such a spelling names
+    // the model too.
+    { name: "Vertex id, modelSettings under the plain id", model: null, initModel: "claude-opus-5-5@20261001", settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "low" } } }, learned: false },
+    { name: "Vertex id, nothing set", model: null, initModel: "claude-opus-5-5@20261001", settings: null, learned: false },
+    { name: "dated id, modelSettings under the plain id", model: "claude-sonnet-4-5-20250929", initModel: "claude-sonnet-4-5-20250929", settings: { modelSettings: { "claude-sonnet-4-5": { effortLevel: "low" } } }, learned: false },
+    { name: "Bedrock id, modelSettings under the plain id", model: null, initModel: "us.anthropic.claude-opus-5-5-v1:0", settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "low" } } }, learned: false },
+    { name: "Bedrock id of an older model, top-level effortLevel", model: null, initModel: "us.anthropic.claude-opus-4-7-v1:0", settings: { effortLevel: "low" }, learned: false },
+    { name: "plain id, modelSettings under a dated spelling", model: null, initModel: "claude-opus-5-5", settings: { modelSettings: { "claude-opus-5-5-20261001": { effortLevel: "low" } } }, learned: false },
+    { name: "plain id, managed modelSettings under a Bedrock spelling", model: null, initModel: "claude-opus-5-5", settings: null, managed: { modelSettings: { "us.anthropic.claude-opus-5-5-v1:0": { effortLevel: "low" } } }, learned: false },
+    { name: "top-level effortLevel, Sonnet 5.5 (not exempt by the docs)", model: null, initModel: "claude-sonnet-5-5", settings: { effortLevel: "low" }, learned: false },
   ];
   for (const c of learning) {
     it(`learning the organization's effort before any defaults(): ${c.name} -> ${c.learned ? "learned" : "not learned"}`, async () => {
@@ -567,12 +580,66 @@ describe("Claude adapter defaults()", () => {
       managed = null;
       const base = c.initModel.replace(/\[1m\]$/, "");
       const d = await adapter.defaults?.({ model: base, instanceEnv: {}, instanceDefaults: null });
-      const expected = c.learned
-        ? { value: "low", source: "organization", detail: null }
-        : { value: base === "claude-opus-4-7" ? "xhigh" : "medium", source: "model", detail: null };
-      assert.deepEqual(d?.effort, expected);
+      if (c.learned) assert.deepEqual(d?.effort, { value: "low", source: "organization", detail: null });
+      else assert.notEqual(d?.effort.source, "organization", JSON.stringify(d?.effort));
     });
   }
+
+  function learningAdapter(fake: ReturnType<typeof runQuery>) {
+    return createClaudeAdapter({
+      query: fake.query,
+      resolveExecutable: async () => null,
+      readSettings: async () => null,
+      readManagedSettings: async () => null,
+      closeGraceMs: 0,
+      closeTermMs: 0,
+      closeTimeoutMs: 0,
+    });
+  }
+
+  const opusDefault = { model: "claude-opus-5-5", instanceEnv: {}, instanceDefaults: null };
+
+  it("a slash command (/effort, /model, a skill) sets the turn's level: nothing is learned", async () => {
+    const fake = runQuery("claude-opus-5-5");
+    const adapter = learningAdapter(fake);
+    const handle = await adapter.start(runStart(null, null, "/effort low"), () => undefined);
+    await fake.initConsumed;
+    await fake.stop("low");
+    fake.finish();
+    await handle.close();
+    assert.deepEqual((await adapter.defaults?.(opusDefault))?.effort, { value: "medium", source: "model", detail: null });
+  });
+
+  it("a skill the agent runs sets the turn's level: nothing is learned", async () => {
+    const skill = {
+      type: "assistant",
+      parent_tool_use_id: null,
+      session_id: "agent-1",
+      uuid: "u-1",
+      message: { id: "m1", role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: "t1", name: "Skill", input: { skill: "fast" } }], usage: {} },
+    };
+    const fake = runQuery("claude-opus-5-5", [skill]);
+    const adapter = learningAdapter(fake);
+    const handle = await adapter.start(runStart(null), () => undefined);
+    await fake.initConsumed;
+    await fake.stop("low");
+    fake.finish();
+    await handle.close();
+    assert.deepEqual((await adapter.defaults?.(opusDefault))?.effort, { value: "medium", source: "model", detail: null });
+  });
+
+  it("only the first turn's level is kept; a later turn's (after /effort in the chat) is not", async () => {
+    const fake = runQuery("claude-opus-5-5");
+    const adapter = learningAdapter(fake);
+    const handle = await adapter.start(runStart(null), () => undefined);
+    await fake.initConsumed;
+    await fake.stop("high");
+    await handle.send("/effort low");
+    await fake.stop("low");
+    fake.finish();
+    await handle.close();
+    assert.deepEqual((await adapter.defaults?.(opusDefault))?.effort, { value: "high", source: "organization", detail: null });
+  });
 
   it("a model switched before the init message teaches nothing", async () => {
     const fake = runQuery("claude-opus-5-5");
