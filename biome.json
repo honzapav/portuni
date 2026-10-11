@@ -41,6 +41,7 @@
       }
     }
   },
+  "plugins": ["./biome-plugins/escape-prevents-default.grit"],
   "linter": {
     "enabled": true,
     "rules": {

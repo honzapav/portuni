@@ -1,0 +1,15 @@
+language js
+
+// An Escape that a field or control handles must say so with
+// preventDefault(): the window listener that stops the agent's turn
+// (lib/session-chat.ts `escapeStopsTurn`) skips only an Escape marked
+// handled, so a handler that cancels a rename without it also stops the
+// turn.
+JsIfStatement(test = $cond, consequent = $then) where {
+  $cond <: contains `$key === "Escape"`,
+  not $then <: contains `$event.preventDefault()`,
+  register_diagnostic(
+    span = $cond,
+    message = "Escape handled here must call preventDefault(), or the window Escape listener also stops the agent's turn."
+  )
+}

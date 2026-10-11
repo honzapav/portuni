@@ -598,7 +598,10 @@ function DeviceTokensTable() {
             }
             onKeyDown={(e) => {
               if (e.key === "Enter") void handleCreateToken();
-              if (e.key === "Escape") setNewToken(null);
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setNewToken(null);
+              }
             }}
             placeholder={t(($) => $.account.tokens.label_placeholder)}
             disabled={newToken.busy}
