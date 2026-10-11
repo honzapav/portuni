@@ -85,6 +85,18 @@ export function agentRelayElicitTimeoutMs(env: NodeJS.ProcessEnv = process.env):
   return Math.max(1, Math.floor(outer / 2));
 }
 
+// The sync agent's own call to central (agent-transport.ts's
+// `upstream.callTool`) wraps the whole outer hop: central may hold an
+// elicitation dialog open for up to elicitTimeoutMs() before it answers the
+// tool call, so this hop waits one margin longer than that. Without it the
+// SDK's 60 s request default gives up first and the agent sees a bare
+// "Request timed out" instead of central's structured refusal (#597).
+// Invariant: upstream call > outer > relay. Derived, never configured
+// separately.
+export function agentUpstreamCallTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  return elicitTimeoutMs(env) + ELICIT_RELAY_MARGIN_MS;
+}
+
 // The server half an elicitation hop needs: everything else on McpServer /
 // Server is irrelevant here, and narrowing it this far is what lets a test
 // drive the classification below from a fake.

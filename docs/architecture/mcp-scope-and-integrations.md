@@ -180,7 +180,7 @@ marker blocks keep the shorter write-scope hint and never carry it.
 ## Elicitation and tool-call deadlines
 
 Scope and write confirmations are protocol elicitations (`mcp/elicit.ts`)
-when the client declared the capability. Two invariants:
+when the client declared the capability. Three invariants:
 
 1. **A dialog never outlives the client's tool-call deadline.**
    `ELICIT_TIMEOUT_MS` is 4 minutes; the sync-agent relay hop
@@ -199,6 +199,16 @@ when the client declared the capability. Two invariants:
    waiting on a write-scope confirmation. Only those two do:
    `portuni_adopt_files` is remote-only by design and
    `portuni_pull(node_id)` is a preview.
+3. **The sync agent's hop to the central server never gives up before
+   the outer elicitation hop.** Every tool call the front door
+   (`mcp/agent-transport.ts`) proxies to the central server waits
+   `agentUpstreamCallTimeoutMs()`: the outer value plus
+   `ELICIT_RELAY_MARGIN_MS` (5 minutes by default), derived from
+   `PORTUNI_ELICIT_TIMEOUT_MS` and never configured on its own. So
+   **upstream call > outer > relay**: a dialog the central server still
+   holds open ends in its answer (data, or the structured refusal with
+   `dialog_timed_out: true`), never in the SDK's 60 s default turning into
+   a bare `Request timed out` (-32001) (#597).
 
 An unanswered dialog is a distinct outcome (`ElicitOutcome` `"timeout"`):
 `writeGuardError` answers `write_expansion_required` with
