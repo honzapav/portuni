@@ -370,7 +370,11 @@ The composer has two rows under the text. The first holds the model
 selector (`GET /runners/:runner/models` — documented aliases until this
 device has run a task, the real list after) and, only when the chosen
 model supports it, a reasoning-effort selector labelled as applying from
-the next run, not the current one. The second, dimmer row says where the
+the next run, not the current one. A thread without its own choice shows
+the default it will run on, before the first message: "Default: Opus 5.5"
+and "Effort: medium (default)"; hover either to see where the value comes
+from (the runner instance, an environment variable, your Claude Code
+settings file, or the account's and model's own default). The second, dimmer row says where the
 thread runs: runner and instance, chosen from a list of every logged-in
 runner and its instances while the thread is still new (the organisation's
 default is preselected and marked "(default)"; the choice is fixed once

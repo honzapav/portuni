@@ -35,11 +35,22 @@
     "title": "Chain of thought"
   },
   "composer": {
+    "default_source": {
+      "account": "The account's default model",
+      "env": "Set by the environment variable {{name}}",
+      "instance": "The runner instance's default",
+      "managed": "Set by managed settings",
+      "model": "The model's own default",
+      "organization": "Your organization's default for this model",
+      "settings": "Set in {{path}}"
+    },
     "effort": {
+      "default": "Effort: {{level}} (default)",
       "placeholder": "Effort (default)",
       "title": "Reasoning effort, takes effect from the next run"
     },
     "model": {
+      "default": "Default: {{model}}",
       "placeholder": "Model (default)",
       "title": "Model"
     },

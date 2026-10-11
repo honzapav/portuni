@@ -665,13 +665,87 @@ human verification.
   starts `null` and is filled from the first live run's
   `Query.supportedModels()` (called inside the promise chain so a missing
   method rejects into the existing `.catch`); a failure leaves it `null`
-  and the next run retries. Until then `models()` answers
+  and the next run retries. `models({ instanceEnv })` answers that
+  account's own list (below) once there is one, so a second account's
+  picker offers what its own default model supports. Until then `models()` answers
   `CLAUDE_ALIAS_MODELS` (`sonnet`, `opus`, `haiku`, each
   `supportsEffort: false`, `description: ""` with a `description_code`
   the web renders from `chat:model.description.*`; a list the provider
   answered carries the provider's own `description` and no code).
-  `GET /runners/:runner/models` just calls it.
+  `GET /runners/:runner/models?instance=` calls it with the instance's env.
   `FakeRunnerAdapter.models()` returns its constructor's `models` option.
+- **`defaults()` may start one probe.** `GET /runners/:runner/defaults
+  ?instance=&model=` (device-local, `read`) answers what a thread without
+  its own model or effort runs on, each value with its `source` and
+  `detail` (env var name or settings path); a runner without the method
+  answers `defaults: null`. The Claude adapter keeps the list `defaults()`
+  reads per account (the instance's `CLAUDE_CONFIG_DIR`, unset for the
+  default login): a run fills its account's, and an account with none yet
+  gets a probe: a `query()` with an empty prompt queue, the instance's env,
+  `settingSources: []` and `settings: { disableAllHooks: true }` (a read
+  never runs a hook of the user's), asked for `supportedModels()` (the
+  CLI's initialize answer, no model call) and closed; one probe per account
+  at a time, `modelsProbeTimeoutMs` (20 s), and a probe that fails, throws
+  or times out is retried on the next call. The list rows keep
+  `resolvedModel`.
+  `resolveClaudeDefaults` (`domain/runner/claude-defaults.ts`, pure) then
+  follows Claude Code's order: model = instance `defaults.model` ->
+  `ANTHROPIC_MODEL` -> `model` in the managed tier, else in
+  `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json` ->
+  `ANTHROPIC_DEFAULT_MODEL` -> the `default` row's
+  `resolvedModel` (`account`); effort, for the thread's own model or that
+  default = `CLAUDE_CODE_EFFORT_LEVEL` (it overrides `--effort`; `auto`
+  is the model's own default below, still with `source: "env"`) ->
+  instance `defaults.effort` ->
+  `modelSettings[<model>].effortLevel` (the managed tier's before the user
+  file's) -> top-level `effortLevel` in the managed tier (applies to every
+  model) -> top-level `effortLevel` in the user file (the older form,
+  which per the same page does not count for Opus 5.5; treated so for
+  Sonnet 5.5 too, and not claimed for an unknown model) -> the
+  model's own default: null when the list says the model has no effort,
+  else the effort a run of this account got for it (`organization`), else
+  `claudeModelDefaultEffort` (medium for Opus/Sonnet 5.5, xhigh for Opus
+  4.7, null for Haiku, high otherwise; null for an unresolved alias). The
+  variables are the run's: the instance's env with the user file's `env`
+  block and then the managed tier's written over it (an empty value
+  there unsets one); a value from a block has `source: "settings"` or
+  `"managed"`. The instance's model is `--model`, which overrides
+  `ANTHROPIC_MODEL`.
+  The managed tier comes from the SDK's `resolveSettings({ settingSources:
+  [] })` (`@alpha`; the CLI's own merge engine, no CLI started; MDM may run
+  `plutil` or `reg.exe` once per process):
+  managed-settings.json, MDM and the remote-cached settings, merged;
+  `detail` is always null (the SDK names no path for the policy tier). The remote cache is the default config dir's whatever an
+  instance's `CLAUDE_CONFIG_DIR` says (the SDK reads it from the
+  process's env), and an admin `policyHelper` is not run.
+  The organization's default effort is visible only to the CLI: every
+  run registers a `Stop` hook whose input carries the effort the CLI
+  applied to the turn (`effort.level`, after any clamp), never why. The
+  adapter keeps it only when nothing set it, and errs towards not
+  keeping it (a level kept wrongly outlives the setting that chose it).
+  Whether anything sets it depends on the model, and a run without a
+  model of its own learns its model only from the init message, so
+  `claudeEffortIsLearnable` decides there: the init id must be a plain
+  `claude-<family>-<version>` (the CLI matches `modelSettings` keys "with
+  its dated, [1m], Bedrock and Vertex spellings", so on any other id the
+  run cannot tell); nothing may set the effort for the thread's model,
+  the init model or the init model without its context suffix (no
+  `run.effort`, nothing in env or settings, or `auto`); no per-model
+  `effortLevel` or `maxEffortLevel` key may name the model even in part;
+  no tier may set `maxEffortLevel`, `agent`, `ultracode` or
+  `fallbackModel`; and a top-level `effortLevel` in the user file counts
+  as set except on Opus 5.5. Only the first turn of a new session (no
+  `run.resume`) on the default login counts (an instance's own
+  `CLAUDE_CONFIG_DIR` has a remote-managed tier this process does not
+  read): its `Stop` hook offers the level and the turn's `result` keeps
+  it, since hooks are answered as they arrive and messages in order. A
+  `setModel`, a prompt starting with `/` (`/effort`, `/model`, a skill),
+  a `Skill` tool call, a main-thread agent (`agent_type` on the hook), a
+  second `Stop` before the result, an assistant message or a `modelUsage`
+  entry on another model, a result without `modelUsage` or other than
+  `success` stops the learning. The level is kept per account and per the init message's
+  model (suffix stripped) for the process's lifetime. Before such a run,
+  the documented default stands in.
 
 - **The runner's own text in the chat is a code (#532).** Codes live in
   `shared/chat-event-codes.ts`; the web renders them with

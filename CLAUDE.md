@@ -60,7 +60,7 @@ tmux send-keys -t portuni-mcp C-c Up Enter          # restart server
 ```
 
 Started once: `tmux new -d -s portuni-mcp 'PORTUNI_AUTH_TOKEN="$(security find-generic-password -s mcp.portuni-dev.auth-token -w)" varlock run -- node dist/index.js 2>&1 | tee /tmp/portuni-mcp.log'`.
-The server never starts without `PORTUNI_AUTH_TOKEN` (#521); the dev token
+The server never starts without `PORTUNI_AUTH_TOKEN`; the dev token
 lives in the Keychain entry `mcp.portuni-dev.auth-token`, never in
 `.env.schema`, and your shell exports the same value as `PORTUNI_MCP_TOKEN`
 for Claude Code in mirror dirs.
@@ -207,7 +207,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
   and `sync_issues`, the Unsynced dialog, Settings → Synchronization, file
   sync badges and dots, Drive link, conflict/restore actions); a file row
   keeps only "untracked" and "missing". `GET /sync/pending` answers empty
-  and MCP registers no store/pull/remote/snapshot tool there (#575).
+  and MCP registers no store/pull/remote/snapshot tool there.
 - A team-workspace sidecar has no graph db. A graph read in code that runs on
   the device goes through a `CentralClient` method or an injected resolver
   whose local default is the direct query; never a swallowed failure.
@@ -262,7 +262,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `SessionContentStore` over this device's `content.db`. Nothing on the
   device sends events, `brief` or `handoff_inline` to the central server;
   the central server never opens a `content.db`, writes no summary and
-  holds no content at all (migration 040).
+  holds no content at all.
   Access is enforced once, on the central server, by
   `auth/session-access.ts`, whose table is one line: a thread is its
   owner's, for every action, `manage` included; anyone else gets
@@ -270,7 +270,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `router.ts`, `agent-router.ts`, `sessions-ws.ts`, `min-scopes.ts` and
   `device-local-routes.json` together.
 - Nothing but Uzavřít and the auto-archive sweep reaches `closed`; writing
-  into a closed thread reopens it like a suspended one (#498). Every other
+  into a closed thread reopens it like a suspended one. Every other
   end (idle `PORTUNI_RUN_IDLE_MS`, provider limit or error, boot sweep, a
   hand-opened CLI's connection dropping) suspends with no summary; a
   handoff file is written only by Předat and Pokračovat v nové session,
@@ -288,11 +288,8 @@ One line each; the linked doc carries the mechanism and the reasoning.
 - `@anthropic-ai/claude-agent-sdk` is pinned exact; never let `npm update`
   touch it. The adapter always uses streaming input, never starts a process
   to answer `models()`, and ends a run on a `result` that carries an error.
-- Migration 036 carries `draft`, `model`, `effort`; migration 039 the
-  context counters; migration 040 (#462, the central migration) rebuilds
-  `sessions` without `brief`/`handoff_inline` and drops the graph db's
-  `session_events`. The 030, 036 and 040 rebuilds, `DDL_SESSIONS` and
-  `PG_BASELINE_DDL` carry the current full shape too. A new `sessions`
+- The `sessions` rebuilds in migrations 030, 036 and 040, `DDL_SESSIONS`
+  and `PG_BASELINE_DDL` each carry the full current shape; a new `sessions`
   column goes into all of them. `content.db` has its own DDL and version
   row (`infra/device-content-db.ts`) and never a `MIGRATIONS` entry; a
   personal workspace copies its old content into it before `ensureSchema`
@@ -383,7 +380,7 @@ One line each; the linked doc carries the mechanism and the reasoning.
   `getFixedT(locale, ns)`. Terms per `glossary.md`; `npm run i18n:check`
   is in the gate. Boot and namespaces: `task-surface-web.md`.
 
-## Security rules (from the auth refactor post-mortem)
+## Security rules
 
 1. **No secret in webview JS, ever.** The webview calls the `api_request`
    Tauri command; the Rust proxy injects the bearer header.

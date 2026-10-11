@@ -139,6 +139,7 @@ import {
   handleDeleteRunnerInstance,
   handleListRunnerInstances,
   handleListRunnerModels,
+  handleGetRunnerDefaults,
   handleGetLocalHost,
   handleListRunners,
   handleSetRunnerInstanceOrgDefault,
@@ -928,7 +929,12 @@ async function routeRunners(
   // has to be exactly "models".
   const modelsMatch = pathname.match(/^\/runners\/([^/]+)\/models$/);
   if (modelsMatch && method === "GET") {
-    await handleListRunnerModels(req, res, decodeURIComponent(modelsMatch[1]));
+    await handleListRunnerModels(req, res, decodeURIComponent(modelsMatch[1]), url);
+    return true;
+  }
+  const defaultsMatch = pathname.match(/^\/runners\/([^/]+)\/defaults$/);
+  if (defaultsMatch && method === "GET") {
+    await handleGetRunnerDefaults(req, res, decodeURIComponent(defaultsMatch[1]), url);
     return true;
   }
   if (pathname === "/runners/instances" && method === "GET") {

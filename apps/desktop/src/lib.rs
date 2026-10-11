@@ -1423,9 +1423,14 @@ pub(crate) fn is_device_local_path(path: &str) -> bool {
 /// Lexical only — does not resolve symlinks; the mirror is trusted not to
 /// contain symlinks escaping the workspace.
 fn path_within_root(root: &std::path::Path, candidate: &std::path::Path) -> bool {
+    lexical_normalize(candidate).starts_with(root)
+}
+
+/// `path` with `.` dropped and `..` popped, without touching the disk.
+fn lexical_normalize(path: &std::path::Path) -> std::path::PathBuf {
     use std::path::Component;
     let mut normalized = std::path::PathBuf::new();
-    for comp in candidate.components() {
+    for comp in path.components() {
         match comp {
             Component::ParentDir => {
                 normalized.pop();
@@ -1434,7 +1439,7 @@ fn path_within_root(root: &std::path::Path, candidate: &std::path::Path) -> bool
             other => normalized.push(other.as_os_str()),
         }
     }
-    normalized.starts_with(root)
+    normalized
 }
 
 /// Expand a leading `~` / `~/` in a config path to the user's home dir.
@@ -1955,6 +1960,92 @@ fn is_showtime_ext(path: &std::path::Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("showtime"))
         .unwrap_or(false)
+}
+
+/// Content type of a file a previewed document may pull in by relative path:
+/// a stylesheet, a web font or an image. Anything else (scripts, data, .env,
+/// markdown) the protocol refuses.
+fn preview_asset_mime(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "css" => "text/css; charset=utf-8",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        _ => return None,
+    })
+}
+
+/// What a portuni-html request resolves to.
+#[derive(Debug, PartialEq)]
+enum PreviewTarget {
+    /// The previewed document itself: an .html/.htm file, or a .showtime
+    /// bundle served as its preview.html.
+    Document(std::path::PathBuf),
+    /// A stylesheet, font or image the document references by relative path.
+    Asset {
+        path: std::path::PathBuf,
+        mime: &'static str,
+    },
+}
+
+/// Resolve a portuni-html URL path against the workspace mirror `root`.
+///
+/// URL shape (built by the FE's `protocolUrl`):
+/// `/<encodeURIComponent(document dir)>/<encodeURIComponent(file name)>`.
+/// The document's folder is ONE percent-encoded segment, so the browser
+/// resolves the document's relative references (`fonts/x.css`,
+/// `img/a.png`, `url(t.woff2)` inside that CSS) to further segments under
+/// it, and the handler can tell which folder they belong to. A reference
+/// that climbs out with `../` loses that first segment in the browser's
+/// own resolution and is refused here; an encoded `%2E%2E` or `%2F` is
+/// decoded and normalized before the check, so it cannot climb out either.
+///
+/// Errors carry the reason for the handler's log line.
+fn resolve_preview_request(
+    root: &std::path::Path,
+    uri_path: &str,
+) -> Result<PreviewTarget, String> {
+    let decode = |s: &str| {
+        percent_encoding::percent_decode_str(s)
+            .decode_utf8_lossy()
+            .to_string()
+    };
+    let raw = uri_path.strip_prefix('/').unwrap_or(uri_path);
+    let Some((base_enc, rest_enc)) = raw.split_once('/') else {
+        return Err(format!("no document folder in path: {uri_path}"));
+    };
+    let base = std::path::PathBuf::from(decode(base_enc));
+    if !base.is_absolute() {
+        return Err(format!("document folder is not absolute: {}", base.display()));
+    }
+    let base = lexical_normalize(&base);
+    if !base.starts_with(root) {
+        return Err(format!("out-of-scope folder: {}", base.display()));
+    }
+    let rest = decode(rest_enc);
+    let candidate = lexical_normalize(&base.join(rest));
+    if candidate == base || !candidate.starts_with(&base) {
+        return Err(format!("path leaves the document folder: {}", candidate.display()));
+    }
+    if is_previewable_ext(&candidate) {
+        return Ok(PreviewTarget::Document(candidate));
+    }
+    match preview_asset_mime(&candidate) {
+        Some(mime) => Ok(PreviewTarget::Asset {
+            path: candidate,
+            mime,
+        }),
+        None => Err(format!("not a previewable file type: {}", candidate.display())),
+    }
 }
 
 /// The entry of a `.showtime` bundle that holds the rendered deck. Showtime
@@ -3308,17 +3399,9 @@ pub fn run() {
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
             use tauri::http::Response;
             let app = ctx.app_handle();
-            // URL: portuni-html://localhost/<percent-encoded absolute path>
-            // Strip exactly one leading slash (the literal '/' that separates
-            // the authority from the path in the URL). Using strip_prefix
-            // rather than trim_start_matches so we only consume one character,
-            // matching the FE contract: portuni-html://localhost/<encodeURIComponent(absPath)>.
-            let raw_path = request.uri().path();
-            let raw = raw_path.strip_prefix('/').unwrap_or(raw_path);
-            let decoded = percent_encoding::percent_decode_str(raw)
-                .decode_utf8_lossy()
-                .to_string();
-            let candidate = std::path::PathBuf::from(&decoded);
+            // URL: portuni-html://localhost/<encoded document dir>/<encoded file>
+            // (the FE contract, see `protocolUrl` and `resolve_preview_request`).
+            let raw_path = request.uri().path().to_string();
 
             // Scope the preview to THIS WINDOW's workspace mirror root (#223)
             // -- resolved from the requesting webview's own label, not the
@@ -3350,38 +3433,59 @@ pub fn run() {
             };
 
             let Some(root) = root else { return forbidden() };
-            if !path_within_root(&root, &candidate) {
-                error!("portuni-html refused out-of-scope path: {decoded}");
-                return forbidden();
-            }
-            // Defense-in-depth: only serve .html/.htm files and .showtime
-            // bundles. The preview never requests anything else, so this
-            // never breaks normal use; it narrows what the protocol can serve
-            // even if the scope check were somehow bypassed.
-            if !is_previewable_ext(&candidate) {
-                error!("portuni-html refused non-html path: {decoded}");
-                return forbidden();
-            }
-            // A .showtime bundle is served as the preview.html it carries
-            // (Showtime packs the rendered deck into the zip at every save);
-            // an .html file is served as it is.
-            let read = if is_showtime_ext(&candidate) {
-                showtime_preview_bytes(&candidate)
-            } else {
-                std::fs::read(&candidate).map_err(|e| e.to_string())
+            // Scope + type check in one place: the request must stay inside
+            // the document's folder in this window's mirror, and be the
+            // document itself (.html/.htm/.showtime) or a stylesheet, font or
+            // image it references. Everything else is refused.
+            let target = match resolve_preview_request(&root, &raw_path) {
+                Ok(target) => target,
+                Err(reason) => {
+                    error!("portuni-html refused {raw_path}: {reason}");
+                    return forbidden();
+                }
+            };
+            let (path, read, content_type, is_font) = match &target {
+                // A .showtime bundle is served as the preview.html it carries
+                // (Showtime packs the rendered deck into the zip at every
+                // save); an .html file is served as it is.
+                PreviewTarget::Document(path) => (
+                    path,
+                    if is_showtime_ext(path) {
+                        showtime_preview_bytes(path)
+                    } else {
+                        std::fs::read(path).map_err(|e| e.to_string())
+                    },
+                    "text/html; charset=utf-8",
+                    false,
+                ),
+                PreviewTarget::Asset { path, mime } => (
+                    path,
+                    std::fs::read(path).map_err(|e| e.to_string()),
+                    *mime,
+                    mime.starts_with("font/"),
+                ),
             };
             match read {
-                Ok(bytes) => Response::builder()
-                    .status(200)
-                    .header("Content-Type", "text/html; charset=utf-8")
-                    // Own permissive CSP: this origin is sandboxed (no
-                    // allow-same-origin) and isolated from the app, so the
-                    // app CSP is intentionally NOT applied here.
-                    .header("Content-Security-Policy", "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'")
-                    .body(bytes)
-                    .unwrap(),
+                Ok(bytes) => {
+                    let mut response = Response::builder()
+                        .status(200)
+                        .header("Content-Type", content_type)
+                        .header("X-Content-Type-Options", "nosniff")
+                        // Own permissive CSP: this origin is sandboxed (no
+                        // allow-same-origin) and isolated from the app, so the
+                        // app CSP is intentionally NOT applied here.
+                        .header("Content-Security-Policy", "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'");
+                    // The sandboxed frame has an opaque origin, and browsers
+                    // fetch @font-face sources in CORS mode: without this
+                    // header the font is dropped and the fallback shows.
+                    // Stylesheets and images load without CORS.
+                    if is_font {
+                        response = response.header("Access-Control-Allow-Origin", "*");
+                    }
+                    response.body(bytes).unwrap()
+                }
                 Err(e) => {
-                    error!("portuni-html read failed for {decoded}: {e}");
+                    error!("portuni-html read failed for {}: {e}", path.display());
                     Response::builder()
                         .status(404)
                         .header("Content-Type", "text/plain")
@@ -4341,6 +4445,102 @@ mod protocol_scope_tests {
     #[test]
     fn rejects_unrelated_root() {
         assert!(!path_within_root(Path::new("/ws"), Path::new("/etc/passwd")));
+    }
+}
+
+#[cfg(test)]
+mod preview_request_tests {
+    //! Reported: an HTML diagram in the mirror loading Space Grotesk/Cabin from
+    //! `fonts/fonts-local.css` (@font-face with relative url()) rendered with
+    //! the fallback font in the preview, fine in Chrome. The preview URL
+    //! encoded the whole path as one segment, so `fonts/fonts-local.css`
+    //! resolved to `portuni-html://localhost/fonts/fonts-local.css` and the
+    //! handler served only .html anyway. These URL paths are what the browser
+    //! requests for such a document under the new `protocolUrl` shape.
+    use super::{resolve_preview_request, PreviewTarget};
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    use std::path::{Path, PathBuf};
+
+    const ROOT: &str = "/ws";
+    const DIR: &str = "/ws/projects/strategie/wip/diagram strategie";
+
+    fn url(dir: &str, rest: &str) -> String {
+        format!("/{}/{rest}", utf8_percent_encode(dir, NON_ALPHANUMERIC))
+    }
+
+    fn resolve(path: &str) -> Result<PreviewTarget, String> {
+        resolve_preview_request(Path::new(ROOT), path)
+    }
+
+    fn asset(rel: &str, mime: &'static str) -> PreviewTarget {
+        PreviewTarget::Asset {
+            path: PathBuf::from(DIR).join(rel),
+            mime,
+        }
+    }
+
+    #[test]
+    fn serves_the_document() {
+        assert_eq!(
+            resolve(&url(DIR, "diagram.html")),
+            Ok(PreviewTarget::Document(PathBuf::from(DIR).join("diagram.html")))
+        );
+        assert_eq!(
+            resolve(&url(DIR, "deck.showtime")),
+            Ok(PreviewTarget::Document(PathBuf::from(DIR).join("deck.showtime")))
+        );
+    }
+
+    #[test]
+    fn serves_relative_css_font_and_image() {
+        assert_eq!(
+            resolve(&url(DIR, "fonts/fonts-local.css")),
+            Ok(asset("fonts/fonts-local.css", "text/css; charset=utf-8"))
+        );
+        assert_eq!(
+            resolve(&url(DIR, "fonts/SpaceGrotesk.woff2")),
+            Ok(asset("fonts/SpaceGrotesk.woff2", "font/woff2"))
+        );
+        assert_eq!(
+            resolve(&url(DIR, "img/logo%20final.PNG")),
+            Ok(asset("img/logo final.PNG", "image/png"))
+        );
+    }
+
+    #[test]
+    fn dot_segments_inside_the_folder_stay_allowed() {
+        assert_eq!(
+            resolve(&url(DIR, "fonts/../img/a.svg")),
+            Ok(asset("img/a.svg", "image/svg+xml"))
+        );
+    }
+
+    #[test]
+    fn refuses_climbing_out_of_the_document_folder() {
+        // The browser resolves `../secret.png` against the document URL by
+        // dropping the folder segment: what arrives has no folder at all.
+        assert!(resolve("/secret.png").is_err());
+        // Encoded so the browser leaves it alone: decoded, then refused.
+        assert!(resolve(&url(DIR, "%2E%2E/other.png")).is_err());
+        assert!(resolve(&url(DIR, "..%2F..%2Fother.css")).is_err());
+        assert!(resolve(&url(DIR, "fonts/../../other.woff2")).is_err());
+        // An absolute rest would replace the folder in Path::join.
+        assert!(resolve(&url(DIR, "%2Fws%2Fother%2Fa.png")).is_err());
+    }
+
+    #[test]
+    fn refuses_a_folder_outside_the_mirror() {
+        assert!(resolve(&url("/etc", "passwd.css")).is_err());
+        assert!(resolve(&url("/ws/../etc", "a.png")).is_err());
+        assert!(resolve(&url("relative/dir", "a.png")).is_err());
+    }
+
+    #[test]
+    fn refuses_other_file_types_and_the_folder_itself() {
+        assert!(resolve(&url(DIR, "notes.md")).is_err());
+        assert!(resolve(&url(DIR, ".env")).is_err());
+        assert!(resolve(&url(DIR, "app.js")).is_err());
+        assert!(resolve(&url(DIR, "")).is_err());
     }
 }
 

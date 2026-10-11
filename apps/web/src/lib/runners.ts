@@ -8,10 +8,10 @@
 
 import type { TFunction } from "i18next";
 import { jsonRequest } from "../api";
-import type { RunnerInfo, RunnerInstanceSummary, RunnerModel } from "../../../server/shared/api-types";
+import type { RunnerDefaultsInfo, RunnerInfo, RunnerInstanceSummary, RunnerModel } from "../../../server/shared/api-types";
 import { isPortuniEnvKey, isSecretShapedEnvKey } from "../../../server/shared/runner-env";
 
-export type { RunnerInfo, RunnerInstanceSummary, RunnerModel };
+export type { RunnerDefaultsInfo, RunnerInfo, RunnerInstanceSummary, RunnerModel };
 export { isPortuniEnvKey, isSecretShapedEnvKey };
 
 export async function listRunners(): Promise<RunnerInfo[]> {
@@ -22,9 +22,31 @@ export async function listRunners(): Promise<RunnerInfo[]> {
 // #376: the model picker's list -- GET /runners/:runner/models. Before any
 // task has run under this runner in this process, the server answers the
 // documented aliases (plus free text is the caller's own job to allow).
-export async function fetchRunnerModels(runner: string): Promise<RunnerModel[]> {
-  const res = await jsonRequest<{ models: RunnerModel[] }>("GET", `/runners/${encodeURIComponent(runner)}/models`);
+// `instanceId` names the account whose list is wanted.
+export async function fetchRunnerModels(runner: string, instanceId: string | null = null): Promise<RunnerModel[]> {
+  const query = instanceId ? `?${new URLSearchParams({ instance: instanceId }).toString()}` : "";
+  const res = await jsonRequest<{ models: RunnerModel[] }>("GET", `/runners/${encodeURIComponent(runner)}/models${query}`);
   return res.models;
+}
+
+// What a thread on `instanceId` runs on without its own model or effort,
+// with where each value comes from -- GET /runners/:runner/defaults. `model`
+// is the thread's own model; the effort default follows it. null when the
+// runner cannot tell.
+export async function fetchRunnerDefaults(
+  runner: string,
+  instanceId: string | null,
+  model: string | null,
+): Promise<RunnerDefaultsInfo | null> {
+  const params = new URLSearchParams();
+  if (instanceId) params.set("instance", instanceId);
+  if (model) params.set("model", model);
+  const query = params.toString();
+  const res = await jsonRequest<{ defaults: RunnerDefaultsInfo | null }>(
+    "GET",
+    `/runners/${encodeURIComponent(runner)}/defaults${query ? `?${query}` : ""}`,
+  );
+  return res.defaults;
 }
 
 export async function listRunnerInstances(): Promise<RunnerInstanceSummary[]> {

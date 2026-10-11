@@ -18,7 +18,7 @@ A team workspace (central server + sync agent) is the primary runtime; a persona
 
 ## Documentation
 
-`CLAUDE.md`, `docs/`, and the public docs site `sites/docs/` for any behaviour, tool or API change. release-please never touches `sites/docs/`, so a change shipped without a docs edit leaves the published site wrong.
+`docs/` and the public docs site `sites/docs/` for any behaviour, tool or API change. release-please never touches `sites/docs/`, so a change shipped without a docs edit leaves the published site wrong.
 
 ## Repo rules
 

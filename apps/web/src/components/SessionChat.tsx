@@ -22,6 +22,8 @@ import { displayError } from "../errors";
 import type { TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 import {
+  defaultModelName,
+  defaultSourceText,
   modelDescriptionText,
   questionDetailIsContent,
   questionDetailText,
@@ -168,11 +170,13 @@ import {
   renamePersistentSession,
 } from "../api";
 import {
+  fetchRunnerDefaults,
   fetchRunnerModels,
   listRunnerInstances,
   listRunners,
   type RunnerInfo,
   type RunnerInstanceSummary,
+  type RunnerDefaultsInfo,
   type RunnerModel,
 } from "../lib/runners";
 import { useLocale } from "../lib/use-locale";
@@ -295,14 +299,15 @@ export default function SessionChat({
     };
   }, []);
 
-  // #376: the model picker's list, for the thread's runner. A draft on a
-  // device with no logged-in runner falls back to "claude", the only
-  // runner this codebase registers today.
+  // #376: the model picker's list, for the thread's runner and the account
+  // its instance logs in to. A draft on a device with no logged-in runner
+  // falls back to "claude", the only runner this codebase registers today.
   const [models, setModels] = useState<RunnerModel[]>([]);
   const runner = session?.runner ?? null;
+  const instanceId = session?.instance_id ?? null;
   useEffect(() => {
     let cancelled = false;
-    fetchRunnerModels(runner ?? "claude")
+    fetchRunnerModels(runner ?? "claude", instanceId)
       .then((list) => {
         if (!cancelled) setModels(list);
       })
@@ -312,7 +317,32 @@ export default function SessionChat({
     return () => {
       cancelled = true;
     };
-  }, [runner]);
+  }, [runner, instanceId]);
+
+  // What the thread runs on without its own model or effort, and from where
+  // -- shown before the first run. Asked again when the thread's runner,
+  // instance or own model changes (the effort default follows the model).
+  // The first answer may follow a probe of the runner, so the models list
+  // is re-read with it.
+  const [defaults, setDefaults] = useState<RunnerDefaultsInfo | null>(null);
+  const ownModel = session?.model ?? null;
+  useEffect(() => {
+    let cancelled = false;
+    const runnerId = runner ?? "claude";
+    fetchRunnerDefaults(runnerId, instanceId, ownModel)
+      .then(async (d) => {
+        if (cancelled) return;
+        setDefaults(d);
+        const list = await fetchRunnerModels(runnerId, instanceId);
+        if (!cancelled) setModels(list);
+      })
+      .catch(() => {
+        if (!cancelled) setDefaults(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runner, instanceId, ownModel]);
 
   // Backfill + subscribe. Keyed on the thread id alone: state and waiting
   // come from the store's record now, so nothing in here reads a session
@@ -505,6 +535,17 @@ export default function SessionChat({
   };
 
   const selectedModel = models.find((m) => m.id === session.model) ?? null;
+  // Without a model of its own the thread runs on the default one; its row
+  // decides whether effort applies.
+  const defaultModel = defaults?.model.value ?? null;
+  const effortModel =
+    selectedModel ??
+    (session.model === null && defaultModel
+      ? (models.find((m) => m.id === defaultModel) ??
+        models.find((m) => m.id !== "default" && m.resolvedModel === defaultModel) ??
+        models.find((m) => m.id === "default" && m.resolvedModel === defaultModel) ??
+        null)
+      : null);
 
   const handleModelChange = (value: string) => {
     const model = value === "" ? null : value;
@@ -915,8 +956,21 @@ export default function SessionChat({
             <div className="flex items-center justify-between gap-2">
             <PromptInputTools>
               <PromptInputSelect value={session.model ?? ""} onValueChange={handleModelChange}>
-                <PromptInputSelectTrigger className="w-auto min-w-0" title={t(($) => $.composer.model.title)}>
-                  <PromptInputSelectValue placeholder={t(($) => $.composer.model.placeholder)} />
+                <PromptInputSelectTrigger
+                  className="w-auto min-w-0"
+                  title={
+                    session.model === null && defaults
+                      ? defaultSourceText(defaults.model.source, defaults.model.detail, t)
+                      : t(($) => $.composer.model.title)
+                  }
+                >
+                  <PromptInputSelectValue
+                    placeholder={
+                      defaultModel
+                        ? t(($) => $.composer.model.default, { model: defaultModelName(defaultModel, models) })
+                        : t(($) => $.composer.model.placeholder)
+                    }
+                  />
                 </PromptInputSelectTrigger>
                 <PromptInputSelectContent>
                   {models.map((m) => (
@@ -926,16 +980,26 @@ export default function SessionChat({
                   ))}
                 </PromptInputSelectContent>
               </PromptInputSelect>
-              {selectedModel?.supportsEffort && (
+              {effortModel?.supportsEffort && (
                 <PromptInputSelect value={session.effort ?? ""} onValueChange={handleEffortChange}>
                   <PromptInputSelectTrigger
                     className="w-auto min-w-0"
-                    title={t(($) => $.composer.effort.title)}
+                    title={
+                      session.effort === null && defaults?.effort.value
+                        ? defaultSourceText(defaults.effort.source, defaults.effort.detail, t)
+                        : t(($) => $.composer.effort.title)
+                    }
                   >
-                    <PromptInputSelectValue placeholder={t(($) => $.composer.effort.placeholder)} />
+                    <PromptInputSelectValue
+                      placeholder={
+                        defaults?.effort.value
+                          ? t(($) => $.composer.effort.default, { level: defaults.effort.value })
+                          : t(($) => $.composer.effort.placeholder)
+                      }
+                    />
                   </PromptInputSelectTrigger>
                   <PromptInputSelectContent>
-                    {selectedModel.effortLevels.map((e) => (
+                    {effortModel.effortLevels.map((e) => (
                       <PromptInputSelectItem key={e} value={e}>
                         {e}
                       </PromptInputSelectItem>

@@ -33,6 +33,8 @@ active --> archived     (no longer relevant)
 
 **Superseding.** Use `portuni_supersede` when a decision changes or the information's been updated. The old event becomes `superseded` and a new event takes its place, linked back to the original.
 
+**Editing.** Use `portuni_update_event` for corrections of form that history does not need to keep: a typo, a shorter wording, a wrong date or type. The event keeps its ID, so references to it still hold. It also changes status directly, for example to archive an event or restore one superseded by mistake.
+
 ## How events show up in context
 
 Events appear in tool responses with detail that scales inversely with distance from where you're looking:
@@ -54,4 +56,5 @@ Note that `portuni_get_context` surfaces **active** events only – resolved, su
 | `portuni_log` | Record an event on a node |
 | `portuni_resolve` | Mark an event as resolved |
 | `portuni_supersede` | Replace one with an updated version |
+| `portuni_update_event` | Edit one in place (content, type, date, meta, refs, status) |
 | `portuni_list_events` | Query events with filters |

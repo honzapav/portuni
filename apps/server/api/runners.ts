@@ -3,6 +3,7 @@
 //
 //   GET    /runners                          read   -> detected adapters + availability
 //   GET    /runners/:runner/models            read   -> the picker's list (#376)
+//   GET    /runners/:runner/defaults          read   -> default model/effort and their source
 //   GET    /runners/instances                read   -> provider instances (no env values)
 //   POST   /runners/instances                write  -> create an instance
 //   PATCH  /runners/instances/:id            write  -> update (partial; empty env value = unchanged)
@@ -21,18 +22,20 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { parseJsonBody, respondApiError, respondError, respondJson } from "../http/middleware.js";
 import { detectAll, getAdapter } from "../domain/runner/registry.js";
-import { EFFORT_LEVELS } from "../domain/runner/types.js";
+import { EFFORT_LEVELS, type RunnerAdapter } from "../domain/runner/types.js";
 import { localHostInfo } from "../domain/runner/hosts.js";
 import {
   InstanceDefaultsKeyRefusedError,
   InstanceEnvKeyRefusedError,
   createInstance,
   deleteInstance,
+  getInstanceDefaults,
+  getInstanceEnv,
   listInstances,
   setOrgDefault,
   updateInstance,
 } from "../domain/runner/instances.js";
-import type { LocalHostInfo, RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
+import type { LocalHostInfo, RunnerDefaultsInfo, RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
 
 function respondInstanceError(res: ServerResponse, ctx: string, err: unknown): void {
   if (err instanceof InstanceEnvKeyRefusedError || err instanceof InstanceDefaultsKeyRefusedError) {
@@ -60,25 +63,67 @@ export function handleGetLocalHost(res: ServerResponse): void {
   respondJson(res, 200, body);
 }
 
+// The adapter a /runners/:runner/* read is for, or a 404 already sent.
+function runnerOr404(res: ServerResponse, runnerId: string): RunnerAdapter | null {
+  const adapter = getAdapter(runnerId);
+  if (!adapter) respondApiError(res, 404, "UNKNOWN_RUNNER", `unknown runner '${runnerId}'`, { runner: runnerId });
+  return adapter;
+}
+
+// The env of the instance `?instance=<id>` names; {} without one.
+async function instanceEnvOf(instanceId: string | null): Promise<Record<string, string>> {
+  return instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
+}
+
 // #376: the model picker's list -- device-local like every other /runners*
 // route (lib.rs's is_device_local_path already matches on the /runners/
 // prefix). 404 for an unregistered runner id, same tier as the instance
-// routes below (no ownership model, read scope).
+// routes below (no ownership model, read scope). `?instance=<id>` names the
+// account whose list is wanted (an instance's CLAUDE_CONFIG_DIR).
 export async function handleListRunnerModels(
   req: IncomingMessage,
   res: ServerResponse,
   runnerId: string,
+  url: URL,
 ): Promise<void> {
   try {
-    const adapter = getAdapter(runnerId);
-    if (!adapter) {
-      respondApiError(res, 404, "UNKNOWN_RUNNER", `unknown runner '${runnerId}'`, { runner: runnerId });
-      return;
-    }
-    const models = await adapter.models();
+    const adapter = runnerOr404(res, runnerId);
+    if (!adapter) return;
+    const models = await adapter.models({ instanceEnv: await instanceEnvOf(url.searchParams.get("instance") || null) });
     respondJson(res, 200, { models });
   } catch (err) {
     respondError(res, `${req.method} /runners/${runnerId}/models`, err);
+  }
+}
+
+// GET /runners/:runner/defaults?instance=<id>&model=<id>: what a thread on
+// that instance runs on when it names no model or effort of its own, with
+// the source of each value -- the composer shows it before the first run.
+// `model` is the thread's own model (the effort default depends on it).
+// Device-local like the rest of /runners*: the instance env and the
+// runner's settings file are this device's. A runner without the method
+// answers `defaults: null`.
+export async function handleGetRunnerDefaults(
+  req: IncomingMessage,
+  res: ServerResponse,
+  runnerId: string,
+  url: URL,
+): Promise<void> {
+  try {
+    const adapter = runnerOr404(res, runnerId);
+    if (!adapter) return;
+    if (!adapter.defaults) {
+      respondJson(res, 200, { defaults: null });
+      return;
+    }
+    const instanceId = url.searchParams.get("instance") || null;
+    const model = url.searchParams.get("model") || null;
+    const instanceEnv = await instanceEnvOf(instanceId);
+    const instanceDefaults = instanceId ? await getInstanceDefaults(instanceId) : null;
+    const defaults: RunnerDefaultsInfo = await adapter.defaults({ model, instanceEnv, instanceDefaults });
+    respondJson(res, 200, { defaults });
+  } catch (err) {
+    respondError(res, `${req.method} /runners/${runnerId}/defaults`, err);
   }
 }
 

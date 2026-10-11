@@ -48,6 +48,36 @@ The new event inherits the old event's `node_id`, `type`, and `task_ref`, and pr
 
 Returns: `{ new_id, superseded_id, node_id, status: "active" }`
 
+## portuni_update_event
+
+Edit an existing event in place. The `id`, `node_id` and `logged_at` stay
+the same; nothing new is written to the history chain.
+
+Use it for corrections of form: a typo, a shorter or clearer wording, a
+wrong type or date, missing `meta` or `refs`. Use it also to change the
+status: archive an event, or bring a superseded or archived one back to
+`active`. When the substance changes (a decision was revised, a fact turned
+out differently), use `portuni_supersede`, so history keeps both versions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `event_id` | string | yes | Event ID |
+| `content` | string | no | New content (must not be empty) |
+| `type` | string | no | New event type |
+| `status` | string | no | `active`, `resolved`, `superseded` or `archived` |
+| `created_at` | string | no | New event date (ISO), stored normalized |
+| `meta` | object \| null | no | Replaces the stored meta; `null` clears it |
+| `refs` | string[] \| null | no | Replaces the stored refs; `null` clears them |
+| `task_ref` | string \| null | no | Replaces the task reference; `null` clears it |
+
+At least one field besides `event_id` is required. Needs write scope on
+the event's node, same as `portuni_log`. The REST route
+`PATCH /events/:id` takes the same fields.
+
+Returns: the full event row (`id`, `node_id`, `type`, `content`, `meta`,
+`status`, `refs`, `task_ref`, `created_at`, `logged_at`) plus
+`updated_fields`.
+
 ## portuni_list_events
 
 Query events with filters.

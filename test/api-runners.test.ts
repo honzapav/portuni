@@ -122,6 +122,16 @@ describe("runner registry REST endpoints", () => {
     ]);
   });
 
+  test("GET /runners/:runner/defaults answers null for a runner without defaults(), 404 for an unknown one", async () => {
+    registerAdapter(new FakeRunnerAdapter({ script: [] }));
+    const res = await call(makeIdentity("read"), "GET", "/runners/fake/defaults?instance=nope&model=m1");
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(JSON.parse(res.body), { defaults: null });
+    const missing = await call(makeIdentity("read"), "GET", "/runners/nonexistent/defaults");
+    assert.equal(missing.statusCode, 404);
+    assert.equal(JSON.parse(missing.body).code, "UNKNOWN_RUNNER");
+  });
+
   test("GET /runners/:runner/models 404s for an unregistered runner", async () => {
     const res = await call(makeIdentity("read"), "GET", "/runners/nonexistent/models");
     assert.equal(res.statusCode, 404);

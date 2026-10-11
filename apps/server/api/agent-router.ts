@@ -78,6 +78,7 @@ import {
   handleDeleteRunnerInstance,
   handleListRunnerInstances,
   handleListRunnerModels,
+  handleGetRunnerDefaults,
   handleGetLocalHost,
   handleListRunners,
   handleSetRunnerInstanceOrgDefault,
@@ -456,7 +457,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     // own router.ts.
     const runnerModelsMatch = pathname.match(/^\/runners\/([^/]+)\/models$/);
     if (runnerModelsMatch && method === "GET") {
-      await handleListRunnerModels(req, res, decodeURIComponent(runnerModelsMatch[1]));
+      await handleListRunnerModels(req, res, decodeURIComponent(runnerModelsMatch[1]), url);
+      return true;
+    }
+    const runnerDefaultsMatch = pathname.match(/^\/runners\/([^/]+)\/defaults$/);
+    if (runnerDefaultsMatch && method === "GET") {
+      await handleGetRunnerDefaults(req, res, decodeURIComponent(runnerDefaultsMatch[1]), url);
       return true;
     }
     if (pathname === "/runners/instances" && method === "GET") {

@@ -8,7 +8,7 @@
 //   - createAgentMcpTransport mounted on a second ephemeral HTTP server;
 //   - a real SDK Client connected to the agent server.
 
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -25,6 +25,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createAgentMcpTransport } from "../apps/server/mcp/agent-transport.js";
+import { createElicitor, agentRelayElicitTimeoutMs } from "../apps/server/mcp/elicit.js";
+import { scopeExpansionError } from "../apps/server/mcp/scope.js";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
@@ -163,6 +165,25 @@ function startStubCentral(): Promise<StubCentral> {
             },
           });
           return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        },
+      );
+      // Stands in for central's scope gate (#597): opens a dialog through
+      // the real elicitor (central's own outer deadline) and answers the way
+      // the gate does -- data on accept, the read gate's own structured
+      // refusal (scopeExpansionError, dialog_timed_out on an unanswered
+      // dialog) otherwise.
+      mcp.tool(
+        "portuni_test_scope_dialog",
+        { node_id: z.string() },
+        async (a) => {
+          const outcome = await createElicitor(mcp).confirm(`Read node ${a.node_id}?`);
+          const payload =
+            outcome === "accept"
+              ? { node_id: a.node_id, granted: true }
+              : scopeExpansionError(a.node_id, "expand scope first", {
+                  dialogTimedOut: outcome === "timeout",
+                });
+          return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
         },
       );
       mcp.tool(
@@ -788,6 +809,92 @@ describe("agent MCP front door: elicitation round trip", () => {
       const result = JSON.parse(r.content[0].text);
       assert.equal(result.action, "decline");
     } finally {
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
+    }
+  });
+});
+
+// #597: the sync agent's own call to central used the SDK's 60 s request
+// default, so a scope dialog central still held open turned into a bare
+// "Request timed out" (-32001) after a minute. Fake timers drive the clock
+// past 60 s (and past the relay deadline) without waiting for it.
+describe("agent MCP front door: the upstream call outlasts a scope dialog (#597)", () => {
+  async function connectWithDialog(): Promise<{
+    client: Client;
+    server: Server;
+    dialogShown: Promise<void>;
+    answer: (action: "accept" | "decline") => void;
+  }> {
+    const server = createServer((req, res) => {
+      void agentTransport.handle(req, res, taskIdentity);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const client = new Client(
+      { name: "upstream-deadline-test", version: "0.0.0" },
+      { capabilities: { elicitation: {} } },
+    );
+    let shown!: () => void;
+    const dialogShown = new Promise<void>((r) => (shown = r));
+    let answer!: (action: "accept" | "decline") => void;
+    const answered = new Promise<"accept" | "decline">((r) => (answer = r));
+    client.setRequestHandler(ElicitRequestSchema, async () => {
+      shown();
+      const action = await answered;
+      return { action, content: action === "accept" ? { confirm: true } : undefined };
+    });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    return { client, server, dialogShown, answer };
+  }
+
+  // The downstream client's own deadline is not under test here; a real
+  // client (Claude Code, claude.ai) has its own, longer than central's.
+  const clientCallOptions = { timeout: 60 * 60 * 1000 };
+
+  it("a dialog answered after more than 60 s passes through the front door without a timeout", async () => {
+    const { client, server, dialogShown, answer } = await connectWithDialog();
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const call = client.callTool(
+        { name: "portuni_test_scope_dialog", arguments: { node_id: "01OUTOFSCOPE" } },
+        undefined,
+        clientCallOptions,
+      );
+      await dialogShown;
+      mock.timers.tick(61_000);
+      answer("accept");
+      const r = (await call) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, undefined, JSON.stringify(r));
+      assert.deepEqual(JSON.parse(r.content[0].text), { node_id: "01OUTOFSCOPE", granted: true });
+    } finally {
+      mock.timers.reset();
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
+    }
+  });
+
+  it("an unanswered dialog comes back as a dialog_timed_out refusal, not -32001", async () => {
+    const { client, server, dialogShown } = await connectWithDialog();
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const call = client.callTool(
+        { name: "portuni_test_scope_dialog", arguments: { node_id: "01OUTOFSCOPE" } },
+        undefined,
+        clientCallOptions,
+      );
+      await dialogShown;
+      // Past the relay hop's deadline: the front door gives up on the
+      // dialog, central turns that into its refusal, and the upstream call
+      // is still waiting for it.
+      mock.timers.tick(agentRelayElicitTimeoutMs() + 1);
+      const r = (await call) as { content: Array<{ text: string }>; isError?: boolean };
+      const payload = JSON.parse(r.content[0].text);
+      assert.equal(payload.error, "scope_expansion_required");
+      assert.equal(payload.dialog_timed_out, true);
+    } finally {
+      mock.timers.reset();
       await client.close().catch(() => undefined);
       await new Promise<void>((res) => server.close(() => res()));
     }

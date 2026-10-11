@@ -12,10 +12,10 @@
 import { execFile as nodeExecFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
-import { access, stat } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
-import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { query as sdkQuery, resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ElicitationRequest,
   ElicitationResult,
@@ -33,7 +33,13 @@ import { isPortuniEnvKey } from "../../../shared/runner-env.js";
 import type { ChatEventParams, DenyCode, RunErrorCode } from "../../../shared/chat-event-codes.js";
 import { askUserQuestionAnswers, decidePermission } from "../permissions.js";
 import { isProcessAlive } from "../process-liveness.js";
-import { RunEndedError } from "../types.js";
+import {
+  type ClaudeUserSettings,
+  type ResolveClaudeDefaultsInput,
+  claudeEffortIsLearnable,
+  resolveClaudeDefaults,
+} from "../claude-defaults.js";
+import { EFFORT_LEVELS, RunEndedError } from "../types.js";
 import type {
   CanonicalEvent,
   EventSink,
@@ -43,13 +49,17 @@ import type {
   RunStart,
   RunnerAdapter,
   RunnerAvailability,
+  RunnerDefaults,
+  RunnerDefaultsInput,
   RunnerModel,
+  EffortLevel,
   ToolCallCategory,
 } from "../types.js";
 
 // #376: before this process has ever run a live query, there is nothing to
 // ask supportedModels() -- and starting a throwaway process just to build a
-// picker is explicitly ruled out. These are the documented aliases the SDK
+// picker is explicitly ruled out (defaults() is the one caller that probes:
+// the account's default model is known only to the CLI). These are the documented aliases the SDK
 // accepts as a bare `model` string; "sonnet" first since it's the sensible
 // everyday default. Effort support is left false/[] here (deliberately
 // conservative -- the real per-model answer only exists once
@@ -101,6 +111,58 @@ export interface CreateClaudeAdapterDeps {
   // Origins of this Portuni, for switching off inherited claude.ai
   // connectors to it; defaults to PORTUNI_CENTRAL_URL / PORTUNI_PUBLIC_URL.
   portuniOrigins?: () => string[];
+  // Reads a Claude Code settings file for defaults(); null when it is
+  // missing or not JSON. Tests inject the file's content.
+  readSettings?: (path: string) => Promise<ClaudeUserSettings | null>;
+  // Reads the managed (policy) settings tier for defaults(); null when
+  // none applies. Tests inject it.
+  readManagedSettings?: () => Promise<{ settings: ClaudeUserSettings } | null>;
+  // How long defaults() waits for the runner's list before answering
+  // without it.
+  modelsProbeTimeoutMs?: number;
+}
+
+const DEFAULT_MODELS_PROBE_TIMEOUT_MS = 20_000;
+
+async function readSettingsFile(path: string): Promise<ClaudeUserSettings | null> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    return parsed && typeof parsed === "object" ? (parsed as ClaudeUserSettings) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The managed tier through the SDK's own merge engine, without starting the
+// CLI: no user, project or local file, so what is left is the policy tier
+// (managed-settings.json, MDM, the remote-cached settings). The remote
+// cache is read from the default config dir, whatever an instance's
+// CLAUDE_CONFIG_DIR says: the SDK reads it from this process's env.
+async function readManagedSettingsTier(): Promise<{ settings: ClaudeUserSettings } | null> {
+  try {
+    const resolved = await resolveSettings({ settingSources: [], cwd: process.env.HOME ?? process.cwd() });
+    if (!resolved.sources.some((s) => s.source === "managed")) return null;
+    return { settings: resolved.effective as ClaudeUserSettings };
+  } catch {
+    return null;
+  }
+}
+
+// A model id as the init message names it, without a context-window
+// suffix ("claude-opus-5-5[1m]").
+function baseModelId(model: unknown): string | null {
+  return typeof model === "string" && model !== "" ? model.replace(/\[[^\]]*\]$/, "") : null;
+}
+
+function toRunnerModels(list: Awaited<ReturnType<Query["supportedModels"]>>): RunnerModel[] {
+  return list.map((m) => ({
+    id: m.value,
+    displayName: m.displayName,
+    description: m.description,
+    supportsEffort: m.supportsEffort ?? false,
+    effortLevels: m.supportedEffortLevels ?? [],
+    ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}),
+  }));
 }
 
 // `signal` lets a caller cancel a still-pending sleep the instant it no
@@ -933,8 +995,97 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   // failed), never re-fetched once it holds a real list.
   let modelsCache: RunnerModel[] | null = null;
 
-  async function models(): Promise<RunnerModel[]> {
-    return modelsCache ?? [...CLAUDE_ALIAS_MODELS];
+  // An account's own list once it has one (the picker must offer what that
+  // account's default model supports), else the first list this process
+  // saw, else the aliases.
+  async function models(input?: { instanceEnv: Readonly<Record<string, string>> }): Promise<RunnerModel[]> {
+    const own = input ? accountModels.get(accountKey(input.instanceEnv)) : undefined;
+    return own ?? modelsCache ?? [...CLAUDE_ALIAS_MODELS];
+  }
+
+  const readSettings = deps.readSettings ?? readSettingsFile;
+  const readManagedSettings = deps.readManagedSettings ?? readManagedSettingsTier;
+  // The effort a run of an account got for a model when nothing set one,
+  // keyed by account then full model id: the organization's default for
+  // the model is known only to the CLI, which reports the effort it
+  // applies on every turn's hooks. Kept for this process's lifetime.
+  const accountEfforts = new Map<string, Record<string, EffortLevel>>();
+  const modelsProbeTimeoutMs = deps.modelsProbeTimeoutMs ?? DEFAULT_MODELS_PROBE_TIMEOUT_MS;
+  // The account's default model is per account, and an instance's
+  // CLAUDE_CONFIG_DIR is what selects the account (buildEnv), so the list
+  // defaults() reads is kept per config dir; "" is the default login.
+  const accountModels = new Map<string, RunnerModel[]>();
+  const accountProbes = new Map<string, Promise<void>>();
+  const accountKey = (env: Readonly<Record<string, string>>): string => buildEnv(env).CLAUDE_CONFIG_DIR ?? "";
+
+  // The runner's own list before any run on this account: a query with no
+  // prompt, asked for supportedModels() (the CLI's initialize answer, no
+  // model call) and closed. No settings file is loaded and hooks are off,
+  // so a read of the defaults cannot start a SessionStart (or any other)
+  // hook. One probe per account at a time; a probe that fails, throws or
+  // times out leaves that account's list empty and the next defaults()
+  // tries again.
+  function probeModels(env: Readonly<Record<string, string>>): Promise<void> {
+    const key = accountKey(env);
+    if (accountModels.has(key)) return Promise.resolve();
+    const running = accountProbes.get(key);
+    if (running) return running;
+    const probe = (async () => {
+      const prompt = createPushQueue<SDKUserMessage>();
+      const stop = new AbortController();
+      let q: Query | null = null;
+      try {
+        const executable = await resolveExecutable();
+        q = query({
+          prompt,
+          options: {
+            cwd: process.env.HOME ?? process.cwd(),
+            ...(executable !== null ? { pathToClaudeCodeExecutable: executable } : {}),
+            settingSources: [],
+            settings: { disableAllHooks: true },
+            env: buildEnv(env),
+          },
+        });
+        const started = q;
+        const list = await Promise.race([
+          Promise.resolve().then(() => started.supportedModels()),
+          sleep(modelsProbeTimeoutMs, stop.signal).then(() => null),
+        ]);
+        if (list) {
+          const listed = toRunnerModels(list);
+          accountModels.set(key, listed);
+          if (modelsCache === null) modelsCache = listed;
+        }
+      } catch {
+        // No list: defaults() answers without the account's default.
+      } finally {
+        stop.abort();
+        prompt.end();
+        q?.close();
+        accountProbes.delete(key);
+      }
+    })();
+    accountProbes.set(key, probe);
+    return probe;
+  }
+
+  async function defaultsInput(input: RunnerDefaultsInput): Promise<ResolveClaudeDefaultsInput> {
+    const configDir = input.instanceEnv.CLAUDE_CONFIG_DIR?.trim() || join(process.env.HOME ?? "", ".claude");
+    const settingsPath = join(configDir, "settings.json");
+    const key = accountKey(input.instanceEnv);
+    return {
+      ...input,
+      settings: await readSettings(settingsPath),
+      settingsPath,
+      managed: await readManagedSettings(),
+      models: accountModels.get(key) ?? [],
+      accountEfforts: accountEfforts.get(key) ?? {},
+    };
+  }
+
+  async function defaults(input: RunnerDefaultsInput): Promise<RunnerDefaults> {
+    await probeModels(input.instanceEnv);
+    return resolveClaudeDefaults(await defaultsInput(input));
   }
 
   async function runExec(executable: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
@@ -967,7 +1118,11 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     const promptQueue = createPushQueue<SDKUserMessage>();
     // #490: the brief is the run's first message and is counted like any
     // other -- the turn that answers it echoes this uuid back.
+    // Learning the organization's effort (below) stops for good on a
+    // slash command: /effort, /model or a skill sets the turn's level.
+    let learningStopped = false;
     const pushPrompt = (text: string): void => {
+      if (text.trimStart().startsWith("/")) learningStopped = true;
       const uuid = randomUUID();
       state.pendingSends.push(uuid);
       promptQueue.push(userMessage(text, uuid));
@@ -1180,6 +1335,79 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       });
     }
 
+    // When nothing sets this run's effort, the effort its turns report is
+    // the account's default for the model -- the organization's, where it
+    // has one. The CLI reports only the level, never why (HookInput.effort),
+    // so the learning errs towards keeping nothing: a level kept wrongly
+    // outlives the setting that chose it. Whether anything sets it depends
+    // on the model, and a run without a model of its own learns its model
+    // only from its init message: the decision waits for it
+    // (claudeEffortIsLearnable). Only the first turn of a new session
+    // counts. Its Stop hook offers the level, and the turn's result keeps
+    // it: hooks are answered as they arrive, messages in order, so only at
+    // the result has every message of the turn been seen. A model switched
+    // (setModel, a fallback), a slash command, a skill or a main-thread
+    // agent before then stops the learning, since each sets the turn's
+    // model or level.
+    const runAccountKey = accountKey(run.instance.env);
+    let learnEffort: Promise<boolean> = Promise.resolve(false);
+    let runModelId: string | null = null;
+    let offeredEffort: EffortLevel | null = null;
+    // A resumed session may carry a level set in it; an account of its own
+    // (CLAUDE_CONFIG_DIR) has a remote-managed tier this process does not
+    // read (readManagedSettingsTier).
+    if (run.resume || runAccountKey !== "") learningStopped = true;
+
+    function stopEffortLearning(): void {
+      learningStopped = true;
+      learnEffort = Promise.resolve(false);
+      offeredEffort = null;
+    }
+
+    function decideEffortLearning(initModel: unknown): void {
+      if (run.effort !== null || learningStopped || runModelId !== null) return;
+      runModelId = baseModelId(initModel);
+      if (runModelId === null) return;
+      const model = initModel as string;
+      learnEffort = defaultsInput({ model: null, instanceEnv: run.instance.env, instanceDefaults: null })
+        .then((input) => claudeEffortIsLearnable(input, run.model, model))
+        .catch(() => false);
+    }
+
+    // A model the turn ran on other than the init message's.
+    function checkTurnModel(model: unknown): void {
+      if (runModelId !== null && baseModelId(model) !== runModelId) stopEffortLearning();
+    }
+
+    async function stopHook(input: HookInput): Promise<HookJSONOutput> {
+      const level = (input as { effort?: { level?: unknown } }).effort?.level;
+      // A second Stop before the first turn's result is a later turn's.
+      const offered =
+        !learningStopped &&
+        offeredEffort === null &&
+        input.agent_type === undefined &&
+        typeof level === "string" &&
+        (EFFORT_LEVELS as readonly string[]).includes(level);
+      if (offered) offeredEffort = level as EffortLevel;
+      else stopEffortLearning();
+      return {};
+    }
+
+    async function keepOfferedEffort(result: { subtype: string; modelUsage?: Record<string, unknown> }): Promise<void> {
+      const model = runModelId;
+      const level = offeredEffort;
+      // No per-model usage: whether the turn stayed on its model is unknown.
+      const used = result.modelUsage && typeof result.modelUsage === "object" ? Object.keys(result.modelUsage) : [];
+      if (result.subtype !== "success" || used.length === 0) stopEffortLearning();
+      for (const id of used) checkTurnModel(id);
+      const learn = learnEffort;
+      stopEffortLearning();
+      if (model === null || level === null || !(await learn)) return;
+      const known = accountEfforts.get(runAccountKey) ?? {};
+      known[model] = level;
+      accountEfforts.set(runAccountKey, known);
+    }
+
     async function preCompactHook(input: HookInput): Promise<HookJSONOutput> {
       if (input.hook_event_name === "PreCompact") {
         state.compactionTrigger = input.trigger === "manual" ? "manual" : "auto";
@@ -1221,7 +1449,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       canUseTool,
       onElicitation,
       env: buildEnv(run.instance.env),
-      hooks: { PreCompact: [{ hooks: [preCompactHook] }] },
+      hooks: { PreCompact: [{ hooks: [preCompactHook] }], Stop: [{ hooks: [stopHook] }] },
       spawnClaudeCodeProcess,
       ...(run.model !== null ? { model: run.model } : {}),
       ...(run.effort !== null ? { effort: run.effort } : {}),
@@ -1242,17 +1470,15 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     // rather than calling q.supportedModels() directly, so a query mock
     // that doesn't implement it (an older SDK, or a test double) rejects
     // instead of throwing synchronously past the .catch below.
-    if (modelsCache === null) {
+    // The same answer is this run's account's list for defaults().
+    const runAccount = accountKey(run.instance.env);
+    if (modelsCache === null || !accountModels.has(runAccount)) {
       void Promise.resolve()
         .then(() => q.supportedModels())
         .then((list) => {
-          modelsCache = list.map((m) => ({
-            id: m.value,
-            displayName: m.displayName,
-            description: m.description,
-            supportsEffort: m.supportsEffort ?? false,
-            effortLevels: m.supportedEffortLevels ?? [],
-          }));
+          const listed = toRunnerModels(list);
+          if (modelsCache === null) modelsCache = listed;
+          if (!accountModels.has(runAccount)) accountModels.set(runAccount, listed);
         })
         .catch(() => undefined);
     }
@@ -1260,6 +1486,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     async function translateMessage(msg: SDKMessage): Promise<void> {
       if (msg.type === "system" && msg.subtype === "init") {
         state.agentSessionId = msg.session_id;
+        decideEffortLearning(msg.model);
         const origins = portuniOrigins();
         if (origins.length > 0) {
           void Promise.resolve()
@@ -1296,6 +1523,8 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       }
       if (msg.type === "assistant" && isSyntheticErrorMessage(msg)) return;
       if (msg.type === "assistant") {
+        checkTurnModel(msg.message.model);
+        if (msg.message.content.some((block) => block.type === "tool_use" && block.name === "Skill")) stopEffortLearning();
         await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);
         return;
       }
@@ -1308,6 +1537,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       if (msg.type === "result") {
+        await keepOfferedEffort(msg as { subtype: string; modelUsage?: Record<string, unknown> });
         state.latestUsage = { usage: msg.usage, total_cost_usd: msg.total_cost_usd };
         // The window comes with the result's per-model usage; the ring
         // shows a bare count until the first one (spec, known gaps).
@@ -1536,6 +1766,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       },
       async setModel(model: string | null): Promise<void> {
         if (state.ended) return;
+        stopEffortLearning();
         await q.setModel(model ?? undefined);
       },
       agentSessionId(): string | null {
@@ -1548,5 +1779,5 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     return handle;
   }
 
-  return { id: "claude", detect, start, models };
+  return { id: "claude", detect, start, models, defaults };
 }
