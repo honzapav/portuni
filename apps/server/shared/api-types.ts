@@ -146,6 +146,16 @@ export type FileContentResponse = {
   local_path: string | null;
 };
 
+// Response of GET /nodes/:nodeId/file?path=<rel>&as=preview-asset: a
+// stylesheet, font or image an HTML preview loads from its document's
+// folder. `mime_type` is the preview allowlist's type for the extension
+// (shared/preview-assets.ts), not the remote's.
+export type PreviewAssetResponse = {
+  content_base64: string;
+  version: string;
+  mime_type: string;
+};
+
 // Per-file sync state classified by the engine's statusScan. Untracked
 // discovery results (new_local / new_remote) are intentionally omitted
 // here -- the UI tab listing is built from tracked `files` rows, so a

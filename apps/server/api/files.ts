@@ -1,6 +1,8 @@
 // REST handlers for file content + lifecycle within a node mirror.
 //   GET    /nodes/:nodeId/file?path=<rel>        -> read content (a .showtime
-//                                                   bundle reads as its bundled preview.html)
+//                                                   bundle reads as its bundled preview.html;
+//                                                   &as=preview-asset reads a stylesheet,
+//                                                   font or image as base64)
 //   PUT    /nodes/:nodeId/file?path=<rel>        -> save (local-only, conflict-checked)
 //   POST   /nodes/:nodeId/files                  -> create (registers + pushes)
 //   POST   /nodes/:nodeId/files/:fileId/rename   -> rename (tracked)
@@ -39,6 +41,7 @@ import {
   registerFileRecordsRemote,
 } from "../domain/sync/sync-remote-api.js";
 import { isShowtimePath, readShowtimePreview } from "../domain/sync/showtime-preview.js";
+import { readPreviewAssetLocal, requirePreviewAssetMime } from "../domain/sync/preview-asset.js";
 
 // File-content bodies carry whole files (base64-inflated for binary), so the
 // generic 5 MB JSON cap would hard-413 any push over ~3.7 MB raw. Dedicated
@@ -52,7 +55,7 @@ import { NodeNotFoundError } from "../domain/sync/node-info.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
 import { filterVisibleNodeIds } from "../auth/node-access.js";
 import { guardRestNodeWrite, guardHeadlessFileWrite } from "./write-gate.js";
-import type { FileContentResponse } from "../shared/api-types.js";
+import type { FileContentResponse, PreviewAssetResponse } from "../shared/api-types.js";
 import {
   fileCreateSchema,
   fileMoveSchema,
@@ -122,6 +125,26 @@ export async function handleGetFileContent(
     // not-found so its file content never leaks.
     const db = await openVisibleNode(res, identity, nodeId);
     if (!db) return;
+    // A stylesheet, font or image the web HTML preview inlines into its
+    // document (apps/web/src/lib/html-preview-assets.ts). Binary-safe, and
+    // only for the preview's allowlist of types; mirror first like the text
+    // read, the remote without one.
+    if (url.searchParams.get("as") === "preview-asset") {
+      const mime = requirePreviewAssetMime(relPath);
+      const r = await byMirror(
+        identity,
+        nodeId,
+        () => readPreviewAssetLocal({ userId: identity.userId, nodeId, relPath }),
+        () => readFileBytesRemote(db, { nodeId, relPath }),
+      );
+      const payload: PreviewAssetResponse = {
+        content_base64: r.bytes.toString("base64"),
+        version: r.version,
+        mime_type: mime,
+      };
+      respondJson(res, 200, payload);
+      return;
+    }
     // Binary-safe byte read for the central-mode sync agent. Remote-only:
     // the central server has no mirrors, and the agent never talks to a
     // mirror-holding server.

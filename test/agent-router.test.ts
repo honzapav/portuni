@@ -492,6 +492,58 @@ describe("agent router over HTTP", () => {
     assert.equal(body.local_path, null);
   });
 
+  // The web HTML preview inlines its document's stylesheets, fonts and
+  // images (apps/web/src/lib/html-preview-assets.ts); a font that is only on
+  // this device must read from the mirror, as base64 (the text read refuses it).
+  it("GET /nodes/:id/file?as=preview-asset reads a binary asset from the mirror", async () => {
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const font = Buffer.from([0x77, 0x4f, 0x46, 0x32, 0x00, 0x01, 0xff]);
+    await mkdir(join(mirrorRoot, "wip", "fonts"), { recursive: true });
+    await writeFile(join(mirrorRoot, "wip", "fonts", "a.woff2"), font);
+
+    const res = await authFetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/fonts/a.woff2")}&as=preview-asset`,
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { content_base64: string; version: string; mime_type: string };
+    assert.deepEqual(Buffer.from(body.content_base64, "base64"), font);
+    assert.equal(body.mime_type, "font/woff2");
+    assert.equal(body.version, sha(font));
+  });
+
+  it("GET /nodes/:id/file?as=preview-asset falls back to central when the asset is not on disk", async () => {
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    fake.bytes.set(posix.join(NODE_ROOT, "wip/img/a.png"), Buffer.from([0x89, 0x50, 0x00]));
+
+    const res = await authFetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/img/a.png")}&as=preview-asset`,
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { content_base64: string; mime_type: string };
+    assert.deepEqual(Buffer.from(body.content_base64, "base64"), Buffer.from([0x89, 0x50, 0x00]));
+    assert.equal(body.mime_type, "image/png");
+  });
+
+  it("GET /nodes/:id/file?as=preview-asset refuses a type outside the allowlist", async () => {
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "app.js"), "alert(1)");
+    for (const path of ["wip/app.js", "wip/.env", "wip/notes.md"]) {
+      const res = await authFetch(
+        `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent(path)}&as=preview-asset`,
+      );
+      assert.equal(res.status, 400, path);
+      assert.equal(((await res.json()) as { code: string }).code, "INVALID_PATH", path);
+    }
+  });
+
+  it("GET /nodes/:id/file?as=preview-asset refuses a path out of the mirror", async () => {
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const res = await authFetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/../../outside.png")}&as=preview-asset`,
+    );
+    assert.equal(res.status, 400);
+  });
+
   it("GET /nodes/:id/file is 404 when the file exists nowhere", async () => {
     await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const res = await authFetch(
