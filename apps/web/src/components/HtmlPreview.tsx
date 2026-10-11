@@ -5,7 +5,11 @@
 // Web (Vite): there is no app CSP, so srcDoc executes scripts directly.
 // Desktop (Tauri): the strict app CSP is inherited by srcdoc/blob frames and
 // would block scripts, so we load the file over the portuni-html:// custom
-// protocol (its own origin + permissive CSP, served by Rust from disk).
+// protocol (its own origin + permissive CSP, served by Rust from disk). The
+// protocol also serves the stylesheets, fonts and images the document pulls
+// in by relative path from its own folder (see protocolUrl). srcDoc on web
+// has no URL of its own, so relative references there resolve against the
+// app and do not load.
 //
 // Two kinds of file land here: an .html file, shown as it is, and a .showtime
 // deck bundle, shown through the preview.html Showtime packs into it -- the
