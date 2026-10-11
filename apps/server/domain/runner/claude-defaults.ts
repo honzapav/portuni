@@ -38,10 +38,9 @@ export interface ClaudeUserSettings {
 export interface ResolveClaudeDefaultsInput extends RunnerDefaultsInput {
   settings: ClaudeUserSettings | null;
   settingsPath: string;
-  // The managed (policy) tier, merged; null when none applies. `path` is
-  // the managed-settings.json it came from, null for MDM or the
-  // remote-cached tier.
-  managed?: { settings: ClaudeUserSettings; path: string | null } | null;
+  // The managed (policy) tier, merged; null when none applies. The SDK
+  // names no file for it, so a managed value carries no detail.
+  managed?: { settings: ClaudeUserSettings } | null;
   // The effort a run of this account actually got for a model when
   // nothing set one, keyed by the full model id: the organization's
   // default where it has one, learned from the run (adapters/claude.ts).
@@ -91,7 +90,7 @@ function envBlock(settings: ClaudeUserSettings | null | undefined): Record<strin
 // A variable as the run sees it, and where it comes from.
 function envValue(name: string, input: ResolveClaudeDefaultsInput): { value: string | null } & Source {
   const managed = envBlock(input.managed?.settings);
-  if (typeof managed[name] === "string") return { value: nonEmpty(managed[name]), source: "managed", detail: input.managed?.path ?? null };
+  if (typeof managed[name] === "string") return { value: nonEmpty(managed[name]), source: "managed", detail: null };
   const user = envBlock(input.settings);
   if (typeof user[name] === "string") return { value: nonEmpty(user[name]), source: "settings", detail: input.settingsPath };
   return { value: nonEmpty(input.instanceEnv[name]), source: "env", detail: name };
@@ -104,7 +103,7 @@ function settingValue<T>(
   read: (settings: ClaudeUserSettings) => T | null,
 ): ({ value: T } & Source) | null {
   const managed = input.managed ? read(input.managed.settings) : null;
-  if (managed !== null) return { value: managed, source: "managed", detail: input.managed?.path ?? null };
+  if (managed !== null) return { value: managed, source: "managed", detail: null };
   const user = input.settings ? read(input.settings) : null;
   if (user !== null) return { value: user, source: "settings", detail: input.settingsPath };
   return null;

@@ -139,9 +139,7 @@ export function defaultSourceText(
     case "settings":
       return t(($) => $.composer.default_source.settings, { ns: "chat", path: detail ?? "-" });
     case "managed":
-      return detail
-        ? t(($) => $.composer.default_source.managed_file, { ns: "chat", path: detail })
-        : t(($) => $.composer.default_source.managed, { ns: "chat" });
+      return t(($) => $.composer.default_source.managed, { ns: "chat" });
     case "account":
       return t(($) => $.composer.default_source.account, { ns: "chat" });
     case "organization":

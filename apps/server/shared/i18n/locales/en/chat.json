@@ -40,7 +40,6 @@
       "env": "Set by the environment variable {{name}}",
       "instance": "The runner instance's default",
       "managed": "Set by managed settings",
-      "managed_file": "Set by managed settings in {{path}}",
       "model": "The model's own default",
       "organization": "Your organization's default for this model",
       "settings": "Set in {{path}}"

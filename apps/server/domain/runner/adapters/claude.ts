@@ -116,7 +116,7 @@ export interface CreateClaudeAdapterDeps {
   readSettings?: (path: string) => Promise<ClaudeUserSettings | null>;
   // Reads the managed (policy) settings tier for defaults(); null when
   // none applies. Tests inject it.
-  readManagedSettings?: () => Promise<{ settings: ClaudeUserSettings; path: string | null } | null>;
+  readManagedSettings?: () => Promise<{ settings: ClaudeUserSettings } | null>;
   // How long defaults() waits for the runner's list before answering
   // without it.
   modelsProbeTimeoutMs?: number;
@@ -138,15 +138,11 @@ async function readSettingsFile(path: string): Promise<ClaudeUserSettings | null
 // (managed-settings.json, MDM, the remote-cached settings). The remote
 // cache is read from the default config dir, whatever an instance's
 // CLAUDE_CONFIG_DIR says: the SDK reads it from this process's env.
-async function readManagedSettingsTier(): Promise<{ settings: ClaudeUserSettings; path: string | null } | null> {
+async function readManagedSettingsTier(): Promise<{ settings: ClaudeUserSettings } | null> {
   try {
     const resolved = await resolveSettings({ settingSources: [], cwd: process.env.HOME ?? process.cwd() });
-    const managed = resolved.sources.filter((s) => s.source === "managed");
-    if (managed.length === 0) return null;
-    return {
-      settings: resolved.effective as ClaudeUserSettings,
-      path: managed.length === 1 ? (managed[0].path ?? null) : null,
-    };
+    if (!resolved.sources.some((s) => s.source === "managed")) return null;
+    return { settings: resolved.effective as ClaudeUserSettings };
   } catch {
     return null;
   }

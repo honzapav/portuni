@@ -713,8 +713,7 @@ human verification.
   The managed tier comes from the SDK's `resolveSettings({ settingSources:
   [] })` (`@alpha`; the CLI's own merge engine, no process):
   managed-settings.json, MDM and the remote-cached settings, merged;
-  `detail` is the file's path when exactly one managed file applies, else
-  null. The remote cache is the default config dir's whatever an
+  `detail` is always null (the SDK names no path for the policy tier). The remote cache is the default config dir's whatever an
   instance's `CLAUDE_CONFIG_DIR` says (the SDK reads it from the
   process's env), and an admin `policyHelper` is not run.
   The organization's default effort is visible only to the CLI: a run

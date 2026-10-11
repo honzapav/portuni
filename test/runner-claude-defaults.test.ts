@@ -161,14 +161,13 @@ describe("resolveClaudeDefaults", () => {
 });
 
 describe("resolveClaudeDefaults: managed settings, auto, the organization's effort", () => {
-  const managedPath = "/etc/claude-code/managed-settings.json";
 
-  it("the managed tier's model wins over the user settings file and names its file; ANTHROPIC_MODEL still wins", () => {
-    const managed = { settings: { model: "claude-opus-4-7" }, path: managedPath };
+  it("the managed tier's model wins over the user settings file with no detail; ANTHROPIC_MODEL still wins", () => {
+    const managed = { settings: { model: "claude-opus-4-7" } };
     assert.deepEqual(resolveClaudeDefaults({ ...base, settings: { model: "sonnet" }, managed }).model, {
       value: "claude-opus-4-7",
       source: "managed",
-      detail: managedPath,
+      detail: null,
     });
     assert.deepEqual(
       resolveClaudeDefaults({ ...base, instanceEnv: { ANTHROPIC_MODEL: "haiku" }, managed }).model.source,
@@ -176,8 +175,8 @@ describe("resolveClaudeDefaults: managed settings, auto, the organization's effo
     );
   });
 
-  it("the managed env block is written over the user one; MDM has no file to name", () => {
-    const managed = { settings: { env: { ANTHROPIC_MODEL: "claude-opus-4-7", CLAUDE_CODE_EFFORT_LEVEL: "low" } }, path: null };
+  it("the managed env block is written over the user one", () => {
+    const managed = { settings: { env: { ANTHROPIC_MODEL: "claude-opus-4-7", CLAUDE_CODE_EFFORT_LEVEL: "low" } } };
     const d = resolveClaudeDefaults({
       ...base,
       settings: { env: { ANTHROPIC_MODEL: "sonnet", CLAUDE_CODE_EFFORT_LEVEL: "high" } },
@@ -192,16 +191,16 @@ describe("resolveClaudeDefaults: managed settings, auto, the organization's effo
     const perModel = resolveClaudeDefaults({
       ...base,
       settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "low" } } },
-      managed: { settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "xhigh" } } }, path: managedPath },
+      managed: { settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "xhigh" } } } },
     });
-    assert.deepEqual(perModel.effort, { value: "xhigh", source: "managed", detail: managedPath });
+    assert.deepEqual(perModel.effort, { value: "xhigh", source: "managed", detail: null });
     const legacy = resolveClaudeDefaults({
       ...base,
       model: "sonnet",
       settings: { effortLevel: "low" },
-      managed: { settings: { effortLevel: "medium" }, path: managedPath },
+      managed: { settings: { effortLevel: "medium" } },
     });
-    assert.deepEqual(legacy.effort, { value: "medium", source: "managed", detail: managedPath });
+    assert.deepEqual(legacy.effort, { value: "medium", source: "managed", detail: null });
   });
 
   it("CLAUDE_CODE_EFFORT_LEVEL=auto is the model's own default, and still wins over the instance and the settings", () => {
@@ -407,7 +406,7 @@ describe("Claude adapter defaults()", () => {
       query: probeQuery(async () => []).query,
       resolveExecutable: async () => null,
       readSettings: async () => ({ model: "sonnet" }),
-      readManagedSettings: async () => ({ settings: { model: "claude-opus-4-7" }, path: null }),
+      readManagedSettings: async () => ({ settings: { model: "claude-opus-4-7" } }),
     });
     const d = await adapter.defaults?.({ model: null, instanceEnv: {}, instanceDefaults: null });
     assert.deepEqual(d?.model, { value: "claude-opus-4-7", source: "managed", detail: null });
