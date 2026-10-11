@@ -48,6 +48,12 @@ describe("previewAssetMime", () => {
   for (const [path, mime] of cases) {
     it(`${path} -> ${mime}`, () => assert.equal(previewAssetMime(path), mime));
   }
+
+  // Every member an object literal inherits is a name a request can use as
+  // the extension (`a.constructor`, `a.__proto__`); none is a preview asset.
+  for (const name of Object.getOwnPropertyNames(Object.prototype)) {
+    it(`a.${name} -> null`, () => assert.equal(previewAssetMime(`a.${name}`), null));
+  }
 });
 
 describe("resolveAssetRef", () => {
@@ -332,5 +338,103 @@ describe("inlinePreviewAssets", () => {
     const b = /^@import url\("([^"]+)"\)/.exec(dataPayload(a.result as string));
     assert.ok(b);
     assert.equal(dataPayload(b[1]), `@import url("${BLOCKED_URL}");`);
+  });
+
+  // Loads are shared between every chain that references a file, so two
+  // chains can each wait on the other's pending load. Whatever the cycle and
+  // whichever chain gets there first, inlining has to finish (the browser
+  // drops the cyclic @import and still renders the page) and read each file
+  // once; an import that is not a cycle (the diamond) must not be blocked.
+  describe("@import cycles across chains finish", () => {
+    const cases: {
+      name: string;
+      files: Record<string, string>;
+      slots: [AssetSlot["kind"], string][];
+      blocked: boolean;
+    }[] = [
+      {
+        name: "two linked stylesheets importing each other",
+        files: { [`${DIR}/a.css`]: '@import "b.css";', [`${DIR}/b.css`]: '@import "a.css";' },
+        slots: [["url", "a.css"], ["url", "b.css"]],
+        blocked: true,
+      },
+      {
+        name: "a link and a <style> importing each other's stylesheet",
+        files: { [`${DIR}/a.css`]: '@import "b.css";', [`${DIR}/b.css`]: '@import "a.css";' },
+        slots: [["url", "a.css"], ["css", '@import "b.css";']],
+        blocked: true,
+      },
+      {
+        name: "a three-stylesheet ring, all linked",
+        files: {
+          [`${DIR}/a.css`]: '@import "b.css";',
+          [`${DIR}/b.css`]: '@import "c.css";',
+          [`${DIR}/c.css`]: '@import "a.css";',
+        },
+        slots: [["url", "a.css"], ["url", "b.css"], ["url", "c.css"]],
+        blocked: true,
+      },
+      {
+        name: "a ring through a subfolder, linked from both ends",
+        files: {
+          [`${DIR}/a.css`]: '@import "css/b.css";',
+          [`${DIR}/css/b.css`]: '@import "../a.css";',
+        },
+        slots: [["url", "css/b.css"], ["url", "a.css"]],
+        blocked: true,
+      },
+      {
+        name: "a diamond (two stylesheets sharing one import) is not a cycle",
+        files: {
+          [`${DIR}/a.css`]: '@import "c.css";',
+          [`${DIR}/b.css`]: '@import "c.css";',
+          [`${DIR}/c.css`]: "x{background:url(i.png)}",
+          [`${DIR}/i.png`]: "I",
+        },
+        slots: [["url", "a.css"], ["url", "b.css"]],
+        blocked: false,
+      },
+    ];
+
+    // Every reachable data: URL payload of a slot, @imports followed.
+    const payloads = (url: string): string[] => {
+      const text = dataPayload(url);
+      const nested = [...text.matchAll(/url\("(data:[^"]+)"\)/g)]
+        .filter((m) => m[1].startsWith("data:text/css"))
+        .flatMap((m) => payloads(m[1]));
+      return [text, ...nested];
+    };
+
+    for (const c of cases) {
+      // Fetches that settle at once and fetches that settle in reverse
+      // order: the cycle must be caught under either interleaving.
+      for (const delays of ["immediate", "staggered"] as const) {
+        it(`${c.name} (${delays} reads)`, async () => {
+          const m = mirror(c.files);
+          const order = Object.keys(c.files);
+          const fetchAsset = async (path: string) => {
+            if (delays === "staggered") {
+              await new Promise((r) => setTimeout(r, 5 * (order.length - order.indexOf(path))));
+            }
+            return m.fetchAsset(path);
+          };
+          const slots = c.slots.map(([kind, value]) => slot(kind, value));
+          const timeout = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 1000).unref());
+          const done = await Promise.race([inlinePreviewAssets(slots, DOC, fetchAsset), timeout]);
+          assert.equal(done, true);
+
+          assert.deepEqual([...m.reads].sort(), Object.keys(c.files).sort());
+          const texts: string[] = [];
+          for (const s of slots) {
+            assert.equal(typeof s.result, "string", `slot ${s.value} never set`);
+            const r = s.result as string;
+            texts.push(...(s.kind === "url" ? payloads(r) : [r]));
+          }
+          const all = texts.join("\n");
+          assert.equal(all.includes(BLOCKED_URL), c.blocked, all);
+          if (!c.blocked) assert.ok(all.includes(`data:image/png;base64,${b64("I")}`), all);
+        });
+      }
+    }
   });
 });

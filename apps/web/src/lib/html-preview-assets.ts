@@ -313,8 +313,19 @@ function base64ToText(b64: string): string {
   return new TextDecoder().decode(bytes);
 }
 
+// Who waits on whom while stylesheets load: an edge from a stylesheet (or
+// ROOT, the document itself) to each file whose load it is awaiting. The
+// cache shares one load per file between every chain that references it, so
+// a chain can end up awaiting a load that is itself, through another chain,
+// awaiting the first: `a.css` and `b.css` linked side by side and importing
+// each other each wait on the other's pending load, and neither ever
+// settles. The import chain alone cannot see that; the wait graph can, and a
+// wait that would close a cycle is refused before it starts.
+const ROOT = "";
+
 class Inliner {
   private readonly cache = new Map<string, Promise<string | null>>();
+  private readonly waits = new Map<string, Set<string>>();
   changed = false;
 
   constructor(
@@ -333,13 +344,39 @@ class Inliner {
     // A stylesheet already being inlined further up the @import chain: the
     // cycle stops here.
     if (imports.includes(r.path) || imports.length > MAX_IMPORT_DEPTH) return BLOCKED_URL;
+    // A file whose load already waits, through any chain, on the stylesheet
+    // asking for it: awaiting it would deadlock.
+    const waiter = imports.length > 0 ? imports[imports.length - 1] : ROOT;
+    if (this.waitsOn(r.path, waiter)) return BLOCKED_URL;
     let pending = this.cache.get(r.path);
     if (!pending) {
       if (this.cache.size >= MAX_PREVIEW_ASSETS) return BLOCKED_URL;
       pending = this.load(r.path, r.mime, imports).catch(() => null);
       this.cache.set(r.path, pending);
     }
+    let edges = this.waits.get(waiter);
+    if (!edges) {
+      edges = new Set();
+      this.waits.set(waiter, edges);
+    }
+    edges.add(r.path);
     return (await pending) ?? BLOCKED_URL;
+  }
+
+  // Whether the load of `from` is (transitively) awaiting `target`. A
+  // finished load only ever waited on finished loads, so its stale edges
+  // never reach a stylesheet still in flight.
+  private waitsOn(from: string, target: string): boolean {
+    const seen = new Set<string>();
+    const stack = [from];
+    while (stack.length > 0) {
+      const node = stack.pop() as string;
+      if (node === target) return true;
+      if (seen.has(node)) continue;
+      seen.add(node);
+      for (const next of this.waits.get(node) ?? []) stack.push(next);
+    }
+    return false;
   }
 
   private async load(path: string, mime: string, imports: readonly string[]): Promise<string> {
