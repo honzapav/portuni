@@ -467,7 +467,7 @@ export default function SessionChat({
     const onMessage = (e: MessageEvent) => {
       const active = document.activeElement;
       const focusedFrame = active instanceof HTMLIFrameElement ? active.contentWindow : null;
-      if (!isRelayedEscape(e.data, e.source, focusedFrame, document.hasFocus())) return;
+      if (!isRelayedEscape(e.data, e.source, focusedFrame)) return;
       escapeHandler.current?.(RELAYED_ESCAPE);
     };
     window.addEventListener("keydown", onKey);

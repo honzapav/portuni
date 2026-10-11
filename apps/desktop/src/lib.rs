@@ -1994,61 +1994,94 @@ const ESCAPE_RELAY_SCRIPT: &str = r#"<script>addEventListener("keydown",function
 /// page's own policy; without it the page runs under the permissive CSP
 /// this handler serves. Same rule as `withoutCspMeta` in
 /// apps/web/src/lib/html-preview-url.ts (the reasoning is written there).
-/// Works on bytes: a previewed file need not be UTF-8.
+///
+/// Only the meta a browser applies goes: a real `<meta>` element that the
+/// tree builder puts in the head, with that http-equiv and a content. The
+/// same text in a script, a comment, an attribute or a `<textarea>`, or a
+/// meta in the body, stays. lol_html tokenizes the document and passes
+/// every byte it is not told to change through as it was; it builds no
+/// tree, so the head is followed here the way the standard's insertion
+/// modes do: it lasts until the first start tag that does not belong in a
+/// head, or the first text that is not whitespace (a `</head>` alone does
+/// not end it -- a meta after it still goes into the head). A document
+/// lol_html refuses (it cannot tell how to tokenize some foreign-content
+/// constructs without a tree) is served unchanged: the relay may then be
+/// blocked, the page never altered.
 fn without_csp_meta(bytes: &[u8]) -> Vec<u8> {
-    let lower = bytes.to_ascii_lowercase();
+    use lol_html::html_content::{Element, TextType};
+    use lol_html::{doc_text, element, HtmlRewriter, Settings};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    // A `<template>` in the head holds a fragment of its own: nothing in it
+    // is a child of the head, and nothing in it ends the head.
+    fn enter_template(el: &mut Element, depth: &Rc<Cell<u32>>) {
+        depth.set(depth.get() + 1);
+        if let Some(handlers) = el.end_tag_handlers() {
+            let depth = Rc::clone(depth);
+            handlers.push(Box::new(move |_| {
+                depth.set(depth.get().saturating_sub(1));
+                Ok(())
+            }));
+        }
+    }
+
+    let in_head = Cell::new(true);
+    let template_depth = Rc::new(Cell::new(0u32));
     let mut out = Vec::with_capacity(bytes.len());
-    let mut pos = 0;
-    while let Some(found) = find_bytes(&lower[pos..], b"<meta") {
-        let start = pos + found;
-        let after_name = start + b"<meta".len();
-        let name_ends = lower
-            .get(after_name)
-            .map_or(true, |c| c.is_ascii_whitespace() || *c == b'/' || *c == b'>');
-        let Some(len) = find_bytes(&lower[start..], b">") else { break };
-        let end = start + len + 1;
-        out.extend_from_slice(&bytes[pos..start]);
-        if !(name_ends && is_csp_http_equiv(&lower[start..end])) {
-            out.extend_from_slice(&bytes[start..end]);
+    let result = {
+        // x-user-defined maps every byte to its own character and back, so
+        // text lol_html decodes for the handlers is written out exactly as
+        // it came, whatever the file's real encoding (UTF-8 would turn a
+        // stray windows-1250 byte into U+FFFD). Only ASCII is ever compared.
+        let encoding = lol_html::AsciiCompatibleEncoding::new(encoding_rs::X_USER_DEFINED)
+            .expect("x-user-defined is ASCII-compatible");
+        let settings = Settings::new()
+            .with_encoding(encoding)
+            .append_element_content_handler(element!("*", |el| {
+                let name = el.tag_name().to_ascii_lowercase();
+                if template_depth.get() > 0 {
+                    if name == "template" {
+                        enter_template(el, &template_depth);
+                    }
+                    return Ok(());
+                }
+                if !in_head.get() {
+                    return Ok(());
+                }
+                match name.as_str() {
+                    "meta" => {
+                        let csp = el
+                            .get_attribute("http-equiv")
+                            .is_some_and(|v| v.eq_ignore_ascii_case("content-security-policy"));
+                        if csp && el.has_attribute("content") {
+                            el.remove();
+                        }
+                    }
+                    "template" => enter_template(el, &template_depth),
+                    "html" | "head" | "base" | "basefont" | "bgsound" | "link" | "title" | "noscript"
+                    | "noframes" | "style" | "script" => {}
+                    _ => in_head.set(false),
+                }
+                Ok(())
+            }))
+            .append_document_content_handler(doc_text!(|t| {
+                let text = t.as_str().bytes().any(|b| !matches!(b, b'\t' | b'\n' | 0x0c | b'\r' | b' '));
+                if text && t.text_type() == TextType::Data && template_depth.get() == 0 {
+                    in_head.set(false);
+                }
+                Ok(())
+            }));
+        let mut rewriter = HtmlRewriter::new(settings, |chunk: &[u8]| out.extend_from_slice(chunk));
+        rewriter.write(bytes).and_then(|()| rewriter.end())
+    };
+    match result {
+        Ok(()) => out,
+        Err(e) => {
+            error!("portuni-html served a document unchanged, lol_html refused it: {e}");
+            bytes.to_vec()
         }
-        pos = end;
     }
-    out.extend_from_slice(&bytes[pos..]);
-    out
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-/// Whether a lowercased `<meta ...>` tag carries
-/// `http-equiv="content-security-policy"` (any quoting, any spacing).
-fn is_csp_http_equiv(tag: &[u8]) -> bool {
-    let mut from = 0;
-    while let Some(found) = find_bytes(&tag[from..], b"http-equiv") {
-        let at = from + found;
-        from = at + 1;
-        if at > 0 && (tag[at - 1].is_ascii_alphanumeric() || tag[at - 1] == b'-' || tag[at - 1] == b'_') {
-            continue;
-        }
-        let mut rest = skip_ascii_whitespace(&tag[at + b"http-equiv".len()..]);
-        let Some(r) = rest.strip_prefix(b"=") else { continue };
-        rest = skip_ascii_whitespace(r);
-        if let Some(r) = rest.strip_prefix(b"\"").or_else(|| rest.strip_prefix(b"'")) {
-            rest = skip_ascii_whitespace(r);
-        }
-        let Some(r) = rest.strip_prefix(b"content-security-policy") else { continue };
-        // The value ends here, not in `-report-only` or the like.
-        if r.first().map_or(true, |c| c.is_ascii_whitespace() || matches!(c, b'"' | b'\'' | b'/' | b'>')) {
-            return true;
-        }
-    }
-    false
-}
-
-fn skip_ascii_whitespace(bytes: &[u8]) -> &[u8] {
-    let n = bytes.iter().take_while(|c| c.is_ascii_whitespace()).count();
-    &bytes[n..]
 }
 
 fn with_escape_relay(bytes: Vec<u8>) -> Vec<u8> {
@@ -2125,28 +2158,57 @@ mod showtime_preview_tests {
     }
 
     #[test]
-    fn csp_meta_is_matched_however_it_is_written_and_only_it() {
-        for tag in [
-            r#"<META HTTP-EQUIV='content-security-policy' CONTENT="default-src 'self'">"#,
-            r#"<meta content="script-src 'none'" http-equiv=Content-Security-Policy>"#,
-            r#"<meta http-equiv = " Content-Security-Policy " content="script-src 'none'" />"#,
-        ] {
-            let page = format!("<head>{tag}<title>x</title></head>");
-            assert_eq!(without_csp_meta(page.as_bytes()), b"<head><title>x</title></head>", "{tag}");
+    fn csp_meta_goes_however_the_head_comes_to_be() {
+        let csp = r#"<META HTTP-EQUIV=content-security-policy CONTENT="default-src 'self'">"#;
+        let cases = [
+            // No <head> tag: the parser opens one for the meta.
+            (format!("{csp}<p>x</p>"), "<p>x</p>".to_string()),
+            // After </head>, before <body>: the parser puts it back in the head.
+            (format!("<head></head>\n{csp}<body></body>"), "<head></head>\n<body></body>".to_string()),
+            // Several, with other metas and text around them.
+            (
+                format!(r#"<head><meta charset="utf-8">{csp}<title>x</title>{csp}</head>"#),
+                r#"<head><meta charset="utf-8"><title>x</title></head>"#.to_string(),
+            ),
+        ];
+        for (page, expected) in cases {
+            assert_eq!(String::from_utf8(without_csp_meta(page.as_bytes())).unwrap(), expected, "{page}");
         }
-        for tag in [
-            r#"<meta charset="utf-8">"#,
-            r#"<meta name="description" content="about Content-Security-Policy">"#,
-            r#"<meta http-equiv="refresh" content="5">"#,
-            r#"<meta data-http-equiv="Content-Security-Policy">"#,
-            r#"<meta http-equiv="Content-Security-Policy-Report-Only" content="script-src 'none'">"#,
-            r#"<metadata http-equiv="Content-Security-Policy">"#,
-        ] {
-            let page = format!("<head>{tag}</head>");
-            assert_eq!(without_csp_meta(page.as_bytes()), page.as_bytes(), "{tag}");
+    }
+
+    // Codex review of #606, round 3: the round-2 byte scan cut the meta
+    // text out of anything, a script included -- `const example = '<meta
+    // ...>'` became `const example = ''` and the page threw. Only a meta
+    // the browser applies goes; every other byte stays.
+    #[test]
+    fn csp_meta_text_stays_wherever_a_browser_would_not_apply_it() {
+        let csp = r#"<meta http-equiv="Content-Security-Policy" content="default-src none">"#;
+        let untouched = [
+            // The exact reproduction from the review.
+            format!(r#"<script>const example = '{csp}'; if (!example) throw new Error("missing template");</script>"#),
+            format!("<head><script>const example = '{csp}';</script></head>"),
+            format!("<head><!-- {csp} --></head>"),
+            format!("<html><head></head><body>{csp}</body></html>"),
+            format!("<p>x</p>{csp}"),
+            format!("<body><textarea>{csp}</textarea></body>"),
+            format!("<head><title>{csp}</title></head>"),
+            format!("<head><template>{csp}</template></head>"),
+            format!(r#"<head><meta name="description" content='{csp}'></head>"#),
+            r#"<head><meta http-equiv="Content-Security-Policy-Report-Only" content="script-src 'none'"></head>"#.to_string(),
+            r#"<head><meta http-equiv="Content-Security-Policy"></head>"#.to_string(),
+            r#"<head><meta charset="utf-8"><meta http-equiv="refresh" content="5"></head>"#.to_string(),
+        ];
+        for page in untouched {
+            assert_eq!(without_csp_meta(page.as_bytes()), page.as_bytes(), "{page}");
         }
         // Not UTF-8 (windows-1250 "ž") passes through untouched.
         assert_eq!(without_csp_meta(b"<p>\x9e</p>"), b"<p>\x9e</p>");
+        // UTF-8 around a removed meta stays as it was.
+        let page = format!("<head><title>Žluťoučký kůň</title>{csp}</head><body>ďábelské ódy</body>");
+        assert_eq!(
+            String::from_utf8(without_csp_meta(page.as_bytes())).unwrap(),
+            "<head><title>Žluťoučký kůň</title></head><body>ďábelské ódy</body>"
+        );
     }
 
     #[test]
