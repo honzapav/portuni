@@ -11,8 +11,9 @@
 // by key. The organization's default effort for a model is known only to
 // the CLI: the adapter learns it from a run's own turns (accountEfforts),
 // and before such a run the model's documented default stands in. A
-// top-level effortLevel in a settings file does not apply to Opus 5.5 and
-// Sonnet 5.5 (legacyEffortApplies).
+// top-level effortLevel in the user settings file does not apply to Opus 5.5
+// and Sonnet 5.5 (legacyEffortApplies); in managed settings it applies to
+// every model.
 //
 // Environment variables are the run's: the instance's env with the
 // settings files' `env` blocks written over it (the managed block over the
@@ -71,11 +72,12 @@ export function claudeModelDefaultEffort(modelId: string): EffortLevel | null {
   return "high";
 }
 
-// A top-level effortLevel in a settings file is the older form
+// A top-level effortLevel in the user settings file is the older form
 // /effort wrote; per the same page it "doesn't count for Opus 5.5", which
 // starts at its own default unless a level is set for it. Sonnet 5.5 is
 // treated the same (its default is Opus 5.5's). An unknown model gives
-// false: whether the key applies cannot be told.
+// false: whether the key applies cannot be told. The same key in managed
+// settings "applies to every model".
 function legacyEffortApplies(modelId: string | null): boolean {
   if (!modelId?.startsWith("claude-")) return false;
   return !/^claude-(opus|sonnet)-5-5\b/.test(modelId);
@@ -150,8 +152,10 @@ function resolveEffort(
     );
   });
   if (perModel) return { effort: perModel, modelDefault: false };
-  const legacy = legacyEffortApplies(fullId) ? settingValue(input, (s) => effortLevel(s.effortLevel)) : null;
-  if (legacy) return { effort: legacy, modelDefault: false };
+  const managedTop = input.managed ? effortLevel(input.managed.settings.effortLevel) : null;
+  if (managedTop) return { effort: { value: managedTop, source: "managed", detail: null }, modelDefault: false };
+  const userTop = legacyEffortApplies(fullId) && input.settings ? effortLevel(input.settings.effortLevel) : null;
+  if (userTop) return { effort: { value: userTop, source: "settings", detail: input.settingsPath }, modelDefault: false };
   return { effort: own, modelDefault: true };
 }
 

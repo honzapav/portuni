@@ -74,8 +74,8 @@ export interface RunnerModel {
 
 // What a thread runs on when it names no model or effort of its own, and
 // where that value comes from (GET /runners/:runner/defaults). `detail`
-// names the environment variable or the settings file (for "managed" the
-// managed-settings.json, null for MDM or the remote-cached tier); `value`
+// names the environment variable or the settings file (null for
+// "managed": the SDK names no file for the policy tier); `value`
 // is null when the runner cannot tell. "organization" is the effort the
 // organization's default gave a run of this account on the model.
 export type DefaultModelSource = "instance" | "env" | "settings" | "managed" | "account";

@@ -697,10 +697,11 @@ human verification.
   default = `CLAUDE_CODE_EFFORT_LEVEL` (it overrides `--effort`; `auto`
   is the model's own default below, still with `source: "env"`) ->
   instance `defaults.effort` ->
-  `modelSettings[<model>].effortLevel` -> top-level `effortLevel` (each
-  the managed tier's before the user file's; the top-level key is the
-  older form, which per the same page does not count for Opus 5.5; treated
-  so for Sonnet 5.5 too, and not claimed for an unknown model) -> the
+  `modelSettings[<model>].effortLevel` (the managed tier's before the user
+  file's) -> top-level `effortLevel` in the managed tier (applies to every
+  model) -> top-level `effortLevel` in the user file (the older form,
+  which per the same page does not count for Opus 5.5; treated so for
+  Sonnet 5.5 too, and not claimed for an unknown model) -> the
   model's own default: null when the list says the model has no effort,
   else the effort a run of this account got for it (`organization`), else
   `claudeModelDefaultEffort` (medium for Opus/Sonnet 5.5, xhigh for Opus
@@ -711,19 +712,25 @@ human verification.
   `"managed"`. The instance's model is `--model`, which overrides
   `ANTHROPIC_MODEL`.
   The managed tier comes from the SDK's `resolveSettings({ settingSources:
-  [] })` (`@alpha`; the CLI's own merge engine, no process):
+  [] })` (`@alpha`; the CLI's own merge engine, no CLI started; MDM may run
+  `plutil` or `reg.exe` once per process):
   managed-settings.json, MDM and the remote-cached settings, merged;
   `detail` is always null (the SDK names no path for the policy tier). The remote cache is the default config dir's whatever an
   instance's `CLAUDE_CONFIG_DIR` says (the SDK reads it from the
   process's env), and an admin `policyHelper` is not run.
-  The organization's default effort is visible only to the CLI: a run
-  that sets no effort (`claudeEffortIsAccountDefault` at start: no
-  `run.effort`, nothing in env or settings, or `auto`) registers a `Stop`
-  hook whose input carries the effort the CLI applied to the turn
-  (`effort.level`, after any clamp); it is kept per account and per the
-  init message's model (context suffix stripped) for the process's
-  lifetime, and a mid-run `setModel` stops the learning. Before such a
-  run, the documented default stands in.
+  The organization's default effort is visible only to the CLI: every
+  run registers a `Stop` hook whose input carries the effort the CLI
+  applied to the turn (`effort.level`, after any clamp), and a run that
+  sets no effort keeps it. Whether it sets one depends on the model
+  (`modelSettings`, the top-level key), and a run without a model of its
+  own learns its model only from the init message, so the decision is
+  made there: `claudeEffortIsAccountDefault` must hold for the thread's
+  model, the init message's model and that model without its context
+  suffix (no `run.effort`, nothing in env or settings, or `auto`). The
+  level is kept per account and per the init message's model (suffix
+  stripped) for the process's lifetime; a `setModel` before or during the
+  run stops the learning. Before such a run, the documented default
+  stands in.
 
 - **The runner's own text in the chat is a code (#532).** Codes live in
   `shared/chat-event-codes.ts`; the web renders them with

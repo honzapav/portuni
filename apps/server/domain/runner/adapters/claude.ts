@@ -1333,26 +1333,41 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
     // When nothing sets this run's effort, the effort its turns report is
     // the account's default for the model -- the organization's, where it
-    // has one. Learned per model the init message names; a model switched
-    // mid-run stops the learning, since the turn's model is then unknown.
+    // has one. Whether anything sets it depends on the model (modelSettings,
+    // the top-level effortLevel, a model without effort), and with no model
+    // of its own a run's model is known only from its init message: the
+    // decision waits for it. It holds only if every name the model goes by
+    // (the thread's, the init message's, without a context-window suffix)
+    // finds nothing set. Learned per model the init message names; a model
+    // switched mid-run stops the learning, since the turn's model is then
+    // unknown.
     const runAccountKey = accountKey(run.instance.env);
-    let learnEffort = false;
-    if (run.effort === null) {
+    let learnEffort: Promise<boolean> = Promise.resolve(false);
+    let learningStopped = false;
+    let runModelId: string | null = null;
+
+    async function effortIsAccountDefault(names: ReadonlyArray<string | null>): Promise<boolean> {
       try {
-        learnEffort = claudeEffortIsAccountDefault(
-          await defaultsInput({ model: run.model, instanceEnv: run.instance.env, instanceDefaults: null }),
-        );
+        const input = await defaultsInput({ model: null, instanceEnv: run.instance.env, instanceDefaults: null });
+        return [...new Set(names)].every((model) => claudeEffortIsAccountDefault({ ...input, model }));
       } catch {
-        learnEffort = false;
+        return false;
       }
     }
-    let runModelId: string | null = null;
+
+    function decideEffortLearning(initModel: unknown): void {
+      if (run.effort !== null || learningStopped || runModelId !== null) return;
+      runModelId = baseModelId(initModel);
+      if (runModelId === null) return;
+      learnEffort = effortIsAccountDefault([run.model, initModel as string, runModelId]);
+    }
 
     async function stopHook(input: HookInput): Promise<HookJSONOutput> {
       const level = (input as { effort?: { level?: unknown } }).effort?.level;
-      if (learnEffort && runModelId !== null && typeof level === "string" && (EFFORT_LEVELS as readonly string[]).includes(level)) {
+      const model = runModelId;
+      if (model !== null && typeof level === "string" && (EFFORT_LEVELS as readonly string[]).includes(level) && (await learnEffort)) {
         const known = accountEfforts.get(runAccountKey) ?? {};
-        known[runModelId] = level as EffortLevel;
+        known[model] = level as EffortLevel;
         accountEfforts.set(runAccountKey, known);
       }
       return {};
@@ -1436,7 +1451,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     async function translateMessage(msg: SDKMessage): Promise<void> {
       if (msg.type === "system" && msg.subtype === "init") {
         state.agentSessionId = msg.session_id;
-        if (learnEffort && runModelId === null) runModelId = baseModelId(msg.model);
+        decideEffortLearning(msg.model);
         const origins = portuniOrigins();
         if (origins.length > 0) {
           void Promise.resolve()
@@ -1713,7 +1728,8 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       },
       async setModel(model: string | null): Promise<void> {
         if (state.ended) return;
-        learnEffort = false;
+        learningStopped = true;
+        learnEffort = Promise.resolve(false);
         await q.setModel(model ?? undefined);
       },
       agentSessionId(): string | null {

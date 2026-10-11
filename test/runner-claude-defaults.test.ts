@@ -203,6 +203,14 @@ describe("resolveClaudeDefaults: managed settings, auto, the organization's effo
     assert.deepEqual(legacy.effort, { value: "medium", source: "managed", detail: null });
   });
 
+  it("a top-level effortLevel in managed settings applies to every model, Opus 5.5 and an unknown model too", () => {
+    const managed = { settings: { effortLevel: "low" } };
+    for (const model of [null, "claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-7"]) {
+      assert.deepEqual(resolveClaudeDefaults({ ...base, model, managed }).effort, { value: "low", source: "managed", detail: null }, String(model));
+    }
+    assert.deepEqual(resolveClaudeDefaults({ ...base, models: [], managed }).effort, { value: "low", source: "managed", detail: null });
+  });
+
   it("CLAUDE_CODE_EFFORT_LEVEL=auto is the model's own default, and still wins over the instance and the settings", () => {
     const d = resolveClaudeDefaults({
       ...base,
@@ -449,7 +457,7 @@ describe("Claude adapter defaults()", () => {
     return { query, initConsumed, finish, stop };
   }
 
-  function runStart(effort: "low" | null) {
+  function runStart(effort: "low" | null, model: string | null = null) {
     return {
       sessionId: "S1",
       runId: "R1",
@@ -462,7 +470,7 @@ describe("Claude adapter defaults()", () => {
       policy: "default" as const,
       portuniRoot: "/tmp",
       mirrors: [],
-      model: null,
+      model,
       effort,
     };
   }
@@ -504,6 +512,86 @@ describe("Claude adapter defaults()", () => {
     fake.finish();
     await handle.close();
     const d = await adapter.defaults?.({ model: null, instanceEnv: {}, instanceDefaults: null });
+    assert.deepEqual(d?.effort, { value: "medium", source: "model", detail: null });
+  });
+
+  // #611 Codex review: a run with no model of its own learns which model it
+  // runs on only from its init message, so whether its effort is set (per
+  // model, or by the top-level key that counts only for some models) is
+  // decided then -- a level set for that model is the user's, not the
+  // organization's, and must not outlive the setting. Expected values follow
+  // Claude Code's model-config page ("Adjust effort level"): a modelSettings
+  // entry sets the model's effort; the top-level effortLevel does not count
+  // for Opus 5.5 in the user file and applies to every model in managed
+  // settings.
+  const learning: Array<{
+    name: string;
+    model: string | null;
+    initModel: string;
+    settings: Record<string, unknown> | null;
+    managed?: Record<string, unknown>;
+    learned: boolean;
+  }> = [
+    { name: "user modelSettings for the init model", model: null, initModel: "claude-opus-5-5", settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "low" } } }, learned: false },
+    { name: "managed modelSettings for the init model", model: null, initModel: "claude-opus-5-5", settings: null, managed: { modelSettings: { "claude-opus-5-5": { effortLevel: "low" } } }, learned: false },
+    { name: "modelSettings for the init model, init carrying [1m]", model: null, initModel: "claude-opus-5-5[1m]", settings: { modelSettings: { "claude-opus-5-5": { effortLevel: "low" } } }, learned: false },
+    { name: "modelSettings under the [1m] id the init message names", model: null, initModel: "claude-opus-5-5[1m]", settings: { modelSettings: { "claude-opus-5-5[1m]": { effortLevel: "low" } } }, learned: false },
+    { name: "modelSettings under the thread's alias", model: "opus", initModel: "claude-opus-5-5", settings: { modelSettings: { opus: { effortLevel: "low" } } }, learned: false },
+    { name: "top-level effortLevel, an init model it counts for", model: null, initModel: "claude-opus-4-7", settings: { effortLevel: "low" }, learned: false },
+    { name: "managed top-level effortLevel, Opus 5.5 (counts for every model)", model: null, initModel: "claude-opus-5-5", settings: null, managed: { effortLevel: "low" }, learned: false },
+    { name: "top-level effortLevel, Opus 5.5 (does not count)", model: null, initModel: "claude-opus-5-5", settings: { effortLevel: "low" }, learned: true },
+    { name: "modelSettings for another model only", model: null, initModel: "claude-opus-5-5", settings: { modelSettings: { "claude-sonnet-5": { effortLevel: "low" } } }, learned: true },
+    { name: "nothing set", model: null, initModel: "claude-opus-5-5", settings: null, learned: true },
+  ];
+  for (const c of learning) {
+    it(`learning the organization's effort before any defaults(): ${c.name} -> ${c.learned ? "learned" : "not learned"}`, async () => {
+      const fake = runQuery(c.initModel);
+      let settings: Record<string, unknown> | null = c.settings;
+      let managed: Record<string, unknown> | null = c.managed ?? null;
+      const adapter = createClaudeAdapter({
+        query: fake.query,
+        resolveExecutable: async () => null,
+        readSettings: async () => settings,
+        readManagedSettings: async () => (managed ? { settings: managed } : null),
+        closeGraceMs: 0,
+        closeTermMs: 0,
+        closeTimeoutMs: 0,
+      });
+      const handle = await adapter.start(runStart(null, c.model), () => undefined);
+      await fake.initConsumed;
+      await fake.stop("low");
+      fake.finish();
+      await handle.close();
+      // The setting removed: only a learned value can still say "low".
+      settings = null;
+      managed = null;
+      const base = c.initModel.replace(/\[1m\]$/, "");
+      const d = await adapter.defaults?.({ model: base, instanceEnv: {}, instanceDefaults: null });
+      const expected = c.learned
+        ? { value: "low", source: "organization", detail: null }
+        : { value: base === "claude-opus-4-7" ? "xhigh" : "medium", source: "model", detail: null };
+      assert.deepEqual(d?.effort, expected);
+    });
+  }
+
+  it("a model switched before the init message teaches nothing", async () => {
+    const fake = runQuery("claude-opus-5-5");
+    const adapter = createClaudeAdapter({
+      query: fake.query,
+      resolveExecutable: async () => null,
+      readSettings: async () => null,
+      readManagedSettings: async () => null,
+      closeGraceMs: 0,
+      closeTermMs: 0,
+      closeTimeoutMs: 0,
+    });
+    const handle = await adapter.start(runStart(null), () => undefined);
+    await handle.setModel("sonnet");
+    await fake.initConsumed;
+    await fake.stop("low");
+    fake.finish();
+    await handle.close();
+    const d = await adapter.defaults?.({ model: "claude-opus-5-5", instanceEnv: {}, instanceDefaults: null });
     assert.deepEqual(d?.effort, { value: "medium", source: "model", detail: null });
   });
 });
