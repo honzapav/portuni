@@ -13,6 +13,7 @@ import type {
   SyncJobSummary,
   DetailFile,
   FileContentResponse,
+  PreviewAssetResponse,
   NodeAccessResponse,
   NodeAccessEntryInput,
   AccessRequest,
@@ -849,6 +850,18 @@ export async function fetchFileContent(
   // catalog text like any other error.
   await throwForStatus(res, "file content");
   return res.json();
+}
+
+// A stylesheet, font or image the web HTML preview inlines from its
+// document's folder (lib/html-preview-assets.ts), as base64. The server
+// refuses types outside the preview allowlist.
+export async function fetchPreviewAsset(nodeId: string, relPath: string): Promise<string> {
+  const res = await apiFetch(
+    `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}&as=preview-asset`,
+  );
+  await throwForStatus(res, "preview asset");
+  const body = (await res.json()) as PreviewAssetResponse;
+  return body.content_base64;
 }
 
 export async function saveFileContent(

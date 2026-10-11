@@ -8,8 +8,9 @@
 // protocol (its own origin + permissive CSP, served by Rust from disk). The
 // protocol also serves the stylesheets, fonts and images the document pulls
 // in by relative path from its own folder (see protocolUrl). srcDoc on web
-// has no URL of its own, so relative references there resolve against the
-// app and do not load.
+// has no URL of its own, so relative references there would resolve against
+// the app; the web preview inlines them as data: URLs before the frame gets
+// the document (lib/html-preview-assets.ts).
 //
 // Two kinds of file land here: an .html file, shown as it is, and a .showtime
 // deck bundle, shown through the preview.html Showtime packs into it -- the
@@ -21,6 +22,8 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { isTauri, openPathExternal } from "../lib/backend-url";
 import { protocolUrl } from "../lib/html-preview-url";
+import { buildPreviewSrcDoc } from "../lib/html-preview-assets";
+import { fetchPreviewAsset } from "../api";
 import { copyText } from "../lib/clipboard";
 import { openInShowtime, showtimeInstalled } from "../lib/showtime";
 import { Button } from "@/components/ui/button";
@@ -33,6 +36,7 @@ export default function HtmlPreview({
   version = null,
   kind = "html",
   nodeId = null,
+  relPath = null,
 }: {
   content: string;
   localPath: string | null;
@@ -42,12 +46,36 @@ export default function HtmlPreview({
   kind?: HtmlPreviewKind;
   // The node the file belongs to; a Showtime deck is handed over with it.
   nodeId?: string | null;
+  // The file's mirror-relative path; the web preview loads the document's
+  // stylesheets, fonts and images relative to it.
+  relPath?: string | null;
 }) {
   const { t } = useTranslation("common");
   const [copied, setCopied] = useState(false);
   const [canOpenInShowtime, setCanOpenInShowtime] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const useProtocol = isTauri() && localPath !== null;
+  // srcDoc with the document's folder assets inlined. Until it is built the
+  // frame stays empty rather than flashing the fallback fonts; a failed
+  // build shows the document as it is.
+  const inlineAssets = !useProtocol && kind === "html" && nodeId !== null && relPath !== null;
+  const [inlined, setInlined] = useState<{ key: string; doc: string } | null>(null);
+  const inlineKey = `${nodeId}\u0000${relPath}\u0000${version}\u0000${content}`;
+
+  useEffect(() => {
+    if (!inlineAssets || nodeId === null || relPath === null) return;
+    let cancelled = false;
+    void buildPreviewSrcDoc(content, relPath, (path) => fetchPreviewAsset(nodeId, path))
+      .catch(() => content)
+      .then((doc) => {
+        if (!cancelled) setInlined({ key: inlineKey, doc });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inlineAssets, inlineKey, content, nodeId, relPath]);
+
+  const srcDoc = !inlineAssets ? content : inlined?.key === inlineKey ? inlined.doc : null;
 
   useEffect(() => {
     if (kind !== "showtime") return;
@@ -124,6 +152,7 @@ export default function HtmlPreview({
           )}
         </div>
       )}
+      {useProtocol || srcDoc !== null ? (
       <iframe
         title={
           kind === "showtime"
@@ -133,9 +162,12 @@ export default function HtmlPreview({
         sandbox="allow-scripts"
         {...(useProtocol
           ? { src: protocolUrl(localPath as string, version) }
-          : { srcDoc: content })}
+          : { srcDoc: srcDoc ?? "" })}
         className="min-h-0 flex-1 border-0 bg-white"
       />
+      ) : (
+        <div className="min-h-0 flex-1 bg-white" />
+      )}
     </div>
   );
 }

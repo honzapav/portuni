@@ -5,7 +5,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable, Writable } from "node:stream";
@@ -18,6 +18,7 @@ import { resetAdapterCacheForTests, getAdapter } from "../apps/server/domain/syn
 import { resolveNodeInfo } from "../apps/server/domain/sync/node-info.js";
 import { buildRemotePath, type Section } from "../apps/server/domain/sync/remote-path.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
 
@@ -144,6 +145,58 @@ describe("GET /nodes/:id/file (central, no mirror)", () => {
       args: [JSON.stringify({ access_group: "secret@x.com" }), shared.nodeId],
     });
     const r = await call("GET", `/nodes/${shared.nodeId}/file?path=wip/x.md`, outsider());
+    assert.equal(r.statusCode, 404, r.body);
+  });
+});
+
+// The web HTML preview's read of a stylesheet, font or image from the
+// document's folder (apps/web/src/lib/html-preview-assets.ts).
+describe("GET /nodes/:id/file?as=preview-asset", () => {
+  const font = Buffer.from([0x77, 0x4f, 0x46, 0x32, 0x00, 0x01, 0xff]);
+
+  it("reads a binary asset from the remote when the node has no mirror", async () => {
+    const info = await resolveNodeInfo(shared.db, shared.nodeId);
+    const remotePath = buildRemotePath({ ...info, section: "wip", subpath: "fonts", filename: "a.woff2" });
+    await (await getAdapter(shared.db, "test-fs")).put(remotePath, font);
+    const r = await call("GET", `/nodes/${shared.nodeId}/file?path=wip/fonts/a.woff2&as=preview-asset`, admin());
+    assert.equal(r.statusCode, 200, r.body);
+    const payload = JSON.parse(r.body) as { content_base64: string; mime_type: string };
+    assert.deepEqual(Buffer.from(payload.content_base64, "base64"), font);
+    assert.equal(payload.mime_type, "font/woff2");
+  });
+
+  it("reads a binary asset from the local mirror", async () => {
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", shared.nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip", "fonts"), { recursive: true });
+    await writeFile(join(mirrorRoot, "wip", "fonts", "a.woff2"), font);
+    const r = await call("GET", `/nodes/${shared.nodeId}/file?path=wip/fonts/a.woff2&as=preview-asset`, admin());
+    assert.equal(r.statusCode, 200, r.body);
+    const payload = JSON.parse(r.body) as { content_base64: string; mime_type: string };
+    assert.deepEqual(Buffer.from(payload.content_base64, "base64"), font);
+  });
+
+  it("refuses a type outside the allowlist and a path out of the mirror", async () => {
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", shared.nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    await writeFile(join(mirrorRoot, "wip", "app.js"), "alert(1)");
+    for (const path of ["wip/app.js", "wip/.env", "wip/../../x.png"]) {
+      const r = await call(
+        "GET",
+        `/nodes/${shared.nodeId}/file?path=${encodeURIComponent(path)}&as=preview-asset`,
+        admin(),
+      );
+      assert.equal(r.statusCode, 400, `${path}: ${r.body}`);
+    }
+  });
+
+  it("returns 404 for a node the identity cannot see (group visibility)", async () => {
+    await shared.db.execute({
+      sql: "UPDATE nodes SET visibility = 'group', meta = ? WHERE id = ?",
+      args: [JSON.stringify({ access_group: "secret@x.com" }), shared.nodeId],
+    });
+    const r = await call("GET", `/nodes/${shared.nodeId}/file?path=wip/a.png&as=preview-asset`, outsider());
     assert.equal(r.statusCode, 404, r.body);
   });
 });

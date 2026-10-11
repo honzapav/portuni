@@ -37,6 +37,7 @@ import {
   readShowtimePreview,
   SHOWTIME_PREVIEW_ENTRY,
 } from "../domain/sync/showtime-preview.js";
+import { readPreviewAssetLocal, requirePreviewAssetMime } from "../domain/sync/preview-asset.js";
 import {
   computeSyncPendingCentral,
   createMirrorForNodeCentral,
@@ -96,6 +97,7 @@ import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import type {
   FileContentResponse,
   NodeMirrorResponse,
+  PreviewAssetResponse,
   SyncStatusResponse,
   UntrackedFile,
 } from "../shared/api-types.js";
@@ -1191,6 +1193,35 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         return true;
       }
       const mirror = await getLocalMirror(identity.userId, nodeId);
+
+      if (method === "GET" && url.searchParams.get("as") === "preview-asset") {
+        // A stylesheet, font or image the HTML preview inlines (same read as
+        // api/files.ts): the mirror copy, or central's when the file is not
+        // on this device yet.
+        try {
+          const mime = requirePreviewAssetMime(relPath);
+          let asset: { bytes: Buffer; version: string } | null = null;
+          if (mirror) {
+            try {
+              asset = await readPreviewAssetLocal({ userId: identity.userId, nodeId, relPath });
+            } catch (err) {
+              if (!(err instanceof FileContentError && err.code === "NOT_FOUND")) throw err;
+            }
+          }
+          asset ??= await client.getFileRaw(nodeId, relPath);
+          const payload: PreviewAssetResponse = {
+            content_base64: asset.bytes.toString("base64"),
+            version: asset.version,
+            mime_type: mime,
+          };
+          respondJson(res, 200, payload);
+        } catch (err) {
+          if (respondFileContentError(res, err)) return true;
+          if (respondCentralFileError(res, err)) return true;
+          respondError(res, `GET /nodes/${nodeId}/file`, err);
+        }
+        return true;
+      }
 
       if (method === "GET") {
         if (mirror) {
