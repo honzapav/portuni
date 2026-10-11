@@ -735,13 +735,15 @@ human verification.
   no tier may set `maxEffortLevel`, `agent`, `ultracode` or
   `fallbackModel`; and a top-level `effortLevel` in the user file counts
   as set except on Opus 5.5. Only the first turn of a new session (no
-  `run.resume`) counts: its `Stop` hook offers the level and the turn's
-  `result` keeps it, since hooks are answered as they arrive and messages
-  in order. A `setModel`, a prompt starting with `/` (`/effort`,
-  `/model`, a skill), a `Skill` tool call, a main-thread agent
-  (`agent_type` on the hook), an assistant message or a `modelUsage`
-  entry on another model, or a result other than `success` stops the
-  learning. The level is kept per account and per the init message's
+  `run.resume`) on the default login counts (an instance's own
+  `CLAUDE_CONFIG_DIR` has a remote-managed tier this process does not
+  read): its `Stop` hook offers the level and the turn's `result` keeps
+  it, since hooks are answered as they arrive and messages in order. A
+  `setModel`, a prompt starting with `/` (`/effort`, `/model`, a skill),
+  a `Skill` tool call, a main-thread agent (`agent_type` on the hook), a
+  second `Stop` before the result, an assistant message or a `modelUsage`
+  entry on another model, a result without `modelUsage` or other than
+  `success` stops the learning. The level is kept per account and per the init message's
   model (suffix stripped) for the process's lifetime. Before such a run,
   the documented default stands in.
 

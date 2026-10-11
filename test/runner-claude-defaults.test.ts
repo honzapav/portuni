@@ -679,7 +679,7 @@ describe("Claude adapter defaults()", () => {
     assert.deepEqual((await adapter.defaults?.(opusDefault))?.effort, { value: "medium", source: "model", detail: null });
   });
 
-  const turnEnds: Array<{ name: string; end: (fake: ReturnType<typeof runQuery>) => Promise<void>; resume?: boolean }> = [
+  const turnEnds: Array<{ name: string; end: (fake: ReturnType<typeof runQuery>) => Promise<void>; resume?: boolean; configDir?: boolean }> = [
     {
       name: "a main-thread agent (agent_type on the Stop hook)",
       end: async (f) => {
@@ -710,18 +710,39 @@ describe("Claude adapter defaults()", () => {
     },
     { name: "a Stop hook with no result", end: async (f) => void (await f.hook("low")) },
     { name: "a resumed session", end: async (f) => f.stop("low"), resume: true },
+    {
+      name: "a later turn's Stop hook before the first turn's result",
+      end: async (f) => {
+        await f.hook("high");
+        await f.hook("max");
+        await f.result();
+      },
+    },
+    {
+      name: "a result without per-model usage",
+      end: async (f) => {
+        await f.hook("low");
+        await f.result("success", {});
+      },
+    },
+    { name: "an instance with an account of its own (its remote-managed tier is not read)", end: async (f) => f.stop("low"), configDir: true },
   ];
   for (const t of turnEnds) {
     it(`nothing is learned from ${t.name}`, async () => {
       const fake = runQuery("claude-opus-5-5");
       const adapter = learningAdapter(fake);
-      const start = { ...runStart(null), ...(t.resume ? { resume: { agentSessionId: "agent-0" } } : {}) };
+      const instanceEnv = t.configDir ? { CLAUDE_CONFIG_DIR: "/home/u/.claude-work" } : {};
+      const start = {
+        ...runStart(null),
+        instance: { id: null, env: instanceEnv },
+        ...(t.resume ? { resume: { agentSessionId: "agent-0" } } : {}),
+      };
       const handle = await adapter.start(start, () => undefined);
       await fake.initConsumed;
       await t.end(fake);
       fake.finish();
       await handle.close();
-      assert.deepEqual((await adapter.defaults?.(opusDefault))?.effort, { value: "medium", source: "model", detail: null });
+      assert.deepEqual((await adapter.defaults?.({ ...opusDefault, instanceEnv }))?.effort, { value: "medium", source: "model", detail: null });
     });
   }
 

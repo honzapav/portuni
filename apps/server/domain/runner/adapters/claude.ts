@@ -1353,7 +1353,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     let learnEffort: Promise<boolean> = Promise.resolve(false);
     let runModelId: string | null = null;
     let offeredEffort: EffortLevel | null = null;
-    if (run.resume) learningStopped = true;
+    // A resumed session may carry a level set in it; an account of its own
+    // (CLAUDE_CONFIG_DIR) has a remote-managed tier this process does not
+    // read (readManagedSettingsTier).
+    if (run.resume || runAccountKey !== "") learningStopped = true;
 
     function stopEffortLearning(): void {
       learningStopped = true;
@@ -1378,7 +1381,13 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
     async function stopHook(input: HookInput): Promise<HookJSONOutput> {
       const level = (input as { effort?: { level?: unknown } }).effort?.level;
-      const offered = !learningStopped && input.agent_type === undefined && typeof level === "string" && (EFFORT_LEVELS as readonly string[]).includes(level);
+      // A second Stop before the first turn's result is a later turn's.
+      const offered =
+        !learningStopped &&
+        offeredEffort === null &&
+        input.agent_type === undefined &&
+        typeof level === "string" &&
+        (EFFORT_LEVELS as readonly string[]).includes(level);
       if (offered) offeredEffort = level as EffortLevel;
       else stopEffortLearning();
       return {};
@@ -1387,8 +1396,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     async function keepOfferedEffort(result: { subtype: string; modelUsage?: Record<string, unknown> }): Promise<void> {
       const model = runModelId;
       const level = offeredEffort;
-      if (result.subtype !== "success") stopEffortLearning();
-      for (const used of Object.keys(result.modelUsage ?? {})) checkTurnModel(used);
+      // No per-model usage: whether the turn stayed on its model is unknown.
+      const used = result.modelUsage && typeof result.modelUsage === "object" ? Object.keys(result.modelUsage) : [];
+      if (result.subtype !== "success" || used.length === 0) stopEffortLearning();
+      for (const id of used) checkTurnModel(id);
       const learn = learnEffort;
       stopEffortLearning();
       if (model === null || level === null || !(await learn)) return;
