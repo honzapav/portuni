@@ -26,6 +26,7 @@ export type {
   SyncWatchResponse,
   UntrackedFile,
   FileContentResponse,
+  PreviewAssetResponse,
   NodeAccessEntry,
   NodeAccessResponse,
   AccessRequest,
