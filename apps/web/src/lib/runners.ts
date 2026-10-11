@@ -22,8 +22,10 @@ export async function listRunners(): Promise<RunnerInfo[]> {
 // #376: the model picker's list -- GET /runners/:runner/models. Before any
 // task has run under this runner in this process, the server answers the
 // documented aliases (plus free text is the caller's own job to allow).
-export async function fetchRunnerModels(runner: string): Promise<RunnerModel[]> {
-  const res = await jsonRequest<{ models: RunnerModel[] }>("GET", `/runners/${encodeURIComponent(runner)}/models`);
+// `instanceId` names the account whose list is wanted.
+export async function fetchRunnerModels(runner: string, instanceId: string | null = null): Promise<RunnerModel[]> {
+  const query = instanceId ? `?${new URLSearchParams({ instance: instanceId }).toString()}` : "";
+  const res = await jsonRequest<{ models: RunnerModel[] }>("GET", `/runners/${encodeURIComponent(runner)}/models${query}`);
   return res.models;
 }
 

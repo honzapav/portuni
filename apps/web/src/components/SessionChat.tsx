@@ -293,14 +293,15 @@ export default function SessionChat({
     };
   }, []);
 
-  // #376: the model picker's list, for the thread's runner. A draft on a
-  // device with no logged-in runner falls back to "claude", the only
-  // runner this codebase registers today.
+  // #376: the model picker's list, for the thread's runner and the account
+  // its instance logs in to. A draft on a device with no logged-in runner
+  // falls back to "claude", the only runner this codebase registers today.
   const [models, setModels] = useState<RunnerModel[]>([]);
   const runner = session?.runner ?? null;
+  const instanceId = session?.instance_id ?? null;
   useEffect(() => {
     let cancelled = false;
-    fetchRunnerModels(runner ?? "claude")
+    fetchRunnerModels(runner ?? "claude", instanceId)
       .then((list) => {
         if (!cancelled) setModels(list);
       })
@@ -310,7 +311,7 @@ export default function SessionChat({
     return () => {
       cancelled = true;
     };
-  }, [runner]);
+  }, [runner, instanceId]);
 
   // What the thread runs on without its own model or effort, and from where
   // -- shown before the first run. Asked again when the thread's runner,
@@ -318,7 +319,6 @@ export default function SessionChat({
   // The first answer may follow a probe of the runner, so the models list
   // is re-read with it.
   const [defaults, setDefaults] = useState<RunnerDefaultsInfo | null>(null);
-  const instanceId = session?.instance_id ?? null;
   const ownModel = session?.model ?? null;
   useEffect(() => {
     let cancelled = false;
@@ -327,7 +327,7 @@ export default function SessionChat({
       .then(async (d) => {
         if (cancelled) return;
         setDefaults(d);
-        const list = await fetchRunnerModels(runnerId);
+        const list = await fetchRunnerModels(runnerId, instanceId);
         if (!cancelled) setModels(list);
       })
       .catch(() => {

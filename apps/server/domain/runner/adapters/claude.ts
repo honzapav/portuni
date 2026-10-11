@@ -15,7 +15,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { access, readFile, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
-import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { query as sdkQuery, resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ElicitationRequest,
   ElicitationResult,
@@ -33,8 +33,13 @@ import { isPortuniEnvKey } from "../../../shared/runner-env.js";
 import type { ChatEventParams, DenyCode, RunErrorCode } from "../../../shared/chat-event-codes.js";
 import { askUserQuestionAnswers, decidePermission } from "../permissions.js";
 import { isProcessAlive } from "../process-liveness.js";
-import { type ClaudeUserSettings, resolveClaudeDefaults } from "../claude-defaults.js";
-import { RunEndedError } from "../types.js";
+import {
+  type ClaudeUserSettings,
+  type ResolveClaudeDefaultsInput,
+  claudeEffortIsLearnable,
+  resolveClaudeDefaults,
+} from "../claude-defaults.js";
+import { EFFORT_LEVELS, RunEndedError } from "../types.js";
 import type {
   CanonicalEvent,
   EventSink,
@@ -47,6 +52,7 @@ import type {
   RunnerDefaults,
   RunnerDefaultsInput,
   RunnerModel,
+  EffortLevel,
   ToolCallCategory,
 } from "../types.js";
 
@@ -108,6 +114,9 @@ export interface CreateClaudeAdapterDeps {
   // Reads a Claude Code settings file for defaults(); null when it is
   // missing or not JSON. Tests inject the file's content.
   readSettings?: (path: string) => Promise<ClaudeUserSettings | null>;
+  // Reads the managed (policy) settings tier for defaults(); null when
+  // none applies. Tests inject it.
+  readManagedSettings?: () => Promise<{ settings: ClaudeUserSettings } | null>;
   // How long defaults() waits for the runner's list before answering
   // without it.
   modelsProbeTimeoutMs?: number;
@@ -122,6 +131,27 @@ async function readSettingsFile(path: string): Promise<ClaudeUserSettings | null
   } catch {
     return null;
   }
+}
+
+// The managed tier through the SDK's own merge engine, without starting the
+// CLI: no user, project or local file, so what is left is the policy tier
+// (managed-settings.json, MDM, the remote-cached settings). The remote
+// cache is read from the default config dir, whatever an instance's
+// CLAUDE_CONFIG_DIR says: the SDK reads it from this process's env.
+async function readManagedSettingsTier(): Promise<{ settings: ClaudeUserSettings } | null> {
+  try {
+    const resolved = await resolveSettings({ settingSources: [], cwd: process.env.HOME ?? process.cwd() });
+    if (!resolved.sources.some((s) => s.source === "managed")) return null;
+    return { settings: resolved.effective as ClaudeUserSettings };
+  } catch {
+    return null;
+  }
+}
+
+// A model id as the init message names it, without a context-window
+// suffix ("claude-opus-5-5[1m]").
+function baseModelId(model: unknown): string | null {
+  return typeof model === "string" && model !== "" ? model.replace(/\[[^\]]*\]$/, "") : null;
 }
 
 function toRunnerModels(list: Awaited<ReturnType<Query["supportedModels"]>>): RunnerModel[] {
@@ -965,11 +995,21 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   // failed), never re-fetched once it holds a real list.
   let modelsCache: RunnerModel[] | null = null;
 
-  async function models(): Promise<RunnerModel[]> {
-    return modelsCache ?? [...CLAUDE_ALIAS_MODELS];
+  // An account's own list once it has one (the picker must offer what that
+  // account's default model supports), else the first list this process
+  // saw, else the aliases.
+  async function models(input?: { instanceEnv: Readonly<Record<string, string>> }): Promise<RunnerModel[]> {
+    const own = input ? accountModels.get(accountKey(input.instanceEnv)) : undefined;
+    return own ?? modelsCache ?? [...CLAUDE_ALIAS_MODELS];
   }
 
   const readSettings = deps.readSettings ?? readSettingsFile;
+  const readManagedSettings = deps.readManagedSettings ?? readManagedSettingsTier;
+  // The effort a run of an account got for a model when nothing set one,
+  // keyed by account then full model id: the organization's default for
+  // the model is known only to the CLI, which reports the effort it
+  // applies on every turn's hooks. Kept for this process's lifetime.
+  const accountEfforts = new Map<string, Record<string, EffortLevel>>();
   const modelsProbeTimeoutMs = deps.modelsProbeTimeoutMs ?? DEFAULT_MODELS_PROBE_TIMEOUT_MS;
   // The account's default model is per account, and an instance's
   // CLAUDE_CONFIG_DIR is what selects the account (buildEnv), so the list
@@ -1029,16 +1069,23 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     return probe;
   }
 
-  async function defaults(input: RunnerDefaultsInput): Promise<RunnerDefaults> {
-    await probeModels(input.instanceEnv);
+  async function defaultsInput(input: RunnerDefaultsInput): Promise<ResolveClaudeDefaultsInput> {
     const configDir = input.instanceEnv.CLAUDE_CONFIG_DIR?.trim() || join(process.env.HOME ?? "", ".claude");
     const settingsPath = join(configDir, "settings.json");
-    return resolveClaudeDefaults({
+    const key = accountKey(input.instanceEnv);
+    return {
       ...input,
       settings: await readSettings(settingsPath),
       settingsPath,
-      models: accountModels.get(accountKey(input.instanceEnv)) ?? [],
-    });
+      managed: await readManagedSettings(),
+      models: accountModels.get(key) ?? [],
+      accountEfforts: accountEfforts.get(key) ?? {},
+    };
+  }
+
+  async function defaults(input: RunnerDefaultsInput): Promise<RunnerDefaults> {
+    await probeModels(input.instanceEnv);
+    return resolveClaudeDefaults(await defaultsInput(input));
   }
 
   async function runExec(executable: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
@@ -1071,7 +1118,11 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     const promptQueue = createPushQueue<SDKUserMessage>();
     // #490: the brief is the run's first message and is counted like any
     // other -- the turn that answers it echoes this uuid back.
+    // Learning the organization's effort (below) stops for good on a
+    // slash command: /effort, /model or a skill sets the turn's level.
+    let learningStopped = false;
     const pushPrompt = (text: string): void => {
+      if (text.trimStart().startsWith("/")) learningStopped = true;
       const uuid = randomUUID();
       state.pendingSends.push(uuid);
       promptQueue.push(userMessage(text, uuid));
@@ -1284,6 +1335,79 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       });
     }
 
+    // When nothing sets this run's effort, the effort its turns report is
+    // the account's default for the model -- the organization's, where it
+    // has one. The CLI reports only the level, never why (HookInput.effort),
+    // so the learning errs towards keeping nothing: a level kept wrongly
+    // outlives the setting that chose it. Whether anything sets it depends
+    // on the model, and a run without a model of its own learns its model
+    // only from its init message: the decision waits for it
+    // (claudeEffortIsLearnable). Only the first turn of a new session
+    // counts. Its Stop hook offers the level, and the turn's result keeps
+    // it: hooks are answered as they arrive, messages in order, so only at
+    // the result has every message of the turn been seen. A model switched
+    // (setModel, a fallback), a slash command, a skill or a main-thread
+    // agent before then stops the learning, since each sets the turn's
+    // model or level.
+    const runAccountKey = accountKey(run.instance.env);
+    let learnEffort: Promise<boolean> = Promise.resolve(false);
+    let runModelId: string | null = null;
+    let offeredEffort: EffortLevel | null = null;
+    // A resumed session may carry a level set in it; an account of its own
+    // (CLAUDE_CONFIG_DIR) has a remote-managed tier this process does not
+    // read (readManagedSettingsTier).
+    if (run.resume || runAccountKey !== "") learningStopped = true;
+
+    function stopEffortLearning(): void {
+      learningStopped = true;
+      learnEffort = Promise.resolve(false);
+      offeredEffort = null;
+    }
+
+    function decideEffortLearning(initModel: unknown): void {
+      if (run.effort !== null || learningStopped || runModelId !== null) return;
+      runModelId = baseModelId(initModel);
+      if (runModelId === null) return;
+      const model = initModel as string;
+      learnEffort = defaultsInput({ model: null, instanceEnv: run.instance.env, instanceDefaults: null })
+        .then((input) => claudeEffortIsLearnable(input, run.model, model))
+        .catch(() => false);
+    }
+
+    // A model the turn ran on other than the init message's.
+    function checkTurnModel(model: unknown): void {
+      if (runModelId !== null && baseModelId(model) !== runModelId) stopEffortLearning();
+    }
+
+    async function stopHook(input: HookInput): Promise<HookJSONOutput> {
+      const level = (input as { effort?: { level?: unknown } }).effort?.level;
+      // A second Stop before the first turn's result is a later turn's.
+      const offered =
+        !learningStopped &&
+        offeredEffort === null &&
+        input.agent_type === undefined &&
+        typeof level === "string" &&
+        (EFFORT_LEVELS as readonly string[]).includes(level);
+      if (offered) offeredEffort = level as EffortLevel;
+      else stopEffortLearning();
+      return {};
+    }
+
+    async function keepOfferedEffort(result: { subtype: string; modelUsage?: Record<string, unknown> }): Promise<void> {
+      const model = runModelId;
+      const level = offeredEffort;
+      // No per-model usage: whether the turn stayed on its model is unknown.
+      const used = result.modelUsage && typeof result.modelUsage === "object" ? Object.keys(result.modelUsage) : [];
+      if (result.subtype !== "success" || used.length === 0) stopEffortLearning();
+      for (const id of used) checkTurnModel(id);
+      const learn = learnEffort;
+      stopEffortLearning();
+      if (model === null || level === null || !(await learn)) return;
+      const known = accountEfforts.get(runAccountKey) ?? {};
+      known[model] = level;
+      accountEfforts.set(runAccountKey, known);
+    }
+
     async function preCompactHook(input: HookInput): Promise<HookJSONOutput> {
       if (input.hook_event_name === "PreCompact") {
         state.compactionTrigger = input.trigger === "manual" ? "manual" : "auto";
@@ -1325,7 +1449,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       canUseTool,
       onElicitation,
       env: buildEnv(run.instance.env),
-      hooks: { PreCompact: [{ hooks: [preCompactHook] }] },
+      hooks: { PreCompact: [{ hooks: [preCompactHook] }], Stop: [{ hooks: [stopHook] }] },
       spawnClaudeCodeProcess,
       ...(run.model !== null ? { model: run.model } : {}),
       ...(run.effort !== null ? { effort: run.effort } : {}),
@@ -1362,6 +1486,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     async function translateMessage(msg: SDKMessage): Promise<void> {
       if (msg.type === "system" && msg.subtype === "init") {
         state.agentSessionId = msg.session_id;
+        decideEffortLearning(msg.model);
         const origins = portuniOrigins();
         if (origins.length > 0) {
           void Promise.resolve()
@@ -1398,6 +1523,8 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       }
       if (msg.type === "assistant" && isSyntheticErrorMessage(msg)) return;
       if (msg.type === "assistant") {
+        checkTurnModel(msg.message.model);
+        if (msg.message.content.some((block) => block.type === "tool_use" && block.name === "Skill")) stopEffortLearning();
         await translateAssistantMessage(msg, state, run.cwd, run.runId, sink, now);
         return;
       }
@@ -1410,6 +1537,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       if (msg.type === "result") {
+        await keepOfferedEffort(msg as { subtype: string; modelUsage?: Record<string, unknown> });
         state.latestUsage = { usage: msg.usage, total_cost_usd: msg.total_cost_usd };
         // The window comes with the result's per-model usage; the ring
         // shows a bare count until the first one (spec, known gaps).
@@ -1638,6 +1766,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       },
       async setModel(model: string | null): Promise<void> {
         if (state.ended) return;
+        stopEffortLearning();
         await q.setModel(model ?? undefined);
       },
       agentSessionId(): string | null {

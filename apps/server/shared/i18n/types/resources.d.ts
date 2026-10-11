@@ -31,7 +31,9 @@ export default interface Resources {
         "account": "The account's default model",
         "env": "Set by the environment variable {{name}}",
         "instance": "The runner instance's default",
+        "managed": "Set by managed settings",
         "model": "The model's own default",
+        "organization": "Your organization's default for this model",
         "settings": "Set in {{path}}"
       },
       "effort": {

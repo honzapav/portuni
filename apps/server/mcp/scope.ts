@@ -377,19 +377,45 @@ export function decideRead(
 // Build the structured-error JSON returned to MCP clients on out-of-scope
 // reads (Codex CLI doesn't yet support MCP elicitation, so we return a
 // machine-readable error and let the agent surface it in chat).
+//
+// dialogTimedOut mirrors writeGuardError (#409, #597): a dialog WAS shown and
+// went unanswered until the hop's deadline, so the payload carries
+// dialog_timed_out: true and a hint that says so; absent otherwise, so the
+// usual payload shape stays unchanged.
 export function scopeExpansionError(
   nodeId: string,
   hint: string,
+  opts: { dialogTimedOut?: boolean } = {},
 ): {
   error: string;
   node_id: string;
   hint: string;
+  dialog_timed_out?: true;
 } {
+  if (opts.dialogTimedOut === true) {
+    return {
+      error: "scope_expansion_required",
+      node_id: nodeId,
+      hint: timedOutReadHint(nodeId),
+      dialog_timed_out: true,
+    };
+  }
   return {
     error: "scope_expansion_required",
     node_id: nodeId,
     hint,
   };
+}
+
+// The agent-facing hint for a read dialog nobody answered in time: nothing
+// was read, the user was simply not at the keyboard, so the agent asks in
+// chat and retries (a new dialog) or expands scope on the user's word.
+function timedOutReadHint(nodeId: string): string {
+  return (
+    `The confirmation dialog for reading node ${nodeId} was not answered in time, so nothing ` +
+    `was read. Ask the user in chat, then either retry the tool (a new dialog is shown) or call ` +
+    `portuni_expand_scope with node_ids: ["${nodeId}"], reason 'user-confirmed-in-chat'.`
+  );
 }
 
 // Build the structured-error JSON for a hard, non-negotiable refusal (no
@@ -567,6 +593,7 @@ export async function guardNodeRead(
     };
   }
   if (decision.kind === "elicit") {
+    let dialogTimedOut = false;
     if (scope.sessionType !== "headless" && elicitor !== undefined) {
       // The dialog gets the human-facing prompt; the agent-facing hint (with
       // its expand_scope instructions) is for the structured error below.
@@ -588,10 +615,13 @@ export async function guardNodeRead(
         });
         return { kind: "allow" };
       }
+      dialogTimedOut = outcome === "timeout";
     }
     return {
       kind: "elicit",
-      error: scopeExpansionError(nodeId, decision.agentHint ?? "expand scope first"),
+      error: scopeExpansionError(nodeId, decision.agentHint ?? "expand scope first", {
+        dialogTimedOut,
+      }),
     };
   }
 

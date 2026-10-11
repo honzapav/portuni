@@ -127,7 +127,7 @@ export function defaultModelName(
 
 // Where a default comes from, for the picker's tooltip.
 export function defaultSourceText(
-  source: "instance" | "env" | "settings" | "account" | "model",
+  source: "instance" | "env" | "settings" | "managed" | "account" | "organization" | "model",
   detail: string | null,
   t: ChatT,
 ): string {
@@ -138,8 +138,12 @@ export function defaultSourceText(
       return t(($) => $.composer.default_source.env, { ns: "chat", name: detail ?? "-" });
     case "settings":
       return t(($) => $.composer.default_source.settings, { ns: "chat", path: detail ?? "-" });
+    case "managed":
+      return t(($) => $.composer.default_source.managed, { ns: "chat" });
     case "account":
       return t(($) => $.composer.default_source.account, { ns: "chat" });
+    case "organization":
+      return t(($) => $.composer.default_source.organization, { ns: "chat" });
     case "model":
       return t(($) => $.composer.default_source.model, { ns: "chat" });
   }

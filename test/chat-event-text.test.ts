@@ -183,5 +183,7 @@ describe("composer defaults", () => {
     assert.equal(defaultSourceText("account", null, tEn), "The account's default model");
     assert.equal(defaultSourceText("model", null, tCs), "Výchozí hodnota modelu");
     assert.equal(defaultSourceText("instance", null, tEn), "The runner instance's default");
+    assert.equal(defaultSourceText("managed", null, tEn), "Set by managed settings");
+    assert.equal(defaultSourceText("organization", null, tEn), "Your organization's default for this model");
   });
 });

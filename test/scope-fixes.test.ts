@@ -159,6 +159,39 @@ describe("guardNodeRead", () => {
     assert.doesNotMatch(seen[0], /portuni_expand_scope/);
   });
 
+  it("flags an unanswered read dialog with dialog_timed_out (#597)", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", null],
+    });
+    const scope = new SessionScope("interactive_task");
+    const r = await guardNodeRead(db, scope, "N1", "U1", undefined, {
+      confirm: async () => "timeout" as const,
+    });
+    assert.equal(r.kind, "elicit");
+    assert.ok(r.kind === "elicit");
+    assert.equal(r.error.error, "scope_expansion_required");
+    assert.equal(r.error.node_id, "N1");
+    assert.equal(r.error.dialog_timed_out, true);
+    assert.match(r.error.hint, /not answered in time/);
+    assert.equal(scope.has("N1"), false);
+  });
+
+  it("leaves dialog_timed_out off a declined read dialog", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", null],
+    });
+    const scope = new SessionScope("interactive_task");
+    const r = await guardNodeRead(db, scope, "N1", "U1", undefined, {
+      confirm: async () => "decline" as const,
+    });
+    assert.ok(r.kind === "elicit");
+    assert.equal("dialog_timed_out" in r.error, false);
+  });
+
   it("auto-expands an edge-reachable out-of-scope node without an elicit round-trip", async () => {
     const db = await freshDb();
     await db.execute({

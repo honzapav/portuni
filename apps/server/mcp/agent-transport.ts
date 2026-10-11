@@ -70,7 +70,11 @@ import {
   WRITE_SCOPE_WHY,
   type WriteContext,
 } from "../domain/write-gate.js";
-import { createElicitorFromServer, agentRelayElicitTimeoutMs } from "./elicit.js";
+import {
+  createElicitorFromServer,
+  agentRelayElicitTimeoutMs,
+  agentUpstreamCallTimeoutMs,
+} from "./elicit.js";
 import { CentralHttpError, type CentralClient } from "../domain/sync/central/client.js";
 import { spawnSessionIdFromHeader } from "../domain/sessions.js";
 import {
@@ -275,6 +279,39 @@ function buildAgentServer(
 
   server.setRequestHandler(ListToolsRequestSchema, async () => upstream.listTools());
 
+  // Every tool call proxied to central goes through here: central may open a
+  // scope/write dialog mid-call and wait on it for up to its own elicitation
+  // deadline, so this hop must outlast that one instead of falling to the
+  // SDK's 60 s request default (#597).
+  const callUpstream = (toolName: string, toolArgs: Record<string, unknown>) =>
+    upstream.callTool({ name: toolName, arguments: toolArgs }, undefined, {
+      timeout: agentUpstreamCallTimeoutMs(),
+    });
+
+  // Proxies a call, then lets this device rewrite the text of a successful
+  // answer (null keeps central's). A failing rewrite is logged and degrades
+  // to central's answer rather than failing a call central already applied.
+  async function callUpstreamThenRewrite(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+    stepLabel: string,
+    rewrite: (text: string) => Promise<string | null>,
+  ) {
+    const result = (await callUpstream(toolName, toolArgs)) as {
+      content?: Array<{ type: string; text?: string }>;
+      isError?: boolean;
+    };
+    const textPart = result.content?.find((c) => c.type === "text");
+    if (!result.isError && textPart?.text) {
+      const rewritten = await rewrite(textPart.text).catch((e) => {
+        console.error(`[portuni:agent] ${stepLabel} after ${toolName} failed:`, e);
+        return null;
+      });
+      if (rewritten !== null) textPart.text = rewritten;
+    }
+    return result;
+  }
+
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
@@ -368,50 +405,22 @@ function buildAgentServer(
         });
         if (localPath) await awaitPendingPush(localPath);
       }
-      const result = (await upstream.callTool({ name, arguments: args })) as {
-        content?: Array<{ type: string; text?: string }>;
-        isError?: boolean;
-      };
-      const textPart = result.content?.find((c) => c.type === "text");
-      if (snapshot && !result.isError && textPart?.text) {
-        const rewritten = await applyLocalAfterProxiedMutation(
-          opts.client,
-          identity.userId,
-          snapshot,
-          textPart.text,
-        ).catch((e) => {
-          console.error(`[portuni:agent] local disk step after ${name} failed:`, e);
-          return null;
-        });
-        // The device's local step outcome replaces central's (which has no
-        // mirror and would report local_done:false for every move).
-        if (rewritten !== null) textPart.text = rewritten;
-      }
-      return result;
+      // The device's local step outcome replaces central's (which has no
+      // mirror and would report local_done:false for every move).
+      return callUpstreamThenRewrite(name, args, "local disk step", (text) =>
+        snapshot
+          ? applyLocalAfterProxiedMutation(opts.client, identity.userId, snapshot, text)
+          : Promise.resolve(null),
+      );
     }
     // Snapshot runs on central (it holds the Drive credentials) and creates
     // the exported file remote-direct; pull it into this device's mirror so
     // the agent gets a real local_path (null when the node is not mirrored
     // here).
     if (name === "portuni_snapshot") {
-      const result = (await upstream.callTool({ name, arguments: args })) as {
-        content?: Array<{ type: string; text?: string }>;
-        isError?: boolean;
-      };
-      const textPart = result.content?.find((c) => c.type === "text");
-      if (!result.isError && textPart?.text) {
-        const rewritten = await applyLocalAfterSnapshot(
-          opts.client,
-          identity.userId,
-          args,
-          textPart.text,
-        ).catch((e) => {
-          console.error(`[portuni:agent] local pull after ${name} failed:`, e);
-          return null;
-        });
-        if (rewritten !== null) textPart.text = rewritten;
-      }
-      return result;
+      return callUpstreamThenRewrite(name, args, "local pull", (text) =>
+        applyLocalAfterSnapshot(opts.client, identity.userId, args, text),
+      );
     }
     // Graph reads proxy to central verbatim, but central has no device state,
     // so portuni_get_node comes back with local_mirror:null. Overlay the
@@ -433,10 +442,10 @@ function buildAgentServer(
     // device, which a plain proxy could never do since central has no device
     // filesystem of its own to write into.
     if (name === "portuni_read_file") {
-      const gate = (await upstream.callTool({
-        name: "portuni_get_node",
-        arguments: { node_id: args.node_id },
-      })) as { content: Array<{ type: string; text?: string }>; isError?: boolean };
+      const gate = (await callUpstream("portuni_get_node", { node_id: args.node_id })) as {
+        content: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      };
       if (gate.isError) return gate;
       return readNodeFileOrPath({
         userId: identity.userId,
@@ -452,7 +461,7 @@ function buildAgentServer(
     // own `readable` field is structurally useless in agent mode -- overlay
     // this device's own mirror lookup of each accepted node instead.
     if (name === "portuni_expand_scope") {
-      const result = (await upstream.callTool({ name, arguments: args })) as {
+      const result = (await callUpstream(name, args)) as {
         content?: Array<{ type: string; text?: string }>;
         isError?: boolean;
       };
@@ -478,20 +487,20 @@ function buildAgentServer(
       return result;
     }
     if (name === "portuni_get_node") {
-      const result = await upstream.callTool({ name, arguments: args });
+      const result = await callUpstream(name, args);
       return enrichGetNodeResult(opts.client, identity.userId, result as {
         content: Array<{ type: string; text?: string }>;
         isError?: boolean;
       });
     }
     if (name === "portuni_get_context") {
-      const result = await upstream.callTool({ name, arguments: args });
+      const result = await callUpstream(name, args);
       return enrichGetContextResult(identity.userId, result as {
         content: Array<{ type: string; text?: string }>;
         isError?: boolean;
       });
     }
-    return upstream.callTool({ name, arguments: args });
+    return callUpstream(name, args);
   });
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => upstream.listResources());
