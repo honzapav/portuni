@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.30.0](https://github.com/honzapav/portuni/compare/v0.29.0...v0.30.0) (2026-10-11)
+
+
+### Features
+
+* **runner,web,mcp:** composer defaults read managed settings and the organization's effort; the sync agent's call to central outlasts a scope dialog ([#611](https://github.com/honzapav/portuni/issues/611)) ([0425d33](https://github.com/honzapav/portuni/commit/0425d33833b9edfd5cd0efd38d7f46aa44a6a82f))
+
+
+### Bug Fixes
+
+* **desktop:** HTML preview loads relative stylesheets, fonts and images from the document's folder ([2d00ecd](https://github.com/honzapav/portuni/commit/2d00ecdd9a9f4a2885ff4426158e4a7f43fcc118))
+* Esc stops the agent's turn when the focus is outside the composer ([#606](https://github.com/honzapav/portuni/issues/606)) ([6895376](https://github.com/honzapav/portuni/commit/689537682ab9970a89bd7f931a0da295a0c009c6))
+* HTML preview loads relative stylesheets, fonts and images from the document's folder ([#613](https://github.com/honzapav/portuni/issues/613)) ([2d00ecd](https://github.com/honzapav/portuni/commit/2d00ecdd9a9f4a2885ff4426158e4a7f43fcc118))
+* **web:** HTML preview loads relative stylesheets, fonts and images from the document's folder ([#614](https://github.com/honzapav/portuni/issues/614)) ([2d739f8](https://github.com/honzapav/portuni/commit/2d739f8e8577e9f19ba306466daa552f07cf7ab2))
+
 ## [0.29.0](https://github.com/honzapav/portuni/compare/v0.28.0...v0.29.0) (2026-10-10)
 
 
