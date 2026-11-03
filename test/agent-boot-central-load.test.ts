@@ -5,7 +5,7 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
@@ -19,6 +19,7 @@ import {
   mirrorConfigsFresh,
   recordMirrorConfigsRefreshed,
   REFRESH_FRESH_MS,
+  sidecarBuildId,
 } from "../apps/server/boot/mirror-config-refresh-stamp.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 
@@ -92,6 +93,7 @@ describe("boot backfill sync-info (#633)", () => {
 describe("mirror config refresh stamp (#633)", () => {
   const key = {
     mcpUrl: "http://127.0.0.1:47012/mcp",
+    build: "/app/portuni-sidecar:1000:1",
     mirrors: [
       { node_id: "A", local_path: "/w/a" },
       { node_id: "B", local_path: "/w/b" },
@@ -118,5 +120,47 @@ describe("mirror config refresh stamp (#633)", () => {
       false,
       "a new mirror refreshes",
     );
+  });
+
+  // Each row: what differs from the recorded refresh -> fresh (skip)?
+  it("table: only an identical key within the window skips", () => {
+    const t0 = 20_000_000;
+    recordMirrorConfigsRefreshed(dir, key, t0);
+    const rows: [string, typeof key, number, boolean][] = [
+      ["identical, 20 s later", key, t0 + 20_000, true],
+      ["mirror order swapped", { ...key, mirrors: [...key.mirrors].reverse() }, t0 + 1, true],
+      ["updater relaunch: new sidecar build", { ...key, build: "/app/portuni-sidecar:2000:2" }, t0 + 5_000, false],
+      ["same path, rebuilt (mtime)", { ...key, build: "/app/portuni-sidecar:1000:3" }, t0 + 1, false],
+      ["other port", { ...key, mcpUrl: "http://127.0.0.1:1/mcp" }, t0 + 1, false],
+      ["mirror moved", { ...key, mirrors: [key.mirrors[0], { node_id: "B", local_path: "/w/b2" }] }, t0 + 1, false],
+      ["mirror removed", { ...key, mirrors: [key.mirrors[0]] }, t0 + 1, false],
+      ["window over", key, t0 + REFRESH_FRESH_MS, false],
+      ["clock went back", key, t0 - 1, false],
+    ];
+    for (const [name, k, at, fresh] of rows) {
+      assert.equal(mirrorConfigsFresh(dir, k, at), fresh, name);
+    }
+  });
+
+  it("a stamp written before the build was part of the key refreshes", async () => {
+    const legacy = JSON.stringify({ mcpUrl: key.mcpUrl, mirrors: ["A\u0000/w/a", "B\u0000/w/b"] });
+    await writeFile(join(dir, "mirror-configs-refreshed.json"), JSON.stringify({ key: legacy, at: 5 }));
+    assert.equal(mirrorConfigsFresh(dir, key, 6), false);
+  });
+
+  it("sidecarBuildId changes when the executable or entry script is replaced", async () => {
+    const exe = join(dir, "sidecar-bin");
+    const entry = join(dir, "entry.js");
+    await writeFile(exe, "v1");
+    await writeFile(entry, "x");
+    const before = sidecarBuildId([exe, entry]);
+    assert.equal(sidecarBuildId([exe, entry]), before, "stable while nothing changes");
+    await writeFile(exe, "v2-longer");
+    assert.notEqual(sidecarBuildId([exe, entry]), before, "new bytes");
+    const sized = sidecarBuildId([exe, entry]);
+    await utimes(entry, new Date(1_000_000), new Date(1_000_000));
+    assert.notEqual(sidecarBuildId([exe, entry]), sized, "rebuilt entry script (mtime)");
+    assert.equal(sidecarBuildId([join(dir, "missing"), undefined]), join(dir, "missing"));
+    assert.ok(sidecarBuildId().length > 0, "the running process has an identity");
   });
 });

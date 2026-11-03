@@ -25,6 +25,7 @@ import { centralBackfillMirror, createCentralBackfillSweep } from "./boot/centra
 import {
   mirrorConfigsFresh,
   recordMirrorConfigsRefreshed,
+  sidecarBuildId,
 } from "./boot/mirror-config-refresh-stamp.js";
 import { resolvePortuniMcpUrl } from "./domain/write-scope.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
@@ -236,13 +237,14 @@ async function agentMain(client: CentralClient, dataDir: string): Promise<void> 
       // two central requests per mirror. Skip it then.
       const refreshKey = {
         mcpUrl: resolvePortuniMcpUrl(),
+        build: sidecarBuildId(),
         mirrors: (await listUserMirrors(SOLO_USER)).map((m) => ({
           node_id: m.node_id,
           local_path: m.local_path,
         })),
       };
       if (mirrorConfigsFresh(dataDir, refreshKey, Date.now())) {
-        console.error("[boot] mirror configs refreshed minutes ago with the same URL, skipped");
+        console.error("[boot] mirror configs refreshed minutes ago by this build with the same URL, skipped");
         return;
       }
       // A central read that failed degrades that mirror's files; such a

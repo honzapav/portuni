@@ -31,7 +31,11 @@
 //     dead upstream would surface downstream as opaque tool errors. A 429
 //     from central's rate limiter is retried after its Retry-After within a
 //     bounded budget, and if it persists answered as 429 RATE_LIMITED with
-//     the same Retry-After, never as "unreachable" (#633).
+//     the same Retry-After, never as "unreachable" (#633). The connect is
+//     the whole handshake: initialize, notifications/initialized AND the
+//     standalone GET stream central sends its own requests on (elicitation
+//     rides it), so a 429 or failure on that GET counts like one on the
+//     initialize (#633 review).
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -132,6 +136,41 @@ class UpstreamRateLimitedError extends Error {
   }
 }
 
+// The upstream connect's standalone SSE GET did not open (any answer but a
+// 2xx or 405, or a network failure): a session without it never receives
+// central's elicitation requests, so it is a failed connect.
+class UpstreamStreamError extends Error {
+  constructor(detail: string) {
+    super(`central did not open the upstream MCP notification stream: ${detail}`);
+    this.name = "UpstreamStreamError";
+  }
+}
+
+// How long the connect waits for central to answer the standalone GET's
+// headers (an SSE response sends them at once). Only a hung central gets
+// here; the session then opens as before rather than never.
+const UPSTREAM_STREAM_OPEN_TIMEOUT_MS = 10_000;
+
+// How long a failed connect's DELETE of central's half-open session may run
+// before the client is closed (which aborts it).
+const UPSTREAM_TERMINATE_GRACE_MS = 2_000;
+
+// True for the client's `notifications/initialized` POST body. The SDK
+// starts the standalone GET right after central accepts it (202), without
+// awaiting it, so `client.connect()` returns before that GET is answered.
+function isInitializedPost(init: RequestInit | undefined): boolean {
+  if (typeof init?.body !== "string") return false;
+  try {
+    const msg = JSON.parse(init.body) as unknown;
+    const msgs = Array.isArray(msg) ? msg : [msg];
+    return msgs.some(
+      (m) => m !== null && typeof m === "object" && (m as { method?: unknown }).method === "notifications/initialized",
+    );
+  } catch {
+    return false;
+  }
+}
+
 // Retry-After as delta-seconds (what central's rate limiter sends) or an
 // HTTP date. Missing or unparsable -> 1 s, the limiter's own minimum.
 function parseRetryAfterSeconds(header: string | null, nowMs: number): number {
@@ -206,33 +245,99 @@ async function openUpstream(
   let waitedMs = 0;
   for (let attempt = 1; ; attempt++) {
     // The SDK's transport error keeps the status but not the headers, so a
-    // fetch wrapper records central's Retry-After on a 429 for the retry.
+    // fetch wrapper records central's Retry-After on a 429 for the retry --
+    // on any request of the handshake, the standalone GET included.
     let rateLimited: UpstreamRateLimitedError | null = null;
+    // Set when central accepted notifications/initialized: the SDK then
+    // opens the standalone GET on its own, and `stream` settles with that
+    // GET's status (or its network error) the first time it is answered.
+    let streamExpected = false;
+    let settleStream: (outcome: number | Error) => void = () => undefined;
+    const stream = new Promise<number | Error>((r) => {
+      settleStream = r;
+    });
     const transport = new StreamableHTTPClientTransport(
       upstreamUrl(opts.centralUrl, homeNodeId),
       {
         requestInit: { headers },
         fetch: async (input, init) => {
-          const res = await fetch(input, init);
+          const isGet = (init?.method ?? "GET").toUpperCase() === "GET";
+          let res: Response;
+          try {
+            res = await fetch(input, init);
+          } catch (e) {
+            if (isGet) settleStream(e instanceof Error ? e : new Error(String(e)));
+            throw e;
+          }
           if (res.status === 429) {
             rateLimited = new UpstreamRateLimitedError(
               parseRetryAfterSeconds(res.headers.get("retry-after"), Date.now()),
             );
           }
+          // A same-origin redirect is not the answer yet: the SDK follows
+          // it through this same wrapper (followWithinOrigin) and the
+          // followed response settles the stream.
+          const redirect = res.status >= 300 && res.status < 400 && res.headers.has("location");
+          if (isGet && !redirect) settleStream(res.status);
+          else if (res.status === 202 && isInitializedPost(init)) streamExpected = true;
           return res;
         },
       },
     );
+    // The SDK reports a GET it gave up on without a usable answer (a
+    // redirect it will not follow: cross-origin, added userinfo, too many
+    // hops) only through onerror; the Client chains this handler in.
+    transport.onerror = (e) => settleStream(e);
     const client = new Client(
       { name: "portuni-agent-upstream", version: "0.1.0" },
       { capabilities: relayableCapabilities(downstreamCapabilities) },
     );
     try {
       await client.connect(transport);
+      if (streamExpected) {
+        let timer: NodeJS.Timeout | undefined;
+        const outcome = await Promise.race([
+          stream,
+          new Promise<"timeout">((r) => {
+            timer = setTimeout(() => r("timeout"), UPSTREAM_STREAM_OPEN_TIMEOUT_MS);
+            timer.unref?.();
+          }),
+        ]);
+        clearTimeout(timer);
+        if (outcome === "timeout") {
+          console.warn("Agent MCP upstream notification stream not answered yet; opening the session anyway");
+        } else if (outcome instanceof Error) {
+          throw new UpstreamStreamError(outcome.message);
+        } else if (!(outcome >= 200 && outcome < 300) && outcome !== 405) {
+          // 405: central offers no standalone stream at all, which the SDK
+          // accepts too; anything else is a refused stream.
+          throw new UpstreamStreamError(`HTTP ${outcome}`);
+        }
+      }
       return client;
     } catch (err) {
-      client.close().catch(() => undefined);
+      // Read before the DELETE below, which is a request of its own.
       const limited = rateLimited as UpstreamRateLimitedError | null;
+      // Best effort, never awaited (a central that does not answer the
+      // DELETE must not hold the local initialize): end central's
+      // half-open session so it does not wait for its idle GC, then close
+      // the client -- after the DELETE, since close() aborts it, or after
+      // UPSTREAM_TERMINATE_GRACE_MS. Skipped when central is rate limiting
+      // this token: the DELETE would only spend the budget the retry needs.
+      const closeClient = (): void => void client.close().catch(() => undefined);
+      if (!limited && transport.sessionId) {
+        const grace = setTimeout(closeClient, UPSTREAM_TERMINATE_GRACE_MS);
+        grace.unref?.();
+        void transport
+          .terminateSession()
+          .catch(() => undefined)
+          .finally(() => {
+            clearTimeout(grace);
+            closeClient();
+          });
+      } else {
+        closeClient();
+      }
       if (!limited) throw err;
       const waitMs = limited.retryAfterSeconds * 1000;
       if (attempt >= UPSTREAM_RATE_LIMIT_MAX_ATTEMPTS || waitedMs + waitMs > budgetMs) {

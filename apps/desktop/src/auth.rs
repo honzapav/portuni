@@ -628,12 +628,14 @@ pub async fn central_request(
     let refresh_ws = ws_id.clone();
     let gate = refresh_gate(&ws_id);
     let resp = central_request_with_refresh(
-        &config.server_url,
-        &method,
-        &path,
-        body.as_ref(),
-        &jwt,
-        request_id.as_deref(),
+        &CentralRequest {
+            server_url: &config.server_url,
+            method: &method,
+            path: &path,
+            body: body.as_ref(),
+            jwt: &jwt,
+            request_id: request_id.as_deref(),
+        },
         &gate,
         || keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id),
         || async move {
@@ -765,14 +767,8 @@ pub fn refresh_gate(ws_id: &str) -> std::sync::Arc<RefreshGate> {
 /// (`current_jwt` reads the JWT it stored). The retry carries the same
 /// request id as the first attempt (#573), so both land under one id in the
 /// central server's log.
-#[allow(clippy::too_many_arguments)]
 pub async fn central_request_with_refresh<E, C, R, RF>(
-    server_url: &str,
-    method: &str,
-    path: &str,
-    body: Option<&Value>,
-    jwt: &str,
-    request_id: Option<&str>,
+    req: &CentralRequest<'_>,
     gate: &RefreshGate,
     current_jwt: C,
     refresh: R,
@@ -784,17 +780,44 @@ where
     RF: std::future::Future<Output = Option<Result<String, E>>>,
 {
     let seen = gate.generation();
-    let resp = do_central_request(server_url, method, path, body, jwt, request_id).await?;
+    let resp = do_central_request(
+        req.server_url,
+        req.method,
+        req.path,
+        req.body,
+        req.jwt,
+        req.request_id,
+    )
+    .await?;
     if resp.status != 401 {
         return Ok(resp);
     }
-    match gate.resolve(seen, jwt, current_jwt, refresh).await {
+    match gate.resolve(seen, req.jwt, current_jwt, refresh).await {
         None => Ok(resp),
         Some(Err(e)) => Err(e),
-        Some(Ok(new_jwt)) => {
-            Ok(do_central_request(server_url, method, path, body, &new_jwt, request_id).await?)
-        }
+        Some(Ok(new_jwt)) => Ok(do_central_request(
+            req.server_url,
+            req.method,
+            req.path,
+            req.body,
+            &new_jwt,
+            req.request_id,
+        )
+        .await?),
     }
+}
+
+/// One request to the central server as the webview asked for it: what
+/// `central_request_with_refresh` sends first and, after a refresh, again
+/// with the new JWT.
+pub struct CentralRequest<'a> {
+    pub server_url: &'a str,
+    pub method: &'a str,
+    pub path: &'a str,
+    pub body: Option<&'a Value>,
+    /// The session JWT the first attempt carries.
+    pub jwt: &'a str,
+    pub request_id: Option<&'a str>,
 }
 
 async fn do_central_request(
@@ -897,12 +920,14 @@ mod tests {
     fn central_request_forwards_the_request_id_and_keeps_it_on_the_401_retry() {
         let (url, server) = canned_server(vec![401, 200]);
         let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _, _>(
-            &url,
-            "GET",
-            "/nodes",
-            None,
-            "old-jwt",
-            Some("01JREQUESTID"),
+            &CentralRequest {
+                server_url: &url,
+                method: "GET",
+                path: "/nodes",
+                body: None,
+                jwt: "old-jwt",
+                request_id: Some("01JREQUESTID"),
+            },
             &RefreshGate::default(),
             || Some("old-jwt".to_string()),
             || async { Some(Ok("new-jwt".to_string())) },
@@ -922,12 +947,14 @@ mod tests {
     fn central_request_hands_back_the_401_when_the_refresh_fails() {
         let (url, server) = canned_server(vec![401]);
         let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _, _>(
-            &url,
-            "GET",
-            "/nodes",
-            None,
-            "old-jwt",
-            None,
+            &CentralRequest {
+                server_url: &url,
+                method: "GET",
+                path: "/nodes",
+                body: None,
+                jwt: "old-jwt",
+                request_id: None,
+            },
             &RefreshGate::default(),
             || Some("old-jwt".to_string()),
             || async { None },
@@ -945,12 +972,14 @@ mod tests {
     fn central_request_keeps_the_refresh_cmd_error() {
         let (url, server) = canned_server(vec![401]);
         let err = tauri::async_runtime::block_on(central_request_with_refresh(
-            &url,
-            "POST",
-            "/device-tokens",
-            None,
-            "old-jwt",
-            Some("01JCENTRALFETCH"),
+            &CentralRequest {
+                server_url: &url,
+                method: "POST",
+                path: "/device-tokens",
+                body: None,
+                jwt: "old-jwt",
+                request_id: Some("01JCENTRALFETCH"),
+            },
             &RefreshGate::default(),
             || Some("old-jwt".to_string()),
             || async { Some(Err(CmdError::NotLoggedIn)) },
@@ -1022,12 +1051,14 @@ mod tests {
             let gate = &gate;
             async move {
                 central_request_with_refresh::<String, _, _, _>(
-                    &url,
-                    "GET",
-                    "/nodes",
-                    None,
-                    "old-jwt",
-                    None,
+                    &CentralRequest {
+                        server_url: &url,
+                        method: "GET",
+                        path: "/nodes",
+                        body: None,
+                        jwt: "old-jwt",
+                        request_id: None,
+                    },
                     gate,
                     move || Some(stored_read.lock().unwrap().clone()),
                     move || async move {
@@ -1083,12 +1114,14 @@ mod tests {
     fn a_401_for_a_replaced_jwt_retries_without_refreshing() {
         let (url, server) = jwt_server(2, "new-jwt");
         let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _, _>(
-            &url,
-            "GET",
-            "/nodes",
-            None,
-            "old-jwt",
-            None,
+            &CentralRequest {
+                server_url: &url,
+                method: "GET",
+                path: "/nodes",
+                body: None,
+                jwt: "old-jwt",
+                request_id: None,
+            },
             &RefreshGate::default(),
             || Some("new-jwt".to_string()),
             || async { panic!("must not refresh") },
