@@ -24,7 +24,14 @@ import {
   listUntrackedLocalCentral,
   mapConcurrent,
   reconcilePathCentral,
+  syncInfoByNode,
 } from "./domain/sync/central/engine-central.js";
+import type { NodeSyncInfo } from "./domain/sync/sync-remote-api.js";
+import {
+  mirrorConfigsFresh,
+  recordMirrorConfigsRefreshed,
+} from "./boot/mirror-config-refresh-stamp.js";
+import { resolvePortuniMcpUrl } from "./domain/write-scope.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
 import { createAgentSessionRuntime, getSessionRuntime } from "./boot/session-runtime.js";
@@ -151,11 +158,15 @@ async function bindAndAnnounce(
 async function centralBackfillMirror(
   client: CentralClient,
   m: { node_id: string },
+  // The node's sync-info from the sweep's one batch request (#633); absent
+  // when central omitted the node or the batch failed, then this asks for it.
+  preloaded?: NodeSyncInfo,
 ): Promise<void> {
-  const untracked = await listUntrackedLocalCentral(client, {
-    userId: SOLO_USER,
-    nodeId: m.node_id,
-  });
+  const untracked = await listUntrackedLocalCentral(
+    client,
+    { userId: SOLO_USER, nodeId: m.node_id },
+    preloaded,
+  );
   for (const u of untracked) {
     try {
       await reconcilePathCentral(client, {
@@ -176,7 +187,25 @@ async function centralBackfillMirror(
 // (agent-tools.ts) run on this box, everything else proxies to the central
 // MCP server. Refreshes per-mirror harness configs to point at this local
 // front door (resolvePortuniMcpUrl in domain/write-scope.ts).
-async function agentMain(client: CentralClient): Promise<void> {
+// Both workspaces end the same way on SIGTERM/SIGINT: stop the watcher,
+// close the server, exit.
+function exitOnSignal(
+  watcher: { stop(): void } | null | undefined,
+  handle: { shutdown(): Promise<void> },
+): void {
+  const shutdown = async (): Promise<void> => {
+    try {
+      watcher?.stop();
+      await handle.shutdown();
+    } finally {
+      process.exit(0);
+    }
+  };
+  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown());
+}
+
+async function agentMain(client: CentralClient, dataDir: string): Promise<void> {
   const port = Number(process.env.PORTUNI_PORT ?? 0);
   process.env.PORT = String(port);
 
@@ -265,10 +294,26 @@ async function agentMain(client: CentralClient): Promise<void> {
       // rather than asked -- 26 mirrors x 2 (client-side retry) doomed
       // connects per round is what buried the log.
       let unreachable = false;
+      // #633: one POST /sync/info-batch for every mirror instead of one
+      // GET /nodes/:id/sync-info each -- at boot this ran alongside the
+      // config refresh and the first MCP connects, all on the same token's
+      // per-minute budget. A node the batch omits falls back to its own GET.
+      let infos = new Map<string, NodeSyncInfo>();
+      if (mirrors.length > 0) {
+        try {
+          infos = await syncInfoByNode(
+            client,
+            mirrors.map((m) => m.node_id),
+          );
+        } catch (e) {
+          if (isUnreachableError(e)) unreachable = true;
+          else console.error(`[${tag}] central sync-info batch failed, asking per mirror:`, e);
+        }
+      }
       await mapConcurrent(mirrors, 4, async (m) => {
         if (unreachable) return;
         try {
-          await centralBackfillMirror(client, m);
+          await centralBackfillMirror(client, m, infos.get(m.node_id));
         } catch (e) {
           if (isUnreachableError(e)) {
             unreachable = true;
@@ -306,34 +351,52 @@ async function agentMain(client: CentralClient): Promise<void> {
   // resolvePortuniMcpUrl), not to central directly.
   void (async () => {
     try {
+      // #633: a quick restart (same port, same mirrors, a refresh that
+      // completed minutes ago) would rewrite the same files at a cost of
+      // two central requests per mirror. Skip it then.
+      const refreshKey = {
+        mcpUrl: resolvePortuniMcpUrl(),
+        mirrors: (await listUserMirrors(SOLO_USER)).map((m) => ({
+          node_id: m.node_id,
+          local_path: m.local_path,
+        })),
+      };
+      if (mirrorConfigsFresh(dataDir, refreshKey, Date.now())) {
+        console.error("[boot] mirror configs refreshed minutes ago with the same URL, skipped");
+        return;
+      }
+      // A central read that failed degrades that mirror's files; such a
+      // refresh is not recorded, so the next boot fetches again.
+      let centralReadFailed = false;
       const r = await materializeAllRegisteredMirrors({
-        dataSourcesFor: (nodeId) => client.dataSources(nodeId).catch(() => []),
+        dataSourcesFor: (nodeId) =>
+          client.dataSources(nodeId).catch(() => {
+            centralReadFailed = true;
+            return [];
+          }),
         // #323 ends the "no orientation in central mode" cut: no local db
         // in agent mode, but CentralClient.orientation now backs a real
         // GET /nodes/:id/orientation on central.
-        orientationFor: (nodeId) => client.orientation(nodeId).catch(() => null),
+        orientationFor: (nodeId) =>
+          client.orientation(nodeId).catch(() => {
+            centralReadFailed = true;
+            return null;
+          }),
       });
       if (r.errors.length > 0) {
         console.error(
           `[boot] mirror rematerialisation completed with ${r.errors.length} error(s):`,
           r.errors,
         );
+      } else if (!centralReadFailed) {
+        recordMirrorConfigsRefreshed(dataDir, refreshKey, Date.now());
       }
     } catch (err) {
       console.error("[boot] mirror rematerialisation skipped:", err);
     }
   })();
 
-  const shutdown = async (): Promise<void> => {
-    try {
-      watcher?.stop();
-      await handle.shutdown();
-    } finally {
-      process.exit(0);
-    }
-  };
-  process.on("SIGTERM", () => void shutdown());
-  process.on("SIGINT", () => void shutdown());
+  exitOnSignal(watcher, handle);
 }
 
 async function main(): Promise<void> {
@@ -365,7 +428,7 @@ async function main(): Promise<void> {
     // Records made under this device's previous ids live on the central
     // server; best-effort, never holds up the boot.
     void claimHostRecordsCentral(agentClient, hostIdentity);
-    await agentMain(agentClient);
+    await agentMain(agentClient, dataDir);
     return;
   }
 
@@ -440,16 +503,7 @@ async function main(): Promise<void> {
     }
   })();
 
-  const shutdown = async (): Promise<void> => {
-    try {
-      watcher?.stop();
-      await handle.shutdown();
-    } finally {
-      process.exit(0);
-    }
-  };
-  process.on("SIGTERM", () => void shutdown());
-  process.on("SIGINT", () => void shutdown());
+  exitOnSignal(watcher, handle);
 }
 
 main().catch((err) => {

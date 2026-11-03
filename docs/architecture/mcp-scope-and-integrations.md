@@ -52,6 +52,18 @@ place of the one the client asked for. A headless device token without
   opens the upstream connection to central only once the request carries
   a valid `initialize`, forwards the parameter, and the central server does the seed.
   A probe at the local door never creates a session row on the central server.
+  Central rate-limits per token, and the sync agent's token carries every
+  MCP session of the device plus its own boot work. A `429` on the upstream
+  `initialize` is waited out per `Retry-After` and retried (at most 20 s in
+  total, 4 attempts; `UPSTREAM_RATE_LIMIT_BUDGET_MS`), so a client's connect
+  still opens in one go. A limit that outlasts that budget answers the local
+  client `429 RATE_LIMITED` with the same `Retry-After`, never the
+  `503 CENTRAL_UNREACHABLE` reserved for a central that does not answer.
+  The boot itself stays small (#633): the backfill asks for every mirror's
+  sync-info in one `POST /sync/info-batch`, and the boot refresh of the
+  per-mirror configs (two central reads per mirror) is skipped when the last
+  complete refresh was under 5 minutes ago with the same MCP URL and mirrors
+  (`boot/mirror-config-refresh-stamp.ts`, a stamp in the data dir).
 - Remote MCP client on the central server: no `home_node_id` and no scope set; the session is
   `interactive_chat`, permission-only reads (see scope-rules).
 

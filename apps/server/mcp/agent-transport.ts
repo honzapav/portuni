@@ -28,7 +28,10 @@
 //     upstream client is closed too.
 //   - Upstream connect failure -> 503 with the underlying reason (mirrors the
 //     auto-seed 503 contract in transport.ts): letting a session start with a
-//     dead upstream would surface downstream as opaque tool errors.
+//     dead upstream would surface downstream as opaque tool errors. A 429
+//     from central's rate limiter is retried after its Retry-After within a
+//     bounded budget, and if it persists answered as 429 RATE_LIMITED with
+//     the same Retry-After, never as "unreachable" (#633).
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -45,6 +48,7 @@ import {
   isInitializeRequest,
   type ClientCapabilities,
 } from "@modelcontextprotocol/sdk/types.js";
+import { respondApiError } from "../http/middleware.js";
 import { parseMcpBody, routeToExistingSession, writeInternalError } from "./http-session.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { McpTransport } from "./transport.js";
@@ -101,6 +105,43 @@ export interface AgentTransportOpts {
   client: CentralClient;
   centralUrl: string;
   centralToken: string;
+  // How long one new local session may wait in total for central's rate
+  // limiter (429 + Retry-After) before the front door gives up with a 429
+  // of its own (#633). Defaults to UPSTREAM_RATE_LIMIT_BUDGET_MS. Tests
+  // inject `sleep` so they wait for nothing.
+  rateLimitRetry?: { budgetMs?: number; sleep?: (ms: number) => Promise<void> };
+}
+
+// #633: central rate-limits per bearer token, and every MCP session this
+// device opens shares the sync agent's token with its boot backfill and the
+// window's device-local polls. A 429 on the upstream initialize is not an
+// unreachable central: it says when to come back. The front door waits for
+// that (Retry-After) and tries again, as long as the total wait stays under
+// this budget -- well under the downstream client's own connect timeout
+// (Claude Code's MCP_TIMEOUT is 30 s), so the session still opens in one go.
+const UPSTREAM_RATE_LIMIT_BUDGET_MS = 20_000;
+const UPSTREAM_RATE_LIMIT_MAX_ATTEMPTS = 4;
+
+// Central refused the upstream initialize with 429. Carries the wait central
+// asked for, so the caller can retry or answer the local client with the
+// same Retry-After.
+class UpstreamRateLimitedError extends Error {
+  constructor(readonly retryAfterSeconds: number) {
+    super(`central rate limited the upstream MCP connect; retry after ${retryAfterSeconds} s`);
+    this.name = "UpstreamRateLimitedError";
+  }
+}
+
+// Retry-After as delta-seconds (what central's rate limiter sends) or an
+// HTTP date. Missing or unparsable -> 1 s, the limiter's own minimum.
+function parseRetryAfterSeconds(header: string | null, nowMs: number): number {
+  if (header) {
+    const secs = Number(header.trim());
+    if (Number.isFinite(secs) && secs >= 0) return Math.max(1, Math.ceil(secs));
+    const at = Date.parse(header);
+    if (Number.isFinite(at)) return Math.max(1, Math.ceil((at - nowMs) / 1000));
+  }
+  return 1;
 }
 
 // Build the upstream URL: `${centralUrl}/mcp`, carrying the local
@@ -159,18 +200,51 @@ async function openUpstream(
 ): Promise<Client> {
   const headers: Record<string, string> = { Authorization: `Bearer ${opts.centralToken}` };
   if (forward.spawnSessionId) headers["X-Portuni-Spawn-Id"] = forward.spawnSessionId;
-  const transport = new StreamableHTTPClientTransport(
-    upstreamUrl(opts.centralUrl, homeNodeId),
-    {
-      requestInit: { headers },
-    },
-  );
-  const client = new Client(
-    { name: "portuni-agent-upstream", version: "0.1.0" },
-    { capabilities: relayableCapabilities(downstreamCapabilities) },
-  );
-  await client.connect(transport);
-  return client;
+  const budgetMs = opts.rateLimitRetry?.budgetMs ?? UPSTREAM_RATE_LIMIT_BUDGET_MS;
+  const sleep =
+    opts.rateLimitRetry?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let waitedMs = 0;
+  for (let attempt = 1; ; attempt++) {
+    // The SDK's transport error keeps the status but not the headers, so a
+    // fetch wrapper records central's Retry-After on a 429 for the retry.
+    let rateLimited: UpstreamRateLimitedError | null = null;
+    const transport = new StreamableHTTPClientTransport(
+      upstreamUrl(opts.centralUrl, homeNodeId),
+      {
+        requestInit: { headers },
+        fetch: async (input, init) => {
+          const res = await fetch(input, init);
+          if (res.status === 429) {
+            rateLimited = new UpstreamRateLimitedError(
+              parseRetryAfterSeconds(res.headers.get("retry-after"), Date.now()),
+            );
+          }
+          return res;
+        },
+      },
+    );
+    const client = new Client(
+      { name: "portuni-agent-upstream", version: "0.1.0" },
+      { capabilities: relayableCapabilities(downstreamCapabilities) },
+    );
+    try {
+      await client.connect(transport);
+      return client;
+    } catch (err) {
+      client.close().catch(() => undefined);
+      const limited = rateLimited as UpstreamRateLimitedError | null;
+      if (!limited) throw err;
+      const waitMs = limited.retryAfterSeconds * 1000;
+      if (attempt >= UPSTREAM_RATE_LIMIT_MAX_ATTEMPTS || waitedMs + waitMs > budgetMs) {
+        throw limited;
+      }
+      console.warn(
+        `Agent MCP upstream connect rate limited by central; retrying in ${limited.retryAfterSeconds} s (attempt ${attempt})`,
+      );
+      waitedMs += waitMs;
+      await sleep(waitMs);
+    }
+  }
 }
 
 // Session type for the DEVICE_LOCAL_TOOLS write gate below. This is deliberately
@@ -591,6 +665,16 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         });
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
+        if (err instanceof UpstreamRateLimitedError) {
+          // #633: central is up and said "later" -- answer the local client
+          // with the same 429 and Retry-After, not an "unreachable" 503.
+          console.warn("Agent MCP upstream connect still rate limited:", reason);
+          res.setHeader("Retry-After", String(err.retryAfterSeconds));
+          respondApiError(res, 429, "RATE_LIMITED", "Central MCP server rate limited this device; retry later", {
+            retryAfterSeconds: err.retryAfterSeconds,
+          });
+          return;
+        }
         console.error("Agent MCP upstream connect failed:", err);
         res.writeHead(503, { "Content-Type": "application/json" });
         res.end(
