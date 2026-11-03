@@ -118,6 +118,25 @@ export async function loadNodeContext(
   };
 }
 
+// Sync-info for many nodes in as few requests as POST /sync/info-batch
+// allows (500 ids per call), keyed by node id. A node central omits (hidden
+// or unknown) is simply absent; the caller falls back to the single-node
+// GET for it, which reports the real reason. The agent's boot backfill uses
+// this so a start costs one request instead of one per mirror (#633).
+export const SYNC_INFO_BATCH_MAX = 500;
+export async function syncInfoByNode(
+  client: CentralClient,
+  nodeIds: readonly string[],
+): Promise<Map<string, NodeSyncInfo>> {
+  const out = new Map<string, NodeSyncInfo>();
+  const unique = [...new Set(nodeIds)];
+  for (let i = 0; i < unique.length; i += SYNC_INFO_BATCH_MAX) {
+    const infos = await client.syncInfoBatch(unique.slice(i, i + SYNC_INFO_BATCH_MAX));
+    for (const info of infos) out.set(info.node.id, info);
+  }
+  return out;
+}
+
 // Bounded-concurrency map (results keep input order). Mirrors the engine's
 // internal helper; exported for the agent boot wiring (desktop.ts backfill).
 export async function mapConcurrent<T, R>(
@@ -488,8 +507,11 @@ async function walkUntracked(
 export async function listUntrackedLocalCentral(
   client: CentralClient,
   a: { userId: string; nodeId: string },
+  // Sync-info the caller already fetched in one batch (the agent's boot
+  // backfill, #633); without it this costs one GET per mirror.
+  preloaded?: NodeSyncInfo,
 ): Promise<NewLocalEntry[]> {
-  const ctx = await loadNodeContext(client, a.userId, a.nodeId);
+  const ctx = await loadNodeContext(client, a.userId, a.nodeId, preloaded);
   // Path-only listing (UI untracked list, sync-run adopt): hash-free, same
   // as discover-local.ts -- storeFile rehashes at adopt time anyway.
   return untrackedForContext(ctx, { hash: false });

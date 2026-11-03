@@ -40,6 +40,19 @@ export class CentralHttpError extends Error {
   }
 }
 
+// The request never got an answer from central (DNS, refused, reset,
+// timeout), after the client's one retry. Thrown instead of the runtime's
+// own fetch error, whose shape differs between Node (undici: a TypeError
+// with a `cause`) and the Bun-compiled sidecar, so callers can tell "central
+// did not answer" from any other failure by class. Keeps the original
+// message and the original error as `cause`.
+export class CentralUnreachableError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "CentralUnreachableError";
+  }
+}
+
 // Keeps only the string/number values of an error body's `params`.
 function readParams(value: unknown): ErrorParams | undefined {
   const out = readErrorParams(value);
@@ -240,7 +253,11 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
     try {
       return await requestOnce(method, path, body, timeoutMs, requestId);
     } catch {
-      return requestOnce(method, path, body, timeoutMs, requestId);
+      try {
+        return await requestOnce(method, path, body, timeoutMs, requestId);
+      } catch (e) {
+        throw new CentralUnreachableError(e);
+      }
     }
   }
 

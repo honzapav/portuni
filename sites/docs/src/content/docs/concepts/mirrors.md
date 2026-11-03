@@ -121,6 +121,12 @@ The watcher also understands the two everyday shell operations:
   the record and the remote copy and shows as "deleted locally" for an
   explicit decision.
 
+A mirror whose node no longer exists (deleted from the graph, or unknown
+to the central server of a team workspace) is unregistered at the next
+start or periodic sweep, and the log names its folder once. Only the
+registration goes: the folder and its files stay on disk, and Portuni
+stops asking about them.
+
 A deliberate delete — the Files tab's "Delete" button, or `portuni_delete_file`
 — is a different action from the on-disk `rm` above: it removes the record,
 the remote object, **and** the local mirror copy, in every data mode. A

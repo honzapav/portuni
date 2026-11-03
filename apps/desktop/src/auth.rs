@@ -626,13 +626,18 @@ pub async fn central_request(
 
     // Same window, so the same workspace.
     let refresh_ws = ws_id.clone();
+    let gate = refresh_gate(&ws_id);
     let resp = central_request_with_refresh(
-        &config.server_url,
-        &method,
-        &path,
-        body.as_ref(),
-        &jwt,
-        request_id.as_deref(),
+        &CentralRequest {
+            server_url: &config.server_url,
+            method: &method,
+            path: &path,
+            body: body.as_ref(),
+            jwt: &jwt,
+            request_id: request_id.as_deref(),
+        },
+        &gate,
+        || keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id),
         || async move {
             info!("central_request: got 401, attempting silent refresh");
             match auth_refresh(window).await {
@@ -679,37 +684,140 @@ pub async fn do_central_request_raw(
     do_central_request(server_url, method, path, body, jwt, request_id).await
 }
 
+// ─── Single-flight silent refresh (#634) ─────────────────────────────────────
+
+/// One workspace's silent-refresh gate. When the session JWT expires, every
+/// request the window has in flight gets a 401 at about the same time; the
+/// gate lets exactly one of them refresh (Google token endpoint, central
+/// `/auth/login`, a Keychain write) while the others wait for that outcome
+/// and retry with the JWT it stored, or hand back their original 401 when it
+/// failed.
+#[derive(Default)]
+pub struct RefreshGate {
+    /// Bumped once per finished refresh attempt. A request reads it before
+    /// it is sent; a different value after its 401 means a refresh ran
+    /// while it was in flight, so its outcome answers this request too.
+    generation: std::sync::atomic::AtomicU64,
+    /// Held for the whole refresh; `true` when the last attempt succeeded.
+    last_ok: tokio::sync::Mutex<bool>,
+}
+
+impl RefreshGate {
+    /// Snapshot taken before a request is sent.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Resolve a 401 for a request sent with `stale_jwt` at generation
+    /// `seen`. Answers like `refresh`: `Some(Ok(jwt))` to retry with,
+    /// `Some(Err)` to return, `None` to hand the original 401 back.
+    /// `current_jwt` reads the stored session JWT (the Keychain in the app).
+    pub async fn resolve<E, C, R, RF>(
+        &self,
+        seen: u64,
+        stale_jwt: &str,
+        current_jwt: C,
+        refresh: R,
+    ) -> Option<Result<String, E>>
+    where
+        C: Fn() -> Option<String>,
+        R: FnOnce() -> RF,
+        RF: std::future::Future<Output = Option<Result<String, E>>>,
+    {
+        let mut last_ok = self.last_ok.lock().await;
+        if self.generation() != seen {
+            // A refresh finished while this request was in flight (or while
+            // it waited for the lock): share its outcome, never start another.
+            return if *last_ok { current_jwt().map(Ok) } else { None };
+        }
+        // The stored JWT already moved on (a refresh or a login that landed
+        // between reading the JWT and taking the snapshot): retry with it.
+        if let Some(current) = current_jwt() {
+            if current != stale_jwt {
+                return Some(Ok(current));
+            }
+        }
+        let outcome = refresh().await;
+        *last_ok = matches!(outcome, Some(Ok(_)));
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        outcome
+    }
+}
+
+/// The refresh gate of workspace `ws_id`, shared by `api_request` and
+/// `central_request` so both paths count as one refresh per workspace.
+pub fn refresh_gate(ws_id: &str) -> std::sync::Arc<RefreshGate> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static GATES: OnceLock<Mutex<HashMap<String, Arc<RefreshGate>>>> = OnceLock::new();
+    let mut gates = GATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    gates.entry(ws_id.to_string()).or_default().clone()
+}
+
 /// One webview request to the central server with the silent 401 refresh
-/// (api_request's central branch). On a 401 `refresh` runs once and answers
-/// the new JWT (`Some(Ok)`), an error to return (`Some(Err)`), or `None`
-/// when the refresh itself failed, which hands the original 401 back to the
-/// webview. The retry carries the same request id as the first attempt
-/// (#573), so both land under one id in the central server's log.
-pub async fn central_request_with_refresh<E, R, RF>(
-    server_url: &str,
-    method: &str,
-    path: &str,
-    body: Option<&Value>,
-    jwt: &str,
-    request_id: Option<&str>,
+/// (api_request's central branch). On a 401 the workspace's `gate` decides:
+/// `refresh` runs at most once for all requests in flight at the time and
+/// answers the new JWT (`Some(Ok)`), an error to return (`Some(Err)`), or
+/// `None` when the refresh itself failed, which hands the original 401 back
+/// to the webview; the other requests wait for it and reuse its outcome
+/// (`current_jwt` reads the JWT it stored). The retry carries the same
+/// request id as the first attempt (#573), so both land under one id in the
+/// central server's log.
+pub async fn central_request_with_refresh<E, C, R, RF>(
+    req: &CentralRequest<'_>,
+    gate: &RefreshGate,
+    current_jwt: C,
     refresh: R,
 ) -> Result<CentralResponse, E>
 where
     E: From<String>,
+    C: Fn() -> Option<String>,
     R: FnOnce() -> RF,
     RF: std::future::Future<Output = Option<Result<String, E>>>,
 {
-    let resp = do_central_request(server_url, method, path, body, jwt, request_id).await?;
+    let seen = gate.generation();
+    let resp = do_central_request(
+        req.server_url,
+        req.method,
+        req.path,
+        req.body,
+        req.jwt,
+        req.request_id,
+    )
+    .await?;
     if resp.status != 401 {
         return Ok(resp);
     }
-    match refresh().await {
+    match gate.resolve(seen, req.jwt, current_jwt, refresh).await {
         None => Ok(resp),
         Some(Err(e)) => Err(e),
-        Some(Ok(new_jwt)) => {
-            Ok(do_central_request(server_url, method, path, body, &new_jwt, request_id).await?)
-        }
+        Some(Ok(new_jwt)) => Ok(do_central_request(
+            req.server_url,
+            req.method,
+            req.path,
+            req.body,
+            &new_jwt,
+            req.request_id,
+        )
+        .await?),
     }
+}
+
+/// One request to the central server as the webview asked for it: what
+/// `central_request_with_refresh` sends first and, after a refresh, again
+/// with the new JWT.
+pub struct CentralRequest<'a> {
+    pub server_url: &'a str,
+    pub method: &'a str,
+    pub path: &'a str,
+    pub body: Option<&'a Value>,
+    /// The session JWT the first attempt carries.
+    pub jwt: &'a str,
+    pub request_id: Option<&'a str>,
 }
 
 async fn do_central_request(
@@ -811,13 +919,17 @@ mod tests {
     #[test]
     fn central_request_forwards_the_request_id_and_keeps_it_on_the_401_retry() {
         let (url, server) = canned_server(vec![401, 200]);
-        let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _>(
-            &url,
-            "GET",
-            "/nodes",
-            None,
-            "old-jwt",
-            Some("01JREQUESTID"),
+        let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _, _>(
+            &CentralRequest {
+                server_url: &url,
+                method: "GET",
+                path: "/nodes",
+                body: None,
+                jwt: "old-jwt",
+                request_id: Some("01JREQUESTID"),
+            },
+            &RefreshGate::default(),
+            || Some("old-jwt".to_string()),
             || async { Some(Ok("new-jwt".to_string())) },
         ))
         .unwrap();
@@ -834,13 +946,17 @@ mod tests {
     #[test]
     fn central_request_hands_back_the_401_when_the_refresh_fails() {
         let (url, server) = canned_server(vec![401]);
-        let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _>(
-            &url,
-            "GET",
-            "/nodes",
-            None,
-            "old-jwt",
-            None,
+        let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _, _>(
+            &CentralRequest {
+                server_url: &url,
+                method: "GET",
+                path: "/nodes",
+                body: None,
+                jwt: "old-jwt",
+                request_id: None,
+            },
+            &RefreshGate::default(),
+            || Some("old-jwt".to_string()),
             || async { None },
         ))
         .unwrap();
@@ -856,18 +972,170 @@ mod tests {
     fn central_request_keeps_the_refresh_cmd_error() {
         let (url, server) = canned_server(vec![401]);
         let err = tauri::async_runtime::block_on(central_request_with_refresh(
-            &url,
-            "POST",
-            "/device-tokens",
-            None,
-            "old-jwt",
-            Some("01JCENTRALFETCH"),
+            &CentralRequest {
+                server_url: &url,
+                method: "POST",
+                path: "/device-tokens",
+                body: None,
+                jwt: "old-jwt",
+                request_id: Some("01JCENTRALFETCH"),
+            },
+            &RefreshGate::default(),
+            || Some("old-jwt".to_string()),
             || async { Some(Err(CmdError::NotLoggedIn)) },
         ))
         .err();
         assert_eq!(err, Some(CmdError::NotLoggedIn));
         let heads = server.join().unwrap();
         assert!(heads[0].contains("x-portuni-request-id: 01jcentralfetch"), "{}", heads[0]);
+    }
+
+    /// A loopback HTTP server for `connections` requests, each on its own
+    /// thread: 401 unless the request carries `Bearer {good_jwt}`, then 200.
+    /// Hands back every request's head.
+    fn jwt_server(
+        connections: usize,
+        good_jwt: &'static str,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut workers = Vec::new();
+            for _ in 0..connections {
+                let (mut sock, _) = listener.accept().unwrap();
+                workers.push(std::thread::spawn(move || {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        let n = sock.read(&mut chunk).unwrap();
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                    }
+                    let head = String::from_utf8_lossy(&buf).to_lowercase();
+                    let status = if head.contains(&format!("authorization: bearer {good_jwt}")) {
+                        200
+                    } else {
+                        401
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                    );
+                    sock.write_all(reply.as_bytes()).unwrap();
+                    head
+                }));
+            }
+            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        });
+        (url, handle)
+    }
+
+    /// Runs `n` concurrent requests through one gate against a server that
+    /// takes only `new-jwt`; `refresh_ok` decides how the refresh ends.
+    /// Answers (statuses, refresh count, request heads).
+    fn concurrent_401s(n: usize, refresh_ok: bool) -> (Vec<u16>, usize, Vec<String>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        let connections = if refresh_ok { 2 * n } else { n };
+        let (url, server) = jwt_server(connections, "new-jwt");
+        let gate = RefreshGate::default();
+        let stored = Arc::new(Mutex::new("old-jwt".to_string()));
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let requests = (0..n).map(|_| {
+            let stored_read = stored.clone();
+            let stored_write = stored.clone();
+            let refreshes = refreshes.clone();
+            let url = url.clone();
+            let gate = &gate;
+            async move {
+                central_request_with_refresh::<String, _, _, _>(
+                    &CentralRequest {
+                        server_url: &url,
+                        method: "GET",
+                        path: "/nodes",
+                        body: None,
+                        jwt: "old-jwt",
+                        request_id: None,
+                    },
+                    gate,
+                    move || Some(stored_read.lock().unwrap().clone()),
+                    move || async move {
+                        refreshes.fetch_add(1, Ordering::SeqCst);
+                        if !refresh_ok {
+                            return None;
+                        }
+                        *stored_write.lock().unwrap() = "new-jwt".to_string();
+                        Some(Ok("new-jwt".to_string()))
+                    },
+                )
+                .await
+                .unwrap()
+                .status
+            }
+        });
+        let statuses =
+            tauri::async_runtime::block_on(futures_util::future::join_all(requests));
+        let heads = server.join().unwrap();
+        (statuses, refreshes.load(Ordering::SeqCst), heads)
+    }
+
+    /// #634: a burst of 401s (an expired session JWT under a window's
+    /// startup reads) refreshes once, and every request retries with the
+    /// JWT that one refresh stored.
+    #[test]
+    fn concurrent_401s_refresh_once_and_all_retry_with_the_new_jwt() {
+        let n = 8;
+        let (statuses, refreshes, heads) = concurrent_401s(n, true);
+        assert_eq!(refreshes, 1);
+        assert_eq!(statuses, vec![200; n]);
+        let retried = heads
+            .iter()
+            .filter(|h| h.contains("authorization: bearer new-jwt"))
+            .count();
+        assert_eq!(retried, n);
+    }
+
+    /// #634: when the one refresh fails, every waiting request gets its
+    /// original 401 back and none starts a refresh of its own.
+    #[test]
+    fn concurrent_401s_share_a_failed_refresh_and_keep_their_401() {
+        let n = 8;
+        let (statuses, refreshes, heads) = concurrent_401s(n, false);
+        assert_eq!(refreshes, 1);
+        assert_eq!(statuses, vec![401; n]);
+        assert_eq!(heads.len(), n);
+    }
+
+    /// A 401 for a JWT the store has already replaced retries with the
+    /// stored one and does not refresh.
+    #[test]
+    fn a_401_for_a_replaced_jwt_retries_without_refreshing() {
+        let (url, server) = jwt_server(2, "new-jwt");
+        let resp = tauri::async_runtime::block_on(central_request_with_refresh::<String, _, _, _>(
+            &CentralRequest {
+                server_url: &url,
+                method: "GET",
+                path: "/nodes",
+                body: None,
+                jwt: "old-jwt",
+                request_id: None,
+            },
+            &RefreshGate::default(),
+            || Some("new-jwt".to_string()),
+            || async { panic!("must not refresh") },
+        ))
+        .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn refresh_gate_is_one_per_workspace() {
+        let a = refresh_gate("ws-gate-a");
+        assert!(std::sync::Arc::ptr_eq(&a, &refresh_gate("ws-gate-a")));
+        assert!(!std::sync::Arc::ptr_eq(&a, &refresh_gate("ws-gate-b")));
     }
 
     #[test]

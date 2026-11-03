@@ -20,11 +20,14 @@ import { SOLO_USER } from "./infra/schema.js";
 import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { createCentralClientFromEnv, type CentralClient } from "./domain/sync/central/client.js";
+import { reconcilePathCentral } from "./domain/sync/central/engine-central.js";
+import { centralBackfillMirror, createCentralBackfillSweep } from "./boot/central-backfill.js";
 import {
-  listUntrackedLocalCentral,
-  mapConcurrent,
-  reconcilePathCentral,
-} from "./domain/sync/central/engine-central.js";
+  mirrorConfigsFresh,
+  recordMirrorConfigsRefreshed,
+  sidecarBuildId,
+} from "./boot/mirror-config-refresh-stamp.js";
+import { resolvePortuniMcpUrl } from "./domain/write-scope.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
 import { createAgentSessionRuntime, getSessionRuntime } from "./boot/session-runtime.js";
@@ -42,14 +45,6 @@ import {
 } from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
-import {
-  backoffMsFor,
-  initialBackoff,
-  isUnreachableError,
-  recordReachable,
-  recordUnreachable,
-  shouldAttempt,
-} from "./domain/sync/central/reachability.js";
 
 // Reads a required env var, trimmed. Used for the two central-mode
 // connection settings: both are already validated non-empty by
@@ -131,44 +126,6 @@ async function bindAndAnnounce(
   process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
 }
 
-// Reconcile anything on disk in one mirror that the central records don't
-// know yet. Used for the boot backfill sweep and, via the watcher's
-// backfillMirror seam, for mirrors registered while running.
-//
-// Routed through reconcilePathCentral per file (#253), not a batch
-// client.registerFiles call: a live watcher pairs an on-disk mv by inode via
-// tryApplyDiskMoveCentral, but that never runs for a mv that happened while
-// the agent was down (or missed a directory-level watcher event, which only
-// fires once for the directory itself -- see reconcileDirectoryCentral) --
-// this backfill sweep is the catch-up path for exactly that case. A raw
-// batch register would instead split a moved file into a fresh duplicate
-// record, leaving the old one stuck deleted_local with its Drive copy
-// orphaned. Sequential, matching the local engine's dbBackfillMirror: one
-// unreadable/misbehaving file must not abort backfill for the rest of the
-// mirror. reconcilePathCentral's own registration/move paths already cache
-// the local hash (registerLocalFileCentral / tryApplyDiskMoveCentral both
-// call localHashFor), so there is no separate hash-caching pass needed here.
-async function centralBackfillMirror(
-  client: CentralClient,
-  m: { node_id: string },
-): Promise<void> {
-  const untracked = await listUntrackedLocalCentral(client, {
-    userId: SOLO_USER,
-    nodeId: m.node_id,
-  });
-  for (const u of untracked) {
-    try {
-      await reconcilePathCentral(client, {
-        userId: SOLO_USER,
-        nodeId: u.node_id,
-        absPath: u.local_path,
-      });
-    } catch (e) {
-      console.error(`[portuni:watch] central backfill reconcile failed for ${u.local_path}:`, e);
-    }
-  }
-}
-
 // Central-mode sync agent (teammate mirrors): no Turso, no graph db. Serves
 // the local-only sync/mirror/scope routes backed by the central engine, runs
 // the mirror watcher with a central reconcile, and also serves MCP on /mcp
@@ -176,7 +133,25 @@ async function centralBackfillMirror(
 // (agent-tools.ts) run on this box, everything else proxies to the central
 // MCP server. Refreshes per-mirror harness configs to point at this local
 // front door (resolvePortuniMcpUrl in domain/write-scope.ts).
-async function agentMain(client: CentralClient): Promise<void> {
+// Both workspaces end the same way on SIGTERM/SIGINT: stop the watcher,
+// close the server, exit.
+function exitOnSignal(
+  watcher: { stop(): void } | null | undefined,
+  handle: { shutdown(): Promise<void> },
+): void {
+  const shutdown = async (): Promise<void> => {
+    try {
+      watcher?.stop();
+      await handle.shutdown();
+    } finally {
+      process.exit(0);
+    }
+  };
+  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown());
+}
+
+async function agentMain(client: CentralClient, dataDir: string): Promise<void> {
   const port = Number(process.env.PORTUNI_PORT ?? 0);
   process.env.PORT = String(port);
 
@@ -234,7 +209,7 @@ async function agentMain(client: CentralClient): Promise<void> {
       userId: SOLO_USER,
       reconcile: (a) => reconcilePathCentral(client, a),
       backfill: false,
-      backfillMirror: (m) => centralBackfillMirror(client, m),
+      backfillMirror: (m) => centralBackfillMirror(client, SOLO_USER, m),
       onError: (e) => console.error("[portuni:watch]", e),
     });
     watcher
@@ -244,60 +219,11 @@ async function agentMain(client: CentralClient): Promise<void> {
   }
 
   // Central backfill: register anything on disk the records don't know yet,
-  // so files created while the agent was down are tracked. Best-effort.
-  // Bounded fan-out across mirrors + ONE batch registration per mirror
-  // instead of a strictly sequential per-file chain (perf review, scale-boot).
-  // Runs at boot and then periodically -- the safety net for any watcher
-  // event that was still lost despite timeout+retry (GH #80).
-  let sweepRunning = false;
-  let backoff = initialBackoff();
-  const backfillSweep = async (tag: string): Promise<void> => {
-    if (sweepRunning) return;
-    // Central unreachable on the last round: stay quiet until the backoff
-    // window opens. A laptop that is asleep or off wifi would otherwise
-    // burn one doomed round every 10 minutes, forever.
-    if (!shouldAttempt(backoff, Date.now())) return;
-    sweepRunning = true;
-    try {
-      const mirrors = await listUserMirrors(SOLO_USER);
-      // Set by the first mirror whose call fails at the NETWORK level. The
-      // remaining mirrors would all fail the same way, so they are skipped
-      // rather than asked -- 26 mirrors x 2 (client-side retry) doomed
-      // connects per round is what buried the log.
-      let unreachable = false;
-      await mapConcurrent(mirrors, 4, async (m) => {
-        if (unreachable) return;
-        try {
-          await centralBackfillMirror(client, m);
-        } catch (e) {
-          if (isUnreachableError(e)) {
-            unreachable = true;
-            return;
-          }
-          // Central answered -- this is a real per-mirror problem, so it
-          // keeps its full detail.
-          console.error(`[${tag}] central backfill failed for`, m.node_id, e);
-        }
-      });
-      if (unreachable) {
-        backoff = recordUnreachable(backoff, Date.now());
-        // ONE line, no stack trace: being offline is not an error report,
-        // it is a condition. The stack was identical for every mirror and
-        // carried a source excerpt of the bundled sidecar with it.
-        console.warn(
-          `[${tag}] central unreachable, skipped ${mirrors.length} mirror(s); next attempt in ${Math.round(
-            backoffMsFor(backoff.consecutiveFailures) / 60_000,
-          )} min`,
-        );
-      } else {
-        backoff = recordReachable(backoff);
-      }
-    } catch (e) {
-      console.error(`[${tag}] central backfill skipped:`, e);
-    } finally {
-      sweepRunning = false;
-    }
-  };
+  // so files created while the agent was down are tracked, and drop the
+  // registration of a mirror whose node central does not know (#635).
+  // Best-effort. Runs at boot and then periodically -- the safety net for
+  // any watcher event that was still lost despite timeout+retry (GH #80).
+  const backfillSweep = createCentralBackfillSweep({ client, userId: SOLO_USER });
   void backfillSweep("boot");
   setInterval(() => void backfillSweep("sweep"), BACKFILL_SWEEP_INTERVAL_MS).unref();
 
@@ -306,34 +232,53 @@ async function agentMain(client: CentralClient): Promise<void> {
   // resolvePortuniMcpUrl), not to central directly.
   void (async () => {
     try {
+      // #633: a quick restart (same port, same mirrors, a refresh that
+      // completed minutes ago) would rewrite the same files at a cost of
+      // two central requests per mirror. Skip it then.
+      const refreshKey = {
+        mcpUrl: resolvePortuniMcpUrl(),
+        build: sidecarBuildId(),
+        mirrors: (await listUserMirrors(SOLO_USER)).map((m) => ({
+          node_id: m.node_id,
+          local_path: m.local_path,
+        })),
+      };
+      if (mirrorConfigsFresh(dataDir, refreshKey, Date.now())) {
+        console.error("[boot] mirror configs refreshed minutes ago by this build with the same URL, skipped");
+        return;
+      }
+      // A central read that failed degrades that mirror's files; such a
+      // refresh is not recorded, so the next boot fetches again.
+      let centralReadFailed = false;
       const r = await materializeAllRegisteredMirrors({
-        dataSourcesFor: (nodeId) => client.dataSources(nodeId).catch(() => []),
+        dataSourcesFor: (nodeId) =>
+          client.dataSources(nodeId).catch(() => {
+            centralReadFailed = true;
+            return [];
+          }),
         // #323 ends the "no orientation in central mode" cut: no local db
         // in agent mode, but CentralClient.orientation now backs a real
         // GET /nodes/:id/orientation on central.
-        orientationFor: (nodeId) => client.orientation(nodeId).catch(() => null),
+        orientationFor: (nodeId) =>
+          client.orientation(nodeId).catch(() => {
+            centralReadFailed = true;
+            return null;
+          }),
       });
       if (r.errors.length > 0) {
         console.error(
           `[boot] mirror rematerialisation completed with ${r.errors.length} error(s):`,
           r.errors,
         );
+      } else if (!centralReadFailed) {
+        recordMirrorConfigsRefreshed(dataDir, refreshKey, Date.now());
       }
     } catch (err) {
       console.error("[boot] mirror rematerialisation skipped:", err);
     }
   })();
 
-  const shutdown = async (): Promise<void> => {
-    try {
-      watcher?.stop();
-      await handle.shutdown();
-    } finally {
-      process.exit(0);
-    }
-  };
-  process.on("SIGTERM", () => void shutdown());
-  process.on("SIGINT", () => void shutdown());
+  exitOnSignal(watcher, handle);
 }
 
 async function main(): Promise<void> {
@@ -365,7 +310,7 @@ async function main(): Promise<void> {
     // Records made under this device's previous ids live on the central
     // server; best-effort, never holds up the boot.
     void claimHostRecordsCentral(agentClient, hostIdentity);
-    await agentMain(agentClient);
+    await agentMain(agentClient, dataDir);
     return;
   }
 
@@ -440,16 +385,7 @@ async function main(): Promise<void> {
     }
   })();
 
-  const shutdown = async (): Promise<void> => {
-    try {
-      watcher?.stop();
-      await handle.shutdown();
-    } finally {
-      process.exit(0);
-    }
-  };
-  process.on("SIGTERM", () => void shutdown());
-  process.on("SIGINT", () => void shutdown());
+  exitOnSignal(watcher, handle);
 }
 
 main().catch((err) => {

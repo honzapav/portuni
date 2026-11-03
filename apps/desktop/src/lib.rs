@@ -2434,14 +2434,20 @@ async fn api_request(
         // (#223) -- auth_refresh no longer re-derives it from "the active
         // one".
         let refresh_window = window.clone();
+        // One refresh per workspace however many requests got the 401 (#634).
         let refresh_ws = ws_id.clone();
+        let gate = auth::refresh_gate(&ws_id);
         let resp = auth::central_request_with_refresh(
-            &server_url,
-            &method,
-            &path,
-            body_value.as_ref(),
-            &jwt,
-            request_id.as_deref(),
+            &auth::CentralRequest {
+                server_url: &server_url,
+                method: &method,
+                path: &path,
+                body: body_value.as_ref(),
+                jwt: &jwt,
+                request_id: request_id.as_deref(),
+            },
+            &gate,
+            || keychain_get_ws(auth::KEYCHAIN_SESSION_JWT, &ws_id),
             || async move {
                 info!("api_request central: got 401, attempting silent refresh");
                 match auth::auth_refresh(refresh_window).await {

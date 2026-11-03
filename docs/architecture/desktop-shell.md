@@ -256,6 +256,15 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   `record_pending_backend_error`, `retire_pending_backend_error`.
 - In a team workspace before login the replayed `backend-ready` carries the
   sentinel port `0`.
+- `backend-ready` means the port is known, not that the first request is
+  answered: a window's first calls can still fail with no HTTP answer at
+  all (#632, `/graph` and `/me` at startup, a `network-error` in the UI
+  trail). `apiFetch` therefore sends a `GET`/`HEAD` whose transport failed
+  again with a short backoff (`lib/transport-retry.ts`, about 8 s in all):
+  a browser fetch `TypeError`, `UNKNOWN_DETAIL` from the proxy or
+  `DESKTOP_BACKEND_NOT_READY`. Any HTTP status, a definite desktop state
+  (`SYNC_AGENT_DOWN`, unknown workspace) and every write go back to the
+  caller after one attempt.
 - The `backend-error` payload is a `CmdError` (below):
   `DESKTOP_BACKEND_FAILED` with the sidecar's `PORTUNI_BACKEND_ERROR=` text
   as `detail`, `DESKTOP_BACKEND_EXITED` with `exitCode`, or
@@ -356,6 +365,13 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
     JWT (`auth::central_request_with_refresh`), retrying once after a
     silent refresh on 401 with the same request id, **unless** `is_device_local_path(path)` is true; then it
     proxies to the local sync agent exactly as a personal workspace would.
+    The silent refresh is single-flight per workspace (`auth::refresh_gate`,
+    shared with `central_request`): when an expired JWT makes a burst of
+    requests answer 401, one of them runs `auth_refresh` and the rest wait
+    for its outcome, then retry with the JWT it stored in the Keychain, or
+    all hand back their original 401 when it failed. A 401 for a JWT the
+    Keychain has already replaced retries with the stored one without
+    refreshing.
 - The device-local list is the set of routes the device must serve itself
   (mirrors, sync status and runs, file content and file lifecycle, runner
   registry, task actions). The canonical list is

@@ -52,6 +52,33 @@ place of the one the client asked for. A headless device token without
   opens the upstream connection to central only once the request carries
   a valid `initialize`, forwards the parameter, and the central server does the seed.
   A probe at the local door never creates a session row on the central server.
+  Central rate-limits per token, and the sync agent's token carries every
+  MCP session of the device plus its own boot work. A `429` on the upstream
+  `initialize` is waited out per `Retry-After` and retried (at most 20 s in
+  total, 4 attempts; `UPSTREAM_RATE_LIMIT_BUDGET_MS`), so a client's connect
+  still opens in one go. A limit that outlasts that budget answers the local
+  client `429 RATE_LIMITED` with the same `Retry-After`, never the
+  `503 CENTRAL_UNREACHABLE` reserved for a central that does not answer.
+  The upstream connect is the whole handshake: `initialize`,
+  `notifications/initialized` and the standalone GET stream central sends
+  its own requests on (elicitation rides it). The SDK opens that GET after
+  `connect()` has returned, so the front door waits for its answer: a `429`
+  there is retried like one on `initialize`, any other refusal (not `2xx`,
+  not `405`, which means central offers no stream) is a failed connect
+  (`503`), never a session that silently cannot confirm anything.
+  The boot itself stays small (#633): the backfill asks for every mirror's
+  sync-info in one `POST /sync/info-batch`, and the boot refresh of the
+  per-mirror configs (two central reads per mirror) is skipped when the last
+  complete refresh was under 5 minutes ago with the same MCP URL, mirrors
+  and sidecar build (path, size and mtime of the executable and entry
+  script, so an updater relaunch always refreshes;
+  `boot/mirror-config-refresh-stamp.ts`, a stamp in the data dir). A
+  backfill round stops at the first answer that every later request of the
+  round would get too -- no network, `429` (the next round waits at least
+  `Retry-After`), `401` -- with one log line; a file the device cannot
+  read never stops it. Only a per-request answer (an older central without
+  the batch route, a `403` naming one node, a `5xx`) falls back to
+  one `GET /nodes/:id/sync-info` per mirror.
 - Remote MCP client on the central server: no `home_node_id` and no scope set; the session is
   `interactive_chat`, permission-only reads (see scope-rules).
 
