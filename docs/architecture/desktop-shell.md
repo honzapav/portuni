@@ -365,6 +365,13 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
     JWT (`auth::central_request_with_refresh`), retrying once after a
     silent refresh on 401 with the same request id, **unless** `is_device_local_path(path)` is true; then it
     proxies to the local sync agent exactly as a personal workspace would.
+    The silent refresh is single-flight per workspace (`auth::refresh_gate`,
+    shared with `central_request`): when an expired JWT makes a burst of
+    requests answer 401, one of them runs `auth_refresh` and the rest wait
+    for its outcome, then retry with the JWT it stored in the Keychain, or
+    all hand back their original 401 when it failed. A 401 for a JWT the
+    Keychain has already replaced retries with the stored one without
+    refreshing.
 - The device-local list is the set of routes the device must serve itself
   (mirrors, sync status and runs, file content and file lifecycle, runner
   registry, task actions). The canonical list is
