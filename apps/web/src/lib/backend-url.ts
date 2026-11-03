@@ -13,6 +13,7 @@
 
 import { ClientError } from "./api-error";
 import { DesktopError, invoke, toDesktopError } from "./tauri-invoke";
+import { withTransportRetry } from "./transport-retry";
 import { errorCode, startApiCall } from "./ui-trail";
 
 declare global {
@@ -162,10 +163,20 @@ const REQUEST_ID_HEADER = "X-Portuni-Request-Id";
 // Every API call mints a request id and leaves one `api` entry in the UI
 // trail (lib/ui-trail.ts): method, path without query, status, duration,
 // id and the error code.
+//
+// A read whose transport failed (no HTTP answer at all) is sent again with
+// a short backoff (lib/transport-retry.ts, #632): at startup the first
+// requests can beat the sidecar to its socket, and a sidebar whose /graph
+// or /me failed that way must still load. Each attempt is its own trail
+// entry with its own request id.
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   await ensureBackendReady();
 
   const method = (init?.method ?? "GET").toUpperCase();
+  return withTransportRetry(method, () => apiFetchOnce(method, path, init));
+}
+
+async function apiFetchOnce(method: string, path: string, init?: RequestInit): Promise<Response> {
   const { requestId, done: record } = startApiCall(method, path);
 
   let res: Response;

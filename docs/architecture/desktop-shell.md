@@ -256,6 +256,15 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
   `record_pending_backend_error`, `retire_pending_backend_error`.
 - In a team workspace before login the replayed `backend-ready` carries the
   sentinel port `0`.
+- `backend-ready` means the port is known, not that the first request is
+  answered: a window's first calls can still fail with no HTTP answer at
+  all (#632, `/graph` and `/me` at startup, a `network-error` in the UI
+  trail). `apiFetch` therefore sends a `GET`/`HEAD` whose transport failed
+  again with a short backoff (`lib/transport-retry.ts`, about 8 s in all):
+  a browser fetch `TypeError`, `UNKNOWN_DETAIL` from the proxy or
+  `DESKTOP_BACKEND_NOT_READY`. Any HTTP status, a definite desktop state
+  (`SYNC_AGENT_DOWN`, unknown workspace) and every write go back to the
+  caller after one attempt.
 - The `backend-error` payload is a `CmdError` (below):
   `DESKTOP_BACKEND_FAILED` with the sidecar's `PORTUNI_BACKEND_ERROR=` text
   as `detail`, `DESKTOP_BACKEND_EXITED` with `exitCode`, or
