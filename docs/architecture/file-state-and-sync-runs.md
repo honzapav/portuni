@@ -110,10 +110,18 @@ entry in `is_device_local_path` (`apps/desktop/src/lib.rs`) and a handler in
   `file_state.cached_ino`/`cached_dev`) exactly as if it had fired its own
   event.
 - **Backfill is the catch-up path.** `dbBackfillMirror` and
-  `centralBackfillMirror` (`apps/server/desktop.ts`) route every untracked
+  `centralBackfillMirror` (`apps/server/boot/central-backfill.ts`) route every untracked
   file through `reconcilePath`/`reconcilePathCentral`, so a `mv` that
   happened while nothing was watching (server down, missed event) gets the
   same pairing instead of a fresh duplicate record.
+- **A mirror of a node that does not exist is unregistered (#635).** In a
+  team workspace the sync agent's backfill sweep
+  (`createCentralBackfillSweep`, boot and every 10 minutes) unregisters a
+  mirror whose sync-info central answers with 404 `NODE_NOT_FOUND`; any
+  other failure (network, 5xx, 401, 429) keeps it. In a personal workspace
+  `boot/mirror-watch.ts` runs `tryCleanStaleMirrors` against the graph db
+  before the watcher's start and before each periodic sweep. Both drop only
+  the `local_mirrors` row and log the folder once; the files stay on disk.
 - **A push caches the current hash, not the pushed one.**
   `storeFile`/`storeFileCentral`/`pushEntryCentral` stat before reading the
   bytes and re-stat after; if the file changed mid-upload the cache holds

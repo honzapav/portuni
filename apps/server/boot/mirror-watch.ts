@@ -10,6 +10,7 @@
 import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
 import { authMode } from "../infra/auth-config.js";
+import { tryCleanStaleMirrors } from "../domain/sync/mirror-registry.js";
 import {
   createMirrorWatcher,
   type MirrorWatcher,
@@ -22,6 +23,23 @@ import {
 // load (fs.watch's recursive mode can drop events on a big enough burst).
 const SWEEP_INTERVAL_MS = 10 * 60_000;
 
+// #635: a mirror of a node that is gone from the graph db would otherwise
+// be backfilled (and fail) at every start and every sweep, forever. Its
+// registration is dropped, logged once with the folder; files stay.
+export async function cleanStaleMirrorsLogged(
+  db: Parameters<typeof tryCleanStaleMirrors>[0],
+  userId: string,
+  tag: string,
+  log: Pick<Console, "warn"> = console,
+): Promise<void> {
+  const report = await tryCleanStaleMirrors(db, userId);
+  for (const m of report.removedMirrors) {
+    log.warn(
+      `[${tag}] node ${m.node_id} no longer exists; unregistered its mirror ${m.local_path} (files stay on disk)`,
+    );
+  }
+}
+
 export function startMirrorWatcher(enabled: boolean): MirrorWatcher | null {
   if (!enabled) return null;
   if (authMode() !== "env") return null;
@@ -30,12 +48,18 @@ export function startMirrorWatcher(enabled: boolean): MirrorWatcher | null {
     userId: SOLO_USER,
     onError: (e) => console.error("[portuni:watch]", e),
   });
-  watcher
-    .start()
+  // Stale registrations go before the watcher's start-time backfill, so it
+  // never walks a mirror whose node is gone.
+  cleanStaleMirrorsLogged(getDb(), SOLO_USER, "portuni:watch")
+    .catch((e) => console.error("[portuni:watch] stale mirror cleanup failed:", e))
+    .then(() => watcher.start())
     .then(() => console.log("[portuni:watch] mirror watcher active"))
     .catch((e) => console.error("[portuni:watch] start failed:", e));
   setInterval(() => {
-    void watcher.sweep().catch((e) => console.error("[portuni:watch] periodic sweep failed:", e));
+    void cleanStaleMirrorsLogged(getDb(), SOLO_USER, "portuni:watch")
+      .catch((e) => console.error("[portuni:watch] stale mirror cleanup failed:", e))
+      .then(() => watcher.sweep())
+      .catch((e) => console.error("[portuni:watch] periodic sweep failed:", e));
   }, SWEEP_INTERVAL_MS).unref();
   return watcher;
 }

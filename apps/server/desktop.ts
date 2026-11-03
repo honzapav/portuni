@@ -20,13 +20,8 @@ import { SOLO_USER } from "./infra/schema.js";
 import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { createCentralClientFromEnv, type CentralClient } from "./domain/sync/central/client.js";
-import {
-  listUntrackedLocalCentral,
-  mapConcurrent,
-  reconcilePathCentral,
-  syncInfoByNode,
-} from "./domain/sync/central/engine-central.js";
-import type { NodeSyncInfo } from "./domain/sync/sync-remote-api.js";
+import { reconcilePathCentral } from "./domain/sync/central/engine-central.js";
+import { centralBackfillMirror, createCentralBackfillSweep } from "./boot/central-backfill.js";
 import {
   mirrorConfigsFresh,
   recordMirrorConfigsRefreshed,
@@ -49,14 +44,6 @@ import {
 } from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
-import {
-  backoffMsFor,
-  initialBackoff,
-  isUnreachableError,
-  recordReachable,
-  recordUnreachable,
-  shouldAttempt,
-} from "./domain/sync/central/reachability.js";
 
 // Reads a required env var, trimmed. Used for the two central-mode
 // connection settings: both are already validated non-empty by
@@ -136,48 +123,6 @@ async function bindAndAnnounce(
   process.env.PORT = String(address.port);
   // Parent (Tauri) reads this line from stdout to learn the bound port.
   process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
-}
-
-// Reconcile anything on disk in one mirror that the central records don't
-// know yet. Used for the boot backfill sweep and, via the watcher's
-// backfillMirror seam, for mirrors registered while running.
-//
-// Routed through reconcilePathCentral per file (#253), not a batch
-// client.registerFiles call: a live watcher pairs an on-disk mv by inode via
-// tryApplyDiskMoveCentral, but that never runs for a mv that happened while
-// the agent was down (or missed a directory-level watcher event, which only
-// fires once for the directory itself -- see reconcileDirectoryCentral) --
-// this backfill sweep is the catch-up path for exactly that case. A raw
-// batch register would instead split a moved file into a fresh duplicate
-// record, leaving the old one stuck deleted_local with its Drive copy
-// orphaned. Sequential, matching the local engine's dbBackfillMirror: one
-// unreadable/misbehaving file must not abort backfill for the rest of the
-// mirror. reconcilePathCentral's own registration/move paths already cache
-// the local hash (registerLocalFileCentral / tryApplyDiskMoveCentral both
-// call localHashFor), so there is no separate hash-caching pass needed here.
-async function centralBackfillMirror(
-  client: CentralClient,
-  m: { node_id: string },
-  // The node's sync-info from the sweep's one batch request (#633); absent
-  // when central omitted the node or the batch failed, then this asks for it.
-  preloaded?: NodeSyncInfo,
-): Promise<void> {
-  const untracked = await listUntrackedLocalCentral(
-    client,
-    { userId: SOLO_USER, nodeId: m.node_id },
-    preloaded,
-  );
-  for (const u of untracked) {
-    try {
-      await reconcilePathCentral(client, {
-        userId: SOLO_USER,
-        nodeId: u.node_id,
-        absPath: u.local_path,
-      });
-    } catch (e) {
-      console.error(`[portuni:watch] central backfill reconcile failed for ${u.local_path}:`, e);
-    }
-  }
 }
 
 // Central-mode sync agent (teammate mirrors): no Turso, no graph db. Serves
@@ -263,7 +208,7 @@ async function agentMain(client: CentralClient, dataDir: string): Promise<void> 
       userId: SOLO_USER,
       reconcile: (a) => reconcilePathCentral(client, a),
       backfill: false,
-      backfillMirror: (m) => centralBackfillMirror(client, m),
+      backfillMirror: (m) => centralBackfillMirror(client, SOLO_USER, m),
       onError: (e) => console.error("[portuni:watch]", e),
     });
     watcher
@@ -273,76 +218,11 @@ async function agentMain(client: CentralClient, dataDir: string): Promise<void> 
   }
 
   // Central backfill: register anything on disk the records don't know yet,
-  // so files created while the agent was down are tracked. Best-effort.
-  // Bounded fan-out across mirrors + ONE batch registration per mirror
-  // instead of a strictly sequential per-file chain (perf review, scale-boot).
-  // Runs at boot and then periodically -- the safety net for any watcher
-  // event that was still lost despite timeout+retry (GH #80).
-  let sweepRunning = false;
-  let backoff = initialBackoff();
-  const backfillSweep = async (tag: string): Promise<void> => {
-    if (sweepRunning) return;
-    // Central unreachable on the last round: stay quiet until the backoff
-    // window opens. A laptop that is asleep or off wifi would otherwise
-    // burn one doomed round every 10 minutes, forever.
-    if (!shouldAttempt(backoff, Date.now())) return;
-    sweepRunning = true;
-    try {
-      const mirrors = await listUserMirrors(SOLO_USER);
-      // Set by the first mirror whose call fails at the NETWORK level. The
-      // remaining mirrors would all fail the same way, so they are skipped
-      // rather than asked -- 26 mirrors x 2 (client-side retry) doomed
-      // connects per round is what buried the log.
-      let unreachable = false;
-      // #633: one POST /sync/info-batch for every mirror instead of one
-      // GET /nodes/:id/sync-info each -- at boot this ran alongside the
-      // config refresh and the first MCP connects, all on the same token's
-      // per-minute budget. A node the batch omits falls back to its own GET.
-      let infos = new Map<string, NodeSyncInfo>();
-      if (mirrors.length > 0) {
-        try {
-          infos = await syncInfoByNode(
-            client,
-            mirrors.map((m) => m.node_id),
-          );
-        } catch (e) {
-          if (isUnreachableError(e)) unreachable = true;
-          else console.error(`[${tag}] central sync-info batch failed, asking per mirror:`, e);
-        }
-      }
-      await mapConcurrent(mirrors, 4, async (m) => {
-        if (unreachable) return;
-        try {
-          await centralBackfillMirror(client, m, infos.get(m.node_id));
-        } catch (e) {
-          if (isUnreachableError(e)) {
-            unreachable = true;
-            return;
-          }
-          // Central answered -- this is a real per-mirror problem, so it
-          // keeps its full detail.
-          console.error(`[${tag}] central backfill failed for`, m.node_id, e);
-        }
-      });
-      if (unreachable) {
-        backoff = recordUnreachable(backoff, Date.now());
-        // ONE line, no stack trace: being offline is not an error report,
-        // it is a condition. The stack was identical for every mirror and
-        // carried a source excerpt of the bundled sidecar with it.
-        console.warn(
-          `[${tag}] central unreachable, skipped ${mirrors.length} mirror(s); next attempt in ${Math.round(
-            backoffMsFor(backoff.consecutiveFailures) / 60_000,
-          )} min`,
-        );
-      } else {
-        backoff = recordReachable(backoff);
-      }
-    } catch (e) {
-      console.error(`[${tag}] central backfill skipped:`, e);
-    } finally {
-      sweepRunning = false;
-    }
-  };
+  // so files created while the agent was down are tracked, and drop the
+  // registration of a mirror whose node central does not know (#635).
+  // Best-effort. Runs at boot and then periodically -- the safety net for
+  // any watcher event that was still lost despite timeout+retry (GH #80).
+  const backfillSweep = createCentralBackfillSweep({ client, userId: SOLO_USER });
   void backfillSweep("boot");
   setInterval(() => void backfillSweep("sweep"), BACKFILL_SWEEP_INTERVAL_MS).unref();
 

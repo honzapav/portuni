@@ -55,8 +55,16 @@ export async function listUserMirrors(userId: string): Promise<LocalMirrorRow[]>
 
 export interface StaleCleanReport {
   checked: number;
+  // Node ids whose registration was dropped.
   removed: string[];
+  // The same mirrors with their folders, for the log line (files stay).
+  removedMirrors: LocalMirrorRow[];
 }
+
+// Personal workspace (#635): drop the registration of every mirror whose
+// node is gone from the graph db. Only the local_mirrors row goes; the
+// folder and its files stay on disk. A team-workspace sync agent has no
+// graph db and asks central instead (boot/central-backfill.ts).
 
 export async function tryCleanStaleMirrors(
   shared: DbClient,
@@ -64,6 +72,7 @@ export async function tryCleanStaleMirrors(
 ): Promise<StaleCleanReport> {
   const rows = await listLocalMirrors(userId);
   const removed: string[] = [];
+  const removedMirrors: LocalMirrorRow[] = [];
   for (const m of rows) {
     const r = await shared.execute({
       sql: "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
@@ -72,8 +81,9 @@ export async function tryCleanStaleMirrors(
     if (r.rows.length === 0) {
       await deleteLocalMirror(userId, m.node_id);
       removed.push(m.node_id);
+      removedMirrors.push(m);
     }
   }
   if (removed.length > 0) notifyChange();
-  return { checked: rows.length, removed };
+  return { checked: rows.length, removed, removedMirrors };
 }
