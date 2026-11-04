@@ -184,7 +184,8 @@ Per mode:
 
 `X-Portuni-Spawn-Id` is not a read-scope mechanism: it binds a fresh
 run's MCP connection to the session row `startTask` created
-(`mcp/session-persistence.ts`'s `lookupSpawnSessionForBind`).
+(`mcp/session-persistence.ts`'s `lookupSpawnSessionForBind`). A bound row
+with no scope yet is still auto-seeded, from the row's anchor node.
 
 ## Orientation
 

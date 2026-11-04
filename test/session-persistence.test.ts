@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import { SessionScope } from "../apps/server/mcp/scope.js";
+import { autoSeedFromHome } from "../apps/server/mcp/auto-seed.js";
 import {
   bindExistingSessionPersistence,
   bindSessionPersistence,
@@ -420,6 +421,93 @@ describe("bindExistingSessionPersistence: binding a fresh connection to a pre-cr
       const rows = await getSessionScope(shared.db, running.id);
       return rows.some((r) => r.node_id === later);
     });
+  });
+
+  // transport.ts runs the bind first and the auto-seed right after it, so a
+  // run started from the app reaches the seed with scope.homeNodeId already
+  // set by the bind.
+  const noAudit = async (): Promise<void> => undefined;
+
+  async function edge(shared: SharedDb, targetId: string): Promise<void> {
+    await shared.db.execute({
+      sql: "INSERT INTO edges (id,source_id,target_id,relation,created_by) VALUES (?,?,?,?,?)",
+      args: [ulid(), shared.nodeId, targetId, "related_to", "U1"],
+    });
+  }
+
+  it("seeds the home node and its neighbours when the bound row has no scope yet", async () => {
+    const shared = await makeSharedDb();
+    const neighbour = await neighbourNode(shared, "SeededNeighbour");
+    await edge(shared, neighbour);
+    await registerMirror("U1", shared.nodeId, join(workspace, "home"));
+
+    const running = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    const scope = new SessionScope("interactive_task");
+    await bindExistingSessionPersistence(shared.db, scope, running);
+    const result = await autoSeedFromHome({
+      scope,
+      homeNodeId: shared.nodeId,
+      db: shared.db,
+      auditFn: noAudit,
+    });
+
+    assert.equal(result.seeded, true);
+    assert.ok(scope.has(shared.nodeId), "a session must be able to read its own home node");
+    assert.ok(scope.has(neighbour));
+    await waitUntil(async () => {
+      const rows = await getSessionScope(shared.db, running.id);
+      return rows.some((r) => r.node_id === neighbour);
+    });
+  });
+
+  it("seeds from the row's anchor when the connection URL names another node", async () => {
+    const shared = await makeSharedDb();
+    const elsewhere = await neighbourNode(shared, "UrlNode");
+    await registerMirror("U1", shared.nodeId, join(workspace, "home"));
+
+    const running = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    const scope = new SessionScope("interactive_task");
+    await bindExistingSessionPersistence(shared.db, scope, running);
+    await autoSeedFromHome({
+      scope,
+      homeNodeId: elsewhere,
+      db: shared.db,
+      auditFn: noAudit,
+    });
+
+    assert.equal(scope.homeNodeId, shared.nodeId);
+    assert.ok(scope.has(shared.nodeId));
+    assert.equal(scope.has(elsewhere), false);
+  });
+
+  it("does not re-seed a bound row whose scope was rehydrated", async () => {
+    const shared = await makeSharedDb();
+    const neighbour = await neighbourNode(shared, "UnseededNeighbour");
+    await edge(shared, neighbour);
+    await registerMirror("U1", shared.nodeId, join(workspace, "home"));
+
+    const running = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    await upsertSessionScopeRead(shared.db, running.id, shared.nodeId, "seed", "seed");
+    const scope = new SessionScope("interactive_task");
+    await bindExistingSessionPersistence(shared.db, scope, running);
+    const result = await autoSeedFromHome({
+      scope,
+      homeNodeId: shared.nodeId,
+      db: shared.db,
+      auditFn: noAudit,
+    });
+
+    assert.equal(result.seeded, false);
+    assert.equal(scope.has(neighbour), false);
   });
 
   it("refuses a row that is not running, or owned by someone else", async () => {
