@@ -154,6 +154,7 @@ gating applies to `portuni_list_events`. `portuni_search_files` and
 |-----------|------|----------|-------------|
 | `node_id` | string | no | Filter by node |
 | `status` | enum | no | Filter by status (`wip` or `output`) |
+| `path_prefix` | string | no | Only files under this folder, relative to the node root (e.g. `wip/draft`). Requires `node_id` |
 | `limit` | number | no | Max rows, newest first (default 500, max 2000) |
 
 Returns: Array of files, each with: `id`, `node_id`, `node_name`,

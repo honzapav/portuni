@@ -1,4 +1,5 @@
-// File-level mutations: moveFile, renameFolder, adoptFiles, deleteFile.
+// File-level mutations: moveFile, renameFolder, adoptFiles, deleteFile,
+// deleteFiles.
 //
 // All four are confirm-first or dry-run-first because they touch
 // remote + local + DB and the failure modes are subtle. They return
@@ -11,7 +12,7 @@
 
 import { mkdir, rename as fsRename } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { DbClient, InStatement } from "../../infra/db.js";
+import type { DbClient, InStatement, InValue } from "../../infra/db.js";
 import type { FileRef } from "./types.js";
 import { assertRemoteCapable } from "./types.js";
 import { isLocalWorkspace } from "../../infra/server-config.js";
@@ -1034,6 +1035,187 @@ export async function deleteFile(
   if (pendingOpId) await completePendingOp(db, pendingOpId);
 
   return { file_id: a.fileId, mode, deleted_at: now, status: "ok" };
+}
+
+// --- deleteFiles (batch) ---
+
+export interface DeleteFilesArgs {
+  userId: string;
+  nodeId: string;
+  // Paths relative to the node root ("wip/navrh", "outputs/2026-x"): every
+  // file under one of them is selected. A trailing slash is ignored.
+  pathPrefixes?: string[];
+  // Explicit file ids, unioned with the prefix selection. Ids that do not
+  // belong to nodeId are reported as not_found, never deleted.
+  fileIds?: string[];
+  mode?: "complete" | "unregister_only";
+  confirmed?: boolean;
+  // Bound how many files one confirmed call deletes (default
+  // DEFAULT_DELETE_FILES_LIMIT). A follow-up call with the same selection
+  // continues: deleted rows no longer match. Preview is unbounded -- one DB
+  // query, no remote work.
+  limit?: number;
+}
+
+export interface DeleteFilesPreviewEntry {
+  file_id: string;
+  filename: string;
+  remote_path: string | null;
+  local_path: string | null;
+}
+
+export type DeleteFilesResult =
+  | {
+      requires_confirmation: true;
+      mode: "complete" | "unregister_only";
+      count: number;
+      files: DeleteFilesPreviewEntry[];
+      not_found: string[];
+      next_call: string;
+    }
+  | {
+      type: "applied";
+      mode: "complete" | "unregister_only";
+      deleted: number;
+      failed: number;
+      files: Array<{
+        file_id: string;
+        filename: string;
+        remote_path: string | null;
+        status: "ok" | "repair_needed";
+        error?: string;
+      }>;
+      not_found: string[];
+      // Selected files beyond this call's limit, still to be deleted by a
+      // follow-up call.
+      remaining: number;
+      next_call?: string;
+    };
+
+const DEFAULT_DELETE_FILES_LIMIT = 50;
+// Each deleteFile is a few remote round trips (stat + delete) and DB writes;
+// a small pool keeps a 50-file batch well inside a tool-call timeout without
+// hammering the remote's rate limit.
+const DELETE_FILES_CONCURRENCY = 4;
+
+// One preview and one confirmation for a whole cleanup (a wip/ draft folder,
+// a dated outputs/ run): selects by path prefix and/or file id within one
+// node, then runs the regular single-file deleteFile per row, so pending ops,
+// tombstones and the remote-first ordering are exactly the same.
+export async function deleteFiles(db: DbClient, a: DeleteFilesArgs): Promise<DeleteFilesResult> {
+  const prefixes = (a.pathPrefixes ?? []).map((p) => p.replace(/\/+$/, ""));
+  const fileIds = a.fileIds ?? [];
+  if (prefixes.length === 0 && fileIds.length === 0) {
+    throw new Error("deleteFiles requires path_prefixes or file_ids");
+  }
+  for (const p of prefixes) assertSafeRelativePath(p, "deleteFiles.pathPrefix");
+  const mode = a.mode ?? "complete";
+  const nodeRoot = buildNodeRoot(await resolveNodeInfo(db, a.nodeId));
+  const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
+
+  const conds: string[] = [];
+  const params: InValue[] = [a.nodeId];
+  for (const p of prefixes) {
+    // Same LIKE escaping as renameFolder: "_" in a folder name must not
+    // match any character.
+    const likePrefix = `${nodeRoot}/${p}`.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    conds.push("remote_path LIKE ? ESCAPE '\\'");
+    params.push(`${likePrefix}/%`);
+  }
+  if (fileIds.length > 0) {
+    conds.push(`id IN (${fileIds.map(() => "?").join(",")})`);
+    params.push(...fileIds);
+  }
+  const rows = await db.execute({
+    sql: `SELECT id, filename, remote_path FROM files WHERE node_id = ? AND (${conds.join(" OR ")}) ORDER BY remote_path`,
+    args: params,
+  });
+  const selected: DeleteFilesPreviewEntry[] = rows.rows.map((r) => {
+    const remotePath = r.remote_path as string | null;
+    let localPath: string | null = null;
+    if (mirrorRoot && remotePath) {
+      try {
+        localPath = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath });
+      } catch {
+        localPath = null;
+      }
+    }
+    return {
+      file_id: r.id as string,
+      filename: r.filename as string,
+      remote_path: remotePath,
+      local_path: localPath,
+    };
+  });
+  const found = new Set(selected.map((f) => f.file_id));
+  const notFound = fileIds.filter((id) => !found.has(id));
+
+  if (!a.confirmed) {
+    return {
+      requires_confirmation: true,
+      mode,
+      count: selected.length,
+      files: selected,
+      not_found: notFound,
+      next_call: "portuni_delete_files with the same selection and confirmed: true",
+    };
+  }
+
+  const limit = Math.max(0, a.limit ?? DEFAULT_DELETE_FILES_LIMIT);
+  const toProcess = selected.slice(0, limit);
+  const remaining = selected.length - toProcess.length;
+  const results: Extract<DeleteFilesResult, { type: "applied" }>["files"] = new Array(
+    toProcess.length,
+  );
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < toProcess.length) {
+      const i = next++;
+      const f = toProcess[i];
+      try {
+        const r = await deleteFile(db, { userId: a.userId, fileId: f.file_id, mode, confirmed: true });
+        if ("status" in r && r.status === "repair_needed") {
+          results[i] = {
+            file_id: f.file_id,
+            filename: f.filename,
+            remote_path: f.remote_path,
+            status: "repair_needed",
+            error: r.detail.error,
+          };
+        } else {
+          results[i] = { file_id: f.file_id, filename: f.filename, remote_path: f.remote_path, status: "ok" };
+        }
+      } catch (e) {
+        results[i] = {
+          file_id: f.file_id,
+          filename: f.filename,
+          remote_path: f.remote_path,
+          status: "repair_needed",
+          error: (e as Error).message,
+        };
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(DELETE_FILES_CONCURRENCY, toProcess.length) }, () => worker()),
+  );
+
+  const deleted = results.filter((r) => r.status === "ok").length;
+  return {
+    type: "applied",
+    mode,
+    deleted,
+    failed: results.length - deleted,
+    files: results,
+    not_found: notFound,
+    remaining,
+    ...(remaining > 0
+      ? {
+          next_call:
+            "Call portuni_delete_files again with the same selection and confirmed: true: deleted files no longer match and are skipped automatically.",
+        }
+      : {}),
+  };
 }
 
 // --- renameFile ---

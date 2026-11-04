@@ -646,6 +646,52 @@ describe("proxied disk mutations (GH #78)", () => {
     assert.equal(await getFileState(fileId), null);
   });
 
+  it("removes the local copy of every deleted file after a confirmed batch delete, keeping repair_needed ones", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    await mkdir(join(mirrorRoot, "wip", "navrh"), { recursive: true });
+    const absA = join(mirrorRoot, "wip", "navrh", "a.md");
+    const absB = join(mirrorRoot, "wip", "navrh", "b.md");
+    await writeFile(absA, "A");
+    await writeFile(absB, "B");
+    const idA = fake.seedRemote("wip/navrh/a.md", "A");
+    const idB = fake.seedRemote("wip/navrh/b.md", "B");
+
+    const preview = await snapshotForDiskMutation(fake, "U1", "portuni_delete_files", {
+      node_id: NODE_ID,
+      path_prefixes: ["wip/navrh"],
+    });
+    assert.equal(preview, null);
+    const args = { node_id: NODE_ID, path_prefixes: ["wip/navrh"], confirmed: true };
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_delete_files", args);
+    assert.ok(snapshot);
+    await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({
+        type: "applied",
+        mode: "complete",
+        deleted: 1,
+        failed: 1,
+        files: [
+          { file_id: idA, filename: "a.md", remote_path: posix.join(NODE_ROOT, "wip/navrh/a.md"), status: "ok" },
+          {
+            file_id: idB,
+            filename: "b.md",
+            remote_path: posix.join(NODE_ROOT, "wip/navrh/b.md"),
+            status: "repair_needed",
+            error: "remote down",
+          },
+        ],
+        not_found: [],
+        remaining: 0,
+      }),
+    );
+    await assert.rejects(() => readFile(absA));
+    assert.equal(await readFile(absB, "utf8"), "B");
+  });
+
   it("does not snapshot an unconfirmed (preview) call", async () => {
     const fake = new FakeCentral();
     await setupMirror();

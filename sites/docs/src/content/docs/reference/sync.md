@@ -251,6 +251,21 @@ Delete a tracked file. Two modes.
 
 Returns the preview or the executed result. For Drive remotes, "delete" means moving to Drive's trash (30-day recovery window) – Portuni does not hard-delete via the remote API.
 
+### portuni_delete_files
+
+Delete many files of one node in one go: every file under one or more folders, plus any explicit file ids. One preview and one confirmation cover the whole batch, so cleaning up a `wip/` draft folder or a dated `outputs/` run does not take two calls per file. Each file is deleted exactly as `portuni_delete_file` would delete it (same modes, pending ops and tombstones).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `node_id` | string | yes | Node whose files to delete |
+| `path_prefixes` | string[] | no* | Folders relative to the node root (e.g. `wip/draft`); every file under each is selected |
+| `file_ids` | string[] | no* | Explicit files of this node; ids of other nodes are reported in `not_found` |
+| `mode` | enum | no | `complete` (default) or `unregister_only`, as for `portuni_delete_file` |
+| `confirmed` | boolean | no | First call returns a preview of every selected file; pass `true` with the same selection to execute |
+| `limit` | number | no | Max files deleted per confirmed call (default 50). When `remaining` is > 0, call again with the same selection |
+
+\* At least one of `path_prefixes` and `file_ids` is required.
+
 ## Adoption
 
 ### portuni_adopt_files

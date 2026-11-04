@@ -106,8 +106,8 @@ tombstones. Order:
 
 ## Half-finished mutations
 
-`portuni_move_file`, `portuni_rename_folder`, and `portuni_delete_file`
-record their intent before touching the remote and clear it on success.
+`portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file` and
+`portuni_delete_files` record their intent before touching the remote and clear it on success.
 If the remote step fails partway (network blip, crash), the call still
 returns `repair_needed`; the next sync run retries the same op
 idempotently until it completes, or reports it under `pending_repairs`
@@ -151,6 +151,12 @@ Reconcile drift via:
   `complete` removes remote+local+DB row; `unregister_only` drops
   just the DB row when the file is already gone from disk and
   remote.
+- `portuni_delete_files(node_id, path_prefixes, file_ids, mode)` --
+  remove many files of one node at once (a whole `wip/` folder, a dated
+  `outputs/` run, files already deleted from the mirror on disk). One
+  preview and one confirmation cover the whole batch; find the files
+  with `portuni_list_files(node_id, path_prefix)` instead of listing
+  every file in scope.
 
 ### When to use `portuni_store` vs `portuni_adopt_files`
 
@@ -168,6 +174,11 @@ is "first call previews, second call applies":
 
 - `portuni_delete_file` -- first call returns a preview; second call
   with `confirmed: true` executes.
+- `portuni_delete_files` -- first call returns one preview for every
+  selected file; second call with the same selection and
+  `confirmed: true` executes. A confirmed call is bounded (`limit`,
+  default 50 files); when `remaining` is > 0, call again with the same
+  selection to continue.
 - `portuni_move_file` -- first call returns a preview; second call
   with `confirmed: true` executes.
 - `portuni_rename_folder` -- defaults to `dry_run: true`. Show the

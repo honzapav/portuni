@@ -501,7 +501,7 @@ export async function callLocalTool(
 // Proxied disk mutations (GH #78)
 // ---------------------------------------------------------------------------
 //
-// portuni_delete_file / portuni_move_file / portuni_rename_folder are NOT
+// portuni_delete_file(s) / portuni_move_file / portuni_rename_folder are NOT
 // local tools -- their record/remote step must run on central. But central's
 // engine-mutations local disk step no-ops there (getMirrorPath is null on the
 // server), so the device that owns the mirror must apply it itself: snapshot
@@ -513,6 +513,7 @@ export async function callLocalTool(
 
 const PROXIED_DISK_MUTATIONS = new Set([
   "portuni_delete_file",
+  "portuni_delete_files",
   "portuni_move_file",
   "portuni_rename_folder",
 ]);
@@ -558,7 +559,7 @@ export async function snapshotForDiskMutation(
     name === "portuni_rename_folder" ? args.dry_run === false : args.confirmed === true;
   if (!applies) return null;
 
-  if (name === "portuni_rename_folder") {
+  if (name === "portuni_rename_folder" || name === "portuni_delete_files") {
     const nodeId = args.node_id as string | undefined;
     if (!nodeId) return null;
     const mirrorRoot = await getMirrorPath(userId, nodeId);
@@ -726,6 +727,23 @@ export async function applyLocalAfterProxiedMutation(
       new_local_path: newLocal,
       detail: { ...detail, local_done: localDone },
     });
+  }
+
+  if (snapshot.tool === "portuni_delete_files") {
+    if (parsed.type !== "applied" || !Array.isArray(parsed.files)) return null;
+    // Per file, like the single delete above: only an entry central reports
+    // as deleted loses its local copy; a repair_needed one keeps it.
+    for (const f of parsed.files as Array<Record<string, unknown>>) {
+      if (f.status !== "ok" || typeof f.remote_path !== "string") continue;
+      const localPath = deriveOrNull({
+        mirrorRoot: snapshot.mirrorRoot,
+        nodeRoot: snapshot.nodeRoot,
+        remotePath: f.remote_path,
+      });
+      await removeLocalCopyAndState(localPath, f.file_id as string);
+    }
+    client.invalidateSyncInfo(snapshot.nodeId);
+    return null;
   }
 
   if (snapshot.tool === "portuni_rename_folder") {

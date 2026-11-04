@@ -40,8 +40,10 @@ moves and deletions on disk are reflected without any action from you.
 
 ## Moving, renaming, deleting
 
-`portuni_move_file`, `portuni_rename_folder` and `portuni_delete_file`
-change the file on disk and its record together.
+`portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file` and
+`portuni_delete_files` change the file on disk and its record together.
+`portuni_delete_files` removes a whole folder (path prefix) or a list of
+files of one node with a single preview and confirmation.
 
 ## Confirm-first patterns
 
@@ -50,6 +52,10 @@ Destructive operations require explicit confirmation. The pattern is
 
 - `portuni_delete_file` -- first call returns a preview; second call
   with `confirmed: true` executes.
+- `portuni_delete_files` -- first call returns one preview for every
+  selected file; second call with the same selection and
+  `confirmed: true` executes, bounded by `limit` (default 50) with
+  `remaining` to continue.
 - `portuni_move_file` -- first call returns a preview; second call
   with `confirmed: true` executes.
 - `portuni_rename_folder` -- defaults to `dry_run: true`. Show the
