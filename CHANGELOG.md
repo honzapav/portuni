@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/honzapav/portuni/compare/v0.30.2...v0.31.0) (2026-11-04)
+
+
+### Features
+
+* portuni_delete_files for batch delete and path_prefix in portuni_list_files ([#638](https://github.com/honzapav/portuni/issues/638)) ([be1cb0e](https://github.com/honzapav/portuni/commit/be1cb0e1e19707819ba1b001edd96762c695bc31))
+
 ## [0.30.2](https://github.com/honzapav/portuni/compare/v0.30.1...v0.30.2) (2026-11-04)
 
 
