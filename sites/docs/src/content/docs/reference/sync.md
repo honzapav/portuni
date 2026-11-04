@@ -266,6 +266,8 @@ Delete many files of one node in one go: every file under one or more folders, p
 
 \* At least one of `path_prefixes` and `file_ids` is required.
 
+A folder matches exactly and case-sensitively: `wip/draft` selects neither `wip/draft-final` nor `wip/DRAFT`. With `unregister_only` the local copies stay on disk. When the remote and record are deleted but this device cannot remove its local copy, that entry comes back as `repair_needed`; the next sync removes the leftover.
+
 ## Adoption
 
 ### portuni_adopt_files
