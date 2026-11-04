@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.2](https://github.com/honzapav/portuni/compare/v0.30.1...v0.30.2) (2026-11-04)
+
+
+### Bug Fixes
+
+* **mcp:** seed scope for sessions bound to a pre-created row ([#639](https://github.com/honzapav/portuni/issues/639)) ([9383415](https://github.com/honzapav/portuni/commit/93834153022424ba6f851c1dfa3a9e5bc2a6d4e7))
+
 ## [0.30.1](https://github.com/honzapav/portuni/compare/v0.30.0...v0.30.1) (2026-11-04)
 
 
