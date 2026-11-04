@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.30.1](https://github.com/honzapav/portuni/compare/v0.30.0...v0.30.1) (2026-11-04)
+
+
+### Bug Fixes
+
+* **deps:** bump tauri-plugin-updater to 2.14.1 to drop vulnerable zip 4.6.1 ([8a072b4](https://github.com/honzapav/portuni/commit/8a072b4ef16dbe51eb527eb4ab85de1bc1a817d9))
+* **deps:** bump tauri-plugin-updater to drop vulnerable zip 4.6.1 ([#631](https://github.com/honzapav/portuni/issues/631)) ([8a072b4](https://github.com/honzapav/portuni/commit/8a072b4ef16dbe51eb527eb4ab85de1bc1a817d9))
+* **deps:** patch ip-address and http-cache-semantics lockfile advisories ([#623](https://github.com/honzapav/portuni/issues/623)) ([598397e](https://github.com/honzapav/portuni/commit/598397e13b4adbc609286724178c4403074b6112))
+* **deps:** patch undici, qs, fast-uri, rustls and more for open security alerts ([598397e](https://github.com/honzapav/portuni/commit/598397e13b4adbc609286724178c4403074b6112))
+* **web,agent,desktop:** startup reads survive a slow sidecar, the sync agent waits out central's rate limit and drops mirrors central does not know, one silent refresh per workspace ([#636](https://github.com/honzapav/portuni/issues/636)) ([4119532](https://github.com/honzapav/portuni/commit/4119532d4de8ee2fd819577ed81e79a0cb2b56d6))
+* **web:** keep markdown table columns readable in preview ([#637](https://github.com/honzapav/portuni/issues/637)) ([eaa2aae](https://github.com/honzapav/portuni/commit/eaa2aae99a39e28c6697b7c6ab53990c03f36aea))
+
 ## [0.30.0](https://github.com/honzapav/portuni/compare/v0.29.0...v0.30.0) (2026-10-11)
 
 
