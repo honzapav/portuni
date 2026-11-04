@@ -200,8 +200,9 @@ export function createMcpTransport(): McpTransport {
       }
 
       // Auto-seed scope from `?home_node_id=...` on the connection URL.
-      // A successful resume above already set scope.homeNodeId, so this is
-      // a no-op in that case (autoSeedFromHome's own guard).
+      // A successful resume above already rehydrated the scope, so this is
+      // a no-op in that case (autoSeedFromHome's own guard). A connection
+      // bound to a pre-created row with no scope yet is seeded here.
       // This is what `portuni_mirror` writes into per-mirror configs so
       // every harness gets scope set up without needing to call
       // portuni_session_init explicitly.

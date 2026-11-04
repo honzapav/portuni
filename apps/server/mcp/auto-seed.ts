@@ -82,29 +82,37 @@ interface AutoSeedResult {
 // No-op when:
 //   - homeNodeId is null/empty,
 //   - the node does not exist (gracefully ignored — likely a stale URL),
-//   - the scope already has a home node assigned (idempotent across reconnects).
+//   - the scope already holds nodes under an assigned home (idempotent across
+//     reconnects, and a resumed or rehydrated session keeps exactly its scope).
+//
+// A bind to a pre-created session row assigns the home node without adding
+// anything to the scope, so that case still seeds, from the row's anchor
+// rather than the URL.
 //
 // On success, writes a single `session_init` audit entry tagged
 // `triggered_by=init` so the auto-seed is distinguishable from explicit
 // agent / user expansions.
 export async function autoSeedFromHome(args: AutoSeedArgs): Promise<AutoSeedResult> {
   if (!args.homeNodeId) return { seeded: false, nodeIds: [] };
-  if (args.scope.homeNodeId !== null) return { seeded: false, nodeIds: [] };
+  if (args.scope.homeNodeId !== null && args.scope.size() > 0) {
+    return { seeded: false, nodeIds: [] };
+  }
+  const homeNodeId = args.scope.homeNodeId ?? args.homeNodeId;
 
   const exists = await args.db.execute({
     sql: "SELECT 1 FROM nodes WHERE id = ?",
-    args: [args.homeNodeId],
+    args: [homeNodeId],
   });
   if (exists.rows.length === 0) return { seeded: false, nodeIds: [] };
 
-  const seeded = await seedScopeFromHome(args.db, args.scope, args.homeNodeId, args.identity);
+  const seeded = await seedScopeFromHome(args.db, args.scope, homeNodeId, args.identity);
   args.scope.recordExpansion({
     at: new Date().toISOString(),
     node_ids: seeded,
     reason: "auto-seed from home_node_id query param",
     triggered_by: "init",
   });
-  await args.auditFn("session_init", args.homeNodeId, {
+  await args.auditFn("session_init", homeNodeId, {
     node_ids: seeded,
     triggered_by: "init",
     reason: "auto-seed from home_node_id query param",
