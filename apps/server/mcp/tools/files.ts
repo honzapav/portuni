@@ -10,10 +10,12 @@ import {
   renameFolder,
   adoptFiles,
   deleteFile,
+  deleteFiles,
 } from "../../domain/sync/engine.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { requireLocalSyncDb } from "../../domain/sync/local-db.js";
-import { buildNodeRoot, deriveLocalPath } from "../../domain/sync/remote-path.js";
+import { assertSafeRelativePath, buildNodeRoot, deriveLocalPath, pathPrefixCondition } from "../../domain/sync/remote-path.js";
+import { resolveNodeInfo } from "../../domain/sync/node-info.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
@@ -131,14 +133,24 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_files",
-    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result), except for connector (interactive_chat) sessions, which have no scope set and see every file on nodes visible to them — see portuni://scope-rules.",
+    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope, and path_prefix narrows the list to one folder (e.g. before portuni_delete_files); without node_id results are restricted to the current session scope set (empty scope means an empty result), except for connector (interactive_chat) sessions, which have no scope set and see every file on nodes visible to them — see portuni://scope-rules.",
     {
       node_id: z.string().optional(),
       status: z.enum(FILE_STATUSES).optional(),
+      path_prefix: z
+        .string()
+        .optional()
+        .describe('Only files under this folder, relative to the node root (e.g. "wip/draft"). Requires node_id.'),
       limit: z.number().int().min(1).max(2000).optional().describe("Max rows (default 500, newest first)"),
     },
     async (args) => {
       const db = getDb();
+      if (args.path_prefix !== undefined && args.node_id === undefined) {
+        return {
+          content: [{ type: "text" as const, text: "Error: path_prefix requires node_id" }],
+          isError: true,
+        };
+      }
 
       const gate = await guardListScope(
         db,
@@ -175,6 +187,14 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       if (args.status !== undefined) {
         conds.push("f.status = ?");
         params.push(args.status);
+      }
+      if (args.path_prefix !== undefined && args.node_id !== undefined) {
+        const prefix = args.path_prefix.replace(/\/+$/, "");
+        assertSafeRelativePath(prefix, "portuni_list_files.path_prefix");
+        const nodeRoot = buildNodeRoot(await resolveNodeInfo(db, args.node_id));
+        const under = pathPrefixCondition("f.remote_path", `${nodeRoot}/${prefix}`);
+        conds.push(under.sql);
+        params.push(...under.args);
       }
       const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
 
@@ -375,6 +395,51 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         fileId: args.file_id,
         mode: args.mode,
         confirmed: args.confirmed,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "portuni_delete_files",
+    "Delete many files of one node at once: everything under one or more path prefixes (relative to the node root, e.g. \"wip/draft\", \"outputs/2026-11-03-run\") plus any explicit file_ids. Confirm-first for the whole batch: the first call returns one preview listing every selected file; show it to the user, then call again with the SAME selection and confirmed: true. Use this instead of looping portuni_delete_file, e.g. after removing a folder from the mirror on disk. Same modes as portuni_delete_file (complete: remote + local + record; unregister_only: record only). A confirmed call is bounded (limit, default 50 files); when the result's remaining is > 0, call again with the same selection to continue -- already-deleted files no longer match. See portuni://sync-model.",
+    {
+      node_id: z.string(),
+      path_prefixes: z
+        .array(z.string())
+        .optional()
+        .describe("Folders relative to the node root; every file under each is selected."),
+      file_ids: z.array(z.string()).optional().describe("Explicit files of this node to include."),
+      mode: z.enum(["complete", "unregister_only"]).optional(),
+      confirmed: z.boolean().optional(),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Max files to delete in this confirmed call (default 50). Ignored for the preview."),
+    },
+    async (args) => {
+      const db = getDb();
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return NODE_NOT_FOUND;
+      }
+      if ((args.path_prefixes ?? []).length === 0 && (args.file_ids ?? []).length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "Error: pass path_prefixes and/or file_ids" }],
+          isError: true,
+        };
+      }
+      const deleteWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+      if (deleteWriteGuard.kind === "error") return deleteWriteGuard.response;
+      const r = await deleteFiles(db, {
+        userId: ctx.identity.userId,
+        nodeId: args.node_id,
+        pathPrefixes: args.path_prefixes,
+        fileIds: args.file_ids,
+        mode: args.mode,
+        confirmed: args.confirmed,
+        limit: args.limit,
       });
       return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
     },

@@ -501,7 +501,7 @@ export async function callLocalTool(
 // Proxied disk mutations (GH #78)
 // ---------------------------------------------------------------------------
 //
-// portuni_delete_file / portuni_move_file / portuni_rename_folder are NOT
+// portuni_delete_file(s) / portuni_move_file / portuni_rename_folder are NOT
 // local tools -- their record/remote step must run on central. But central's
 // engine-mutations local disk step no-ops there (getMirrorPath is null on the
 // server), so the device that owns the mirror must apply it itself: snapshot
@@ -513,6 +513,7 @@ export async function callLocalTool(
 
 const PROXIED_DISK_MUTATIONS = new Set([
   "portuni_delete_file",
+  "portuni_delete_files",
   "portuni_move_file",
   "portuni_rename_folder",
 ]);
@@ -558,7 +559,7 @@ export async function snapshotForDiskMutation(
     name === "portuni_rename_folder" ? args.dry_run === false : args.confirmed === true;
   if (!applies) return null;
 
-  if (name === "portuni_rename_folder") {
+  if (name === "portuni_rename_folder" || name === "portuni_delete_files") {
     const nodeId = args.node_id as string | undefined;
     if (!nodeId) return null;
     const mirrorRoot = await getMirrorPath(userId, nodeId);
@@ -620,6 +621,14 @@ async function renameLocalBestEffort(oldPath: string, newPath: string): Promise<
   }
 }
 
+// Delete mode central applied. Central echoes it in the result; the call's
+// own argument (default complete, as in deleteFile) is the fallback. Anything
+// else counts as not complete, so the local copy is kept.
+function proxiedDeleteMode(parsed: Record<string, unknown>, args: Record<string, unknown>): string {
+  if (typeof parsed.mode === "string") return parsed.mode;
+  return typeof args.mode === "string" ? args.mode : "complete";
+}
+
 // Apply the disk step after central confirmed the mutation. resultText is the
 // proxied tool result's JSON payload; anything that does not parse into a
 // success shape (preview, repair_needed, error text) is a no-op.
@@ -656,7 +665,10 @@ export async function applyLocalAfterProxiedMutation(
     // gone (#275) -- central already wrote the tombstone for this delete,
     // so a leftover copy from a failed rm here is still cleaned up by the
     // next sync's tombstone cleanup instead of being silently re-adopted.
-    await removeLocalCopyAndState(localPath, snapshot.fileId);
+    // unregister_only removes the record only: like the domain deleteFile,
+    // the local copy stays and just file_state goes.
+    const removeLocal = proxiedDeleteMode(parsed, snapshot.args) === "complete";
+    await removeLocalCopyAndState(removeLocal ? localPath : null, snapshot.fileId);
     client.invalidateSyncInfo(snapshot.nodeId);
     return null;
   }
@@ -726,6 +738,42 @@ export async function applyLocalAfterProxiedMutation(
       new_local_path: newLocal,
       detail: { ...detail, local_done: localDone },
     });
+  }
+
+  if (snapshot.tool === "portuni_delete_files") {
+    if (parsed.type !== "applied" || !Array.isArray(parsed.files)) return null;
+    // Per file, like the single delete above: only an entry central reports
+    // as deleted loses its local copy; a repair_needed one keeps it, and
+    // unregister_only never touches the disk (file_state only).
+    const removeLocal = proxiedDeleteMode(parsed, snapshot.args) === "complete";
+    const files = parsed.files as Array<Record<string, unknown>>;
+    let anyLocalError = false;
+    for (const f of files) {
+      if (f.status !== "ok" || typeof f.file_id !== "string") continue;
+      const localPath =
+        removeLocal && typeof f.remote_path === "string"
+          ? deriveOrNull({
+              mirrorRoot: snapshot.mirrorRoot,
+              nodeRoot: snapshot.nodeRoot,
+              remotePath: f.remote_path,
+            })
+          : null;
+      const { localRemoved } = await removeLocalCopyAndState(localPath, f.file_id);
+      if (!localRemoved) {
+        // Record and remote are gone, the copy on this device is not: report
+        // it instead of central's "ok". file_state stays, so the next sync's
+        // tombstone cleanup still removes the leftover.
+        f.status = "repair_needed";
+        f.error = `Local copy could not be removed: ${localPath}`;
+        f.repair_hint =
+          "Remote and record are already deleted. Delete the local file manually, or the next sync removes it.";
+        anyLocalError = true;
+      }
+    }
+    client.invalidateSyncInfo(snapshot.nodeId);
+    if (!anyLocalError) return null;
+    const deleted = files.filter((f) => f.status === "ok").length;
+    return JSON.stringify({ ...parsed, deleted, failed: files.length - deleted });
   }
 
   if (snapshot.tool === "portuni_rename_folder") {

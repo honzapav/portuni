@@ -152,3 +152,21 @@ export function safeMirrorJoin(mirrorRoot: string, ...segments: string[]): strin
     throw e;
   }
 }
+
+// SQL condition selecting rows whose `column` lies under the folder absPrefix
+// ("org/projects/x/wip/draft" selects ".../wip/draft/a.md", not
+// ".../wip/draft-final/a.md"). LIKE alone is ASCII case-insensitive in
+// SQLite, so wip/draft would also pick up a separate wip/DRAFT folder; the
+// substr comparison (BINARY collation) makes the match exact. "_" and "%" in folder names are escaped so they match only
+// themselves.
+export function pathPrefixCondition(
+  column: string,
+  absPrefix: string,
+): { sql: string; args: string[] } {
+  const withSlash = `${absPrefix}/`;
+  const like = withSlash.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  return {
+    sql: `(${column} LIKE ? ESCAPE '\\' AND substr(${column}, 1, length(?)) = ?)`,
+    args: [`${like}%`, withSlash, withSlash],
+  };
+}

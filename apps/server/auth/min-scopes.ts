@@ -74,6 +74,7 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_delete_actor: "admin",
   portuni_delete_responsibility: "admin",
   portuni_delete_file: "admin",
+  portuni_delete_files: "admin",
 };
 
 // ---------------------------------------------------------------------------

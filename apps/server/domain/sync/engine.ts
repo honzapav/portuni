@@ -1568,4 +1568,5 @@ export {
   renameFolder,
   adoptFiles,
   deleteFile,
+  deleteFiles,
 } from "./engine-mutations.js";

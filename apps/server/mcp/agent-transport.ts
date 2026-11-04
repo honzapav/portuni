@@ -71,7 +71,7 @@ import {
   applyLocalAfterProxiedMutation,
   deriveOrNull,
 } from "./agent-tools.js";
-import { awaitPendingPush } from "../domain/sync/pending-pushes.js";
+import { awaitAllPendingPushes, awaitPendingPush } from "../domain/sync/pending-pushes.js";
 import {
   guardWrite,
   writeGuardError,
@@ -583,6 +583,10 @@ function buildAgentServer(
           remotePath: snapshot.oldRemotePath,
         });
         if (localPath) await awaitPendingPush(localPath);
+      } else if (snapshot && name === "portuni_delete_files") {
+        // The batch's files are only known to central; wait out every push
+        // in flight on this device instead of one path.
+        await awaitAllPendingPushes();
       }
       // The device's local step outcome replaces central's (which has no
       // mirror and would report local_done:false for every move).

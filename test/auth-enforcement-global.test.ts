@@ -32,7 +32,7 @@ import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 
 describe("TOOL_MIN_SCOPE map", () => {
   it("every registered MCP tool has an explicit min scope", () => {
-    assert.equal(Object.keys(TOOL_MIN_SCOPE).length, 50);
+    assert.equal(Object.keys(TOOL_MIN_SCOPE).length, 51);
     assert.equal(TOOL_MIN_SCOPE.portuni_get_node, "read");
     assert.equal(TOOL_MIN_SCOPE.portuni_read_file, "read");
     assert.equal(TOOL_MIN_SCOPE.portuni_search_files, "read");
