@@ -477,6 +477,17 @@ button:focus-visible {
   text-align: left;
   vertical-align: top;
 }
+/* `anywhere` on .md-preview would let a column collapse to one character,
+ * because it counts per-letter breaks towards the column's minimum width.
+ * `break-word` keeps the minimum at the longest word. */
+.md-preview th,
+.md-preview td {
+  overflow-wrap: break-word;
+}
+/* GFM requires a header row; tables that leave it blank should not show it. */
+.md-preview thead:not(:has(th:not(:empty))) {
+  display: none;
+}
 .md-preview th {
   background: var(--color-surface-2);
   font-weight: 600;
