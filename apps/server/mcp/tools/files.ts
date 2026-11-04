@@ -14,7 +14,7 @@ import {
 } from "../../domain/sync/engine.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { requireLocalSyncDb } from "../../domain/sync/local-db.js";
-import { assertSafeRelativePath, buildNodeRoot, deriveLocalPath } from "../../domain/sync/remote-path.js";
+import { assertSafeRelativePath, buildNodeRoot, deriveLocalPath, pathPrefixCondition } from "../../domain/sync/remote-path.js";
 import { resolveNodeInfo } from "../../domain/sync/node-info.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
@@ -192,11 +192,9 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         const prefix = args.path_prefix.replace(/\/+$/, "");
         assertSafeRelativePath(prefix, "portuni_list_files.path_prefix");
         const nodeRoot = buildNodeRoot(await resolveNodeInfo(db, args.node_id));
-        // Escape LIKE metacharacters: "_" in a folder name must not match
-        // any character.
-        const likePrefix = `${nodeRoot}/${prefix}`.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-        conds.push("f.remote_path LIKE ? ESCAPE '\\'");
-        params.push(`${likePrefix}/%`);
+        const under = pathPrefixCondition("f.remote_path", `${nodeRoot}/${prefix}`);
+        conds.push(under.sql);
+        params.push(...under.args);
       }
       const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
 

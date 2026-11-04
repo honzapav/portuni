@@ -5,7 +5,8 @@ import { constants } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile, deleteFiles } from "../apps/server/domain/sync/engine.js";
+import { storeFile, deleteFiles, renameFolder } from "../apps/server/domain/sync/engine.js";
+import { pathPrefixCondition } from "../apps/server/domain/sync/remote-path.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 import { resetLocalDbForTests, getFileState } from "../apps/server/domain/sync/local-db.js";
@@ -165,5 +166,90 @@ describe("deleteFiles", () => {
     const { db, nodeId } = await makeSharedDb();
     await assert.rejects(deleteFiles(db, { userId: "U1", nodeId }), /path_prefixes or file_ids/);
     await assert.rejects(deleteFiles(db, { userId: "U1", nodeId, pathPrefixes: ["../x"] }));
+  });
+});
+
+// Folder selection by path prefix (deleteFiles, renameFolder, the
+// portuni_list_files path_prefix filter): a row matches exactly when its
+// path starts with "<prefix>/". SQLite LIKE alone is ASCII case-insensitive
+// and treats "_"/"%" as wildcards, so the oracle here is plain JS
+// startsWith, not the query under test.
+describe("pathPrefixCondition", () => {
+  const paths = [
+    "o/projects/p/wip/draft/a.md",
+    "o/projects/p/wip/draft/sub/b.md",
+    "o/projects/p/wip/DRAFT/c.md",
+    "o/projects/p/wip/Draft/d.md",
+    "o/projects/p/wip/draft-final/e.md",
+    "o/projects/p/wip/draft",
+    "o/projects/p/outputs/run_1/f.md",
+    "o/projects/p/outputs/runX1/g.md",
+    "o/projects/p/outputs/RUN_1/h.md",
+    "o/projects/p/sale/100%/i.md",
+    "o/projects/p/sale/100x/j.md",
+    "o/projects/p/back\\slash/k.md",
+    "o/projects/p/backXslash/l.md",
+    "o/projects/p/wip/čeština/m.md",
+    "o/projects/p/wip/ČEŠTINA/n.md",
+    "o/projects/p/wip/🙂x/o.md",
+    "o/projects/p/wip/🙂X/p.md",
+  ];
+  const prefixes = [
+    "o/projects/p/wip/draft",
+    "o/projects/p/wip/DRAFT",
+    "o/projects/p/outputs/run_1",
+    "o/projects/p/sale/100%",
+    "o/projects/p/back\\slash",
+    "o/projects/p/wip/čeština",
+    "o/projects/p/wip/🙂x",
+  ];
+  for (const prefix of prefixes) {
+    it(`selects exactly the paths under ${prefix}`, async () => {
+      const { db } = await makeSharedDb();
+      await db.execute("CREATE TEMP TABLE pp (path TEXT)");
+      for (const path of paths) await db.execute({ sql: "INSERT INTO pp (path) VALUES (?)", args: [path] });
+      const c = pathPrefixCondition("path", prefix);
+      const r = await db.execute({ sql: `SELECT path FROM pp WHERE ${c.sql} ORDER BY path`, args: c.args });
+      const got = r.rows.map((row) => row.path as string).sort();
+      const expected = paths.filter((path) => path.startsWith(`${prefix}/`)).sort();
+      assert.ok(expected.length > 0, "every prefix has at least one real match");
+      assert.deepEqual(got, expected);
+    });
+  }
+});
+
+describe("folder selection is case-sensitive", () => {
+  it("deleteFiles and renameFolder on wip/draft leave a separate wip/DRAFT folder alone", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    // Distinct filenames: the test may run on a case-insensitive filesystem.
+    const lower = await storeAt(db, nodeId, mirrorRoot, "wip/draft/a.md");
+    const upper = await storeAt(db, nodeId, mirrorRoot, "wip/DRAFT/b.md");
+
+    const preview = await deleteFiles(db, { userId: "U1", nodeId, pathPrefixes: ["wip/draft"] });
+    assert.ok("requires_confirmation" in preview);
+    assert.deepEqual(preview.files.map((f) => f.file_id), [lower.file_id]);
+
+    const rename = await renameFolder(db, {
+      userId: "U1",
+      nodeId,
+      oldPrefix: "wip/draft",
+      newPrefix: "wip/old",
+      dryRun: true,
+    });
+    assert.ok(rename.type === "preview");
+    assert.deepEqual(rename.files.map((f) => f.file_id), [lower.file_id]);
+
+    const applied = await deleteFiles(db, {
+      userId: "U1",
+      nodeId,
+      pathPrefixes: ["wip/draft"],
+      confirmed: true,
+    });
+    assert.ok("type" in applied);
+    assert.equal(applied.deleted, 1);
+    assert.equal(await exists(upper.local_path), true);
+    assert.equal(await rowCount(db, nodeId), 1);
   });
 });

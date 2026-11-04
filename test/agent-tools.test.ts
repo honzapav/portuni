@@ -692,6 +692,132 @@ describe("proxied disk mutations (GH #78)", () => {
     assert.equal(await readFile(absB, "utf8"), "B");
   });
 
+  // Which proxied delete touches the disk: only mode "complete" removes the
+  // local copy (same rule as the domain deleteFile, which passes a null path
+  // for unregister_only); every applied delete clears file_state. The mode
+  // central echoes wins over the call's argument, which defaults to complete.
+  const deleteModeCases: Array<{
+    name: string;
+    tool: "portuni_delete_file" | "portuni_delete_files";
+    argMode?: string;
+    resultMode?: string;
+    localKept: boolean;
+  }> = [
+    { name: "single, complete", tool: "portuni_delete_file", resultMode: "complete", localKept: false },
+    { name: "single, unregister_only", tool: "portuni_delete_file", resultMode: "unregister_only", localKept: true },
+    { name: "single, no mode anywhere", tool: "portuni_delete_file", localKept: false },
+    { name: "single, mode from args only", tool: "portuni_delete_file", argMode: "unregister_only", localKept: true },
+    { name: "batch, complete", tool: "portuni_delete_files", resultMode: "complete", localKept: false },
+    { name: "batch, unregister_only", tool: "portuni_delete_files", resultMode: "unregister_only", localKept: true },
+    { name: "batch, no mode anywhere", tool: "portuni_delete_files", localKept: false },
+    { name: "batch, mode from args only", tool: "portuni_delete_files", argMode: "unregister_only", localKept: true },
+    {
+      name: "batch, central's mode wins over args",
+      tool: "portuni_delete_files",
+      argMode: "complete",
+      resultMode: "unregister_only",
+      localKept: true,
+    },
+  ];
+  for (const c of deleteModeCases) {
+    it(`proxied delete mode decides the local copy: ${c.name}`, async () => {
+      const fake = new FakeCentral();
+      await setupMirror();
+      const abs = join(mirrorRoot, "wip", "a.md");
+      await writeFile(abs, "obsah");
+      const fileId = fake.seedRemote("wip/a.md", "obsah");
+      await upsertFileState({
+        file_id: fileId,
+        last_synced_hash: sha(Buffer.from("obsah")),
+        cached_local_hash: sha(Buffer.from("obsah")),
+        cached_mtime: 1,
+        cached_size: 5,
+      });
+      const modeArg = c.argMode ? { mode: c.argMode } : {};
+      const modeResult = c.resultMode ? { mode: c.resultMode } : {};
+      const remotePath = posix.join(NODE_ROOT, "wip/a.md");
+      const args =
+        c.tool === "portuni_delete_file"
+          ? { file_id: fileId, confirmed: true, ...modeArg }
+          : { node_id: NODE_ID, file_ids: [fileId], confirmed: true, ...modeArg };
+      const snapshot = await snapshotForDiskMutation(fake, "U1", c.tool, args);
+      assert.ok(snapshot);
+      fake.records.delete(remotePath);
+      const result =
+        c.tool === "portuni_delete_file"
+          ? { file_id: fileId, ...modeResult, deleted_at: "now", status: "ok" }
+          : {
+              type: "applied",
+              ...modeResult,
+              deleted: 1,
+              failed: 0,
+              files: [{ file_id: fileId, filename: "a.md", remote_path: remotePath, status: "ok" }],
+              not_found: [],
+              remaining: 0,
+            };
+      const out = await applyLocalAfterProxiedMutation(fake, "U1", snapshot!, JSON.stringify(result));
+      assert.equal(out, null, "central's payload passes through unchanged");
+      if (c.localKept) assert.equal(await readFile(abs, "utf8"), "obsah");
+      else await assert.rejects(() => readFile(abs));
+      assert.equal(await getFileState(fileId), null);
+    });
+  }
+
+  it("reports a batch entry whose local copy could not be removed as repair_needed", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    await mkdir(join(mirrorRoot, "wip", "navrh"), { recursive: true });
+    const absA = join(mirrorRoot, "wip", "navrh", "a.md");
+    // rm without recursive cannot remove a non-empty directory: a stand-in
+    // for EACCES/EBUSY on a real file.
+    const absB = join(mirrorRoot, "wip", "navrh", "b.md");
+    await writeFile(absA, "A");
+    await mkdir(absB);
+    await writeFile(join(absB, "inner"), "x");
+    const idA = fake.seedRemote("wip/navrh/a.md", "A");
+    const idB = fake.seedRemote("wip/navrh/b.md", "B");
+    await upsertFileState({
+      file_id: idB,
+      last_synced_hash: sha(Buffer.from("B")),
+      cached_local_hash: sha(Buffer.from("B")),
+      cached_mtime: 1,
+      cached_size: 1,
+    });
+    const args = { node_id: NODE_ID, path_prefixes: ["wip/navrh"], confirmed: true };
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_delete_files", args);
+    assert.ok(snapshot);
+    const out = await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({
+        type: "applied",
+        mode: "complete",
+        deleted: 2,
+        failed: 0,
+        files: [
+          { file_id: idA, filename: "a.md", remote_path: posix.join(NODE_ROOT, "wip/navrh/a.md"), status: "ok" },
+          { file_id: idB, filename: "b.md", remote_path: posix.join(NODE_ROOT, "wip/navrh/b.md"), status: "ok" },
+        ],
+        not_found: [],
+        remaining: 0,
+      }),
+    );
+    assert.ok(out, "the payload is rewritten");
+    const payload = JSON.parse(out!) as {
+      deleted: number;
+      failed: number;
+      files: Array<{ file_id: string; status: string; error?: string }>;
+    };
+    assert.equal(payload.deleted, 1);
+    assert.equal(payload.failed, 1);
+    assert.equal(payload.files[0].status, "ok");
+    assert.equal(payload.files[1].status, "repair_needed");
+    assert.match(payload.files[1].error ?? "", /could not be removed/);
+    await assert.rejects(() => readFile(absA));
+    assert.ok(await getFileState(idB), "file_state stays so the next sync's tombstone cleanup finishes it");
+  });
+
   it("does not snapshot an unconfirmed (preview) call", async () => {
     const fake = new FakeCentral();
     await setupMirror();

@@ -33,6 +33,7 @@ import {
   buildRemotePath,
   deriveLocalPath,
   assertSafeRelativePath,
+  pathPrefixCondition,
   RemotePathError,
   type Section,
 } from "./remote-path.js";
@@ -487,13 +488,13 @@ export async function renameFolder(
   const newAbs = `${nodeRoot}/${a.newPrefix}`;
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
 
-  // Escape LIKE metacharacters in the prefix: "_" (common in folder names)
-  // matches any single character, so wip/my_notes would also select
-  // wip/myXnotes/... and "rename" those rows to themselves.
-  const likePrefix = oldAbs.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  // Exact folder match: "_" (common in folder names) must not match any
+  // character (wip/my_notes vs wip/myXnotes), and wip/draft must not pick up
+  // a separate wip/DRAFT folder and "rename" those rows to themselves.
+  const under = pathPrefixCondition("remote_path", oldAbs);
   const rows = await db.execute({
-    sql: "SELECT id, filename, remote_name, remote_path FROM files WHERE node_id = ? AND remote_path LIKE ? ESCAPE '\\' ORDER BY remote_path",
-    args: [a.nodeId, `${likePrefix}/%`],
+    sql: `SELECT id, filename, remote_name, remote_path FROM files WHERE node_id = ? AND ${under.sql} ORDER BY remote_path`,
+    args: [a.nodeId, ...under.args],
   });
   // A local workspace renames the local copies and the rows only (#310);
   // a legacy row's remote_name is ignored, never dialled.
@@ -1116,11 +1117,9 @@ export async function deleteFiles(db: DbClient, a: DeleteFilesArgs): Promise<Del
   const conds: string[] = [];
   const params: InValue[] = [a.nodeId];
   for (const p of prefixes) {
-    // Same LIKE escaping as renameFolder: "_" in a folder name must not
-    // match any character.
-    const likePrefix = `${nodeRoot}/${p}`.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-    conds.push("remote_path LIKE ? ESCAPE '\\'");
-    params.push(`${likePrefix}/%`);
+    const c = pathPrefixCondition("remote_path", `${nodeRoot}/${p}`);
+    conds.push(c.sql);
+    params.push(...c.args);
   }
   if (fileIds.length > 0) {
     conds.push(`id IN (${fileIds.map(() => "?").join(",")})`);
