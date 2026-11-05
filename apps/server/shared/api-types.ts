@@ -133,6 +133,16 @@ export type UntrackedFile = {
 };
 
 // Response of GET /nodes/:nodeId/file?path=<rel>.
+// GET /changes?since=&wait=: the node and file changes since a cursor
+// (domain/change-feed.ts). `reset`: the cursor is unknown to this server
+// instance (a restart) or older than it keeps; the reader refetches what it
+// shows and continues from `cursor`.
+export type ChangesResponse = {
+  cursor: string;
+  reset: boolean;
+  changes: { node_id: string; kind: "node" | "files"; seq: number }[];
+};
+
 // GET /nodes/:id/file?version_only=1: the version alone, for the open-file
 // poll (client traffic contract, rule 5).
 export type FileVersionResponse = { version: string };

@@ -12,6 +12,7 @@
 // (both source and destination present, or neither) fails the op with
 // that message instead of guessing.
 
+import { publishNodeChange } from "../../infra/change-feed.js";
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 import { nowExpr } from "../../infra/sql.js";
@@ -211,6 +212,8 @@ async function runMove(
       now,
     ],
   });
+  publishNodeChange(row.node_id as string, "files");
+  publishNodeChange(p.to_node_id, "files");
 }
 
 async function runDelete(
@@ -296,6 +299,7 @@ async function runDelete(
       new Date().toISOString(),
     ],
   });
+  publishNodeChange(row.node_id as string, "files");
 }
 
 export interface RetryResult {

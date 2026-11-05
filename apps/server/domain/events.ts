@@ -197,8 +197,6 @@ export async function updateEventInternal(
     throw new EventNotFoundError(eventId);
   }
 
-  await writeAudit(db, userId, "update_event", "event", eventId, { fields: updated });
-
   const row = (
     await db.execute({
       sql: `SELECT id, node_id, type, content, meta, status, refs, task_ref, created_at, logged_at
@@ -206,6 +204,7 @@ export async function updateEventInternal(
       args: [eventId],
     })
   ).rows[0];
+  await writeAudit(db, userId, "update_event", "event", eventId, { fields: updated, node_id: row.node_id as string });
   return {
     id: row.id as string,
     node_id: row.node_id as string,

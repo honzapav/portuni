@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchSyncPending } from "../api";
 import { startBackoffPoll } from "./backoff-poll";
+import { onNodeChanges } from "./node-changes";
 import {
   applyOverrides,
   applyPendingNode,
@@ -13,6 +14,8 @@ import type { SyncPendingResponse, SyncRunResponse } from "../types";
 const EMPTY: SyncPendingResponse = { nodes: [], total: 0, decisions: 0 };
 
 const POLL_MS = 30_000;
+// A file change on the feed asks for the aggregate at most this often.
+const CHANGE_REFRESH_MIN_MS = 2_000;
 // Window-focus refreshes are throttled: alt-tabbing around the desktop used
 // to fire the full cross-mirror aggregate on every focus event with no
 // minimum interval (perf review M7).
@@ -83,8 +86,21 @@ export function useSyncPending(enabled: boolean) {
       store(EMPTY);
       return;
     }
-    // Backoff: 30s -> 60s -> 120s ... capped at 5 min.
-    return startBackoffPoll({
+    // A file change anywhere (the change feed, lib/node-changes.ts) asks
+    // for the aggregate again, at most once per CHANGE_REFRESH_MIN_MS; the
+    // poll stays as the fallback. Backoff: 30s -> 60s -> 120s ... capped
+    // at 5 min.
+    let changeTimer: ReturnType<typeof setTimeout> | null = null;
+    const offChanges = onNodeChanges((batch) => {
+      if (!batch.reset && !batch.changes.some((c) => c.kind === "files")) return;
+      if (changeTimer !== null) return;
+      const wait = Math.max(0, CHANGE_REFRESH_MIN_MS - (Date.now() - lastFetchAtRef.current));
+      changeTimer = setTimeout(() => {
+        changeTimer = null;
+        refresh();
+      }, wait);
+    });
+    const stopPoll = startBackoffPoll({
       refresh,
       pollMs: POLL_MS,
       focusMinMs: FOCUS_MIN_INTERVAL_MS,
@@ -92,6 +108,11 @@ export function useSyncPending(enabled: boolean) {
       lastFetchAtRef,
       failureCountRef,
     });
+    return () => {
+      offChanges();
+      if (changeTimer !== null) clearTimeout(changeTimer);
+      stopPoll();
+    };
   }, [enabled, refresh, store]);
 
   return { pending, refresh, applyRun };

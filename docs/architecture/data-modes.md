@@ -124,6 +124,7 @@ folders of its own; file content it serves is Drive-direct
 | Session record, access checks | yes (`api/sessions.ts` record half) | on the central server | local db |
 | Session content (`content.db`) | never; it holds none (migration 040 dropped the legacy graph-db rows, #462) | yes, this device's | yes, this device's |
 | Live channel `GET /sessions/ws` | yes | yes (own runtime) | yes |
+| Change feed (`infra/change-feed.ts`, `GET /changes`, `node_changed` frames) | the feed itself, published by every write; `GET /changes` for devices | read from central by `boot/change-poller.ts` (one long-poll), republished with the watcher's own file changes | the feed itself, sent to its windows directly |
 | MCP | `/mcp` for remote MCP clients (OAuth grant) and proxied tool calls | front door: device tools local, the rest proxied | `/mcp` |
 | Runner registry `runners.json` | its own host's | this device's | this device's |
 | REST write gate | central auth | `guardAgentRestWrite` (proxy-proven) | `env`-mode gate |

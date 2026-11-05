@@ -553,3 +553,43 @@ describe("createMirrorWatcher backfill", () => {
     assert.match(rows.rows[0].remote_path as string, /outputs\/prezentace\/slide\.md$/);
   });
 });
+
+// The change feed (client traffic contract, rule 3): a reconcile that
+// succeeded names its node to whoever listens, so the windows learn of a
+// file change on this device without polling the sync status.
+describe("createMirrorWatcher onReconciled", () => {
+  it("is called with the node after a successful reconcile, not after a failed one", async () => {
+    const reconciled: string[] = [];
+    let emit: ((p: string) => void) | null = null;
+    const watcher = createMirrorWatcher({
+      db: {} as unknown as Client,
+      userId: "U1",
+      listMirrors: async () => [
+        { user_id: "U1", node_id: "N1", local_path: "/m", registered_at: "" },
+        { user_id: "U1", node_id: "N2", local_path: "/n", registered_at: "" },
+      ],
+      reconcile: async (a) => {
+        if (a.nodeId === "N2") throw new Error("down");
+        return { action: "noop" };
+      },
+      backfill: false,
+      watchFactory: (root, onPath) => {
+        if (root === "/m") emit = onPath;
+        else emitN2 = onPath;
+        return { close() {
+          /* no-op */
+        } };
+      },
+      debounceMs: 5,
+      onError: () => undefined,
+      onReconciled: (nodeId) => reconciled.push(nodeId),
+    });
+    let emitN2: ((p: string) => void) | null = null;
+    await watcher.start();
+    emit!("/m/wip/a.md");
+    emitN2!("/n/wip/b.md");
+    await delay(40);
+    watcher.stop();
+    assert.deepEqual(reconciled, ["N1"]);
+  });
+});

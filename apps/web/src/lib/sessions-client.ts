@@ -21,6 +21,7 @@
 // reply/error/event/delta/session_state) -- see that file's own header
 // comment for the canonical protocol description.
 
+import { emitNodeChanges, type NodeChangeBatch } from "./node-changes";
 import { isTauri } from "./backend-url.js";
 import { ApiError, ClientError } from "./api-error.js";
 import { requestLocale } from "./locale.js";
@@ -90,6 +91,12 @@ interface SessionStatesFrame {
   type: "session_states";
   payload: { sessions: SessionStateMessage[] };
 }
+// The change feed (lib/node-changes.ts): the nodes whose record or files
+// changed, coalesced server side; `reset` says "refetch what you show".
+interface NodeChangedFrame {
+  type: "node_changed";
+  payload: NodeChangeBatch;
+}
 type ServerFrame =
   | ReplyFrame
   | ErrorFrame
@@ -97,7 +104,8 @@ type ServerFrame =
   | EventsFrame
   | DeltaFrame
   | SessionStateFrame
-  | SessionStatesFrame;
+  | SessionStatesFrame
+  | NodeChangedFrame;
 
 type ClientFrame =
   | { id: string; type: "subscribe"; payload: { session_id: string; after?: number } }
@@ -824,6 +832,10 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     }
     if (frame.type === "session_states") {
       for (const cb of sessionStateListeners) cb(frame.payload.sessions);
+      return;
+    }
+    if (frame.type === "node_changed") {
+      emitNodeChanges(frame.payload);
     }
   });
 

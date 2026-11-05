@@ -10,6 +10,7 @@
 // statusScan) stay in one focused file and the destructive operations
 // live in another.
 
+import { publishNodeChange } from "../../infra/change-feed.js";
 import { mkdir, rename as fsRename } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DbClient, InStatement, InValue } from "../../infra/db.js";
@@ -221,6 +222,7 @@ export async function moveFile(
         now,
       ],
     });
+    publishNodeChange(fr.node_id as string, "files");
   }
 
   if (localOnly) return moveFileLocalOnly();
@@ -336,6 +338,8 @@ export async function moveFile(
             now,
           ],
         });
+        publishNodeChange(fr.node_id as string, "files");
+        publishNodeChange(targetNodeId, "files");
         // Write the regular sync_move tombstone too, alongside
         // sync_move_partial, so matchDeleteTombstones picks it up.
         await writeMoveTombstone(now, { local_error: (e as Error).message });
@@ -580,6 +584,7 @@ export async function renameFolder(
         now,
       ],
     });
+    publishNodeChange(a.nodeId, "files");
   }
 
   for (const f of toProcess) {
@@ -688,6 +693,7 @@ export async function renameFolder(
       now,
     ],
   });
+  publishNodeChange(a.nodeId, "files");
 
   return {
     type: "applied",
@@ -820,6 +826,7 @@ export async function adoptFiles(
         now,
       ],
     });
+    publishNodeChange(a.nodeId, "files");
     adopted.push({ file_id: id, remote_path: p, filename, hash: stat.hash });
   }
   // One batch instead of one round trip per adopted file. Written after the
@@ -981,6 +988,7 @@ export async function deleteFile(
           now,
         ],
       });
+      publishNodeChange(nodeId, "files");
       return {
         file_id: a.fileId,
         mode,
@@ -1030,6 +1038,7 @@ export async function deleteFile(
       now,
     ],
   });
+  publishNodeChange(nodeId, "files");
   // Complete the op only after the tombstone is written -- if the audit
   // insert fails, the op must stay pending so a retry writes the tombstone
   // instead of the delete going unrecorded forever.
@@ -1375,6 +1384,7 @@ export async function renameFile(
       now,
     ],
   });
+  publishNodeChange(nodeId, "files");
   if (pendingOpId) await completePendingOp(db, pendingOpId);
 
   return {

@@ -142,7 +142,8 @@ import { useDataMode } from "../lib/central";
 import { showsPersonalWorkspaceBanner, showsSyncSurfaces } from "../lib/sync-visibility";
 import { compareText, formatDate } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
-import { isFresh, shouldPollSyncStatus } from "../lib/poll-policy";
+import { FALLBACK_POLL_MS, isFresh, shouldPollSyncStatus } from "../lib/poll-policy";
+import { nodeChangeTouches, onNodeChanges } from "../lib/node-changes";
 import type { NodeChange } from "../lib/graph-patch";
 import { actorsResource, folderUrlByNode } from "../lib/resources";
 import { useKeyedResource, useResourceState } from "../lib/use-resource";
@@ -573,12 +574,19 @@ function DetailPaneBody({
   tabRef.current = tab;
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  // The change feed (lib/node-changes.ts): this node's files changed on
+  // this device or elsewhere, so the sync status is read again.
+  useEffect(() => {
+    return onNodeChanges((batch) => {
+      if (nodeChangeTouches(batch, node.id, "files")) void loadSyncStatus();
+    });
+  }, [node.id, loadSyncStatus]);
   useEffect(() => {
     let cancelled = false;
     // A remount within the freshness window reads the cached answer.
     if (!isFresh(SYNC_STATUS_FETCHED_AT.get(node.id), Date.now(), SYNC_STATUS_FRESH_MS)) void loadSyncStatus();
-    // Poll so agent-written (untracked) and MCP-registered files appear
-    // without a manual refresh. ~5s, and only while the Files tab is on
+    // A slow fallback: a file change arrives on the change feed (above),
+    // this only catches a dropped frame. Only while the Files tab is on
     // screen, the pane's surface and the window visible and no 429
     // cooldown running (lib/poll-policy.ts). The header's sync dot keeps
     // what the mount load and the last Files visit left.
@@ -594,7 +602,7 @@ function DetailPaneBody({
       )
         return;
       void loadSyncStatus();
-    }, 5000);
+    }, FALLBACK_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(id);

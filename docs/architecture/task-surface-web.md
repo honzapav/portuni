@@ -402,6 +402,13 @@ this bound.
   responsibility, an attribute, a sync run) fetches the one node detail
   again; `graph` (edges, a move, sharing, an archive) reloads the graph
   (`graphNeedsReload`). `refetchAll` remains for a new organization only.
+- **The change feed** (`lib/node-changes.ts`, fed by the live channel's
+  `node_changed` frames): a change to the node a view shows refetches that
+  detail, coalesced over 300 ms; `DetailPane` reads the sync status again
+  on a `files` change of its node, `use-file-editor` checks the open
+  file's version, `use-sync-pending` refreshes the counter (at most once
+  per 2 s). The detail, sync-status and editor polls are 60 s fallbacks
+  (`FALLBACK_POLL_MS`, `lib/poll-policy.ts`) for a dropped frame.
 - **One request where the server can answer a list** (client traffic
   contract, rule 6): the Relace tab's resume-info (`POST
   /sessions/resume-info`), a responsibility reorder (`POST

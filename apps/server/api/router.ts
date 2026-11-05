@@ -4,6 +4,7 @@
 // /responsibilities/:id/assignments precedence over the bare
 // /responsibilities/:id handlers — live in one place.
 
+import { handleGetChanges } from "./changes.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { minScopeForRoute } from "../auth/min-scopes.js";
@@ -294,6 +295,10 @@ async function routeSystem(
   }
   if (pathname === "/graph" && method === "GET") {
     await handleGraph(req, res, identity);
+    return true;
+  }
+  if (pathname === "/changes" && method === "GET") {
+    await handleGetChanges(req, res, identity, url);
     return true;
   }
   if (pathname === "/overview" && method === "GET") {

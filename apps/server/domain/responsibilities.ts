@@ -192,6 +192,7 @@ export async function updateResponsibility(
 
   await writeAudit(db, updatedBy, "update_responsibility", "responsibility", parsed.responsibility_id, {
     changes,
+    node_id: existing.node_id,
   });
 
   const row = await loadResponsibility(db, parsed.responsibility_id);
@@ -276,13 +277,14 @@ export async function assignResponsibility(
     args: [parsed.responsibility_id, parsed.actor_id, now],
   });
 
+  const assigned = await loadResponsibility(db, parsed.responsibility_id);
   await writeAudit(
     db,
     assignedBy,
     "assign_responsibility",
     "responsibility_assignment",
     `${parsed.responsibility_id}:${parsed.actor_id}`,
-    { responsibility_id: parsed.responsibility_id, actor_id: parsed.actor_id },
+    { responsibility_id: parsed.responsibility_id, actor_id: parsed.actor_id, node_id: assigned?.node_id },
   );
 }
 
@@ -299,12 +301,13 @@ export async function unassignResponsibility(
     args: [parsed.responsibility_id, parsed.actor_id],
   });
 
+  const unassigned = await loadResponsibility(db, parsed.responsibility_id);
   await writeAudit(
     db,
     unassignedBy,
     "unassign_responsibility",
     "responsibility_assignment",
     `${parsed.responsibility_id}:${parsed.actor_id}`,
-    { responsibility_id: parsed.responsibility_id, actor_id: parsed.actor_id },
+    { responsibility_id: parsed.responsibility_id, actor_id: parsed.actor_id, node_id: unassigned?.node_id },
   );
 }

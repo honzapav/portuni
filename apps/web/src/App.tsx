@@ -41,7 +41,8 @@ import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { deriveWorkspaceNodeRows } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
-import { focusRefetchTargets, nodeDetailPollTarget } from "./lib/poll-policy";
+import { FALLBACK_POLL_MS, focusRefetchTargets, nodeDetailPollTarget } from "./lib/poll-policy";
+import { nodeChangeTouches, onNodeChanges } from "./lib/node-changes";
 import { isRateLimited } from "./lib/rate-limit-cooldown";
 import { invoke } from "./lib/tauri-invoke";
 import { useAppUpdate } from "./lib/updater";
@@ -690,6 +691,28 @@ export default function App() {
   // store first (the listener above); a REST refetch follows only for a
   // node whose frame names a session the store holds as a stub -- a known
   // thread's state, waiting and name change arrive in the frame itself.
+  // The change feed (lib/node-changes.ts): a change to the node a view
+  // shows refetches that detail, coalesced over a short window; a reset
+  // refetches what both views show. Everything else the pane shows
+  // (sync status, the open file, the sync counter) listens on its own.
+  const nodeChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nodeChangeQueue = useRef(new Set<string>());
+  useEffect(() => {
+    return onNodeChanges((batch) => {
+      const wanted = [selectedIdRef.current, selectedWorkspaceNodeIdRef.current];
+      for (const id of wanted) {
+        if (id && nodeChangeTouches(batch, id, "node")) nodeChangeQueue.current.add(id);
+      }
+      if (nodeChangeQueue.current.size === 0 || nodeChangeTimer.current !== null) return;
+      nodeChangeTimer.current = setTimeout(() => {
+        nodeChangeTimer.current = null;
+        const ids = [...nodeChangeQueue.current];
+        nodeChangeQueue.current.clear();
+        for (const id of ids) void handleNodeChanged(id);
+      }, 300);
+    });
+  }, [handleNodeChanged]);
+
   useEffect(() => {
     return sessionsClient.onSessionStates((states) => {
       // A thread that runs again has a new suspension ahead of it: what
@@ -934,8 +957,9 @@ export default function App() {
     };
   }, [view, selectedId, selectedWorkspaceNodeId, refetchWorkspaceDetail]);
 
-  // Poll the node detail on screen so externally-registered files appear
-  // within seconds. Node-detail only (the graph poll stays on focus), and
+  // A slow fallback for the node detail on screen: a change arrives on
+  // the change feed (above), this only catches a frame that was dropped.
+  // Node-detail only (the graph poll stays on focus), and
   // only for a detail somebody is looking at: lib/poll-policy.ts says
   // which one -- none in Přehled or Settings, none while Práce's aside is
   // collapsed, none while hidden or during a 429 cooldown. Whether Práce
@@ -976,7 +1000,7 @@ export default function App() {
           })
           .catch(() => undefined);
       }
-    }, 5000);
+    }, FALLBACK_POLL_MS);
     return () => clearInterval(id);
   }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail, workspaceDetailVisible, workspaceShowsThread]);
 

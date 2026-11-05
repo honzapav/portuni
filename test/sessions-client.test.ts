@@ -19,6 +19,7 @@ import { ApiError, errorCode } from "../apps/web/src/lib/api-error.js";
 import { DesktopError } from "../apps/web/src/lib/tauri-invoke.js";
 import { liveChannelDown, msUntilLiveChannelDown } from "../apps/web/src/lib/live-channel.js";
 import { createSessionStore } from "../apps/web/src/lib/session-store.js";
+import { onNodeChanges, type NodeChangeBatch } from "../apps/web/src/lib/node-changes.js";
 import { selectMountedThreads, selectNodeRecordIds } from "../apps/web/src/lib/session-selectors.js";
 import type { SessionState, SessionSummary } from "../apps/web/src/types.js";
 
@@ -1178,5 +1179,26 @@ describe("live-channel: when the chat says the channel is down (#590)", () => {
     assert.equal(msUntilLiveChannelDown({ status: "open", since: 0 }, 5_000, 3_000), null);
     assert.equal(msUntilLiveChannelDown({ status: "reconnecting", since: 0 }, 1_000, 3_000), 2_000);
     assert.equal(msUntilLiveChannelDown({ status: "reconnecting", since: 0 }, 9_000, 3_000), 0);
+  });
+});
+
+// The change feed (client traffic contract, rule 3): a node_changed frame
+// lands on the window's node-change bus (lib/node-changes.ts).
+describe("sessions-client: node_changed frames", () => {
+  it("hands a node_changed frame to the node-change bus", async () => {
+    const server = await fakeServer();
+    const transport = testTransport(server);
+    const client = createSessionsClient({ transport });
+    clients.push(client);
+    const heard: NodeChangeBatch[] = [];
+    const off = onNodeChanges((batch) => heard.push(batch));
+    const statuses: string[] = [];
+    client.onConnectionStatus((s) => statuses.push(s));
+    await waitUntil(() => statuses.includes("open"));
+    server.broadcast({ type: "node_changed", payload: { changes: [{ node_id: "N1", kind: "files" }], reset: false } });
+    await waitUntil(() => heard.length === 1);
+    assert.deepEqual(heard[0], { changes: [{ node_id: "N1", kind: "files" }], reset: false });
+    off();
+    client.disconnect();
   });
 });

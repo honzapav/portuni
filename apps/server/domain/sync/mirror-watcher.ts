@@ -82,6 +82,9 @@ export interface MirrorWatcherDeps {
   subscribe?: (onChange: () => void) => () => void;
   debounceMs?: number;
   onError?: (e: unknown) => void;
+  // Called after a reconcile that succeeded: the node's files on this
+  // device changed, which the change feed tells every window.
+  onReconciled?: (nodeId: string) => void;
 }
 
 export interface MirrorWatcher {
@@ -158,7 +161,10 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
           nodeId,
           prior.then(() =>
             reconcile({ userId: deps.userId, nodeId, absPath }).then(
-              () => clearWatcherError(nodeId, absPath),
+              () => {
+                clearWatcherError(nodeId, absPath);
+                deps.onReconciled?.(nodeId);
+              },
               (e) => {
                 recordWatcherError(nodeId, absPath, e);
                 onError(e);
@@ -193,6 +199,7 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
       try {
         await reconcile({ userId: deps.userId, nodeId: u.node_id, absPath: u.local_path });
         clearWatcherError(u.node_id, u.local_path);
+        deps.onReconciled?.(u.node_id);
       } catch (e) {
         recordWatcherError(u.node_id, u.local_path, e);
         onError(e);

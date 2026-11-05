@@ -10,6 +10,7 @@
 
 import type { DataSourceRow, SessionRow, SessionState } from "../../../shared/types.js";
 import type {
+  ChangesResponse,
   NodeConfigBatchResponse,
   NodeConfigEntry, SessionScopeRecord } from "../../../shared/api-types.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.js";
@@ -133,6 +134,10 @@ export interface CentralClient {
   // so a fake that predates it still satisfies the interface; the boot
   // falls back to dataSources + orientation per node.
   nodeConfigs?(nodeIds: readonly string[]): Promise<NodeConfigEntry[]>;
+  // GET /changes?since=&wait=: the change feed, held up to `waitSeconds`
+  // for the next change (boot/change-poller.ts). Optional for the same
+  // reason as nodeConfigs.
+  changes?(since: string | null, waitSeconds: number): Promise<ChangesResponse>;
   nodeExists(nodeId: string): Promise<boolean>;
   // The node's organization, read off central's own node-detail edges
   // (#407): the runner's task defaults resolve the organization default
@@ -255,9 +260,10 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
     method: string,
     path: string,
     body?: unknown,
+    timeoutOverrideMs?: number,
   ): Promise<{ status: number; json: unknown }> {
     const timeoutMs =
-      args.requestTimeoutMs ?? (method === "GET" ? GET_TIMEOUT_MS : MUTATION_TIMEOUT_MS);
+      timeoutOverrideMs ?? args.requestTimeoutMs ?? (method === "GET" ? GET_TIMEOUT_MS : MUTATION_TIMEOUT_MS);
     // The id of the request this call serves (#573), so the central
     // server's log line matches the webview's; a call no request caused (a
     // watcher tick) gets its own. The retry keeps the same id.
@@ -429,6 +435,17 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       invalidate(nodeId);
       if (r.status !== 200) throwFor(r.status, p, r.json);
       return r.json as RemoteSweepResult;
+    },
+
+    async changes(since, waitSeconds) {
+      const qs = new URLSearchParams();
+      if (since !== null) qs.set("since", since);
+      qs.set("wait", String(waitSeconds));
+      const p = `/changes?${qs.toString()}`;
+      // The long-poll outlasts the GET timeout by design.
+      const r = await request("GET", p, undefined, (waitSeconds + 10) * 1000);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as ChangesResponse;
     },
 
     async nodeConfigs(nodeIds) {

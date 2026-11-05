@@ -31,6 +31,7 @@ import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import { createSessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
 import { setSessionRuntimeForTesting } from "../apps/server/boot/session-runtime.js";
 import { clearTestContentDb, installTestContentDb } from "./helpers/content-db.js";
+import { publishNodeChange } from "../apps/server/infra/change-feed.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import type { SessionRow } from "../apps/server/shared/types.js";
 
@@ -582,6 +583,28 @@ describe("GET /sessions/ws", () => {
     // user_message beyond the brief.
     const events = await runtime.listEvents(session.id, {});
     assert.equal(events.filter((e) => e.kind === "user_message").length, 1);
+    ws.close();
+    await waitClose(ws);
+  });
+
+  // The change feed (client traffic contract, rule 3): a node write on this
+  // server reaches every open socket as one coalesced node_changed frame.
+  test("a node change on the server reaches the socket as a node_changed frame", async () => {
+    const token = await tokenFor(U1);
+    const ws = openSocket(base, token);
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    await collector.waitFor((f) => f.type === "session_states");
+    publishNodeChange(nodeId, "node");
+    publishNodeChange(nodeId, "files");
+    const frame = await collector.waitFor((f) => f.type === "node_changed");
+    assert.deepEqual(frame.payload, {
+      changes: [
+        { node_id: nodeId, kind: "node" },
+        { node_id: nodeId, kind: "files" },
+      ],
+      reset: false,
+    });
     ws.close();
     await waitClose(ws);
   });

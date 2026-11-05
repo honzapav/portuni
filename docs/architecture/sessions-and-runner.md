@@ -1088,6 +1088,19 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   (`test/api-sessions-ws.test.ts`), or that subscription sticks to an
   abandoned instance. `SessionRuntime.subscriberCount(target)` exists for
   leak checks.
+- **`node_changed`** (client traffic contract): the server's change feed
+  (`infra/change-feed.ts`, every graph and file write publishes the node
+  it touched) reaches every open socket as one coalesced
+  `node_changed { changes: [{node_id, kind: "node" | "files"}], reset }`
+  frame per 200 ms (`NODE_CHANGED_COALESCE_MS`), whoever the node belongs
+  to -- on the device the feed only holds what central let it see. In the
+  sync agent the feed is fed by `boot/change-poller.ts`, one long-poll of
+  central's `GET /changes?since=&wait=20` after another, plus the
+  watcher's own successful reconciles (`onReconciled`); a `reset` from
+  central (a restart, a cursor let go) is `announceReset()`, and the
+  window refetches what it shows once. A personal workspace's server
+  publishes into its own feed and sends the frame itself. The web hands
+  the frame to `lib/node-changes.ts`.
 
 ## Known gaps
 

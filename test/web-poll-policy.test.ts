@@ -5,6 +5,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  FALLBACK_POLL_MS,
   focusRefetchTargets,
   isFresh,
   nodeDetailPollTarget,
@@ -58,6 +59,12 @@ describe("shouldPollSyncStatus", () => {
 
   it("does not poll a pane whose surface is not on screen (Práce kept mounted behind another view)", () => {
     assert.equal(shouldPollSyncStatus({ tab: "files", hidden: false, rateLimited: false, visible: false }), false);
+  });
+});
+
+describe("FALLBACK_POLL_MS", () => {
+  it("the detail, sync-status and editor polls are 60 s fallbacks behind the change feed", () => {
+    assert.equal(FALLBACK_POLL_MS, 60_000);
   });
 });
 

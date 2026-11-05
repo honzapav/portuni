@@ -109,6 +109,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // /graph -- the one manage-gated field inside it (pending access
   // requests) is filtered by the handler itself, not by this route gate.
   if (pathname === "/overview" && m === "GET") return "read";
+  if (pathname === "/changes" && m === "GET") return "read";
   if (pathname === "/scope" && m === "GET") return "read";
   // GET /users backs the OwnerPicker dropdown (apps/server/api/users.ts).
   // Its only frontend call site is ActorModal's user_id picker

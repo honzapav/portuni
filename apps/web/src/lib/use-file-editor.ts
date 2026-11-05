@@ -4,6 +4,8 @@
 import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchFileContent, fetchFileVersion, saveFileContent, FileConflictError } from "../api";
+import { nodeChangeTouches, onNodeChanges } from "./node-changes";
+import { FALLBACK_POLL_MS } from "./poll-policy";
 
 export type EditorStatus =
   | { kind: "loading" }
@@ -97,23 +99,33 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
     setExternalChange(false);
   }, [nodeId, relPath]);
 
-  // Poll the on-disk version while a file is open. The backend's GET
-  // returns the sha256 `version`; if it moved past what we loaded, the
-  // file changed underneath us (an agent edit, a sync pull). We only
-  // FLAG it -- never silently swap content -- mirroring the save-time
-  // conflict UX. Paused when the tab is hidden. 5 s matches App's
-  // node-detail poll (App.tsx:492-509).
+  // Watch the on-disk version while a file is open. The backend's
+  // version-only GET returns the sha256 `version`; if it moved past what
+  // we loaded, the file changed underneath us (an agent edit, a sync
+  // pull). We only FLAG it -- never silently swap content -- mirroring the
+  // save-time conflict UX. Paused when the tab is hidden.
   useEffect(() => {
     if (nodeId == null || relPath == null || version == null) return;
-    const id = setInterval(() => {
-      if (document.hidden) return;
+    const check = () => {
       fetchFileVersion(nodeId, relPath)
         .then((v) => {
           if (v !== versionRef.current) setExternalChange(true);
         })
         .catch(() => undefined);
-    }, 5000);
-    return () => clearInterval(id);
+    };
+    // A change to this node's files arrives on the change feed
+    // (lib/node-changes.ts); the interval is the fallback for a dropped frame.
+    const off = onNodeChanges((batch) => {
+      if (nodeChangeTouches(batch, nodeId, "files")) check();
+    });
+    const id = setInterval(() => {
+      if (document.hidden) return;
+      check();
+    }, FALLBACK_POLL_MS);
+    return () => {
+      off();
+      clearInterval(id);
+    };
   }, [nodeId, relPath, version]);
 
   return {

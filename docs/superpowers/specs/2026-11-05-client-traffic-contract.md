@@ -26,9 +26,13 @@ bucket, the sidecar's device token another). The window's idle traffic is about
 A change to any surface comes with a test that pins the request count of the
 action it touches (close, open, select, focus, tab switch).
 
-## Where the rule is broken today
+## Where the rule was broken
 
-Ordered by impact. The step column names the migration step that fixes it.
+Ordered by impact. The step column names the migration step that fixed it;
+every step is in. What stays deliberately per item: the backfill registers
+new files one by one (a batch would split an on-disk move into a duplicate
+record, `boot/central-backfill.ts`), and a file move applies one request
+per file (each keeps its lock, order and `repair_needed`).
 
 | # | Trigger | Requests today | Step |
 |---|---|---|---|
@@ -51,7 +55,23 @@ Clean today: graph filters and search, switching threads inside Práce, position
 saves (batched), `/sync/pending` and `/sync/health` polls (throttled, paused
 when hidden). No layer retries a `429`.
 
-## Migration order
+## How the window learns of a change
+
+`infra/change-feed.ts`: every graph and file write on a server publishes
+the node it touched (`writeAudit` publishes for every audit entry that
+names a node; the file-sync engine and the edge routes publish on their
+own). `GET /changes?since=&wait=` reads the feed, holding the request up to
+25 s for the next change; a cursor the server does not know (a restart) or
+has let go answers `reset`. The sync agent long-polls it
+(`boot/change-poller.ts`) and republishes into its own feed, together
+with its own watcher's reconciles; a personal workspace's server is the
+feed itself. The live channel sends every window one coalesced
+`node_changed { changes: [{node_id, kind}], reset }` frame per 200 ms
+(`api/sessions-ws.ts`), and `lib/node-changes.ts` hands it to the detail,
+the Files tab, the open file and the sync counter. The detail,
+sync-status and editor polls are 60 s fallbacks (`FALLBACK_POLL_MS`).
+
+## The steps
 
 1. Contain: route `/mcp/info` to the device, a window-wide `429` cooldown the
    pollers obey, polls only for what is visible, focus refetches only the
@@ -64,9 +84,9 @@ when hidden). No layer retries a `429`.
    chats keep transcript state across view switches.
 4. Mutations return entities; `refetchAll` only for permission and subtree
    changes.
-5. Batch routes (resume-info, mirror configs, file registration, responsibility
-   reorder), version-only file check, a change channel for graph and files,
-   then the remaining polls go.
+5. Batch routes (resume-info, mirror configs, responsibility reorder),
+   version-only file check, the change feed, the remaining polls as
+   fallbacks.
 
-Steps 1 and 2 are one PR; the plan is
-`docs/superpowers/plans/2026-11-05-client-traffic-step-1-2.md`.
+Plans: `docs/superpowers/plans/2026-11-05-client-traffic-step-1-2.md`,
+`docs/superpowers/plans/2026-11-05-client-traffic-step-3-5.md`.

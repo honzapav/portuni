@@ -5,6 +5,11 @@
 // before each tick; the decisions are pure so test/web-poll-policy.test.ts
 // can pin them.
 
+// The detail, sync-status and open-file polls are fallbacks behind the
+// change feed (lib/node-changes.ts): a change reaches the window on the
+// live channel, the poll only catches what a dropped frame missed.
+export const FALLBACK_POLL_MS = 60_000;
+
 export type NodeDetailPollInput = {
   view: string;
   hidden: boolean;

@@ -23,6 +23,8 @@ import type { NodeConfigEntry } from "./shared/api-types.js";
 import type { DataSourceRow } from "./shared/types.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { createCentralClientFromEnv, type CentralClient } from "./domain/sync/central/client.js";
+import { publishNodeChange } from "./infra/change-feed.js";
+import { createChangePoller } from "./boot/change-poller.js";
 import { reconcilePathCentral } from "./domain/sync/central/engine-central.js";
 import { centralBackfillMirror, createCentralBackfillSweep } from "./boot/central-backfill.js";
 import {
@@ -169,13 +171,14 @@ async function agentMain(client: CentralClient, dataDir: string): Promise<void> 
   // without the socket mounted here central mode had no live channel at
   // all (the Rust side just reconnected forever).
   const sessionRuntime = createAgentSessionRuntime(client);
+  const sessionsWs = createSessionsWsServer(createAgentSessionsWsDeps(client, sessionRuntime));
   const handle = startHttpServer({
     port,
     host: "127.0.0.1",
     registerSigint: false,
     router: createAgentRouter(client, { sessionRuntime }),
     mcpTransport,
-    sessionsWs: createSessionsWsServer(createAgentSessionsWsDeps(client, sessionRuntime)),
+    sessionsWs,
   });
   await bindAndAnnounce(handle);
   console.error("[boot] central-mode sync agent (no local graph db)");
@@ -214,11 +217,29 @@ async function agentMain(client: CentralClient, dataDir: string): Promise<void> 
       backfill: false,
       backfillMirror: (m) => centralBackfillMirror(client, SOLO_USER, m),
       onError: (e) => console.error("[portuni:watch]", e),
+      onReconciled: (nodeId) => publishNodeChange(nodeId, "files"),
     });
     watcher
       .start()
       .then(() => console.log("[portuni:watch] mirror watcher active (central)"))
       .catch((e) => console.error("[portuni:watch] start failed:", e));
+  }
+
+  // The change feed (client traffic contract, rule 3): one long-poll of
+  // central's GET /changes replaces the windows' per-node polls. Every
+  // change central hands this device is republished into this device's
+  // own feed, which the live channel fans out; a reset tells every window
+  // to refetch what it shows once.
+  if (client.changes) {
+    const fetchChanges = client.changes.bind(client);
+    const changePoller = createChangePoller({
+      fetchChanges,
+      onChanges: (changes, reset) => {
+        if (reset) sessionsWs.announceReset();
+        for (const c of changes) publishNodeChange(c.node_id, c.kind);
+      },
+    });
+    changePoller.start();
   }
 
   // Central backfill: register anything on disk the records don't know yet,

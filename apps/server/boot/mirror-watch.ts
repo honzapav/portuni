@@ -7,6 +7,7 @@
 // per machine -- the desktop sidecar and the standalone server share the same
 // sync.db, so the standalone server defaults OFF to avoid double reconcile.
 
+import { publishNodeChange } from "../infra/change-feed.js";
 import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
 import { authMode } from "../infra/auth-config.js";
@@ -47,6 +48,7 @@ export function startMirrorWatcher(enabled: boolean): MirrorWatcher | null {
     db: getDb(),
     userId: SOLO_USER,
     onError: (e) => console.error("[portuni:watch]", e),
+    onReconciled: (nodeId) => publishNodeChange(nodeId, "files"),
   });
   // Stale registrations go before the watcher's start-time backfill, so it
   // never walks a mirror whose node is gone.
