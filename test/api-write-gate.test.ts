@@ -441,6 +441,20 @@ describe("REST file mutations: authorized on the file's own node", () => {
     }
   });
 
+  it("a delete replay confirms only the caller's own delete", async () => {
+    const goneId = ulid();
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail)
+            VALUES (?, ?, 'sync_delete_remote', 'file', ?, '{}')`,
+      args: [ulid(), SOLO, goneId],
+    });
+    const stranger = await call("DELETE", `/nodes/${visibleNodeId}/files/${goneId}?confirmed=true`, teammate);
+    assert.equal(stranger.statusCode, 404, stranger.body);
+    const own = await call("DELETE", `/nodes/${visibleNodeId}/files/${goneId}?confirmed=true`, deviceTokenIdentity);
+    assert.equal(own.statusCode, 200, own.body);
+    assert.equal((JSON.parse(own.body) as { already_deleted?: boolean }).already_deleted, true);
+  });
+
   for (const confirmed of [false, true]) {
     it(`move cannot put a file into a hidden node (confirmed: ${confirmed})`, async () => {
       const r = await call("POST", `/nodes/${visibleNodeId}/files/${visibleFileId}/move`, teammate, {

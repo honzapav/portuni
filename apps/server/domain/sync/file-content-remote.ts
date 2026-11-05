@@ -776,14 +776,15 @@ export async function deleteFileRemote(
     // attempt, not a preview) is treated this way, and only once verified
     // against this exact file_id's own delete record -- a genuinely unknown
     // id (typo, never existed) still throws instead of reporting a fake
-    // success.
+    // success. The record must be the caller's own: a replay comes from who
+    // deleted, and anyone else must not learn a hidden file ever existed.
     if (a.confirmed) {
       const priorDelete = await db.execute({
         sql: `SELECT timestamp FROM audit_log
-              WHERE target_type = 'file' AND target_id = ?
+              WHERE target_type = 'file' AND target_id = ? AND user_id = ?
                 AND action IN ('sync_delete', 'sync_delete_remote')
               ORDER BY timestamp DESC LIMIT 1`,
-        args: [a.fileId],
+        args: [a.fileId, a.userId],
       });
       if (priorDelete.rows.length > 0) {
         return {
