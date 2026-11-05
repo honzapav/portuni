@@ -344,6 +344,99 @@ describe("REST write gate: graph-plane mutations", () => {
   });
 });
 
+// File mutations act on the file's own node, whatever node the URL names, and
+// only a bare device token (the sync agent) skips the write gate.
+describe("REST file mutations: authorized on the file's own node", () => {
+  const OTHER_USER = "01OTHER000000000000000000";
+  const teammate: RequestIdentity = { ...deviceTokenIdentity, userId: OTHER_USER, globalScope: "write" };
+  let db: DbClient;
+  let workspace: string;
+  let visibleNodeId: string;
+  let privateNodeId: string;
+  let fileId: string;
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-api-file-node-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    db = await openTestDb();
+    await ensureSchemaOn(db);
+    setDbForTesting(db);
+    await db.execute({
+      sql: "INSERT INTO users (id, email, name) VALUES (?, 'other@x.com', 'Other')",
+      args: [OTHER_USER],
+    });
+    visibleNodeId = ulid();
+    privateNodeId = ulid();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
+            VALUES (?, 'project', 'Open', 'active', 'team', 'open', ?),
+                   (?, 'project', 'Secret', 'active', 'private', 'secret', ?)`,
+      args: [visibleNodeId, SOLO, privateNodeId, SOLO],
+    });
+    fileId = ulid();
+    await db.execute({
+      sql: `INSERT INTO files (id, node_id, filename, remote_path, status, created_by)
+            VALUES (?, ?, 'secret.md', 'x/wip/secret.md', 'wip', ?)`,
+      args: [fileId, privateNodeId, SOLO],
+    });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  async function fileRow(): Promise<{ filename: string } | undefined> {
+    const r = await db.execute({ sql: "SELECT filename FROM files WHERE id = ?", args: [fileId] });
+    return r.rows[0] as unknown as { filename: string } | undefined;
+  }
+
+  it("DELETE through a visible node cannot reach a file on a hidden node", async () => {
+    const r = await call("DELETE", `/nodes/${visibleNodeId}/files/${fileId}?confirmed=true`, teammate);
+    assert.equal(r.statusCode, 404, r.body);
+    assert.ok(await fileRow());
+  });
+
+  it("rename through a visible node cannot reach a file on a hidden node", async () => {
+    const r = await call("POST", `/nodes/${visibleNodeId}/files/${fileId}/rename`, teammate, {
+      new_filename: "stolen.md",
+    });
+    assert.equal(r.statusCode, 404, r.body);
+    assert.equal((await fileRow())?.filename, "secret.md");
+  });
+
+  it("move through a visible node cannot reach a file on a hidden node", async () => {
+    const r = await call("POST", `/nodes/${visibleNodeId}/files/${fileId}/move`, teammate, {
+      new_section: "outputs",
+      confirmed: true,
+    });
+    assert.equal(r.statusCode, 404, r.body);
+  });
+
+  for (const [label, method, path, body] of [
+    ["create", "POST", () => `/nodes/${visibleNodeId}/files`, { filename: "n.md", section: "wip", content: "x" }],
+    ["rename", "POST", () => `/nodes/${visibleNodeId}/files/${ulid()}/rename`, { new_filename: "n.md" }],
+    ["move", "POST", () => `/nodes/${visibleNodeId}/files/${ulid()}/move`, { new_section: "outputs" }],
+    ["delete", "DELETE", () => `/nodes/${visibleNodeId}/files/${ulid()}?confirmed=true`, undefined],
+  ] as const) {
+    it(`${label}: oauth_grant (chat connector) identity is refused`, async () => {
+      const r = await call(method, path(), oauthGrantIdentity, body);
+      assert.equal(r.statusCode, 403, r.body);
+    });
+
+    it(`${label}: env request without the webview proof is refused`, async () => {
+      const r = await call(method, path(), uiIdentity, body);
+      assert.equal(r.statusCode, 403, r.body);
+    });
+
+    it(`${label}: a device token carrying an unresolved spawn id is refused`, async () => {
+      const r = await call(method, path(), deviceTokenIdentity, body, { "x-portuni-spawn-id": ulid() });
+      assert.equal(r.statusCode, 403, r.body);
+    });
+  }
+});
+
 // #210 point 2 / #213: env auth mode resolves every request to the same
 // unscoped solo identity regardless of caller (auth/env-adapter.ts), which
 // used to make the REST write gate a no-op for anything reaching the

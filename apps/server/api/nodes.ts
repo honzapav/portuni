@@ -48,7 +48,7 @@ import {
   type RequestIdentity,
 } from "../http/middleware.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
-import { guardRestNodeWrite, filterRestWritableNodeIds, guardHeadlessFileWrite } from "./write-gate.js";
+import { guardRestNodeWrite, filterRestWritableNodeIds, guardFileWrite } from "./write-gate.js";
 import { z } from "zod";
 import {
   findVisibleNodeRow,
@@ -734,7 +734,7 @@ export async function handleSyncRun(
   nodeId: string,
 ): Promise<void> {
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    const db = await openWritableNode(req, res, identity, nodeId, guardFileWrite);
     if (!db) return;
     // The same per-node lock the background job pool takes (#417): this
     // route and the remote watcher's catch-up sweep of the same node would
@@ -759,7 +759,7 @@ export async function handleRemoteSweep(
   nodeId: string,
 ): Promise<void> {
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    const db = await openWritableNode(req, res, identity, nodeId, guardFileWrite);
     if (!db) return;
     // Same node lock as the sync run above and the job pool (#417) -- an
     // agent-mode device asking for this sweep must not overlap the

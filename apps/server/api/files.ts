@@ -54,7 +54,7 @@ import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { NodeNotFoundError } from "../domain/sync/node-info.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
 import { filterVisibleNodeIds } from "../auth/node-access.js";
-import { guardHeadlessFileWrite } from "./write-gate.js";
+import { guardFileWrite } from "./write-gate.js";
 import type { FileContentResponse, PreviewAssetResponse } from "../shared/api-types.js";
 import {
   fileCreateSchema,
@@ -227,7 +227,7 @@ export async function handlePutFileContent(
     return;
   }
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    const db = await openWritableNode(req, res, identity, nodeId, guardFileWrite);
     if (!db) return;
     // Binary-safe byte write for the central-mode sync agent (remote-only,
     // see the GET handler). Response carries canonical_hash so the agent can
@@ -328,7 +328,7 @@ async function handleRegisterRoute<T>(
   const body = await parseJsonBody(req, res, schema);
   if (!body) return;
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    const db = await openWritableNode(req, res, identity, nodeId, guardFileWrite);
     if (!db) return;
     respondJson(res, 201, await register(db, body));
   } catch (err) {
@@ -432,7 +432,7 @@ export async function handleCreateFile(
   const body = await parseJsonBody(req, res, fileCreateSchema);
   if (!body) return;
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    const db = await openWritableNode(req, res, identity, nodeId, guardFileWrite);
     if (!db) return;
     // Mirror present -> local create (registers + pushes). No mirror
     // (central / VPS) -> adapter-direct create against the routed remote.
@@ -460,6 +460,15 @@ export async function handleCreateFile(
 // Record+remote move. On the central server getMirrorPath is null, so
 // moveFile's local disk step no-ops by design -- the device that owns the
 // mirror applies its own disk step (agent front door / watcher pairing).
+// The node a file mutation is authorized against: the file's own node, never
+// just the one the URL names, or a caller could reach a file on a hidden node
+// through a node it can see. A file with no row keeps the URL's node, so a
+// retried delete still reaches its replay branch.
+async function fileOwnerNodeId(fileId: string, urlNodeId: string): Promise<string> {
+  const r = await getDb().execute({ sql: "SELECT node_id FROM files WHERE id = ?", args: [fileId] });
+  return r.rows.length > 0 ? String(r.rows[0].node_id) : urlNodeId;
+}
+
 export async function handleMoveFile(
   req: IncomingMessage,
   res: ServerResponse,
@@ -470,9 +479,10 @@ export async function handleMoveFile(
   const body = await parseJsonBody(req, res, fileMoveSchema);
   if (!body) return;
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    const ownerNodeId = await fileOwnerNodeId(fileId, nodeId);
+    const db = await openWritableNode(req, res, identity, ownerNodeId, guardFileWrite);
     if (!db) return;
-    if (body.new_node_id && !(await guardHeadlessFileWrite(req, res, identity, body.new_node_id))) return;
+    if (body.new_node_id && !(await guardFileWrite(req, res, identity, body.new_node_id))) return;
     const r = await moveFile(db, {
       userId: identity.userId,
       fileId,
@@ -498,11 +508,12 @@ export async function handleRenameFile(
   const body = await parseJsonBody(req, res, fileRenameSchema);
   if (!body) return;
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    const ownerNodeId = await fileOwnerNodeId(fileId, nodeId);
+    const db = await openWritableNode(req, res, identity, ownerNodeId, guardFileWrite);
     if (!db) return;
     const r = await byMirror(
       identity,
-      nodeId,
+      ownerNodeId,
       () =>
         renameFile(db, {
           userId: identity.userId,
@@ -512,7 +523,7 @@ export async function handleRenameFile(
       () =>
         renameFileRemote(db, {
           userId: identity.userId,
-          nodeId,
+          nodeId: ownerNodeId,
           fileId,
           newFilename: body.new_filename,
         }),
@@ -533,11 +544,12 @@ export async function handleDeleteFile(
 ): Promise<void> {
   const confirmed = url.searchParams.get("confirmed") === "true";
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
+    const ownerNodeId = await fileOwnerNodeId(fileId, nodeId);
+    const db = await openWritableNode(req, res, identity, ownerNodeId, guardFileWrite);
     if (!db) return;
     const r = await byMirror(
       identity,
-      nodeId,
+      ownerNodeId,
       () =>
         deleteFile(db, {
           userId: identity.userId,
@@ -548,7 +560,7 @@ export async function handleDeleteFile(
       () =>
         deleteFileRemote(db, {
           userId: identity.userId,
-          nodeId,
+          nodeId: ownerNodeId,
           fileId,
           mode: "complete",
           confirmed,
