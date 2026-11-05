@@ -308,10 +308,13 @@ export default function SessionChat({
       .then((row) => {
         if (!row.runner) return;
         initialChoiceRef.current = { runner: row.runner, instanceId: row.instance_id };
-        // The window's runner list may have been read while the same failed
-        // detection still held; forget it, so every mounted picker reads it
-        // once more now a runner is there (one request per window).
+        // The window's runner list, and the models and defaults read under
+        // the "no runner" fallback key, may come from while the same failed
+        // detection still held; forget them, so every mounted picker reads
+        // them once more now a runner is there.
         runnersResource.invalidate();
+        runnerModels.invalidate();
+        runnerDefaults.invalidate();
       })
       .catch(() => undefined);
   }, [needsRunner, sessionId]);
