@@ -54,7 +54,7 @@ import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { NodeNotFoundError } from "../domain/sync/node-info.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
 import { filterVisibleNodeIds } from "../auth/node-access.js";
-import { guardRestNodeWrite, guardHeadlessFileWrite } from "./write-gate.js";
+import { guardHeadlessFileWrite } from "./write-gate.js";
 import type { FileContentResponse, PreviewAssetResponse } from "../shared/api-types.js";
 import {
   fileCreateSchema,
@@ -432,7 +432,7 @@ export async function handleCreateFile(
   const body = await parseJsonBody(req, res, fileCreateSchema);
   if (!body) return;
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardRestNodeWrite);
+    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
     if (!db) return;
     // Mirror present -> local create (registers + pushes). No mirror
     // (central / VPS) -> adapter-direct create against the routed remote.
@@ -498,7 +498,7 @@ export async function handleRenameFile(
   const body = await parseJsonBody(req, res, fileRenameSchema);
   if (!body) return;
   try {
-    const db = await openWritableNode(req, res, identity, nodeId, guardRestNodeWrite);
+    const db = await openWritableNode(req, res, identity, nodeId, guardHeadlessFileWrite);
     if (!db) return;
     const r = await byMirror(
       identity,

@@ -50,9 +50,9 @@ The full variable inventory, including tunables not listed here, lives in [`docs
 
 | Scope | Who | Capabilities |
 |-------|-----|--------------|
-| admin | `PORTUNI_GROUPS_ADMIN` members | Everything: deletes, user management, remotes, routing policy; sees every node regardless of visibility |
+| admin | `PORTUNI_GROUPS_ADMIN` members | Everything: deleting nodes, actors and other graph entities, user management, remotes, routing policy; sees every node regardless of visibility |
 | manage | `PORTUNI_GROUPS_MANAGE` members | write + placing nodes in the network (move between organizations), node sharing (access lists, approving access requests), graph positions |
-| write | `PORTUNI_GROUPS_WRITE` members | Everyday work: create and edit nodes, edges, actors, responsibilities, data sources and tools; log and resolve events; files (store, pull, move, snapshot) |
+| write | `PORTUNI_GROUPS_WRITE` members | Everyday work: create and edit nodes, edges, actors, responsibilities, data sources and tools; log and resolve events; files (store, pull, move, rename, delete, snapshot) |
 | read | any authenticated user from an allowed domain | Read only: context, nodes, files, events. Cannot create or edit anything |
 
 Each variable takes a comma-separated list, so several groups can grant the same scope (e.g. `PORTUNI_GROUPS_WRITE=portuni-team@yourdomain,tempo-crew@yourdomain`). Highest matching group wins. On top of these global scopes, individual nodes can be restricted with `group` visibility — a node a user can't see simply answers "not found." A restricted node in **request** mode instead shows up as a locked chip; the user can ask for access from there, and managers approve or deny the request in the node's sharing section or in Settings → Access requests.

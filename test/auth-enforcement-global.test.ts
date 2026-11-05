@@ -133,6 +133,12 @@ describe("minScopeForRoute", () => {
     assert.equal(minScopeForRoute("POST", "/nodes/01ABC/access/request"), "read");
   });
 
+  it("maps DELETE /nodes/:id/files/:fileId -> write", () => {
+    assert.equal(minScopeForRoute("DELETE", "/nodes/01ABC/files/01DEF"), "write");
+    assert.equal(TOOL_MIN_SCOPE.portuni_delete_file, "write");
+    assert.equal(TOOL_MIN_SCOPE.portuni_delete_files, "write");
+  });
+
   it("maps DELETE /nodes/:id -> admin", () => {
     assert.equal(minScopeForRoute("DELETE", "/nodes/01ABC"), "admin");
   });

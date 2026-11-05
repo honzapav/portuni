@@ -313,8 +313,9 @@ One line each; the linked doc carries the mechanism and the reasoning.
 - Disk read scope is the real mirror path or nothing: `readable_path`/
   `local_path` on node answers, `portuni_read_file` for a node with no mirror
   here (1 MB inline cap, then a temp file; no chunked read parameter).
-- Scope tiers: `read` < `write` < `manage` (move, sharing, positions) <
-  `admin` (deletes, users, `setup_remote`, routing). `PORTUNI_AUTH_MODE=env`
+- Scope tiers: `read` < `write` (includes deleting files) < `manage` (move,
+  sharing, positions) < `admin` (graph deletes, users, `setup_remote`,
+  routing). `PORTUNI_AUTH_MODE=env`
   is the solo bearer token, `google` is OAuth + Groups.
 
 ### Database (`database-and-dialects.md`)

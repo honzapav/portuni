@@ -9,16 +9,15 @@
 // Deliberately NOT applied to the file-content/sync-plane REST endpoints
 // that CentralClient (domain/sync/central/client.ts, "Auth: a per-user
 // device token") itself calls to drive the central-mode sync agent's
-// deterministic reconciliation -- PUT file content, register-file(s),
-// move/delete file records (handleMoveFile/handleDeleteFile's mirror-less
-// branch is exactly CentralClient.moveFileRecord/deleteFileRecord), sync-info,
-// sync-run, remote-sweep. That reconciliation has no per-request home-node/
+// deterministic reconciliation and the desktop's file actions -- PUT file
+// content, create, register-file(s), rename/move/delete file records
+// (CentralClient.createFile/renameFile/moveFileRecord/deleteFileRecord),
+// sync-info, sync-run, remote-sweep. That reconciliation has no per-request home-node/
 // session context to check against -- gating it here would refuse the
 // agent's own already-approved sync traffic outright (its write-scope check
 // already happened once, at the MCP tool call that triggered the sync, or
 // the mirror watcher acting on the device's own disk state -- see
-// CLAUDE.md's "File state is deterministic" gotcha). File lifecycle
-// endpoints CentralClient never calls (create, rename) stay gated below.
+// CLAUDE.md's "File state is deterministic" gotcha).
 // #211 (verification follow-up to #203) asked to also gate the routes above
 // on the strength of "a device-token agent can still use them" -- but
 // test/api-write-gate.test.ts already asserts PUT /nodes/:id/file passes for
@@ -261,8 +260,8 @@ export async function guardRestNodeWrite(
 }
 
 // Headless-only gate for the file-plane routes that stay otherwise ungated
-// above (PUT file content, register/register-batch, move, delete, sync,
-// remote-sweep) -- CentralClient's own teammate-sync channel calls these
+// above (PUT file content, create, register/register-batch, rename, move,
+// delete, sync, remote-sweep) -- CentralClient's own teammate-sync channel calls these
 // with a bare (non-headless) device token and must keep working unchanged,
 // so this deliberately does NOT call guardRestNodeWrite unconditionally
 // (that would 403 every teammate's sync run, see the header comment). It

@@ -287,20 +287,20 @@ describe("REST write gate: graph-plane mutations", () => {
     assert.equal(r.statusCode, 403, r.body);
   });
 
-  it("POST /nodes/:id/files (create): device_token identity is refused before reaching the mirrorless remote-create path", async () => {
+  it("POST /nodes/:id/files (create) stays ungated for device_token: the sync agent's createFile rides it", async () => {
     const r = await call("POST", `/nodes/${nodeId}/files`, deviceTokenIdentity, {
       filename: "note.md",
       section: "wip",
       content: "hi",
     });
-    assert.equal(r.statusCode, 403, r.body);
+    assert.notEqual(r.statusCode, 403, r.body);
   });
 
-  it("POST /nodes/:id/files/:fileId/rename: device_token identity is refused", async () => {
+  it("POST /nodes/:id/files/:fileId/rename stays ungated for device_token: the sync agent's renameFile rides it", async () => {
     const r = await call("POST", `/nodes/${nodeId}/files/${ulid()}/rename`, deviceTokenIdentity, {
       new_filename: "renamed.md",
     });
-    assert.equal(r.statusCode, 403, r.body);
+    assert.notEqual(r.statusCode, 403, r.body);
   });
 
   it("POST /nodes/:id/file (PUT content) stays ungated for device_token: it is the central-mode sync agent's own channel", async () => {
