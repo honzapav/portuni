@@ -147,6 +147,11 @@ export interface CentralClient {
   // see in the given states (api/sessions.ts's handleListSessions); the
   // agent-mode live channel's initial session_state snapshot.
   listSessionRecords(opts: { states: readonly SessionState[]; limit?: number }): Promise<SessionRow[]>;
+  // The caller's own records with these ids, any state, in one request
+  // (GET /sessions?ids=): the sync agent's resume-info batch. Optional so
+  // a fake that predates it still satisfies the interface; the router
+  // falls back to one getSessionRecord per id.
+  listSessionRecordsByIds?(ids: readonly string[]): Promise<SessionRow[]>;
   createSessionRecord(input: CreateRunnerSessionInput): Promise<SessionRow>;
   // #374's draft thread, created before a brief or runner exists. Same
   // POST /sessions/record endpoint, its draft shape -- the row is the
@@ -472,6 +477,18 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       const r = await request("GET", p);
       if (r.status !== 200) throwFor(r.status, p, r.json);
       return (r.json as { sessions: SessionRow[] }).sessions;
+    },
+
+    async listSessionRecordsByIds(ids) {
+      const out: SessionRow[] = [];
+      for (let i = 0; i < ids.length; i += 200) {
+        const chunk = ids.slice(i, i + 200);
+        const p = `/sessions?ids=${encodeURIComponent(chunk.join(","))}`;
+        const r = await request("GET", p);
+        if (r.status !== 200) throwFor(r.status, p, r.json);
+        out.push(...(r.json as { sessions: SessionRow[] }).sessions);
+      }
+      return out;
     },
 
     async createSessionRecord(input) {

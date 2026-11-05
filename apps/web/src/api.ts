@@ -327,6 +327,19 @@ export function fetchPersistentSessionResumeInfo(
   return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
 }
 
+// POST /sessions/resume-info -- the Relace tab's one request for every
+// suspended row it has no fresh answer for (client traffic contract, rule
+// 6); unknown and foreign ids are left out of the answer.
+export function fetchSessionsResumeInfo(
+  ids: readonly string[],
+  configDir?: string | null,
+): Promise<{ infos: SessionResumeInfo[] }> {
+  return jsonRequest<{ infos: SessionResumeInfo[] }>("POST", "/sessions/resume-info", {
+    ids,
+    ...(configDir ? { config_dir: configDir } : {}),
+  });
+}
+
 // GET /sessions/:id/events -- a device-local route (#458): the transcript
 // is the running device's own content.db, so the machine that answers is
 // the one that has it. The chat replays the log over the live channel, so

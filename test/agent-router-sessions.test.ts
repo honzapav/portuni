@@ -1497,6 +1497,28 @@ describe("agent-router: sessions/tasks", () => {
   // #456: resume-info moved to the device-local list -- the summary it
   // reports on is content (content.db) and the handoff file it hashes is in
   // this device's mirror, neither of which central has.
+  it("POST /sessions/resume-info answers every id in one request through the sidecar", async () => {
+    stubScript([{ wait: "message" }]);
+    const start = await authFetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "x", runner: "fake" }),
+    });
+    const { session } = (await start.json()) as { session: SessionRow };
+    assert.equal((await authFetch(`${base}/sessions/${session.id}/handoff`, { method: "POST" })).status, 200);
+
+    const res = await authFetch(`${base}/sessions/resume-info`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: [session.id, "nope"] }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { infos: { session_id: string; handoff_path: string | null }[] };
+    assert.equal(body.infos.length, 1, "an unknown id is left out, not a 404 for the batch");
+    assert.equal(body.infos[0].session_id, session.id);
+    assert.equal(body.infos[0].handoff_path, `wip/sessions/${session.id}-handoff.md`);
+  });
+
   it("GET /sessions/:id/resume-info is served by the sidecar, off this device's mirror and content store", async () => {
     stubScript([{ wait: "message" }]);
     const start = await authFetch(`${base}/sessions`, {

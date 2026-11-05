@@ -10,14 +10,14 @@
 // contract, rule 3).
 
 import { displayError } from "../errors";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { Check, CircleX, FileText, GitPullRequestArrow, MessageSquare, Pencil, Redo2, X } from "lucide-react";
 import type { DetailFile, SessionResumeInfo, SessionRunRow, SessionState, SessionSummary } from "../types";
 import {
   fetchNodePersistentSessions,
-  fetchPersistentSessionResumeInfo,
+  fetchSessionsResumeInfo,
   closePersistentSession,
   continueSession,
   deleteDraftSession,
@@ -25,7 +25,7 @@ import {
   startSessionFromHandoff,
 } from "../api";
 import { handoffFileEntries, type HandoffFileEntry } from "../lib/handoff-files";
-import { cachedResumeInfo } from "../lib/resume-info-cache";
+import { peekResumeInfo, primeResumeInfo, resumeInfoIdsToAsk } from "../lib/resume-info-cache";
 import { useLocalHost } from "../lib/use-local-host";
 import {
   hostDisplayName,
@@ -129,6 +129,28 @@ export function SessionsSection({
     sessionStore,
     useCallback((s: SessionStore) => selectNodeSessionRows(s, nodeId, includeArchived), [nodeId, includeArchived]),
   );
+  // Resume-info for every suspended row without a fresh answer, in one
+  // request (lib/resume-info-cache.ts); `resumeInfoVersion` re-renders the
+  // rows once the cache is primed.
+  const [resumeInfoVersion, setResumeInfoVersion] = useState(0);
+  const askingRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const ids = resumeInfoIdsToAsk(sessions).filter((id) => !askingRef.current.has(id));
+    if (ids.length === 0) return;
+    for (const id of ids) askingRef.current.add(id);
+    fetchSessionsResumeInfo(ids)
+      .then(({ infos }) => {
+        primeResumeInfo(infos);
+        setResumeInfoVersion((v) => v + 1);
+      })
+      .catch(() => {
+        /* resumability is informational -- a failed fetch just hides the hint */
+      })
+      .finally(() => {
+        for (const id of ids) askingRef.current.delete(id);
+      });
+  }, [sessions]);
+
   // A thread started elsewhere reaches this node as a frame, which leaves
   // a stub the rows above skip. App.tsx completes stubs of the nodes open
   // in Práce; this tab may show a node that is not (Graf), so it asks for
@@ -271,6 +293,7 @@ export function SessionsSection({
             <SessionRow
               key={s.id}
               session={s}
+              resumeInfo={resumeInfoVersion >= 0 ? peekResumeInfo(s.id) : null}
               onContinue={onSessionStarted ? () => void handleContinue(s.id, s.state) : undefined}
               continuing={continuingId === s.id}
               continueDisabled={continuingId !== null}
@@ -301,6 +324,7 @@ export function SessionsSection({
 
 function SessionRow({
   session,
+  resumeInfo,
   onContinue,
   continuing,
   continueDisabled,
@@ -309,6 +333,8 @@ function SessionRow({
   onOpenHandoff,
 }: {
   session: SessionSummary;
+  // The section's batched answer for this row (null while unknown).
+  resumeInfo: SessionResumeInfo | null;
   // "Pokračovat v nové session" on a closed or archived row; absent where
   // the caller has no chat surface to show the new thread in.
   onContinue?: () => void;
@@ -325,28 +351,6 @@ function SessionRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name);
   const [saving, setSaving] = useState(false);
-  const [resumeInfo, setResumeInfo] = useState<SessionResumeInfo | null>(null);
-
-  // Resumability is only meaningful (and only worth the round trip) for a
-  // suspended session -- fetched per row, once per suspension
-  // (lib/resume-info-cache.ts; App.tsx forgets the answer when a frame
-  // moves the thread out of `suspended`): a remount of the tab shows the
-  // cached answer instead of asking the server for every suspended row
-  // again.
-  useEffect(() => {
-    if (session.state !== "suspended") return;
-    let cancelled = false;
-    cachedResumeInfo(session.id, fetchPersistentSessionResumeInfo)
-      .then((info) => {
-        if (!cancelled) setResumeInfo(info);
-      })
-      .catch(() => {
-        /* resumability is informational -- a failed fetch just hides the hint */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [session.id, session.state]);
 
   const save = async () => {
     const trimmed = draft.trim();

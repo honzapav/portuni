@@ -167,6 +167,25 @@ export async function handleListSessions(
   url: URL,
 ): Promise<void> {
   try {
+    // `ids`: the caller's own sessions with these ids, any state -- what
+    // the sync agent asks for the Relace tab's resume-info batch instead of
+    // one GET per id.
+    const idsParam = url.searchParams.get("ids");
+    if (idsParam !== null) {
+      const ids = [...new Set(idsParam.split(",").map((x) => x.trim()).filter(Boolean))];
+      if (ids.length === 0 || ids.length > 200) {
+        respondApiError(res, 400, "INVALID_REQUEST", "ids: 1 to 200 session ids");
+        return;
+      }
+      const db = getDb();
+      const rows: SessionRow[] = [];
+      for (const id of ids) {
+        const row = await getSession(db, id);
+        if (row && row.user_id === identity.userId) rows.push(row);
+      }
+      respondJson(res, 200, { sessions: rows });
+      return;
+    }
     const parsed = ListSessionsQuery.safeParse({
       state: url.searchParams.get("state") ?? "running,suspended",
       limit: url.searchParams.get("limit") ?? undefined,
@@ -495,6 +514,41 @@ export async function sessionResumeInfoPayload(
     generated_by: info.generatedBy,
     reason: info.reason,
   };
+}
+
+// One request for every suspended row of the Relace tab (client traffic
+// contract, rule 6). The caller's own sessions answer; anyone else's and
+// unknown ids are left out -- the batch is never a 404.
+export const ResumeInfoBatchBody = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(200),
+  config_dir: z.string().min(1).optional(),
+});
+
+export async function handlePostSessionsResumeInfo(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    const body = await parseJsonBody(req, res, ResumeInfoBatchBody);
+    if (!body) return;
+    const db = getDb();
+    const infos: SessionResumeInfo[] = [];
+    for (const id of new Set(body.ids)) {
+      let session: SessionRow;
+      try {
+        session = await sessionAccess(db, identity, id, "read");
+      } catch (err) {
+        if (err instanceof SessionAccessError) continue;
+        throw err;
+      }
+      const mirrorRoot = session.node_id ? await getMirrorPath(identity.userId, session.node_id) : null;
+      infos.push(await sessionResumeInfoPayload(session, mirrorRoot, body.config_dir ?? null));
+    }
+    respondJson(res, 200, { infos });
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/resume-info`, err);
+  }
 }
 
 export async function handleGetSessionResumeInfo(

@@ -119,6 +119,7 @@ import {
   handleDeleteSession,
   handleGetSession,
   handleGetSessionResumeInfo,
+  handlePostSessionsResumeInfo,
   handleGetSessionScope,
   handleGetSessionSignals,
   handleInterruptSession,
@@ -788,6 +789,13 @@ async function routeSessions(
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
   if (stateMatch && method === "POST") {
     await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));
+    return true;
+  }
+  // The Relace tab's one request for every suspended row (client traffic
+  // contract, rule 6); the literal segment never collides with a session
+  // id, like /sessions/record above.
+  if (pathname === "/sessions/resume-info" && method === "POST") {
+    await handlePostSessionsResumeInfo(req, res, identity);
     return true;
   }
   const resumeInfoMatch = pathname.match(/^\/sessions\/([^/]+)\/resume-info$/);

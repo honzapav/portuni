@@ -66,6 +66,7 @@ import {
   MessageBody,
   ContinueSessionBody,
   SessionLocaleBody,
+  ResumeInfoBatchBody,
   sessionResumeInfoPayload,
 } from "./sessions.js";
 import { respondSessionRefusal } from "./session-refusals.js";
@@ -750,6 +751,32 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         respondJson(res, 200, signals);
       } catch (err) {
         respondError(res, `GET /sessions/${sessionId}/signals`, err);
+      }
+      return true;
+    }
+
+    // The Relace tab's one request for every suspended row (client traffic
+    // contract, rule 6): the records come from central in one request too
+    // (GET /sessions?ids=, listSessionRecordsByIds) where the client has
+    // it; the answers are this device's, as for the single route below.
+    if (pathname === "/sessions/resume-info" && method === "POST") {
+      const body = await parseJsonBody(req, res, ResumeInfoBatchBody);
+      if (!body) return true;
+      try {
+        const ids = [...new Set(body.ids)];
+        const rows = client.listSessionRecordsByIds
+          ? await client.listSessionRecordsByIds(ids)
+          : (await Promise.all(ids.map((id) => sessionRuntime.getSession(id)))).filter(
+              (s): s is NonNullable<typeof s> => s !== null,
+            );
+        const infos = [];
+        for (const session of rows) {
+          const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
+          infos.push(await sessionResumeInfoPayload(session, mirrorRoot, body.config_dir ?? null));
+        }
+        respondJson(res, 200, { infos });
+      } catch (err) {
+        respondError(res, "POST /sessions/resume-info", err);
       }
       return true;
     }

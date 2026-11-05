@@ -234,6 +234,8 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // frames on it are gated per frame at the write tier (api/sessions-ws.ts).
   if (pathname === "/sessions/ws" && m === "GET") return "read";
   if (pathname === "/sessions/record" && m === "POST") return "write";
+  // A read, however it is sent: the batch of resume-info answers.
+  if (pathname === "/sessions/resume-info" && m === "POST") return "read";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   // Removes a draft only (#374) -- sessionAccess's "message" tier further
