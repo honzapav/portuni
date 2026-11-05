@@ -8,7 +8,7 @@
 // SyncOverview's pattern.
 
 import { displayError } from "../errors";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, Clock, MessagesSquare, RefreshCw, Sparkles } from "lucide-react";
 import { capRows, overviewCounters, splitThreadsAndCli } from "../lib/overview-view";
@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { SessionStateMessage } from "../lib/sessions-client";
-import { mergeLiveSessionStates, sessionRowChip, sortInboxSessions } from "../lib/session-views";
+import { mergeLiveSessionStates, overviewMissesLiveThread, sessionRowChip, sortInboxSessions } from "../lib/session-views";
 import { formatDateTime } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
 import { nodeTypeLabel } from "../lib/node-type-labels";
@@ -38,9 +38,9 @@ type Props = {
   onSelectNode: (nodeId: string) => void;
   onOpenSession: (nodeId: string, sessionId: string) => void;
   // The window's live session_state map (App.tsx, from the socket): the
-  // Relace card's rows take state/waiting_since from it between loads,
-  // and a change in the set of live sessions reloads the whole overview
-  // (a new task shows up, a closed one leaves the inbox) -- no polling.
+  // Relace card's rows take state/waiting_since from it between loads, and
+  // a live thread the payload does not list (a new task) reloads the
+  // overview once -- no polling, no reload for a state change.
   liveStates?: Readonly<Record<string, SessionStateMessage>>;
   // The counter strip (v2 spec, "Přehled"): the unsynced total from
   // /sync/pending, and where each counter leads -- Práce for the first two,
@@ -81,17 +81,17 @@ export default function OverviewView({
     }
   }, []);
 
-  const liveStamp = useMemo(
-    () =>
-      Object.values(liveStates ?? {})
-        .map((s) => `${s.session_id}:${s.state}`)
-        .sort()
-        .join(","),
-    [liveStates],
-  );
   useEffect(() => {
     void load();
-  }, [load, liveStamp]);
+  }, [load]);
+  // A thread started since the load is the one thing the live map cannot
+  // overlay onto the payload (lib/session-views.ts overviewMissesLiveThread);
+  // everything else -- a state change, a close -- lands through
+  // mergeLiveSessionStates below. `data` in the deps settles the effect
+  // once the refetched payload lists the thread.
+  useEffect(() => {
+    if (overviewMissesLiveThread(data, liveStates ?? {})) void load();
+  }, [data, liveStates, load]);
 
   const syncIssues = showSync && data ? data.attention.sync_issues : [];
 

@@ -20,6 +20,7 @@ import {
   sessionRowContinues,
   threadCanContinue,
   isOpenableChatState,
+  overviewMissesLiveThread,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -130,6 +131,41 @@ describe("applyLiveSessionState / mergeLiveSessionStates", () => {
     const [m1, m2] = mergeLiveSessionStates([base, s2], live);
     assert.equal(m1.waiting_since, "2026-09-13 10:00:00");
     assert.equal(m2, s2);
+  });
+});
+
+// Přehled refetches GET /overview for a live thread its payload does not
+// list (client traffic contract, rule 3); a state change of a thread it
+// lists is overlaid from the live map and costs nothing.
+describe("overviewMissesLiveThread", () => {
+  const live = (id: string, state: SessionStateMessage["state"]): Record<string, SessionStateMessage> => ({
+    [id]: { session_id: id, state, waiting_since: null, node_id: "n1" },
+  });
+  const data = {
+    sessions: {
+      running: [{ id: "S1" } as OverviewSessionRow],
+      suspended: [{ id: "S2" } as OverviewSessionRow],
+    },
+  };
+
+  it("a listed thread, whatever its state now, is not missing", () => {
+    assert.equal(overviewMissesLiveThread(data, live("S1", "running")), false);
+    assert.equal(overviewMissesLiveThread(data, live("S2", "running")), false);
+    assert.equal(overviewMissesLiveThread(data, live("S1", "closed")), false);
+  });
+
+  it("an unlisted running or suspended thread is missing", () => {
+    assert.equal(overviewMissesLiveThread(data, live("S9", "running")), true);
+    assert.equal(overviewMissesLiveThread(data, live("S9", "suspended")), true);
+  });
+
+  it("an unlisted closed or archived thread is not missing", () => {
+    assert.equal(overviewMissesLiveThread(data, live("S9", "closed")), false);
+    assert.equal(overviewMissesLiveThread(data, live("S9", "archived")), false);
+  });
+
+  it("no payload yet means nothing is missing (the mount load is on its way)", () => {
+    assert.equal(overviewMissesLiveThread(null, live("S9", "running")), false);
   });
 });
 

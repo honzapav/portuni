@@ -215,8 +215,10 @@ keeps only rows with `user_id === meId`; `splitThreadsAndCli` then keeps
 threads (`isThreadSession`) as rows and puts hand-opened CLI sessions into
 the footer line "K tomu N relací z CLI (N běží)". `GET /overview` returns the caller's own
 threads only (#457), and its rows are record only -- no `brief` since
-#461, so a row shows `name`. Rows are overlaid with live state (`mergeLiveSessionStates`)
-and the card reloads whenever the live-state stamp changes. The unsynced
+#461, so a row shows `name`. Rows are overlaid with live state (`mergeLiveSessionStates`);
+the card reloads only for a live running or suspended thread the payload
+does not list (`overviewMissesLiveThread`, a thread started since the
+load), never for a state change of one it lists. The unsynced
 counter is `useSyncPending().pending.total` passed down from `App.tsx`.
 
 ### Sidebar thread rows (`WorkspaceNodeList.tsx`)

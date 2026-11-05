@@ -83,6 +83,26 @@ export function mergeLiveSessionStates<T extends { id: string; state: SessionSta
   return sessions.map((s) => applyLiveSessionState(s, liveStates));
 }
 
+// Whether Přehled has to ask GET /overview again (client traffic contract,
+// rule 3): only for a live running or suspended thread its payload does not
+// list -- a thread started since the load. A state change of a listed
+// thread is overlaid from the live map; a thread that closed leaves the
+// inbox the same way. No payload yet: the mount load is on its way.
+export function overviewMissesLiveThread(
+  data: { sessions: { running: readonly { id: string }[]; suspended: readonly { id: string }[] } } | null,
+  liveStates: Readonly<Record<string, SessionStateMessage>>,
+): boolean {
+  if (data === null) return false;
+  const listed = new Set<string>();
+  for (const s of data.sessions.running) listed.add(s.id);
+  for (const s of data.sessions.suspended) listed.add(s.id);
+  for (const s of Object.values(liveStates)) {
+    if (s.state !== "running" && s.state !== "suspended") continue;
+    if (!listed.has(s.session_id)) return true;
+  }
+  return false;
+}
+
 // Přehled's Relace card: waiting ("Čeká na mě") first, then running, then
 // suspended -- each bucket keeps the server's own last_active_at-descending
 // order. Since #457 GET /overview carries the caller's own threads only, so
