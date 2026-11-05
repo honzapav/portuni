@@ -85,16 +85,17 @@ export function mergeLiveSessionStates<T extends { id: string; state: SessionSta
 
 // The live threads Přehled has to ask GET /overview again for (client
 // traffic contract, rule 3): a running or suspended thread its payload does
-// not list -- one started since the load -- and that it has not asked for
-// yet (`alreadyAsked`): the payload caps its rows, so a thread beyond the
-// cap is absent from every answer and a refetch per answer would never end;
-// one refetch per thread id is the bound. A state change of a listed thread
-// is overlaid from the live map; a thread that closed leaves the inbox the
-// same way. No payload yet: the mount load is on its way.
+// not list and that was not live when that payload was loaded
+// (`knownAtLoad`) -- a thread started since. The payload caps its rows, so
+// a thread beyond the cap is absent from every answer; it was known at
+// load time, so it is not "new", no refetch and no loop. A state change of
+// a listed thread is overlaid from the live map; a thread that closed
+// leaves the inbox the same way. No payload yet: the mount load is on its
+// way.
 export function overviewMissingLiveThreads(
   data: { sessions: { running: readonly { id: string }[]; suspended: readonly { id: string }[] } } | null,
   liveStates: Readonly<Record<string, SessionStateMessage>>,
-  alreadyAsked: ReadonlySet<string>,
+  knownAtLoad: ReadonlySet<string>,
 ): string[] {
   if (data === null) return [];
   const listed = new Set<string>();
@@ -103,7 +104,7 @@ export function overviewMissingLiveThreads(
   const missing: string[] = [];
   for (const s of Object.values(liveStates)) {
     if (s.state !== "running" && s.state !== "suspended") continue;
-    if (listed.has(s.session_id) || alreadyAsked.has(s.session_id)) continue;
+    if (listed.has(s.session_id) || knownAtLoad.has(s.session_id)) continue;
     missing.push(s.session_id);
   }
   return missing;

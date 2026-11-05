@@ -34,7 +34,8 @@ import {
   sessionRowOpensChat,
   threadCloseAction,
 } from "../lib/session-views";
-import { selectNodeSessionRows } from "../lib/session-selectors";
+import { refreshNodeSessions } from "../lib/node-sessions-refresh";
+import { selectNodeSessionRows, selectNodeStubStamp } from "../lib/session-selectors";
 import type { SessionStore } from "../lib/session-store";
 import { useSessionStore } from "../lib/use-session-store";
 import { Button } from "@/components/ui/button";
@@ -128,6 +129,19 @@ export function SessionsSection({
     sessionStore,
     useCallback((s: SessionStore) => selectNodeSessionRows(s, nodeId, includeArchived), [nodeId, includeArchived]),
   );
+  // A thread started elsewhere reaches this node as a frame, which leaves
+  // a stub the rows above skip. App.tsx completes stubs of the nodes open
+  // in Práce; this tab may show a node that is not (Graf), so it asks for
+  // the list itself when a stub appears -- through the same coalesced
+  // refresh, so a node open in both places still costs one request.
+  const stubStamp = useSessionStore(
+    sessionStore,
+    useCallback((s: SessionStore) => selectNodeStubStamp(s, nodeId), [nodeId]),
+  );
+  useEffect(() => {
+    if (stubStamp === "") return;
+    refreshNodeSessions(nodeId).catch(() => undefined);
+  }, [stubStamp, nodeId]);
 
   // Uzavřít asks nothing (#498): a closed thread reopens by writing into it.
   // api.ts puts the answered row into the store; the row updates itself.
@@ -315,12 +329,14 @@ function SessionRow({
 
   // Resumability is only meaningful (and only worth the round trip) for a
   // suspended session -- fetched per row, once per suspension
-  // (lib/resume-info-cache.ts): a remount of the tab shows the cached
-  // answer instead of asking the server for every suspended row again.
+  // (lib/resume-info-cache.ts; App.tsx forgets the answer when a frame
+  // moves the thread out of `suspended`): a remount of the tab shows the
+  // cached answer instead of asking the server for every suspended row
+  // again.
   useEffect(() => {
     if (session.state !== "suspended") return;
     let cancelled = false;
-    cachedResumeInfo(session, fetchPersistentSessionResumeInfo)
+    cachedResumeInfo(session.id, fetchPersistentSessionResumeInfo)
       .then((info) => {
         if (!cancelled) setResumeInfo(info);
       })
@@ -330,7 +346,7 @@ function SessionRow({
     return () => {
       cancelled = true;
     };
-  }, [session, session.id, session.state, session.last_active_at]);
+  }, [session.id, session.state]);
 
   const save = async () => {
     const trimmed = draft.trim();

@@ -69,11 +69,20 @@ export default function OverviewView({
   const [data, setData] = useState<OverviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The live threads known when the current payload was asked for: a
+  // thread beyond the payload's row cap is absent from every answer, and
+  // only a thread that was not live at load time counts as started since.
+  const liveStatesRef = useRef(liveStates);
+  liveStatesRef.current = liveStates;
+  const knownAtLoad = useRef(new Set<string>());
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const known = new Set(Object.keys(liveStatesRef.current ?? {}));
     try {
-      setData(await fetchOverview());
+      const payload = await fetchOverview();
+      knownAtLoad.current = known;
+      setData(payload);
     } catch (e) {
       setError(displayError(e));
     } finally {
@@ -87,16 +96,12 @@ export default function OverviewView({
   // A thread started since the load is the one thing the live map cannot
   // overlay onto the payload (lib/session-views.ts overviewMissingLiveThreads);
   // everything else -- a state change, a close -- lands through
-  // mergeLiveSessionStates below. At most one refetch per thread id
-  // (`askedFor`): the payload caps its rows, so a thread beyond the cap
-  // never shows up and must not keep the refetch going. `data` in the deps
-  // settles the effect once the refetched payload lists the thread.
-  const askedFor = useRef(new Set<string>());
+  // mergeLiveSessionStates below. The refetch takes a new `knownAtLoad`
+  // snapshot, so a thread the capped payload still does not list is not
+  // asked for again; a refetch that failed leaves the old snapshot, and the
+  // next frame tries once more.
   useEffect(() => {
-    const missing = overviewMissingLiveThreads(data, liveStates ?? {}, askedFor.current);
-    if (missing.length === 0) return;
-    for (const id of missing) askedFor.current.add(id);
-    void load();
+    if (overviewMissingLiveThreads(data, liveStates ?? {}, knownAtLoad.current).length > 0) void load();
   }, [data, liveStates, load]);
 
   const syncIssues = showSync && data ? data.attention.sync_issues : [];

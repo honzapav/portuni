@@ -18,6 +18,7 @@ import {
   selectThreadsByNode,
   selectLiveStates,
   selectNodeSessionRows,
+  selectNodeStubStamp,
 } from "../apps/web/src/lib/session-selectors.js";
 import type { SessionSummary } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -500,5 +501,37 @@ describe("selectNodeSessionRows", () => {
     assert.equal(selectNodeSessionRows(store, "node-a", false), first);
     store.put(row({ id: "s2" }));
     assert.notEqual(selectNodeSessionRows(store, "node-a", false), first);
+  });
+
+  it("viewing many nodes' Relace tabs keeps one cache entry (the node is a variant, not a key)", () => {
+    const store = createSessionStore();
+    store.put(row({ id: "s1" }));
+    for (let i = 0; i < 20; i++) selectNodeSessionRows(store, `node-${i}`, i % 2 === 0);
+    assert.equal(selectorCacheSize(store), 1);
+  });
+});
+
+// The Relace tab of a node that is not open in Práce learns of a thread
+// started elsewhere only through a frame, which leaves a stub; the stub
+// stamp is what tells the tab to fetch the node's list once.
+describe("selectNodeStubStamp", () => {
+  it("names the node's stubs, sorted, and is empty once they are complete", () => {
+    const store = createSessionStore();
+    store.applyFrames([
+      frame({ session_id: "s2", node_id: "node-a" }),
+      frame({ session_id: "s1", node_id: "node-a" }),
+      frame({ session_id: "s9", node_id: "node-b" }),
+    ]);
+    assert.equal(selectNodeStubStamp(store, "node-a"), "s1,s2");
+    store.putMany([row({ id: "s1" }), row({ id: "s2" })]);
+    assert.equal(selectNodeStubStamp(store, "node-a"), "");
+  });
+
+  it("is a primitive, so an unchanged store or an unrelated put reads the same value", () => {
+    const store = createSessionStore();
+    store.applyFrame(frame({ session_id: "s1", node_id: "node-a" }));
+    const first = selectNodeStubStamp(store, "node-a");
+    store.put(row({ id: "elsewhere", node_id: "node-b" }));
+    assert.equal(selectNodeStubStamp(store, "node-a"), first);
   });
 });

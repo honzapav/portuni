@@ -168,9 +168,10 @@ describe("overviewMissingLiveThreads", () => {
     assert.deepEqual(overviewMissingLiveThreads(null, live("S9", "running"), new Set()), []);
   });
 
-  it("a thread already asked for is not asked for again, so a payload that never lists it cannot loop", () => {
+  it("a thread that was live when the payload was loaded is not missing, however the payload caps its rows", () => {
     // GET /overview caps its rows; a live thread beyond the cap is absent
-    // from every payload, and a refetch per payload would never end.
+    // from every payload. It was known when the load started, so it is not
+    // a thread started since -- no refetch, and no loop.
     assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "running"), new Set(["S9"])), []);
   });
 });

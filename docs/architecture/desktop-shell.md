@@ -373,8 +373,9 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
     Keychain has already replaced retries with the stored one without
     refreshing.
   - A `429` is never retried by any layer. The webview's `apiFetch` notes
-    it with its `Retry-After` (`lib/rate-limit-cooldown.ts`) and every
-    background poll in the window (`lib/poll-policy.ts`) skips its ticks
+    it with its `Retry-After` (`lib/rate-limit-cooldown.ts`) and the polls
+    that reach the central server -- the node-detail poll, the sync-status
+    poll and the focus refetch (`lib/poll-policy.ts`) -- skip their ticks
     until the cooldown is over; a request the user makes on purpose still
     goes out. Contract:
     `docs/superpowers/specs/2026-11-05-client-traffic-contract.md`.

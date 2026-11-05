@@ -178,9 +178,12 @@ The node's persistent sessions, read from the session store
 (`selectNodeSessionRows`: every complete record of the node, any state,
 any session type, archived rows behind a filter, newest activity first).
 One `fetchNodePersistentSessions` on mount, on a node change and on the
-archived toggle fills the store; a frame, a rename, a close or a new
-thread lands in the list through the store, never through a refetch
-(client traffic contract, rule 3). Each row
+archived toggle fills the store; a frame, a rename or a close lands in
+the list through the store (client traffic contract, rule 3). A thread
+started elsewhere arrives as a frame that leaves a stub; the tab asks for
+the node's list once when a stub appears (`selectNodeStubStamp`), through
+the same coalesced `lib/node-sessions-refresh.ts` App.tsx uses for the
+open nodes, so a node open in Práce and shown here costs one request. Each row
 shows `sessionRowChip`, runner, instance and host, and `resumeInfo` as
 information only. It quotes nothing: the thread's first message is content
 and lives in the device's `content.db`, so `SessionSummary` has no `brief`
@@ -217,10 +220,11 @@ the footer line "K tomu N relací z CLI (N běží)". `GET /overview` returns th
 threads only (#457), and its rows are record only -- no `brief` since
 #461, so a row shows `name`. Rows are overlaid with live state (`mergeLiveSessionStates`);
 the card reloads only for a live running or suspended thread the payload
-does not list (`overviewMissingLiveThreads`, a thread started since the
-load), at most once per thread id -- the payload caps its rows, so a
-thread beyond the cap must not keep the reload going -- and never for a
-state change of one it lists. The unsynced
+does not list and that was not live when the payload was loaded
+(`overviewMissingLiveThreads`, a thread started since the load) -- the
+payload caps its rows, so a thread beyond the cap is absent from every
+answer and must not count as new -- and never for a state change of one
+it lists. The unsynced
 counter is `useSyncPending().pending.total` passed down from `App.tsx`.
 
 ### Sidebar thread rows (`WorkspaceNodeList.tsx`)
@@ -360,7 +364,8 @@ this bound.
   the thread (requested id first, else the newest row of the first
   non-empty bucket `selectNodeThreads` orders). `closeNode` drops the
   closed node's records from the store, keeping the shown thread's.
-- **`refreshNodeSessions(nodeId)`**, coalesced per node: a request while
+- **`refreshNodeSessions(nodeId)`** (`lib/node-sessions-refresh.ts`,
+  shared with the Relace tab), coalesced per node: a request while
   one is in flight sets a trailing flag instead of racing a second fetch.
   `lib/session-refresh-policy.ts` says when it runs: for the nodes just
   added to `openNodeIds` (closing a node fetches nothing), and for a node

@@ -279,14 +279,14 @@ export function selectLiveStates(store: SessionStore): Readonly<Record<string, S
   );
 }
 
-// The records a node takes with it when it is closed in Práce (what
-// `pruneNodeSessions` decided before the store existed): everything
 // The Relace tab's rows (client traffic contract, rule 3): every complete
 // record of the node in any state and of any session type -- a hand-opened
 // CLI session belongs here -- archived ones only on request, newest
 // activity first (the order every server list uses). The tab's one REST
 // fetch fills the store; from then on a frame, a rename or a close lands in
-// the row through the store, never through a refetch.
+// the row through the store, never through a refetch. One Relace tab is
+// mounted at a time, so the node is a variant, not a key: viewing a
+// hundred nodes leaves one entry.
 export function selectNodeSessionRows(
   store: SessionStore,
   nodeId: string,
@@ -294,8 +294,8 @@ export function selectNodeSessionRows(
 ): CompleteSession[] {
   return cached(
     store,
-    `nodeSessions:${nodeId}`,
-    String(includeArchived),
+    "nodeSessions",
+    `${nodeId}|${includeArchived}`,
     () => {
       const rows: CompleteSession[] = [];
       for (const s of store.snapshot().values()) {
@@ -309,7 +309,22 @@ export function selectNodeSessionRows(
   );
 }
 
-// Every record of a node, for the close of that node: every record
+// The node's stubs -- sessions a frame named that no list has completed --
+// as one sorted string, empty when there are none. The Relace tab of a
+// node that is not open in Práce (App.tsx refetches only open nodes)
+// fetches the node's list once when this changes to something; the fetch
+// completes the stubs, which turns it back to "". A primitive, so
+// `useSyncExternalStore` compares it by value and no cache entry is needed.
+export function selectNodeStubStamp(store: SessionStore, nodeId: string): string {
+  const ids: string[] = [];
+  for (const s of store.snapshot().values()) {
+    if (s.node_id === nodeId && s.partial) ids.push(s.id);
+  }
+  return ids.sort().join(",");
+}
+
+// The records a node takes with it when it is closed in Práce (what
+// `pruneNodeSessions` decided before the store existed): everything
 // anchored on that node except the thread still on screen, which survives
 // because closing its node does not close the thread. Not memoized and not
 // a render-path selector -- it answers one question, once, for the click

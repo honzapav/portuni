@@ -13,7 +13,6 @@ import {
   fetchGraph,
   fetchNode,
   fetchMe,
-  fetchNodePersistentSessions,
   startDraftThread,
   deleteDraftSession,
   renamePersistentSession,
@@ -22,9 +21,11 @@ import {
 } from "./api";
 import type { SessionSummary, SessionRunRow } from "./types";
 import { createSessionsClient } from "./lib/sessions-client";
-import { requestChatSession, threadCloseAction } from "./lib/session-views";
+import { requestChatSession, shownChatSessionId, threadCloseAction } from "./lib/session-views";
 import { createSessionStore } from "./lib/session-store";
 import { nodesAddedToOpenSet, nodesToRefetchForFrames } from "./lib/session-refresh-policy";
+import { refreshNodeSessions as refreshNodeSessions_ } from "./lib/node-sessions-refresh";
+import { invalidateResumeInfo } from "./lib/resume-info-cache";
 import {
   selectLiveStates,
   selectMountedThreads,
@@ -618,33 +619,23 @@ export default function App() {
   // It fills records and decides nothing about what is shown: the rows land
   // in the store (fetchNodePersistentSessions puts them itself), and the
   // selectors above pick the threads and the shown one out of them.
-  const nodeThreadRefetches = useRef(new Map<string, { trailing: boolean }>());
   // `t` through a ref: a language change must not re-create the callback
   // (and with it re-run the effects below, refetching every open node).
   const tRef = useRef(t);
   tRef.current = t;
-  const refreshNodeSessions = useCallback(function refresh(nodeId: string): void {
-    const inFlight = nodeThreadRefetches.current.get(nodeId);
-    if (inFlight) {
-      inFlight.trailing = true;
-      return;
-    }
-    const entry = { trailing: false };
-    nodeThreadRefetches.current.set(nodeId, entry);
-    void fetchNodePersistentSessions(nodeId, false)
-      .catch((e: unknown) => {
-        // A failure on the node the user is looking at lands on the node
-        // surface, so it reads as a failure instead of a click that did
-        // nothing; another open node's refetch stays silent, as before.
-        if (selectedWorkspaceNodeIdRef.current !== nodeId) return;
-        // Named `t` so the i18n extractor sees the key as used.
-        const t = tRef.current;
-        setWorkspaceDetailError(t(($) => $.app.thread_error.load_failed, { error: displayError(e) }));
-      })
-      .finally(() => {
-        nodeThreadRefetches.current.delete(nodeId);
-        if (entry.trailing && openNodeIdsRef.current.includes(nodeId)) refresh(nodeId);
-      });
+  // The coalescing lives in lib/node-sessions-refresh.ts, shared with the
+  // Relace tab, so a node open in Práce and shown in Relace costs one
+  // request per burst, not two.
+  const refreshNodeSessions = useCallback((nodeId: string): void => {
+    refreshNodeSessions_(nodeId).catch((e: unknown) => {
+      // A failure on the node the user is looking at lands on the node
+      // surface, so it reads as a failure instead of a click that did
+      // nothing; another open node's refetch stays silent, as before.
+      if (selectedWorkspaceNodeIdRef.current !== nodeId) return;
+      // Named `t` so the i18n extractor sees the key as used.
+      const t = tRef.current;
+      setWorkspaceDetailError(t(($) => $.app.thread_error.load_failed, { error: displayError(e) }));
+    });
   }, []);
   // Only the nodes just opened fetch their list (lib/session-refresh-policy.ts):
   // closing a node, or opening one, used to refetch every open node.
@@ -661,6 +652,9 @@ export default function App() {
   // thread's state, waiting and name change arrive in the frame itself.
   useEffect(() => {
     return sessionsClient.onSessionStates((states) => {
+      // A thread that runs again has a new suspension ahead of it: what
+      // the Relace row knew about resuming the old one is over.
+      for (const s of states) if (s.state !== "suspended") invalidateResumeInfo(s.session_id);
       const nodeIds = nodesToRefetchForFrames(states, openNodeIdsRef.current, (id) => {
         const record = sessionStore.get(id);
         return record !== undefined && !record.partial;
@@ -904,7 +898,11 @@ export default function App() {
   // within seconds. Node-detail only (the graph poll stays on focus), and
   // only for a detail somebody is looking at: lib/poll-policy.ts says
   // which one -- none in Přehled or Settings, none while Práce's aside is
-  // collapsed, none while hidden or during a 429 cooldown.
+  // collapsed, none while hidden or during a 429 cooldown. Whether Práce
+  // shows a thread (the detail is then the aside) is the same rule
+  // WorkspaceView applies, as a boolean so a frame on the shown thread
+  // does not restart the interval.
+  const workspaceShowsThread = shownChatSessionId(selectedWorkspaceNodeId, shownThread) !== null;
   useEffect(() => {
     const id = setInterval(() => {
       const target = nodeDetailPollTarget({
@@ -914,7 +912,7 @@ export default function App() {
         selectedId,
         selectedWorkspaceNodeId,
         // No thread shown: the detail is the centre and always visible.
-        workspaceDetailVisible: workspaceDetailVisible || shownThread === null,
+        workspaceDetailVisible: workspaceDetailVisible || !workspaceShowsThread,
       });
       if (target === null) return;
       if (target.kind === "workspace") {
@@ -940,7 +938,7 @@ export default function App() {
       }
     }, 5000);
     return () => clearInterval(id);
-  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail, workspaceDetailVisible, shownThread]);
+  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail, workspaceDetailVisible, workspaceShowsThread]);
 
   // "+" on a Práce node row: open a fresh, empty thread there (#374, "one
   // click, thread is there, composer has focus") -- no dialog, nothing to
