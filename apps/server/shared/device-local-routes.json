@@ -2,6 +2,7 @@
   "$comment": "Routes the desktop webview's api_request sends to THIS device's sidecar in a team workspace instead of the central server (is_device_local_path in apps/desktop/src/lib.rs), and that apps/server/api/agent-router.ts must therefore serve. is_device_local_path embeds this file (include_str!) and matches request paths against the device_local patterns ({name} is one path segment, the query string is ignored); test/agent-router-route-parity.test.ts asserts the agent router handles every device_local entry and lists no route this file does not; the central examples are asserted to stay central. Adding a route here is what routes it to the sidecar; the router has to serve it or the gate fails.",
   "device_local": [
     { "method": "GET", "pattern": "/scope", "example": "/scope?cwd=/tmp&target=/tmp/a" },
+    { "method": "GET", "pattern": "/mcp/info", "example": "/mcp/info" },
     { "method": "GET", "pattern": "/sync/pending", "example": "/sync/pending" },
     { "method": "GET", "pattern": "/sync/health", "example": "/sync/health" },
     { "method": "POST", "pattern": "/sync/jobs", "example": "/sync/jobs" },

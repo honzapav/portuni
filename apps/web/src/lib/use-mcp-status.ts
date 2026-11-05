@@ -3,6 +3,12 @@
 // (every 2s) while the server is down so recovery shows up promptly,
 // and slows to 5s once it's running again to avoid generating
 // background traffic on idle desktops.
+//
+// /mcp/info is a device-local route (shared/device-local-routes.json): in
+// a team workspace the desktop sends it to this device's sidecar, which is
+// the MCP server the footer describes. It used to go to the central server
+// -- 12 requests a minute per window against the user's rate limit, 30
+// after any error, and the URL it showed was central's.
 
 import { displayError } from "../errors";
 import { useEffect, useRef, useState } from "react";

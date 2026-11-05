@@ -4,10 +4,11 @@
 // desktop webview sends to THIS device's sidecar in a team workspace
 // (is_device_local_path, apps/desktop/src/lib.rs, matches request paths
 // against its patterns). This test proves the other half: every route
-// on that list is served by createAgentRouter (it must never fall through to
-// the 501 `agent_mode` catch-all, which is what a team-workspace desktop would
-// see as "feature missing"), and the router serves no route the list does
-// not know about (a handler the desktop never routes to is dead code in
+// on that list is served by createAgentRouter -- or by the front door in
+// http/server.ts, which answers /health and /mcp/info before any router --
+// (it must never fall through to the 501 `agent_mode` catch-all, which is
+// what a team-workspace desktop would see as "feature missing"), and the
+// router serves no route the list does not know about (a handler the desktop never routes to is dead code in
 // team workspace, the shape of #264).
 //
 // The fake central refuses every call, so a handler that reaches central
@@ -42,6 +43,7 @@ interface RouteContract {
 
 const CONTRACT_PATH = new URL("../apps/server/shared/device-local-routes.json", import.meta.url);
 const ROUTER_PATH = new URL("../apps/server/api/agent-router.ts", import.meta.url);
+const SERVER_PATH = new URL("../apps/server/http/server.ts", import.meta.url);
 
 // A central that knows nothing: every method rejects with a 404-shaped
 // CentralHttpError, so any handler that consults central fails fast and
@@ -157,8 +159,12 @@ describe("agent-router: parity with the desktop's device-local route list", () =
   });
 
   it("the agent router serves no route the contract does not list", async () => {
-    const source = await readFile(ROUTER_PATH, "utf8");
-    const served = routerPatterns(source);
+    const served = routerPatterns(await readFile(ROUTER_PATH, "utf8"));
+    // The front door (http/server.ts) answers a few paths before any
+    // router -- /health, /mcp/info, the MCP transport, OAuth. Only the
+    // "dead route" check below counts them as handlers; the "unlisted"
+    // check stays about the agent router alone.
+    const frontDoor = routerPatterns(await readFile(SERVER_PATH, "utf8"));
     assert.ok(served.size >= 30, "router pattern extraction looks broken");
     const known = new Set<string>([
       ...contract.device_local.map((e) => normalizePattern(e.pattern)),
@@ -172,9 +178,25 @@ describe("agent-router: parity with the desktop's device-local route list", () =
     );
     const dead = [...known]
       .filter((p) => !contract.sidecar_direct.patterns.map(normalizePattern).includes(p))
-      .filter((p) => !served.has(p))
+      .filter((p) => !served.has(p) && !frontDoor.has(p))
       .sort();
     assert.deepEqual(dead, [], "listed as device-local but no handler pattern in agent-router.ts matches it");
+  });
+
+  it("GET /mcp/info is device-local and answered by the server front door", async () => {
+    // The footer's MCP indicator must ask THIS device's server (the sidecar
+    // in a team workspace, the one local server in a personal one), never
+    // the central server: it ran there 12 times a minute per window and
+    // showed central's URL instead of the sidecar's.
+    assert.ok(
+      contract.device_local.some((e) => e.method === "GET" && e.pattern === "/mcp/info"),
+      "/mcp/info missing from device_local",
+    );
+    const res = await authFetch(`${base}/mcp/info`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { url: string; port: number };
+    assert.match(body.url, /\/mcp$/);
+    assert.equal(typeof body.port, "number");
   });
 
   it("GET /sync/health answers the device's own watcher error buffer", async () => {
