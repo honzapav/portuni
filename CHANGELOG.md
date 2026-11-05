@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.1](https://github.com/honzapav/portuni/compare/v0.32.0...v0.32.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **ci:** the release build runs on macos-15, macos-14 was retired ([#650](https://github.com/honzapav/portuni/issues/650)) ([5019604](https://github.com/honzapav/portuni/commit/50196044e5f1f44000a9bf7491be53d3aa15cfb8))
+
 ## [0.32.0](https://github.com/honzapav/portuni/compare/v0.31.0...v0.32.0) (2026-11-05)
 
 
