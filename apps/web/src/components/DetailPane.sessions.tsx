@@ -25,6 +25,7 @@ import {
   startSessionFromHandoff,
 } from "../api";
 import { handoffFileEntries, type HandoffFileEntry } from "../lib/handoff-files";
+import { cachedResumeInfo } from "../lib/resume-info-cache";
 import { useLocalHost } from "../lib/use-local-host";
 import {
   hostDisplayName,
@@ -313,12 +314,13 @@ function SessionRow({
   const [resumeInfo, setResumeInfo] = useState<SessionResumeInfo | null>(null);
 
   // Resumability is only meaningful (and only worth the round trip) for a
-  // suspended session -- fetched lazily per row rather than batched with
-  // the list so opening the tab stays a single request.
+  // suspended session -- fetched per row, once per suspension
+  // (lib/resume-info-cache.ts): a remount of the tab shows the cached
+  // answer instead of asking the server for every suspended row again.
   useEffect(() => {
     if (session.state !== "suspended") return;
     let cancelled = false;
-    fetchPersistentSessionResumeInfo(session.id)
+    cachedResumeInfo(session, fetchPersistentSessionResumeInfo)
       .then((info) => {
         if (!cancelled) setResumeInfo(info);
       })
@@ -328,7 +330,7 @@ function SessionRow({
     return () => {
       cancelled = true;
     };
-  }, [session.id, session.state]);
+  }, [session, session.id, session.state, session.last_active_at]);
 
   const save = async () => {
     const trimmed = draft.trim();
