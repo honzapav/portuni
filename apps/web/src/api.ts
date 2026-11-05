@@ -315,6 +315,23 @@ export function patchSessionRunnerInstance(
   });
 }
 
+// #645: a draft opened while the device detected no runner keeps `runner:
+// null`; POST /sessions/:id/runner-defaults (device-local) asks the device
+// again and writes the organisation's default runner and instance when one
+// is usable now. Any other row comes back unchanged.
+export function refreshDraftRunner(
+  id: string,
+): Promise<{ runner: string | null; instance_id: string | null }> {
+  return jsonRequest<{ runner: string | null; instance_id: string | null }>(
+    "POST",
+    `/sessions/${encodeURIComponent(id)}/runner-defaults`,
+    {},
+  ).then((answer) => {
+    foldIntoSession(id, { runner: answer.runner, instance_id: answer.instance_id });
+    return answer;
+  });
+}
+
 // configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
 // caller can resolve one from the desktop profiles registry (#204) --
 // lets the server check conversation-resumability at the right transcript

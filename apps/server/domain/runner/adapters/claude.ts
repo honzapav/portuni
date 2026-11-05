@@ -124,6 +124,9 @@ export interface CreateClaudeAdapterDeps {
   // Working directory for detect()'s `claude --version` / `auth status`;
   // defaults to `detectCwd()`. Tests inject it.
   detectCwd?: () => string;
+  // Where detect() reports a failed probe (#645); defaults to console.warn.
+  // Tests inject it.
+  warn?: (line: string) => void;
 }
 
 // #644: detect() never inherits this process's working directory. The
@@ -996,6 +999,7 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
 export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerAdapter {
   const query = deps.query ?? sdkQuery;
   const exec = deps.exec ?? nodeExecFile;
+  const warnDetect = deps.warn ?? ((line: string) => console.warn(line));
   const resolveExecutable = deps.resolveExecutable ?? (() => resolveClaudeExecutable());
   const execCwd = deps.detectCwd ?? detectCwd;
   const closePollIntervalMs = deps.closePollIntervalMs ?? DEFAULT_CLOSE_POLL_INTERVAL_MS;
@@ -1104,10 +1108,26 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
   async function runExec(executable: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
     return new Promise((resolve) => {
-      exec(executable, args, { timeout: DETECT_TIMEOUT_MS, cwd: execCwd() }, (err, stdout) => {
+      exec(executable, args, { timeout: DETECT_TIMEOUT_MS, cwd: execCwd() }, (err, stdout, stderr) => {
+        // #645: a failed probe leaves a line in the sidecar's log -- the
+        // exit code (or the signal / spawn error) and stderr -- so a device
+        // that reads as "no runner" can be explained afterwards.
+        if (err) logDetectFailure(executable, args, err, stderr?.toString() ?? "");
         resolve({ ok: !err, stdout: stdout?.toString() ?? "" });
       });
     });
+  }
+
+  function logDetectFailure(executable: string, args: string[], err: Error, stderr: string): void {
+    const e = err as Error & { code?: unknown; signal?: unknown; killed?: boolean };
+    const exit =
+      typeof e.code === "number"
+        ? `exit ${e.code}`
+        : e.signal
+          ? `signal ${String(e.signal)}${e.killed ? " (timed out)" : ""}`
+          : `error ${String(e.code ?? e.message)}`;
+    const detail = stderr.trim() || e.message;
+    warnDetect(`[portuni:runner] claude detect: \`${executable} ${args.join(" ")}\` failed (${exit}): ${detail}`);
   }
 
   const notInstalled: RunnerAvailability = {
@@ -1119,7 +1139,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
   async function detect(): Promise<RunnerAvailability> {
     const executable = await resolveExecutable();
-    if (executable === null) return notInstalled;
+    if (executable === null) {
+      warnDetect("[portuni:runner] claude detect: no `claude` executable found on PATH or in the known install locations");
+      return notInstalled;
+    }
     const versionResult = await runExec(executable, ["--version"]);
     if (!versionResult.ok) return notInstalled;
     const version = versionResult.stdout.trim().split("\n")[0] || null;

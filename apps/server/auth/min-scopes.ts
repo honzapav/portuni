@@ -239,20 +239,19 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // Removes a draft only (#374) -- sessionAccess's "message" tier further
   // scopes this to the draft's own owner inside the handler.
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "DELETE") return "write";
-  if (/^\/sessions\/[^/]+\/state$/.test(pathname) && m === "POST") return "write";
-  if (/^\/sessions\/[^/]+\/resume-info$/.test(pathname) && m === "GET") return "read";
-  if (/^\/sessions\/[^/]+\/signals$/.test(pathname) && m === "GET") return "read";
-  if (/^\/sessions\/[^/]+\/scope$/.test(pathname) && m === "GET") return "read";
-  if (/^\/sessions\/[^/]+\/messages$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/(resume-info|signals|scope)$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/questions\/[^/]+$/.test(pathname) && m === "POST") return "write";
-  if (/^\/sessions\/[^/]+\/model$/.test(pathname) && m === "POST") return "write";
-  if (/^\/sessions\/[^/]+\/rename$/.test(pathname) && m === "POST") return "write";
-  if (/^\/sessions\/[^/]+\/interrupt$/.test(pathname) && m === "POST") return "write";
-  // #378: closes this session and starts a new one on the same node.
-  if (/^\/sessions\/[^/]+\/continue$/.test(pathname) && m === "POST") return "write";
-  if (/^\/sessions\/[^/]+\/close$/.test(pathname) && m === "POST") return "write";
-  // #459: "Předat" -- suspends the thread into its handoff file.
-  if (/^\/sessions\/[^/]+\/handoff$/.test(pathname) && m === "POST") return "write";
+  // The single-session POST verbs, all at the write tier: state, a
+  // message, the model/effort override, rename, #645's runner-defaults (a
+  // runner-less draft's runner looked up again on the device), interrupt,
+  // #378's continue (closes this session and starts a new one on the same
+  // node), close and #459's handoff ("Předat", suspends the thread into its
+  // handoff file).
+  if (
+    /^\/sessions\/[^/]+\/(state|messages|model|rename|runner-defaults|interrupt|continue|close|handoff)$/.test(pathname) &&
+    m === "POST"
+  )
+    return "write";
   if (/^\/sessions\/[^/]+\/events$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/runs$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/runs$/.test(pathname) && m === "POST") return "write";

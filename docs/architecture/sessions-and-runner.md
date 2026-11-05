@@ -842,7 +842,16 @@ human verification.
   instance for it; `NoRunnerAvailableError` -> `400 NO_RUNNER_AVAILABLE`
   through `api/session-refusals.ts`, so the sync agent's router and the
   live channel's error frame answer the same code)
-  only when the draft carries none. Central's `PatchSessionBody` accepts
+  only when the draft carries none. `detectAll()` caches only a usable
+  detection (60 s); a negative one is probed again on the next call
+  (#645), and the Claude adapter logs every failed probe with its exit
+  code and stderr. A draft opened with no runner (`runner: null`) is
+  filled in by `SessionRuntime.refreshDraftRunner`, under the lifecycle
+  lock, through the device-local `POST /sessions/:id/runner-defaults`
+  that `SessionChat` calls once per opened runner-less draft: same
+  `resolveDraftDefaults`, written through the runtime's store (central's
+  `PATCH /sessions/:id` in a team workspace), then `session_changed`.
+  Central's `PatchSessionBody` accepts
   the promotion fields (`brief`, `runner`, `instance_id`, `name_is_custom`).
 - **Naming.** `threadNameFromFirstMessage` (`domain/sessions.ts`, mirrored
   by hand in `apps/web/src/lib/session-chat.ts`) takes the first line of

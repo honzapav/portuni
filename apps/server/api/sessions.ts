@@ -409,6 +409,28 @@ export async function handleSetSessionModel(
   }
 }
 
+// #645: a draft opened while this device detected no runner has `runner:
+// null` on its row; the composer asks the device to look again once it
+// is open. A device-local route (device-local-routes.json): detection and
+// the runner instances live on the device, the record half rides along
+// through the runtime's own store. Raw row back, like POST .../model.
+export async function handleRefreshDraftRunner(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
+    if (!existing) return;
+    const updated = await getSessionRuntime().refreshDraftRunner(sessionId);
+    respondJson(res, 200, updated);
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}/runner-defaults`, err);
+  }
+}
+
 // The thread's rename. A device-local route (device-local-routes.json) so
 // it goes through the session runtime, which publishes the change to the
 // live channel; a bare PATCH /sessions/:id writes the row and nothing else

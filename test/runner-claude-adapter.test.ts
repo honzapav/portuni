@@ -164,14 +164,19 @@ const FAKE_CLAUDE = "/fake/bin/claude";
 const resolveFake = async () => FAKE_CLAUDE;
 
 function fakeExec(
-  responses: Record<string, { err?: Error; stdout?: string }>,
+  responses: Record<string, { err?: Error; stdout?: string; stderr?: string }>,
   seen: string[] = [],
 ): CreateClaudeAdapterDeps["exec"] {
-  return ((cmd: string, args: readonly string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+  return ((
+    cmd: string,
+    args: readonly string[],
+    _opts: unknown,
+    cb: (err: Error | null, stdout: string, stderr: string) => void,
+  ) => {
     seen.push(cmd);
     const key = args.join(" ");
     const r = responses[key] ?? { err: new Error("unexpected args") };
-    cb(r.err ?? null, r.stdout ?? "");
+    cb(r.err ?? null, r.stdout ?? "", r.stderr ?? "");
   }) as unknown as CreateClaudeAdapterDeps["exec"];
 }
 
@@ -2172,6 +2177,46 @@ describe("Claude adapter: detect()", () => {
     const availability = await adapter.detect();
     assert.equal(availability.installed, true);
     assert.equal(availability.logged_in, false);
+  });
+});
+
+describe("Claude adapter: detect() logs a failed probe (#645)", () => {
+  it("writes the exit code and stderr of a failing auth status", async () => {
+    const lines: string[] = [];
+    const err = Object.assign(new Error("Command failed: claude auth status"), { code: 1 });
+    const exec = fakeExec({
+      "--version": { stdout: "1.2.3\n" },
+      "auth status": { err, stderr: "The current directory no longer exists\n" },
+    });
+    const adapter = createClaudeAdapter({ exec, resolveExecutable: resolveFake, warn: (l) => lines.push(l) });
+    const availability = await adapter.detect();
+    assert.equal(availability.logged_in, false);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /auth status/);
+    assert.match(lines[0], /exit 1/);
+    assert.match(lines[0], /The current directory no longer exists/);
+  });
+
+  it("writes the failure of --version, and nothing on success", async () => {
+    const lines: string[] = [];
+    const err = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+    const failing = createClaudeAdapter({
+      exec: fakeExec({ "--version": { err } }),
+      resolveExecutable: resolveFake,
+      warn: (l) => lines.push(l),
+    });
+    await failing.detect();
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /--version/);
+    assert.match(lines[0], /EACCES/);
+
+    const ok = createClaudeAdapter({
+      exec: fakeExec({ "--version": { stdout: "1.2.3\n" }, "auth status": { stdout: "ok\n" } }),
+      resolveExecutable: resolveFake,
+      warn: (l) => lines.push(l),
+    });
+    await ok.detect();
+    assert.equal(lines.length, 1);
   });
 });
 

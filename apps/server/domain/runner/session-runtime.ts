@@ -339,6 +339,13 @@ export interface SessionRuntime {
   // Renames the thread (name_is_custom, so handoff-title enrichment at
   // suspend never overwrites it) and publishes a session_changed frame.
   renameSession(sessionId: string, name: string): Promise<SessionRow>;
+  // #645: a draft opened while detection found no runner keeps `runner:
+  // null` on its row. This asks again (a negative detection is never
+  // cached) and, when a runner is usable now, writes the same defaults
+  // createDraft would have -- runner and the organization's instance --
+  // and publishes session_changed. Any other row (not a draft, or a draft
+  // that already has a runner) comes back untouched.
+  refreshDraftRunner(sessionId: string): Promise<SessionRow>;
   closeSession(sessionId: string): Promise<SessionRow>;
   // #459 "Předat": hands the thread to another machine through its handoff
   // file. On a running thread the current turn is interrupted, the run is
@@ -1322,6 +1329,24 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return row;
   }
 
+  function refreshDraftRunner(sessionId: string): Promise<SessionRow> {
+    // Under the lifecycle lock, so it never races the first message's
+    // promotion (which resolves and writes the runner itself).
+    return withLifecycleLock(sessionId, async () => {
+      const row = await store.getSession(sessionId);
+      if (!row) throw new Error(`refreshDraftRunner: ${sessionId} not found`);
+      if (row.state !== "draft" || row.runner !== null || row.node_id === null) return row;
+      const defaults = await resolveDraftDefaults(row.node_id, resolveNodeOrgId);
+      if (defaults.runner === null) return row;
+      const updated = await store.patchSession(sessionId, {
+        runner: defaults.runner,
+        instance_id: defaults.instanceId,
+      });
+      publish(sessionId, { type: "session_changed", session_id: sessionId });
+      return updated;
+    });
+  }
+
   // #378: the only action that actually ends a live run's process (besides
   // continueSession and the idle sweep) -- close(), not interrupt(), so the
   // run genuinely stops instead of just cancelling the current turn.
@@ -1788,6 +1813,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     interrupt,
     setModelAndEffort,
     renameSession,
+    refreshDraftRunner,
     closeSession,
     handoff,
     startFromHandoff,

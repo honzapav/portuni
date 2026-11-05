@@ -674,6 +674,24 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       return true;
     }
 
+    // #645: a runner-less draft asks again. Detection and the instances are
+    // this device's; the row's runner/instance are written through the
+    // runtime's CentralSessionStore (a PATCH /sessions/:id on central,
+    // which enforces the owner).
+    const sessionRunnerDefaultsMatch = pathname.match(/^\/sessions\/([^/]+)\/runner-defaults$/);
+    if (sessionRunnerDefaultsMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionRunnerDefaultsMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      try {
+        const session = await sessionRuntime.refreshDraftRunner(sessionId);
+        respondJson(res, 200, session);
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `POST /sessions/${sessionId}/runner-defaults`, err);
+      }
+      return true;
+    }
+
     const sessionInterruptMatch = pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);
     if (sessionInterruptMatch && method === "POST") {
       const sessionId = decodeURIComponent(sessionInterruptMatch[1]);
