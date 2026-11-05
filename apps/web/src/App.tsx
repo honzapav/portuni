@@ -558,9 +558,9 @@ export default function App() {
     return sessionsClient.onSessionStates(sessionStore.applyFrames);
   }, [sessionsClient, sessionStore]);
   const runningSessionCount = useSessionStore(sessionStore, selectRunningCount);
-  // The surfaces that fetch their own lists (Přehled's Relace card, the node
-  // detail's Relace tab) still take a live-state map; it is the store
-  // projected down to what a frame carries, not a second copy.
+  // Přehled's Relace card, the one surface that still fetches its own list,
+  // takes a live-state map; it is the store projected down to what a frame
+  // carries, not a second copy.
   const liveSessionStates = useSessionStore(sessionStore, selectLiveStates);
 
 
@@ -1199,7 +1199,6 @@ export default function App() {
               openSession={shownThread}
               mountedSessions={workspaceMountedSessions}
               sessionsClient={sessionsClient}
-              liveSessionStates={liveSessionStates}
               sessionStore={sessionStore}
               onSessionStarted={registerSessionStarted}
               onOpenChat={openSessionChat}
@@ -1252,7 +1251,7 @@ export default function App() {
                 registerSessionStarted(result);
                 if (result.session.node_id) openSessionChat(result.session.node_id, result.session.id);
               }}
-              liveSessionStates={liveSessionStates}
+              sessionStore={sessionStore}
             />
           </Suspense>
         ))}

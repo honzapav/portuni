@@ -79,7 +79,7 @@ import {
 } from "../types";
 import { safeHref } from "../lib/safe-url";
 import { useMe } from "../lib/use-me";
-import type { SessionStateMessage } from "../lib/sessions-client";
+import type { SessionStore } from "../lib/session-store";
 import { groupEventsByDate } from "../lib/events";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { externalLinkProps } from "../lib/external-link";
@@ -209,8 +209,8 @@ type Props = {
   // (works from both the graph and workspace views); absent nowhere today,
   // but optional for the same reason onSessionStarted is.
   onOpenChat?: (nodeId: string, sessionId: string) => void;
-  // Live session_state map for the Relace tab (see SessionsSection).
-  liveSessionStates?: Readonly<Record<string, SessionStateMessage>>;
+  // The window's session store, for the Relace tab (see SessionsSection).
+  sessionStore: SessionStore;
 };
 
 // Memoized: 3.5k lines of pane re-rendered wholesale on every App render
@@ -231,7 +231,7 @@ function DetailPane({
   onOpenFile,
   onSessionStarted,
   onOpenChat,
-  liveSessionStates,
+  sessionStore,
 }: Props) {
   // Drives whether the sharing section is editable.
   const { canManage } = useMe();
@@ -288,7 +288,7 @@ function DetailPane({
       onOpenFile={onOpenFile}
       onSessionStarted={onSessionStarted}
       onOpenChat={onOpenChat}
-      liveSessionStates={liveSessionStates}
+      sessionStore={sessionStore}
     />
   );
 }
@@ -306,7 +306,7 @@ function DetailPaneBody({
   onOpenFile,
   onSessionStarted,
   onOpenChat,
-  liveSessionStates,
+  sessionStore,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -320,8 +320,7 @@ function DetailPaneBody({
   onOpenFile?: (nodeId: string, relPath: string) => void;
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
   onOpenChat?: (nodeId: string, sessionId: string) => void;
-  // Live session_state map for the Relace tab (see SessionsSection).
-  liveSessionStates?: Readonly<Record<string, SessionStateMessage>>;
+  sessionStore: SessionStore;
 }) {
   const { t } = useTranslation("node");
   const { t: tFiles } = useTranslation("files");
@@ -1314,7 +1313,7 @@ function DetailPaneBody({
             onOpenFile={onOpenFile}
             onOpenChat={onOpenChat ? (sessionId) => onOpenChat(node.id, sessionId) : undefined}
             onSessionStarted={onSessionStarted}
-            liveStates={liveSessionStates}
+            sessionStore={sessionStore}
           />
         )}
 

@@ -174,8 +174,13 @@ header, so a run that starts writing here clears the state on its own.
 
 ### Relace tab (`DetailPane.sessions.tsx`)
 
-REST-only list of the node's persistent sessions
-(`fetchNodePersistentSessions`), archived rows behind a filter. Each row
+The node's persistent sessions, read from the session store
+(`selectNodeSessionRows`: every complete record of the node, any state,
+any session type, archived rows behind a filter, newest activity first).
+One `fetchNodePersistentSessions` on mount, on a node change and on the
+archived toggle fills the store; a frame, a rename, a close or a new
+thread lands in the list through the store, never through a refetch
+(client traffic contract, rule 3). Each row
 shows `sessionRowChip`, runner, instance and host, and `resumeInfo` as
 information only. It quotes nothing: the thread's first message is content
 and lives in the device's `content.db`, so `SessionSummary` has no `brief`
@@ -192,8 +197,8 @@ row's action is disabled while one request is on the wire, so one click
 means one successor), and "Uzavřít" without a dialog. Above the rows
 the tab lists the node's handoff files (`lib/handoff-files.ts`), each with
 **Navázat na handoff** (#460): `startSessionFromHandoff`, which is
-`POST /sessions` with the file's node-relative path. There is no live
-subscription in this tab; it reloads its list after an action.
+`POST /sessions` with the file's node-relative path. The tab reloads
+nothing after an action: every answer goes into the store.
 
 ### Přehled (`OverviewView.tsx`)
 
@@ -307,9 +312,10 @@ can forget, and no component hands a row to a parent.
 `useSyncExternalStore` over the selectors in `lib/session-selectors.ts`:
 `selectSession`, `selectNodeThreads`, `selectShownThread`,
 `selectMountedThreads`, `selectRunningCount`, `selectThreadsByNode` (the
-sidebar's per-node map) and `selectLiveStates` (the store projected down to
-what a frame carries, for the surfaces that fetch their own lists --
-Přehled's Relace card, the Relace tab). Every selector is memoized per
+sidebar's per-node map), `selectNodeSessionRows` (the Relace tab's rows)
+and `selectLiveStates` (the store projected down to what a frame carries,
+for Přehled's Relace card, the one surface that still fetches its own
+list). Every selector is memoized per
 store and **reference-stable while the store has not changed**: React
 re-reads `getSnapshot` in its post-commit consistency check and
 force-re-renders whenever the value differs by `Object.is`, so an inline

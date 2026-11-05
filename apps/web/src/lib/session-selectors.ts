@@ -227,12 +227,12 @@ export function selectThreadsByNode(
   );
 }
 
-// The live-state map the surfaces that fetch their own lists still take
-// (Přehled's Relace card, the node detail's Relace tab): the store projected
-// down to what a `session_state` frame carries, so those lists overlay the
-// records this window already has instead of a second live map. Only the
-// projected fields count for identity -- a refetch that changes nothing but
-// `last_active_at` must not restamp a list's refetch effect.
+// The live-state map the one surface that still fetches its own list takes
+// (Přehled's Relace card; the Relace tab reads selectNodeSessionRows): the
+// store projected down to what a `session_state` frame carries, so that
+// list overlays the records this window already has instead of a second
+// live map. Only the projected fields count for identity -- a refetch that
+// changes nothing but `last_active_at` must not restamp a list's effect.
 function liveChannelState(state: StoredSession["state"]): SessionStateMessage["state"] | null {
   return state === "running" || state === "suspended" || state === "closed" || state === "archived" ? state : null;
 }
@@ -281,6 +281,35 @@ export function selectLiveStates(store: SessionStore): Readonly<Record<string, S
 
 // The records a node takes with it when it is closed in Práce (what
 // `pruneNodeSessions` decided before the store existed): everything
+// The Relace tab's rows (client traffic contract, rule 3): every complete
+// record of the node in any state and of any session type -- a hand-opened
+// CLI session belongs here -- archived ones only on request, newest
+// activity first (the order every server list uses). The tab's one REST
+// fetch fills the store; from then on a frame, a rename or a close lands in
+// the row through the store, never through a refetch.
+export function selectNodeSessionRows(
+  store: SessionStore,
+  nodeId: string,
+  includeArchived: boolean,
+): CompleteSession[] {
+  return cached(
+    store,
+    `nodeSessions:${nodeId}`,
+    String(includeArchived),
+    () => {
+      const rows: CompleteSession[] = [];
+      for (const s of store.snapshot().values()) {
+        if (s.node_id !== nodeId || s.partial) continue;
+        if (s.state === "archived" && !includeArchived) continue;
+        rows.push(s);
+      }
+      return rows.sort(byLastActive);
+    },
+    sameRows,
+  );
+}
+
+// Every record of a node, for the close of that node: every record
 // anchored on that node except the thread still on screen, which survives
 // because closing its node does not close the thread. Not memoized and not
 // a render-path selector -- it answers one question, once, for the click

@@ -3,8 +3,11 @@
 // the persistent sessions anchored to this node -- running (open the
 // chat), suspended (resume: continuation vs handoff, per the server's
 // conversation-existence check), closed (open the chat; writing reopens
-// it, #498), archived (browse, behind a filter). Self-fetches on mount and whenever nodeId changes, same
-// pattern as DetailPane.access.tsx's AccessSection.
+// it, #498), archived (browse, behind a filter). One REST fetch on mount,
+// on a node change and on the archived toggle fills the session store; the
+// rows are read from the store (selectNodeSessionRows), so a frame, a
+// rename or a close lands in the list without a refetch (client traffic
+// contract, rule 3).
 
 import { displayError } from "../errors";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -25,13 +28,14 @@ import { handoffFileEntries, type HandoffFileEntry } from "../lib/handoff-files"
 import { useLocalHost } from "../lib/use-local-host";
 import {
   hostDisplayName,
-  mergeLiveSessionStates,
   sessionRowChip,
   sessionRowContinues,
   sessionRowOpensChat,
   threadCloseAction,
 } from "../lib/session-views";
-import type { SessionStateMessage } from "../lib/sessions-client";
+import { selectNodeSessionRows } from "../lib/session-selectors";
+import type { SessionStore } from "../lib/session-store";
+import { useSessionStore } from "../lib/use-session-store";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -83,12 +87,10 @@ type Props = {
   // opens, so the Práce sidebar gets the row at once instead of waiting
   // for something else to refetch the node.
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
-  // The window's live session_state map (App.tsx, from the socket) --
-  // overlaid onto the REST rows so state and "Čeká na mě" update without
-  // a reload, and a change on THIS node's sessions (one started, one
-  // closed) refetches the list so new rows appear. Absent where no socket
-  // exists.
-  liveStates?: Readonly<Record<string, SessionStateMessage>>;
+  // The window's one record per thread (#466): the rows are read from it
+  // and every answer api.ts gets (rename, close, continue) is written back
+  // into it, so nothing here keeps a copy.
+  sessionStore: SessionStore;
 };
 
 export function SessionsSection({
@@ -97,56 +99,40 @@ export function SessionsSection({
   onOpenFile,
   onOpenChat,
   onSessionStarted,
-  liveStates,
+  sessionStore,
 }: Props) {
   const { t } = useTranslation("node");
   const locale = useLocale();
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
+  // One fetch fills the store (fetchNodePersistentSessions puts its rows);
+  // the list below is the store's view of this node.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchNodePersistentSessions(nodeId, includeArchived);
-      setSessions(res.sessions);
+      await fetchNodePersistentSessions(nodeId, includeArchived);
     } catch (e) {
       setError(displayError(e));
     } finally {
       setLoading(false);
     }
   }, [nodeId, includeArchived]);
-
-  // Every session id + state the socket reports for this node; a change
-  // means a row appeared or moved state, which the REST list must reflect.
-  const liveStamp = useMemo(
-    () =>
-      Object.values(liveStates ?? {})
-        .filter((s) => s.node_id === nodeId)
-        .map((s) => `${s.session_id}:${s.state}`)
-        .sort()
-        .join(","),
-    [liveStates, nodeId],
-  );
   useEffect(() => {
     void load();
-  }, [load, liveStamp]);
+  }, [load]);
 
-  const liveSessions = useMemo(
-    () => (liveStates ? mergeLiveSessionStates(sessions, liveStates) : sessions),
-    [sessions, liveStates],
+  const sessions = useSessionStore(
+    sessionStore,
+    useCallback((s: SessionStore) => selectNodeSessionRows(s, nodeId, includeArchived), [nodeId, includeArchived]),
   );
 
-  const updateOne = (updated: SessionSummary) => {
-    setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-  };
-
   // Uzavřít asks nothing (#498): a closed thread reopens by writing into it.
+  // api.ts puts the answered row into the store; the row updates itself.
   const handleClose = async (id: string) => {
     try {
-      const updated = await closePersistentSession(id);
-      updateOne(updated);
+      await closePersistentSession(id);
     } catch (e) {
       setError(displayError(e));
     }
@@ -188,13 +174,14 @@ export function SessionsSection({
     setError(null);
     try {
       const { session, run } = await startSessionFromHandoff(nodeId, entry.relative_path);
+      // The new thread's row is the answer itself; no list refetch.
+      sessionStore.put(session);
       onSessionStarted?.({ session, run });
       onOpenChat?.(session.id);
     } catch (e) {
       setError(displayError(e));
     } finally {
       setStartingHandoff(null);
-      await load();
     }
   };
 
@@ -265,21 +252,19 @@ export function SessionsSection({
         <div className="text-[14px] text-[var(--color-text-dim)]">{t(($) => $.sessions.list.empty)}</div>
       ) : (
         <div className="space-y-2">
-          {liveSessions.map((s) => (
+          {sessions.map((s) => (
             <SessionRow
               key={s.id}
               session={s}
-              onRenamed={updateOne}
               onContinue={onSessionStarted ? () => void handleContinue(s.id, s.state) : undefined}
               continuing={continuingId === s.id}
               continueDisabled={continuingId !== null}
               onClose={() => {
                 // #506: a draft is deleted outright, the same deletion as
-                // the sidebar's ×; this list is its own copy, so the row
-                // leaves it here too.
+                // the sidebar's ×; api.ts removes it from the store, which
+                // is where this list reads from.
                 if (threadCloseAction(s.state) === "delete") {
                   deleteDraftSession(s.id);
-                  setSessions((prev) => prev.filter((x) => x.id !== s.id));
                 } else {
                   void handleClose(s.id);
                 }
@@ -301,7 +286,6 @@ export function SessionsSection({
 
 function SessionRow({
   session,
-  onRenamed,
   onContinue,
   continuing,
   continueDisabled,
@@ -310,7 +294,6 @@ function SessionRow({
   onOpenHandoff,
 }: {
   session: SessionSummary;
-  onRenamed: (updated: SessionSummary) => void;
   // "Pokračovat v nové session" on a closed or archived row; absent where
   // the caller has no chat surface to show the new thread in.
   onContinue?: () => void;
@@ -356,8 +339,8 @@ function SessionRow({
     }
     setSaving(true);
     try {
-      const updated = await renamePersistentSession(session.id, trimmed);
-      onRenamed(updated);
+      // api.ts puts the renamed row into the store; the row re-renders.
+      await renamePersistentSession(session.id, trimmed);
       setEditing(false);
     } catch {
       setDraft(session.name);

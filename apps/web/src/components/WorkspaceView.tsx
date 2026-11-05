@@ -25,7 +25,7 @@ import { ChevronLeft } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
-import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
+import type { SessionsClient } from "../lib/sessions-client";
 import type { SessionStore } from "../lib/session-store";
 import { shownChatSessionId } from "../lib/session-views";
 import type { FileEditor } from "../lib/use-file-editor";
@@ -91,7 +91,6 @@ type Props = {
   onSessionStarted: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
   // Relace tab's "Otevřít chat" (#343), threaded through to DetailPane.
   onOpenChat: (nodeId: string, sessionId: string) => void;
-  liveSessionStates: Readonly<Record<string, SessionStateMessage>>;
   // Reports the detail aside's visibility so App polls the node detail only
   // while somebody can see it (lib/poll-policy.ts).
   onDetailVisibleChange?: (visible: boolean) => void;
@@ -121,7 +120,6 @@ export default function WorkspaceView({
   sessionStore,
   onSessionStarted,
   onOpenChat,
-  liveSessionStates,
   onDetailVisibleChange,
 }: Props) {
   const { t } = useTranslation("common");
@@ -185,7 +183,7 @@ export default function WorkspaceView({
           onCollapse={collapsible ? toggleDetail : undefined}
           onSessionStarted={onSessionStarted}
           onOpenChat={onOpenChat}
-          liveSessionStates={liveSessionStates}
+          sessionStore={sessionStore}
         />
       </Suspense>
     );
