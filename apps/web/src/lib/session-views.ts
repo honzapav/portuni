@@ -83,15 +83,65 @@ export function mergeLiveSessionStates<T extends { id: string; state: SessionSta
   return sessions.map((s) => applyLiveSessionState(s, liveStates));
 }
 
+// Přehled's inbox is the payload's running and suspended rows; between
+// loads the live map decides each row's membership and bucket, not the
+// bucket the payload put it in. A listed thread that closes or is archived
+// leaves the inbox, one that is suspended moves to the suspended bucket,
+// and a listed thread that runs again comes back -- all without a refetch
+// (client traffic contract, rule 3). Each bucket keeps the server's order.
+function isInboxState(state: SessionState): state is "running" | "suspended" {
+  return state === "running" || state === "suspended";
+}
+
+export function overviewInboxRows<T extends { id: string; state: SessionState; waiting_since: string | null }>(
+  sessions: { running: readonly T[]; suspended: readonly T[] },
+  liveStates: Readonly<Record<string, SessionStateMessage>>,
+): { running: T[]; suspended: T[] } {
+  const rows = mergeLiveSessionStates([...sessions.running, ...sessions.suspended], liveStates);
+  return {
+    running: rows.filter((s) => s.state === "running"),
+    suspended: rows.filter((s) => s.state === "suspended"),
+  };
+}
+
+// The threads in the inbox when a payload is asked for -- running or
+// suspended in the live map. A closed or archived thread is not in it: the
+// payload does not list it, and it must count as new the moment it runs
+// again.
+export function overviewInboxSnapshot(liveStates: Readonly<Record<string, SessionStateMessage>>): Set<string> {
+  const ids = new Set<string>();
+  for (const s of Object.values(liveStates)) if (isInboxState(s.state)) ids.add(s.session_id);
+  return ids;
+}
+
+// The snapshot after a frame: a thread that has left the inbox since the
+// load (closed, archived) is forgotten, so its return to the inbox is a
+// thread Přehled does not list -- the payload capped it out or never had
+// it -- and asks for once. Returns the same set when nothing left.
+export function overviewForgetLeftInbox(
+  known: ReadonlySet<string>,
+  liveStates: Readonly<Record<string, SessionStateMessage>>,
+): ReadonlySet<string> {
+  let next: Set<string> | null = null;
+  for (const id of known) {
+    const live = liveStates[id];
+    if (live && !isInboxState(live.state)) {
+      next ??= new Set(known);
+      next.delete(id);
+    }
+  }
+  return next ?? known;
+}
+
 // The live threads Přehled has to ask GET /overview again for (client
 // traffic contract, rule 3): a running or suspended thread its payload does
-// not list and that was not live when that payload was loaded
-// (`knownAtLoad`) -- a thread started since. The payload caps its rows, so
-// a thread beyond the cap is absent from every answer; it was known at
-// load time, so it is not "new", no refetch and no loop. A state change of
-// a listed thread is overlaid from the live map; a thread that closed
-// leaves the inbox the same way. No payload yet: the mount load is on its
-// way.
+// not list and that was not in the inbox when that payload was loaded
+// (`knownAtLoad`, see overviewInboxSnapshot / overviewForgetLeftInbox) -- a
+// thread started, or brought back, since. The payload caps its rows, so a
+// thread beyond the cap is absent from every answer; it was in the inbox at
+// load time, so it is not "new", no refetch and no loop. A listed thread is
+// handled by overviewInboxRows whatever its state. No payload yet: the
+// mount load is on its way.
 export function overviewMissingLiveThreads(
   data: { sessions: { running: readonly { id: string }[]; suspended: readonly { id: string }[] } } | null,
   liveStates: Readonly<Record<string, SessionStateMessage>>,
@@ -103,7 +153,7 @@ export function overviewMissingLiveThreads(
   for (const s of data.sessions.suspended) listed.add(s.id);
   const missing: string[] = [];
   for (const s of Object.values(liveStates)) {
-    if (s.state !== "running" && s.state !== "suspended") continue;
+    if (!isInboxState(s.state)) continue;
     if (listed.has(s.session_id) || knownAtLoad.has(s.session_id)) continue;
     missing.push(s.session_id);
   }

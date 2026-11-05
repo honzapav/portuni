@@ -29,7 +29,14 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { SessionStateMessage } from "../lib/sessions-client";
-import { mergeLiveSessionStates, overviewMissingLiveThreads, sessionRowChip, sortInboxSessions } from "../lib/session-views";
+import {
+  overviewForgetLeftInbox,
+  overviewInboxRows,
+  overviewInboxSnapshot,
+  overviewMissingLiveThreads,
+  sessionRowChip,
+  sortInboxSessions,
+} from "../lib/session-views";
 import { formatDateTime } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
 import { nodeTypeLabel } from "../lib/node-type-labels";
@@ -69,23 +76,44 @@ export default function OverviewView({
   const [data, setData] = useState<OverviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  // The live threads known when the current payload was asked for: a
-  // thread beyond the payload's row cap is absent from every answer, and
-  // only a thread that was not live at load time counts as started since.
+  // The threads in the inbox (running, suspended) when the current payload
+  // was asked for: a thread beyond the payload's row cap is absent from
+  // every answer, and only a thread that was not in the inbox at load time
+  // -- or has left it since -- counts as new. `pendingKnown` is the
+  // snapshot of the load in flight; a thread that leaves the inbox while it
+  // flies is forgotten there too, or one closed and run again during the
+  // request would stay "known" while the answer does not list it.
   const liveStatesRef = useRef(liveStates);
   liveStatesRef.current = liveStates;
-  const knownAtLoad = useRef(new Set<string>());
+  const knownAtLoad = useRef<ReadonlySet<string>>(new Set<string>());
+  const pendingKnown = useRef<ReadonlySet<string> | null>(null);
+  // A load asked for while another flies is dropped; when the flying one
+  // fails, `data` does not change and the check below would not re-run, so
+  // the failure bumps `recheck` -- the check runs once more and loads again
+  // only if a thread is still missing.
+  const droppedDuringFlight = useRef(false);
+  const [recheck, setRecheck] = useState(0);
   const load = useCallback(async () => {
+    // One request at a time: a frame during the flight is judged against
+    // its answer once it lands (the effect below re-runs on `data`), so
+    // answers cannot overtake each other and a burst of frames costs one.
+    if (pendingKnown.current !== null) {
+      droppedDuringFlight.current = true;
+      return;
+    }
+    droppedDuringFlight.current = false;
+    pendingKnown.current = overviewInboxSnapshot(liveStatesRef.current ?? {});
     setLoading(true);
     setError(null);
-    const known = new Set(Object.keys(liveStatesRef.current ?? {}));
     try {
       const payload = await fetchOverview();
-      knownAtLoad.current = known;
+      knownAtLoad.current = overviewForgetLeftInbox(pendingKnown.current, liveStatesRef.current ?? {});
       setData(payload);
     } catch (e) {
       setError(displayError(e));
+      if (droppedDuringFlight.current) setRecheck((n) => n + 1);
     } finally {
+      pendingKnown.current = null;
       setLoading(false);
     }
   }, []);
@@ -93,17 +121,24 @@ export default function OverviewView({
   useEffect(() => {
     void load();
   }, [load]);
-  // A thread started since the load is the one thing the live map cannot
+  // A thread that enters the inbox unlisted -- started since the load, or a
+  // closed one running again -- is the one thing the live map cannot
   // overlay onto the payload (lib/session-views.ts overviewMissingLiveThreads);
-  // everything else -- a state change, a close -- lands through
-  // mergeLiveSessionStates below. The refetch takes a new `knownAtLoad`
-  // snapshot, so a thread the capped payload still does not list is not
-  // asked for again; a refetch that failed leaves the old snapshot, and the
-  // next frame tries once more.
+  // everything else -- a state change, a suspend, a close -- lands through
+  // overviewInboxRows below. A thread that left the inbox is forgotten
+  // first, in the current snapshot and in the one in flight, so its return
+  // is asked for. The refetch takes a new `knownAtLoad` snapshot, so a
+  // thread the capped payload still does not list is not asked for again;
+  // a refetch that failed leaves the old snapshot, and the next frame tries
+  // once more.
   useEffect(() => {
-    if (overviewMissingLiveThreads(data, liveStates ?? {}, knownAtLoad.current).length > 0) void load();
-  }, [data, liveStates, load]);
+    const live = liveStates ?? {};
+    knownAtLoad.current = overviewForgetLeftInbox(knownAtLoad.current, live);
+    if (pendingKnown.current !== null) pendingKnown.current = overviewForgetLeftInbox(pendingKnown.current, live);
+    if (overviewMissingLiveThreads(data, live, knownAtLoad.current).length > 0) void load();
+  }, [data, liveStates, load, recheck]);
 
+  const inbox = data ? overviewInboxRows(data.sessions, liveStates ?? {}) : null;
   const syncIssues = showSync && data ? data.attention.sync_issues : [];
 
   if (loading && !data) {
@@ -134,8 +169,8 @@ export default function OverviewView({
         {data && (
           <CounterStrip
             counters={overviewCounters(
-              liveStates ? mergeLiveSessionStates(data.sessions.running, liveStates) : data.sessions.running,
-              liveStates ? mergeLiveSessionStates(data.sessions.suspended, liveStates) : data.sessions.suspended,
+              inbox?.running ?? [],
+              inbox?.suspended ?? [],
               data.attention.nodes.length + data.attention.access_requests.length + syncIssues.length,
               unsyncedCount,
             )}
@@ -148,8 +183,8 @@ export default function OverviewView({
         {data && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <SessionsCard
-              running={liveStates ? mergeLiveSessionStates(data.sessions.running, liveStates) : data.sessions.running}
-              suspended={liveStates ? mergeLiveSessionStates(data.sessions.suspended, liveStates) : data.sessions.suspended}
+              running={inbox?.running ?? []}
+              suspended={inbox?.suspended ?? []}
               disconnectedJumps={data.sessions.disconnected_jumps}
               onOpenSession={onOpenSession}
               onSelectNode={onSelectNode}
