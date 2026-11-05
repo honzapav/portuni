@@ -21,15 +21,15 @@ import type {
   GraphPayload,
 } from "../types";
 import {
-  fetchNodeAccess,
-  fetchNodeAccessRequests,
   putNodeAccess,
   searchGroups,
   GoogleModeOnlyError,
 } from "../api";
 import { AccessRequestList } from "./AccessRequests";
-import { accountUsersResource } from "../lib/resources";
-import { useResource } from "../lib/use-resource";
+import { accountUsersResource, nodeAccessByNode, nodeAccessRequestsByNode } from "../lib/resources";
+import { useKeyedResource, useKeyedResourceState, useResource } from "../lib/use-resource";
+
+const EMPTY_REQUESTS: AccessRequest[] = [];
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -210,7 +210,9 @@ export function AccessSection({
   // Pending access requests on this node (manager-only fetch; GET
   // /nodes/:id/access/requests is manage-gated, so it is skipped entirely
   // for a view-only caller instead of surfacing a 403).
-  const [pendingRequests, setPendingRequests] = useState<AccessRequest[]>([]);
+  // The window's answer per node (lib/resources.ts): a remount of the tab
+  // asks nothing; a manager-only fetch, skipped for a view-only caller.
+  const pendingRequests = useKeyedResource(nodeAccessRequestsByNode, canManage ? nodeId : null) ?? EMPTY_REQUESTS;
 
   // Applies a fresh access view from GET/PUT to the persisted-state slots.
   // Deliberately does NOT touch the local editing flags (overriding,
@@ -229,22 +231,15 @@ export function AccessSection({
     setDraftMode(res.inherited ? "private" : (res.mode ?? "private"));
   }, []);
 
+  // The queue is asked for again after a decision.
   const loadRequests = useCallback(async () => {
-    if (!canManage) {
-      setPendingRequests([]);
-      return;
-    }
-    try {
-      setPendingRequests(await fetchNodeAccessRequests(nodeId));
-    } catch {
-      /* the sharing view is still usable without the queue */
-    }
+    if (!canManage) return;
+    nodeAccessRequestsByNode.invalidate(nodeId);
   }, [nodeId, canManage]);
 
+  // The editing flags reset on a node change; the view itself comes from
+  // the window's answer per node (lib/resources.ts nodeAccessByNode).
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setLoadError(null);
     setAddingOpen(false);
     setSaveError(null);
     setOverriding(false);
@@ -252,25 +247,13 @@ export function AccessSection({
     setEditingGroup(false);
     setConfirm(null);
     setJustSaved(false);
-    fetchNodeAccess(nodeId)
-      .then((res) => {
-        if (cancelled) return;
-        applyView(res);
-      })
-      .catch(() => {
-        if (!cancelled) setLoadError(t(($) => $.access.load_error));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [nodeId, applyView, t]);
-
+  }, [nodeId]);
+  const access = useKeyedResourceState(nodeAccessByNode, nodeId);
   useEffect(() => {
-    void loadRequests();
-  }, [loadRequests]);
+    if (access.value) applyView(access.value);
+    setLoading(access.loading);
+    setLoadError(access.error === null ? null : t(($) => $.access.load_error));
+  }, [access.value, access.loading, access.error, applyView, t]);
 
   // After an approve the grant lives on the (possibly ancestor) source
   // node, so the whole access view is refetched rather than patched
@@ -279,7 +262,8 @@ export function AccessSection({
     await loadRequests();
     if (decision !== "approve") return;
     try {
-      applyView(await fetchNodeAccess(nodeId));
+      nodeAccessByNode.invalidate(nodeId);
+      applyView(await nodeAccessByNode.get(nodeId));
       await onMutate();
     } catch {
       /* stale view until the next node change; the grant itself landed */
@@ -306,6 +290,7 @@ export function AccessSection({
         nextMode,
         nextVisibility,
       );
+      nodeAccessByNode.set(nodeId, res);
       applyView(res);
       setOverriding(false);
       setOverrideSaveError(null);

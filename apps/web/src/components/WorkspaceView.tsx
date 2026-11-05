@@ -94,6 +94,10 @@ type Props = {
   // Reports the detail aside's visibility so App polls the node detail only
   // while somebody can see it (lib/poll-policy.ts).
   onDetailVisibleChange?: (visible: boolean) => void;
+  // Whether Práce is the view on screen. App keeps it mounted behind Graf,
+  // Přehled and Settings so the chats keep their transcripts; while hidden
+  // nothing here polls, focuses or answers a key.
+  active: boolean;
 };
 
 export default function WorkspaceView({
@@ -121,6 +125,7 @@ export default function WorkspaceView({
   onSessionStarted,
   onOpenChat,
   onDetailVisibleChange,
+  active,
 }: Props) {
   const { t } = useTranslation("common");
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
@@ -184,6 +189,7 @@ export default function WorkspaceView({
           onSessionStarted={onSessionStarted}
           onOpenChat={onOpenChat}
           sessionStore={sessionStore}
+          visible={active}
         />
       </Suspense>
     );
@@ -216,6 +222,7 @@ export default function WorkspaceView({
                 onOpenFile={session.node_id ? (relPath) => onOpenFile(session.node_id!, relPath) : undefined}
                 onContinued={onSessionStarted}
                 shown={visible}
+                surfaceActive={active}
               />
             </div>
           );
@@ -244,7 +251,7 @@ export default function WorkspaceView({
             empty; otherwise nudge the user to pick from the left. */}
         {!selectedNodeId &&
           (openNodeCount === 0 ? (
-            <WorkspaceEmpty graph={graph} onPick={(n) => onOpenNodeFromPicker(n)} />
+            <WorkspaceEmpty graph={graph} onPick={(n) => onOpenNodeFromPicker(n)} autoFocus={active} />
           ) : (
             <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-text-dim)]">
               {t(($) => $.workspace.pick_node_hint)}

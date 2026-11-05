@@ -21,6 +21,22 @@ restore button are hidden on a personal workspace (`useDataMode()` in
 
 ### Práce (`WorkspaceView.tsx`)
 
+Práce mounts on its first visit and stays mounted behind Graf, Přehled and
+Settings (hidden, `inert`, `aria-hidden`), so every chat keeps its
+transcript, scroll and composer across a view switch instead of replaying
+it on the way back. `active` says whether it is the view on screen: while
+it is not, no Esc reaches a chat (`escapeStopsTurn`'s `surfaceActive`),
+the detail pane polls nothing (`visible`), and the empty-workspace search
+box does not take the focus.
+
+Data the pane shows is the window's, per node (`lib/resources.ts`:
+`folderUrlByNode`, `nodeAccessByNode`, `nodeAccessRequestsByNode`, and the
+sync-status cache with a 5 s freshness window), so a remount of
+`DetailPane` -- the aside collapsing, the editor closing, a thread
+appearing -- fetches nothing it already has. A failed refresh of a detail
+already on screen stays silent; an error unmounts the pane's body and a
+remount would ask for everything again.
+
 The layout follows one rule: the thread takes the centre whenever the
 selected node has an open thread, and the node surface moves to a
 collapsible right aside.

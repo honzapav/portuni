@@ -206,6 +206,7 @@ export default function SessionChat({
   onOpenFile,
   onContinued,
   shown = true,
+  surfaceActive = true,
 }: {
   sessionId: string;
   sessionStore: SessionStore;
@@ -220,6 +221,9 @@ export default function SessionChat({
   // (WorkspaceView hides the rest), and only the shown one answers an Esc
   // pressed outside its composer.
   shown?: boolean;
+  // Whether Práce itself is the view on screen: it stays mounted behind
+  // the others so the transcripts survive, and no Esc reaches it there.
+  surfaceActive?: boolean;
 }) {
   const { t } = useTranslation("chat");
   const { t: tCommon } = useTranslation("common");
@@ -568,7 +572,7 @@ export default function SessionChat({
 
   // The window Escape listener (added above) reads this render's state.
   escapeHandler.current = (e) => {
-    if (!escapeStopsTurn(e, turnActive, shown) || actionPending !== null) return;
+    if (!escapeStopsTurn(e, turnActive, shown, surfaceActive) || actionPending !== null) return;
     e.preventDefault();
     void runAction("interrupt");
   };

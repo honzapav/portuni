@@ -34,9 +34,23 @@ export function nodeDetailPollTarget(input: NodeDetailPollInput): NodeDetailPoll
 }
 
 // The detail pane's sync-status poll runs only while the Files tab, the
-// only surface that shows per-file state, is on screen.
-export function shouldPollSyncStatus(input: { tab: string; hidden: boolean; rateLimited: boolean }): boolean {
-  return input.tab === "files" && !input.hidden && !input.rateLimited;
+// only surface that shows per-file state, is on screen -- and the pane's
+// own surface too: Práce stays mounted behind Graf, Přehled and Settings,
+// `visible` false then.
+export function shouldPollSyncStatus(input: {
+  tab: string;
+  hidden: boolean;
+  rateLimited: boolean;
+  visible: boolean;
+}): boolean {
+  return input.tab === "files" && !input.hidden && !input.rateLimited && input.visible;
+}
+
+// Whether an answer fetched at `fetchedAt` (ms epoch) is still fresh at
+// `now`: a remount of a pane within the window reads what the window has
+// instead of asking again.
+export function isFresh(fetchedAt: number | undefined, now: number, ttlMs: number): boolean {
+  return fetchedAt !== undefined && now - fetchedAt < ttlMs;
 }
 
 export type FocusRefetchInput = {

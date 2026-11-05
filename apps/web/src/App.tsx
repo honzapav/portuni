@@ -376,6 +376,12 @@ export default function App() {
   // Whether Práce shows its detail aside (WorkspaceView owns the toggle and
   // reports it): a collapsed aside is nothing to poll for.
   const [workspaceDetailVisible, setWorkspaceDetailVisible] = useState(true);
+  // Práce mounts on its first visit and then stays mounted behind the
+  // other views, so its chats keep their transcripts.
+  const [workspaceVisited, setWorkspaceVisited] = useState(view === "workspace");
+  useEffect(() => {
+    if (view === "workspace") setWorkspaceVisited(true);
+  }, [view]);
   // The set of nodes open in the workspace. Persisted across restarts and
   // pruned against the graph once it loads.
   const [openNodeIds, setOpenNodeIds] = useState<string[]>(() => loadOpenNodes());
@@ -488,6 +494,8 @@ export default function App() {
   // selection (the graph is for browsing, the workspace is for active
   // work — different selections make sense).
   const [workspaceNodeDetail, setWorkspaceNodeDetail] = useState<NodeDetail | null>(null);
+  const workspaceNodeDetailRef = useRef<NodeDetail | null>(null);
+  workspaceNodeDetailRef.current = workspaceNodeDetail;
   const [workspaceDetailLoading, setWorkspaceDetailLoading] = useState(false);
   const [workspaceDetailError, setWorkspaceDetailError] = useState<string | null>(null);
 
@@ -516,6 +524,9 @@ export default function App() {
     };
   }, [selectedWorkspaceNodeId]);
 
+  // A failed refresh of a detail already on screen stays silent (the
+  // graph view's poll does the same): an error here unmounts the pane's
+  // body, and a remount asks for everything the pane shows again.
   const refetchWorkspaceDetail = useCallback(async () => {
     if (!selectedWorkspaceNodeId) return;
     try {
@@ -523,6 +534,7 @@ export default function App() {
       setWorkspaceNodeDetail(n);
       setWorkspaceDetailError(null);
     } catch (err) {
+      if (workspaceNodeDetailRef.current?.id === selectedWorkspaceNodeId) return;
       setWorkspaceDetailError(displayError(err));
     }
   }, [selectedWorkspaceNodeId]);
@@ -1165,11 +1177,20 @@ export default function App() {
             />
           </Suspense>
         )}
-        {/* Mounted on demand so the picker's autoFocus doesn't steal focus
-            from the graph view. */}
-        {view === "workspace" && (
-          <div className="absolute inset-0">
+        {/* Mounted on the first visit and kept mounted behind the other
+            views (hidden, inert): every chat keeps its transcript, scroll
+            and composer across a view switch instead of replaying it all
+            on the way back. While hidden it polls nothing, focuses nothing
+            and answers no key (`active`). */}
+        {workspaceVisited && (
+          <div
+            className="absolute inset-0"
+            style={view === "workspace" ? undefined : { visibility: "hidden", pointerEvents: "none" }}
+            aria-hidden={view === "workspace" ? undefined : true}
+            inert={view === "workspace" ? undefined : true}
+          >
             <WorkspaceView
+              active={view === "workspace"}
               graph={graph}
               selectedNodeId={selectedWorkspaceNodeId}
               onSelectNode={workspaceSelectNode}

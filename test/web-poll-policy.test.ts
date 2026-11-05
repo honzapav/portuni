@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   focusRefetchTargets,
+  isFresh,
   nodeDetailPollTarget,
   shouldPollSyncStatus,
 } from "../apps/web/src/lib/poll-policy.js";
@@ -49,10 +50,22 @@ describe("nodeDetailPollTarget", () => {
 
 describe("shouldPollSyncStatus", () => {
   it("polls only on the Files tab, visible, outside a cooldown", () => {
-    assert.equal(shouldPollSyncStatus({ tab: "files", hidden: false, rateLimited: false }), true);
-    assert.equal(shouldPollSyncStatus({ tab: "overview", hidden: false, rateLimited: false }), false);
-    assert.equal(shouldPollSyncStatus({ tab: "files", hidden: true, rateLimited: false }), false);
-    assert.equal(shouldPollSyncStatus({ tab: "files", hidden: false, rateLimited: true }), false);
+    assert.equal(shouldPollSyncStatus({ tab: "files", hidden: false, rateLimited: false, visible: true }), true);
+    assert.equal(shouldPollSyncStatus({ tab: "overview", hidden: false, rateLimited: false, visible: true }), false);
+    assert.equal(shouldPollSyncStatus({ tab: "files", hidden: true, rateLimited: false, visible: true }), false);
+    assert.equal(shouldPollSyncStatus({ tab: "files", hidden: false, rateLimited: true, visible: true }), false);
+  });
+
+  it("does not poll a pane whose surface is not on screen (Práce kept mounted behind another view)", () => {
+    assert.equal(shouldPollSyncStatus({ tab: "files", hidden: false, rateLimited: false, visible: false }), false);
+  });
+});
+
+describe("isFresh", () => {
+  it("an answer younger than the window is fresh, an older or missing one is not", () => {
+    assert.equal(isFresh(10_000, 14_999, 5_000), true);
+    assert.equal(isFresh(10_000, 15_000, 5_000), false);
+    assert.equal(isFresh(undefined, 15_000, 5_000), false);
   });
 });
 

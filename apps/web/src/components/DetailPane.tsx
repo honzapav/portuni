@@ -104,7 +104,6 @@ import {
   fetchNodeSyncStatus,
   runNodeSync,
   createNodeMirror,
-  fetchNodeFolderUrl,
   createFile,
   renameFile,
   deleteFile,
@@ -142,9 +141,9 @@ import { useDataMode } from "../lib/central";
 import { showsPersonalWorkspaceBanner, showsSyncSurfaces } from "../lib/sync-visibility";
 import { compareText, formatDate } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
-import { shouldPollSyncStatus } from "../lib/poll-policy";
-import { actorsResource } from "../lib/resources";
-import { useResourceState } from "../lib/use-resource";
+import { isFresh, shouldPollSyncStatus } from "../lib/poll-policy";
+import { actorsResource, folderUrlByNode } from "../lib/resources";
+import { useKeyedResource, useResourceState } from "../lib/use-resource";
 import { isRateLimited } from "../lib/rate-limit-cooldown";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
@@ -154,6 +153,12 @@ import { isRateLimited } from "../lib/rate-limit-cooldown";
 // already DB-only, but caching here also avoids the network round-trip
 // for repeat visits during a single session.
 const SYNC_STATUS_CACHE = new Map<string, Map<string, SyncStatusFile>>();
+// When the node's sync status was last fetched and what was untracked then:
+// a remount within SYNC_STATUS_FRESH_MS (collapse, editor close, a view
+// switch) reads these instead of asking again (lib/poll-policy.ts isFresh).
+const SYNC_STATUS_FETCHED_AT = new Map<string, number>();
+const SYNC_UNTRACKED_CACHE = new Map<string, UntrackedFile[]>();
+const SYNC_STATUS_FRESH_MS = 5000;
 // Same caching rationale, for sync-status's watcher_errors field (#202).
 const SYNC_WATCHER_ERRORS_CACHE = new Map<string, WatcherErrorEntry[]>();
 
@@ -212,6 +217,9 @@ type Props = {
   onOpenChat?: (nodeId: string, sessionId: string) => void;
   // The window's session store, for the Relace tab (see SessionsSection).
   sessionStore: SessionStore;
+  // False while the pane's surface (Práce) is mounted behind another view:
+  // nothing polls then.
+  visible?: boolean;
 };
 
 // Memoized: 3.5k lines of pane re-rendered wholesale on every App render
@@ -233,6 +241,7 @@ function DetailPane({
   onSessionStarted,
   onOpenChat,
   sessionStore,
+  visible = true,
 }: Props) {
   // Drives whether the sharing section is editable.
   const { canManage } = useMe();
@@ -290,6 +299,7 @@ function DetailPane({
       onSessionStarted={onSessionStarted}
       onOpenChat={onOpenChat}
       sessionStore={sessionStore}
+      visible={visible}
     />
   );
 }
@@ -308,6 +318,7 @@ function DetailPaneBody({
   onSessionStarted,
   onOpenChat,
   sessionStore,
+  visible = true,
 }: Omit<Props, "node" | "loading" | "error"> & {
   // The body renders a loaded node only; the shell above handles the
   // loading and error states.
@@ -358,7 +369,9 @@ function DetailPaneBody({
   const [syncRunResult, setSyncRunResult] = useState<SyncRunResponse | null>(
     null,
   );
-  const [untracked, setUntracked] = useState<UntrackedFile[]>([]);
+  const [untracked, setUntracked] = useState<UntrackedFile[]>(
+    () => SYNC_UNTRACKED_CACHE.get(node.id) ?? [],
+  );
   // Recent mirror-watcher failures for this node (#202) -- rides along on
   // the same sync-status fetch, no separate poll.
   const [watcherErrors, setWatcherErrors] = useState<WatcherErrorEntry[]>(
@@ -487,6 +500,7 @@ function DetailPaneBody({
     const requestNodeId = node.id;
     try {
       await createNodeMirror(requestNodeId);
+      folderUrlByNode.invalidate(requestNodeId);
       if (lastIdRef.current !== requestNodeId) return;
       await onMutate();
       try {
@@ -529,6 +543,8 @@ function DetailPaneBody({
       const m = new Map<string, SyncStatusFile>();
       for (const f of res.files) m.set(f.file_id, f);
       SYNC_STATUS_CACHE.set(requestNodeId, m);
+      SYNC_STATUS_FETCHED_AT.set(requestNodeId, Date.now());
+      SYNC_UNTRACKED_CACHE.set(requestNodeId, res.untracked ?? []);
       setSyncStatus(m);
       setUntracked(res.untracked ?? []);
       setSyncLoaded(true);
@@ -553,24 +569,35 @@ function DetailPaneBody({
   // restart would fetch once more per tab switch).
   const tabRef = useRef(tab);
   tabRef.current = tab;
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   useEffect(() => {
     let cancelled = false;
-    void loadSyncStatus();
+    // A remount within the freshness window reads the cached answer.
+    if (!isFresh(SYNC_STATUS_FETCHED_AT.get(node.id), Date.now(), SYNC_STATUS_FRESH_MS)) void loadSyncStatus();
     // Poll so agent-written (untracked) and MCP-registered files appear
     // without a manual refresh. ~5s, and only while the Files tab is on
-    // screen, the window visible and no 429 cooldown running
-    // (lib/poll-policy.ts). The header's sync dot keeps what the mount
-    // load and the last Files visit left.
+    // screen, the pane's surface and the window visible and no 429
+    // cooldown running (lib/poll-policy.ts). The header's sync dot keeps
+    // what the mount load and the last Files visit left.
     const id = setInterval(() => {
       if (cancelled) return;
-      if (!shouldPollSyncStatus({ tab: tabRef.current, hidden: document.hidden, rateLimited: isRateLimited() })) return;
+      if (
+        !shouldPollSyncStatus({
+          tab: tabRef.current,
+          hidden: document.hidden,
+          rateLimited: isRateLimited(),
+          visible: visibleRef.current,
+        })
+      )
+        return;
       void loadSyncStatus();
     }, 5000);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [loadSyncStatus]);
+  }, [loadSyncStatus, node.id]);
 
   const startEdit = () => {
     setDraftName(node.name);
@@ -3548,19 +3575,11 @@ function MetaSection({ meta }: { meta: unknown }) {
 // Drive mark; anything else a generic link icon labelled by remote name.
 function RemoteFolderActions({ nodeId }: { nodeId: string }) {
   const { t } = useTranslation("node");
-  const [info, setInfo] = useState<{ url: string; remote_name?: string } | null>(null);
+  // The window's answer per node (lib/resources.ts folderUrlByNode): a
+  // remount of the pane asks nothing; creating a mirror forgets it.
+  const folder = useKeyedResource(folderUrlByNode, nodeId);
+  const info = folder?.url ? { url: folder.url, remote_name: folder.remote_name } : null;
   const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    setInfo(null);
-    fetchNodeFolderUrl(nodeId)
-      .then((r) => {
-        if (cancelled) return;
-        if (r.url) setInfo({ url: r.url, remote_name: r.remote_name });
-      })
-      .catch(() => { /* best-effort -- absence is fine */ });
-    return () => { cancelled = true; };
-  }, [nodeId]);
   if (!info) return null;
   const isDrive = /(^|\.)drive\.google\.com$/.test(safeHost(info.url));
   const remoteName = info.remote_name;
