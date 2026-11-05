@@ -617,6 +617,19 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       if (!body) return true;
       const pending = sessionRuntime.pendingQuestion(sessionId);
       if (!pending || pending.request_id !== requestId) {
+        // A pending question exists only for a run this device drives for
+        // the thread's owner; with none, a thread central does not return
+        // is the access rule's 404, the same as the local router answers.
+        try {
+          if (!(await sessionRuntime.getSession(sessionId))) {
+            respondApiError(res, 404, "SESSION_NOT_FOUND", "session not found");
+            return true;
+          }
+        } catch (err) {
+          if (respondCentral404(res, err)) return true;
+          respondError(res, `POST /sessions/${sessionId}/questions/${requestId}`, err);
+          return true;
+        }
         respondApiError(res, 409, "NO_PENDING_QUESTION", "no pending question with this request_id");
         return true;
       }
@@ -699,6 +712,10 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       try {
         await sessionRuntime.interrupt(sessionId);
         const session = await sessionRuntime.getSession(sessionId);
+        if (!session) {
+          respondApiError(res, 404, "SESSION_NOT_FOUND", "session not found");
+          return true;
+        }
         respondJson(res, 200, { session });
       } catch (err) {
         respondError(res, `POST /sessions/${sessionId}/interrupt`, err);
@@ -765,6 +782,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       const sessionId = decodeURIComponent(sessionSignalsMatch[1]);
       try {
         const signals = await sessionRuntime.sessionSignals(sessionId);
+        // A live run here is a thread this device drives for its owner; with
+        // none, a thread central does not return is the access rule's 404.
+        if (signals.runAgeMs === null && !(await sessionRuntime.getSession(sessionId))) {
+          respondApiError(res, 404, "SESSION_NOT_FOUND", "session not found");
+          return true;
+        }
         respondJson(res, 200, signals);
       } catch (err) {
         respondError(res, `GET /sessions/${sessionId}/signals`, err);
@@ -802,6 +825,13 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       const after = url.searchParams.get("after");
       const limit = url.searchParams.get("limit");
       try {
+        // The record first, as the local router's access guard does: a
+        // session central does not return is a 404 whatever the query says.
+        const session = await sessionRuntime.getSession(sessionId);
+        if (!session) {
+          respondApiError(res, 404, "SESSION_NOT_FOUND", "session not found");
+          return true;
+        }
         const rows = await sessionRuntime.listEvents(sessionId, {
           after: after !== null ? Number(after) : undefined,
           limit: limit !== null ? Number(limit) : undefined,
@@ -810,7 +840,6 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
         // #458: the transcript is this device's content.db. A thread the
         // record says ran on another device has none here, and the answer
         // says so rather than looking like an empty chat.
-        const session = await sessionRuntime.getSession(sessionId);
         const transcriptHost = transcriptHostLabel(session?.host_id ?? null, rows.length);
         respondJson(res, 200, { events, ...(transcriptHost ? { transcript_host: transcriptHost } : {}) });
       } catch (err) {

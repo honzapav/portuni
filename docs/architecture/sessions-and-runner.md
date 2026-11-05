@@ -284,7 +284,14 @@ The table is one line: **every action is the owner's** (#457).
   every mutating `/sessions*` route and `POST /sessions` are `write`.
 - In a team workspace these checks run on the central server, on every store round
   trip: the device never re-implements them. A central 404 surfaces as
-  `SESSION_NOT_FOUND`.
+  `SESSION_NOT_FOUND`, on every verb of the sync agent's router: a
+  `CentralHttpError` 404 is relayed with its code, and a record lookup
+  that `CentralSessionStore` turns into `null` makes the runtime throw
+  `SessionNotFoundError` (`domain/runner/session-errors.ts`), which
+  `respondError` and `api/session-refusals.ts` answer as 404. The routes
+  that read only this device's memory (`signals`, an answer) look the
+  record up when no live run or pending question exists here;
+  `test/agent-router-sessions.test.ts` holds every verb to it.
 
 ## The runtime and its store seam
 
