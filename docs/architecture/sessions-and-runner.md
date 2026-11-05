@@ -1092,8 +1092,11 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   (`infra/change-feed.ts`, every graph and file write publishes the node
   it touched) reaches every open socket as one coalesced
   `node_changed { changes: [{node_id, kind: "node" | "files"}], reset }`
-  frame per 200 ms (`NODE_CHANGED_COALESCE_MS`), whoever the node belongs
-  to -- on the device the feed only holds what central let it see. In the
+  frame per 200 ms (`NODE_CHANGED_COALESCE_MS`), naming only the nodes
+  that socket's identity may know about (`SessionsWsDeps.visibleNodes`,
+  the same rule `GET /changes` applies; resolved once per identity per
+  flush) -- on the device the feed only holds what central let it see, so
+  the agent deps pass everything. In the
   sync agent the feed is fed by `boot/change-poller.ts`, one long-poll of
   central's `GET /changes?since=&wait=20` after another, plus the
   watcher's own successful reconciles (`onReconciled`); a `reset` from

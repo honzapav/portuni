@@ -48,6 +48,7 @@ import { ApiError } from "../http/middleware.js";
 import { isErrorCode, type ErrorCode, type ErrorParams } from "../shared/error-codes.js";
 import { logAudit } from "../infra/audit.js";
 import { subscribeChanges, type NodeChangeKind } from "../infra/change-feed.js";
+import { filterVisibleNodeIds } from "../auth/node-access.js";
 import { RequestLocale, toSummary } from "./sessions.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { DeltaFrame, QuestionDecision } from "../domain/runner/types.js";
@@ -140,6 +141,10 @@ export interface SessionsWsDeps {
   // no graph db, and central already audits the record calls the runtime
   // makes on its behalf.
   audit(identity: RequestIdentity, action: string, sessionId: string, detail: Record<string, unknown>): Promise<void>;
+  // Which of these nodes this identity may know about: a `node_changed`
+  // frame names only those (the same rule GET /changes applies). The sync
+  // agent's feed already holds only what central let this device see.
+  visibleNodes(identity: RequestIdentity, nodeIds: readonly string[]): Promise<ReadonlySet<string>>;
 }
 
 // Bounds the initial session_state burst: running + suspended sessions,
@@ -161,6 +166,7 @@ export function createLocalSessionsWsDeps(): SessionsWsDeps {
     },
     canSee: async (identity, row) => canSeeSession(identity, row),
     audit: (identity, action, sessionId, detail) => logAudit(identity.userId, action, "session", sessionId, detail),
+    visibleNodes: (identity, nodeIds) => filterVisibleNodeIds(getDb(), identity, [...nodeIds]),
   };
 }
 
@@ -188,6 +194,7 @@ export function createAgentSessionsWsDeps(client: CentralClient, runtime: Sessio
     // row the frame carries.
     canSee: async (identity, row) => row.user_id === identity.userId,
     audit: async () => undefined,
+    visibleNodes: async (_identity, nodeIds) => new Set(nodeIds),
   };
 }
 
@@ -301,10 +308,28 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     flushTimer = null;
     const changes: { node_id: string; kind: NodeChangeKind }[] = [];
     for (const [node_id, kinds] of pendingChanges) for (const kind of kinds) changes.push({ node_id, kind });
-    const frame = { type: "node_changed", payload: { changes, reset: pendingReset } };
+    const reset = pendingReset;
     pendingChanges = new Map();
     pendingReset = false;
-    for (const conn of connections) send(conn.ws, frame);
+    // Visibility once per identity, not per socket: a frame names only the
+    // nodes that identity may know about, and a socket with nothing to
+    // hear gets no frame (a reset reaches everyone).
+    const nodeIds = [...new Set(changes.map((c) => c.node_id))];
+    const byUser = new Map<string, Promise<ReadonlySet<string>>>();
+    for (const conn of connections) {
+      let visible = byUser.get(conn.identity.userId);
+      if (!visible) {
+        visible = nodeIds.length === 0 ? Promise.resolve(new Set<string>()) : deps.visibleNodes(conn.identity, nodeIds);
+        byUser.set(conn.identity.userId, visible);
+      }
+      void visible
+        .then((set) => {
+          const own = changes.filter((c) => set.has(c.node_id));
+          if (own.length === 0 && !reset) return;
+          send(conn.ws, { type: "node_changed", payload: { changes: own, reset } });
+        })
+        .catch((err: unknown) => console.warn("[portuni:sessions-ws] node_changed visibility read failed:", err));
+    }
   }
   function queueNodeChange(change: { node_id: string; kind: NodeChangeKind } | { reset: true }): void {
     if ("reset" in change) pendingReset = true;
