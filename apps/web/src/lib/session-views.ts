@@ -83,24 +83,30 @@ export function mergeLiveSessionStates<T extends { id: string; state: SessionSta
   return sessions.map((s) => applyLiveSessionState(s, liveStates));
 }
 
-// Whether Přehled has to ask GET /overview again (client traffic contract,
-// rule 3): only for a live running or suspended thread its payload does not
-// list -- a thread started since the load. A state change of a listed
-// thread is overlaid from the live map; a thread that closed leaves the
-// inbox the same way. No payload yet: the mount load is on its way.
-export function overviewMissesLiveThread(
+// The live threads Přehled has to ask GET /overview again for (client
+// traffic contract, rule 3): a running or suspended thread its payload does
+// not list -- one started since the load -- and that it has not asked for
+// yet (`alreadyAsked`): the payload caps its rows, so a thread beyond the
+// cap is absent from every answer and a refetch per answer would never end;
+// one refetch per thread id is the bound. A state change of a listed thread
+// is overlaid from the live map; a thread that closed leaves the inbox the
+// same way. No payload yet: the mount load is on its way.
+export function overviewMissingLiveThreads(
   data: { sessions: { running: readonly { id: string }[]; suspended: readonly { id: string }[] } } | null,
   liveStates: Readonly<Record<string, SessionStateMessage>>,
-): boolean {
-  if (data === null) return false;
+  alreadyAsked: ReadonlySet<string>,
+): string[] {
+  if (data === null) return [];
   const listed = new Set<string>();
   for (const s of data.sessions.running) listed.add(s.id);
   for (const s of data.sessions.suspended) listed.add(s.id);
+  const missing: string[] = [];
   for (const s of Object.values(liveStates)) {
     if (s.state !== "running" && s.state !== "suspended") continue;
-    if (!listed.has(s.session_id)) return true;
+    if (listed.has(s.session_id) || alreadyAsked.has(s.session_id)) continue;
+    missing.push(s.session_id);
   }
-  return false;
+  return missing;
 }
 
 // Přehled's Relace card: waiting ("Čeká na mě") first, then running, then

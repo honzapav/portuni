@@ -20,7 +20,7 @@ import {
   sessionRowContinues,
   threadCanContinue,
   isOpenableChatState,
-  overviewMissesLiveThread,
+  overviewMissingLiveThreads,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -137,7 +137,7 @@ describe("applyLiveSessionState / mergeLiveSessionStates", () => {
 // Přehled refetches GET /overview for a live thread its payload does not
 // list (client traffic contract, rule 3); a state change of a thread it
 // lists is overlaid from the live map and costs nothing.
-describe("overviewMissesLiveThread", () => {
+describe("overviewMissingLiveThreads", () => {
   const live = (id: string, state: SessionStateMessage["state"]): Record<string, SessionStateMessage> => ({
     [id]: { session_id: id, state, waiting_since: null, node_id: "n1" },
   });
@@ -149,23 +149,29 @@ describe("overviewMissesLiveThread", () => {
   };
 
   it("a listed thread, whatever its state now, is not missing", () => {
-    assert.equal(overviewMissesLiveThread(data, live("S1", "running")), false);
-    assert.equal(overviewMissesLiveThread(data, live("S2", "running")), false);
-    assert.equal(overviewMissesLiveThread(data, live("S1", "closed")), false);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S1", "running"), new Set()), []);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S2", "running"), new Set()), []);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S1", "closed"), new Set()), []);
   });
 
   it("an unlisted running or suspended thread is missing", () => {
-    assert.equal(overviewMissesLiveThread(data, live("S9", "running")), true);
-    assert.equal(overviewMissesLiveThread(data, live("S9", "suspended")), true);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "running"), new Set()), ["S9"]);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "suspended"), new Set()), ["S9"]);
   });
 
   it("an unlisted closed or archived thread is not missing", () => {
-    assert.equal(overviewMissesLiveThread(data, live("S9", "closed")), false);
-    assert.equal(overviewMissesLiveThread(data, live("S9", "archived")), false);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "closed"), new Set()), []);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "archived"), new Set()), []);
   });
 
   it("no payload yet means nothing is missing (the mount load is on its way)", () => {
-    assert.equal(overviewMissesLiveThread(null, live("S9", "running")), false);
+    assert.deepEqual(overviewMissingLiveThreads(null, live("S9", "running"), new Set()), []);
+  });
+
+  it("a thread already asked for is not asked for again, so a payload that never lists it cannot loop", () => {
+    // GET /overview caps its rows; a live thread beyond the cap is absent
+    // from every payload, and a refetch per payload would never end.
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "running"), new Set(["S9"])), []);
   });
 });
 

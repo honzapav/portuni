@@ -8,7 +8,7 @@
 // SyncOverview's pattern.
 
 import { displayError } from "../errors";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, Clock, MessagesSquare, RefreshCw, Sparkles } from "lucide-react";
 import { capRows, overviewCounters, splitThreadsAndCli } from "../lib/overview-view";
@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { SessionStateMessage } from "../lib/sessions-client";
-import { mergeLiveSessionStates, overviewMissesLiveThread, sessionRowChip, sortInboxSessions } from "../lib/session-views";
+import { mergeLiveSessionStates, overviewMissingLiveThreads, sessionRowChip, sortInboxSessions } from "../lib/session-views";
 import { formatDateTime } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
 import { nodeTypeLabel } from "../lib/node-type-labels";
@@ -85,12 +85,18 @@ export default function OverviewView({
     void load();
   }, [load]);
   // A thread started since the load is the one thing the live map cannot
-  // overlay onto the payload (lib/session-views.ts overviewMissesLiveThread);
+  // overlay onto the payload (lib/session-views.ts overviewMissingLiveThreads);
   // everything else -- a state change, a close -- lands through
-  // mergeLiveSessionStates below. `data` in the deps settles the effect
-  // once the refetched payload lists the thread.
+  // mergeLiveSessionStates below. At most one refetch per thread id
+  // (`askedFor`): the payload caps its rows, so a thread beyond the cap
+  // never shows up and must not keep the refetch going. `data` in the deps
+  // settles the effect once the refetched payload lists the thread.
+  const askedFor = useRef(new Set<string>());
   useEffect(() => {
-    if (overviewMissesLiveThread(data, liveStates ?? {})) void load();
+    const missing = overviewMissingLiveThreads(data, liveStates ?? {}, askedFor.current);
+    if (missing.length === 0) return;
+    for (const id of missing) askedFor.current.add(id);
+    void load();
   }, [data, liveStates, load]);
 
   const syncIssues = showSync && data ? data.attention.sync_issues : [];

@@ -217,8 +217,10 @@ the footer line "K tomu N relací z CLI (N běží)". `GET /overview` returns th
 threads only (#457), and its rows are record only -- no `brief` since
 #461, so a row shows `name`. Rows are overlaid with live state (`mergeLiveSessionStates`);
 the card reloads only for a live running or suspended thread the payload
-does not list (`overviewMissesLiveThread`, a thread started since the
-load), never for a state change of one it lists. The unsynced
+does not list (`overviewMissingLiveThreads`, a thread started since the
+load), at most once per thread id -- the payload caps its rows, so a
+thread beyond the cap must not keep the reload going -- and never for a
+state change of one it lists. The unsynced
 counter is `useSyncPending().pending.total` passed down from `App.tsx`.
 
 ### Sidebar thread rows (`WorkspaceNodeList.tsx`)
