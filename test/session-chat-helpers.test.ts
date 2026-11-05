@@ -693,6 +693,11 @@ describe("escapeStopsTurn", () => {
     assert.equal(escapeStopsTurn(key(), true, false), false);
   });
 
+  it("does nothing while Práce is kept mounted behind another view", () => {
+    assert.equal(escapeStopsTurn(key(), true, true, false), false);
+    assert.equal(escapeStopsTurn(key(), true, true, true), true);
+  });
+
   it("leaves other keys and IME composition alone", () => {
     assert.equal(escapeStopsTurn(key({ key: "Enter" }), true, true), false);
     assert.equal(escapeStopsTurn(key({ isComposing: true }), true, true), false);

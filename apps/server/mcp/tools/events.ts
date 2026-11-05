@@ -181,6 +181,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
 
       await logAudit(ctx.identity.userId, "resolve_event", "event", args.event_id, {
         resolution: args.resolution ?? null,
+        node_id: row.node_id,
       });
 
       return {

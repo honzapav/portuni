@@ -24,14 +24,13 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  fetchActors,
-  fetchUsers,
   createActor,
   updateActor,
   archiveActor,
   type Actor,
-  type User,
 } from "../api";
+import { actorsResource, usersResource } from "../lib/resources";
+import { useResourceState } from "../lib/use-resource";
 
 type Props = Record<string, never>;
 
@@ -44,9 +43,15 @@ const NO_USER = "__none__";
 
 export default function ActorsPage(_props: Props) {
   const { t } = useTranslation("settings");
-  const [actors, setActors] = useState<Actor[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  // The window's actor registry (lib/resources.ts): the same list the
+  // node detail's pickers read, fetched once; a change here forgets it.
+  const registry = useResourceState(actorsResource);
+  const actors = registry.value;
+  const loading = registry.loading;
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (registry.error !== null) setError(displayError(registry.error));
+  }, [registry.error]);
 
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [placeholderFilter, setPlaceholderFilter] =
@@ -56,22 +61,12 @@ export default function ActorsPage(_props: Props) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Actor | null>(null);
 
+  // After a change: forget the registry, the next read fetches it.
   const loadActors = useCallback(async () => {
-    setLoading(true);
     setError(null);
-    try {
-      const data = await fetchActors();
-      setActors(data);
-    } catch (e) {
-      setError(displayError(e));
-    } finally {
-      setLoading(false);
-    }
+    actorsResource.invalidate();
+    await actorsResource.get().catch(() => undefined);
   }, []);
-
-  useEffect(() => {
-    loadActors();
-  }, [loadActors]);
 
   const filtered = useMemo(() => {
     if (!actors) return [];
@@ -452,8 +447,11 @@ function ActorModal({
   );
   const [userId, setUserId] = useState(actor?.user_id ?? "");
   const [notes, setNotes] = useState(actor?.notes ?? "");
-  const [users, setUsers] = useState<User[] | null>(null);
-  const [usersError, setUsersError] = useState<string | null>(null);
+  // The window's user list (lib/resources.ts), fetched once however often
+  // the modal opens.
+  const usersState = useResourceState(usersResource);
+  const users = usersState.value;
+  const usersError = usersState.error === null ? null : displayError(usersState.error);
 
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -465,21 +463,6 @@ function ActorModal({
       if (userId) setUserId("");
     }
   }, [type, isPlaceholder, userId]);
-
-  // Load users for the user_id dropdown when a real person is being edited.
-  useEffect(() => {
-    let cancelled = false;
-    fetchUsers()
-      .then((list) => {
-        if (!cancelled) setUsers(list);
-      })
-      .catch((e) => {
-        if (!cancelled) setUsersError(displayError(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

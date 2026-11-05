@@ -21,6 +21,22 @@ restore button are hidden on a personal workspace (`useDataMode()` in
 
 ### Práce (`WorkspaceView.tsx`)
 
+Práce mounts on its first visit and stays mounted behind Graf, Přehled and
+Settings (hidden, `inert`, `aria-hidden`), so every chat keeps its
+transcript, scroll and composer across a view switch instead of replaying
+it on the way back. `active` says whether it is the view on screen: while
+it is not, no Esc reaches a chat (`escapeStopsTurn`'s `surfaceActive`),
+the detail pane polls nothing (`visible`), and the empty-workspace search
+box does not take the focus.
+
+Data the pane shows is the window's, per node (`lib/resources.ts`:
+`folderUrlByNode`, `nodeAccessByNode`, `nodeAccessRequestsByNode`, and the
+sync-status cache with a 5 s freshness window), so a remount of
+`DetailPane` -- the aside collapsing, the editor closing, a thread
+appearing -- fetches nothing it already has. A failed refresh of a detail
+already on screen stays silent; an error unmounts the pane's body and a
+remount would ask for everything again.
+
 The layout follows one rule: the thread takes the centre whenever the
 selected node has an open thread, and the node surface moves to a
 collapsible right aside.
@@ -174,8 +190,16 @@ header, so a run that starts writing here clears the state on its own.
 
 ### Relace tab (`DetailPane.sessions.tsx`)
 
-REST-only list of the node's persistent sessions
-(`fetchNodePersistentSessions`), archived rows behind a filter. Each row
+The node's persistent sessions, read from the session store
+(`selectNodeSessionRows`: every complete record of the node, any state,
+any session type, archived rows behind a filter, newest activity first).
+One `fetchNodePersistentSessions` on mount, on a node change and on the
+archived toggle fills the store; a frame, a rename or a close lands in
+the list through the store (client traffic contract, rule 3). A thread
+started elsewhere arrives as a frame that leaves a stub; the tab asks for
+the node's list once when a stub appears (`selectNodeStubStamp`), through
+the same coalesced `lib/node-sessions-refresh.ts` App.tsx uses for the
+open nodes, so a node open in Práce and shown here costs one request. Each row
 shows `sessionRowChip`, runner, instance and host, and `resumeInfo` as
 information only. It quotes nothing: the thread's first message is content
 and lives in the device's `content.db`, so `SessionSummary` has no `brief`
@@ -192,8 +216,8 @@ row's action is disabled while one request is on the wire, so one click
 means one successor), and "Uzavřít" without a dialog. Above the rows
 the tab lists the node's handoff files (`lib/handoff-files.ts`), each with
 **Navázat na handoff** (#460): `startSessionFromHandoff`, which is
-`POST /sessions` with the file's node-relative path. There is no live
-subscription in this tab; it reloads its list after an action.
+`POST /sessions` with the file's node-relative path. The tab reloads
+nothing after an action: every answer goes into the store.
 
 ### Přehled (`OverviewView.tsx`)
 
@@ -210,8 +234,13 @@ keeps only rows with `user_id === meId`; `splitThreadsAndCli` then keeps
 threads (`isThreadSession`) as rows and puts hand-opened CLI sessions into
 the footer line "K tomu N relací z CLI (N běží)". `GET /overview` returns the caller's own
 threads only (#457), and its rows are record only -- no `brief` since
-#461, so a row shows `name`. Rows are overlaid with live state (`mergeLiveSessionStates`)
-and the card reloads whenever the live-state stamp changes. The unsynced
+#461, so a row shows `name`. Rows are overlaid with live state (`mergeLiveSessionStates`);
+the card reloads only for a live running or suspended thread the payload
+does not list and that was not live when the payload was loaded
+(`overviewMissingLiveThreads`, a thread started since the load) -- the
+payload caps its rows, so a thread beyond the cap is absent from every
+answer and must not count as new -- and never for a state change of one
+it lists. The unsynced
 counter is `useSyncPending().pending.total` passed down from `App.tsx`.
 
 ### Sidebar thread rows (`WorkspaceNodeList.tsx`)
@@ -307,9 +336,10 @@ can forget, and no component hands a row to a parent.
 `useSyncExternalStore` over the selectors in `lib/session-selectors.ts`:
 `selectSession`, `selectNodeThreads`, `selectShownThread`,
 `selectMountedThreads`, `selectRunningCount`, `selectThreadsByNode` (the
-sidebar's per-node map) and `selectLiveStates` (the store projected down to
-what a frame carries, for the surfaces that fetch their own lists --
-Přehled's Relace card, the Relace tab). Every selector is memoized per
+sidebar's per-node map), `selectNodeSessionRows` (the Relace tab's rows)
+and `selectLiveStates` (the store projected down to what a frame carries,
+for Přehled's Relace card, the one surface that still fetches its own
+list). Every selector is memoized per
 store and **reference-stable while the store has not changed**: React
 re-reads `getSnapshot` in its post-commit consistency check and
 force-re-renders whenever the value differs by `Object.is`, so an inline
@@ -350,14 +380,50 @@ this bound.
   the thread (requested id first, else the newest row of the first
   non-empty bucket `selectNodeThreads` orders). `closeNode` drops the
   closed node's records from the store, keeping the shown thread's.
-- **`refreshNodeSessions(nodeId)`**, coalesced per node: a request while
+- **`refreshNodeSessions(nodeId)`** (`lib/node-sessions-refresh.ts`,
+  shared with the Relace tab), coalesced per node: a request while
   one is in flight sets a trailing flag instead of racing a second fetch.
-  It runs whenever `openNodeIds` changes and on every `session_state` frame
-  whose `node_id` is open, because a thread started anywhere else (Relace
-  tab, node detail, another window) announces itself only through that
-  frame. It ends in the store's `putMany` (inside `api.ts`) and decides
+  `lib/session-refresh-policy.ts` says when it runs: for the nodes just
+  added to `openNodeIds` (closing a node fetches nothing), and for a node
+  whose `session_state` frame names a session the store holds as a stub --
+  a thread started anywhere else (Relace tab, node detail, another window)
+  announces itself only through that frame, while a known thread's state,
+  waiting and name arrive in the frame itself and need no REST round trip.
+  It ends in the store's `putMany` (inside `api.ts`) and decides
   nothing about what is shown; a failure on the node currently selected
   lands on the node surface as `workspaceDetailError`.
+  `test/web-session-refresh-policy.test.ts` pins the request count per
+  action.
+- **`handleNodeChanged(nodeId, change)`**, what a detail-pane action
+  reports (`lib/graph-patch.ts` `NodeChange`): the node the server
+  returned (`PATCH /nodes/:id`, `POST /nodes/:id/move`) becomes the
+  detail -- the graph's and Práce's when both show it -- and patches its
+  graph row (`patchGraphNode`); nothing returned (a file, an event, a
+  responsibility, an attribute, a sync run) fetches the one node detail
+  again; `graph` (edges, a move, sharing, an archive) reloads the graph
+  (`graphNeedsReload`). `refetchAll` remains for a new organization only.
+- **The change feed** (`lib/node-changes.ts`, fed by the live channel's
+  `node_changed` frames; a reopen of the channel after a loss is a
+  `reset`): a change to the node the view on screen shows refetches that
+  detail, coalesced over 300 ms -- the other view's detail is marked
+  stale and fetched when that view comes back; `DetailPane` reads the
+  sync status again on a `files` change of its node while it is on
+  screen, `use-file-editor` checks the open file's version,
+  `use-sync-pending` refreshes the counter (at most once per 2 s);
+  `lib/resources.ts` forgets a node's folder URL, access and access
+  requests on its `node` change, and every per-node answer plus the actor
+  registry on a reset. The actor and runner registries are forgotten on a
+  window focus too. The detail, sync-status and editor polls are 60 s
+  fallbacks (`FALLBACK_POLL_MS`, `lib/poll-policy.ts`) for a dropped frame.
+- **A resource that failed** shows its error and asks again after
+  `ERROR_RETRY_MS` (15 s); an invalidation during a flight starts a fresh
+  load (`lib/resource.ts`, `lib/use-resource.ts`).
+- **One request where the server can answer a list** (client traffic
+  contract, rule 6): the Relace tab's resume-info (`POST
+  /sessions/resume-info`), a responsibility reorder (`POST
+  /responsibilities/reorder`), and the open-file poll's version check
+  (`GET /nodes/:id/file?version_only=1`, the hash alone, no content on the
+  wire).
 - **`registerSessionStarted`**, the single entry point for every
   `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's
   `DetailPane`, the sidebar `+`, the Relace tab's "Navázat na handoff"):

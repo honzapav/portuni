@@ -20,6 +20,10 @@ import {
   sessionRowContinues,
   threadCanContinue,
   isOpenableChatState,
+  overviewMissingLiveThreads,
+  overviewInboxRows,
+  overviewInboxSnapshot,
+  overviewForgetLeftInbox,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow, SessionState } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -130,6 +134,170 @@ describe("applyLiveSessionState / mergeLiveSessionStates", () => {
     const [m1, m2] = mergeLiveSessionStates([base, s2], live);
     assert.equal(m1.waiting_since, "2026-09-13 10:00:00");
     assert.equal(m2, s2);
+  });
+});
+
+// Přehled refetches GET /overview for a live thread its payload does not
+// list (client traffic contract, rule 3); a state change of a thread it
+// lists is overlaid from the live map and costs nothing.
+describe("overviewMissingLiveThreads", () => {
+  const live = (id: string, state: SessionStateMessage["state"]): Record<string, SessionStateMessage> => ({
+    [id]: { session_id: id, state, waiting_since: null, node_id: "n1" },
+  });
+  const data = {
+    sessions: {
+      running: [{ id: "S1" } as OverviewSessionRow],
+      suspended: [{ id: "S2" } as OverviewSessionRow],
+    },
+  };
+
+  it("a listed thread, whatever its state now, is not missing", () => {
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S1", "running"), new Set()), []);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S2", "running"), new Set()), []);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S1", "closed"), new Set()), []);
+  });
+
+  it("an unlisted running or suspended thread is missing", () => {
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "running"), new Set()), ["S9"]);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "suspended"), new Set()), ["S9"]);
+  });
+
+  it("an unlisted closed or archived thread is not missing", () => {
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "closed"), new Set()), []);
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "archived"), new Set()), []);
+  });
+
+  it("no payload yet means nothing is missing (the mount load is on its way)", () => {
+    assert.deepEqual(overviewMissingLiveThreads(null, live("S9", "running"), new Set()), []);
+  });
+
+  it("a thread that was live when the payload was loaded is not missing, however the payload caps its rows", () => {
+    // GET /overview caps its rows; a live thread beyond the cap is absent
+    // from every payload. It was known when the load started, so it is not
+    // a thread started since -- no refetch, and no loop.
+    assert.deepEqual(overviewMissingLiveThreads(data, live("S9", "running"), new Set(["S9"])), []);
+  });
+});
+
+// Přehled's inbox between loads (Codex review on #649): the live map
+// decides each listed row's membership and bucket. Expected buckets follow
+// the server's own rule in apps/server/api/overview.ts -- `running` is
+// state === "running", `suspended` is state === "suspended", nothing else
+// is listed -- applied to the row's state after the frame.
+describe("overviewInboxRows", () => {
+  const R = overviewRow({ id: "R", user_id: "me" });
+  const P = overviewRow({ id: "P", user_id: "me", state: "suspended" });
+  const frame = (id: string, state: SessionStateMessage["state"], waiting_since: string | null = null) => ({
+    [id]: { session_id: id, state, waiting_since, node_id: "n1" } as SessionStateMessage,
+  });
+  const cases: [string, Record<string, SessionStateMessage>, string[], string[]][] = [
+    ["no frame", {}, ["R"], ["P"]],
+    ["running stays running", frame("R", "running"), ["R"], ["P"]],
+    ["running asks a question", frame("R", "running", "2026-11-05 10:00:00"), ["R"], ["P"]],
+    ["running is suspended", frame("R", "suspended"), [], ["R", "P"]],
+    ["running is closed", frame("R", "closed"), [], ["P"]],
+    ["running is archived", frame("R", "archived"), [], ["P"]],
+    ["suspended runs again", frame("P", "running"), ["R", "P"], []],
+    ["suspended is closed", frame("P", "closed"), ["R"], []],
+    ["suspended is archived", frame("P", "archived"), ["R"], []],
+    ["a frame for an unlisted thread", frame("X", "running"), ["R"], ["P"]],
+  ];
+  for (const [name, live, running, suspended] of cases) {
+    it(name, () => {
+      const inbox = overviewInboxRows({ running: [R], suspended: [P] }, live);
+      assert.deepEqual(inbox.running.map((s) => s.id), running);
+      assert.deepEqual(inbox.suspended.map((s) => s.id), suspended);
+      for (const s of inbox.running) assert.equal(s.state, "running");
+      for (const s of inbox.suspended) assert.equal(s.state, "suspended");
+    });
+  }
+
+  it("a thread closed elsewhere leaves the rendered inbox (the reported case)", () => {
+    const row = overviewRow({ id: "s1", user_id: "me" });
+    const inbox = overviewInboxRows(
+      { running: [row], suspended: [] },
+      { s1: { session_id: "s1", state: "closed", waiting_since: null, node_id: "n1" } },
+    );
+    assert.deepEqual(sortInboxSessions(inbox.running, inbox.suspended), []);
+  });
+});
+
+// The refetch decision over a sequence of frames, the way OverviewView
+// runs it: snapshot the inbox when the load starts, forget a thread that
+// left the inbox on every frame, refetch for an inbox thread the payload
+// does not list and the snapshot does not know.
+describe("Přehled refetch over frame sequences", () => {
+  type Live = Record<string, SessionStateMessage>;
+  const st = (entries: [string, SessionStateMessage["state"]][]): Live =>
+    Object.fromEntries(entries.map(([id, state]) => [id, { session_id: id, state, waiting_since: null, node_id: "n1" }]));
+  const payload = (running: string[], suspended: string[] = []) => ({
+    sessions: { running: running.map((id) => ({ id })), suspended: suspended.map((id) => ({ id })) },
+  });
+  // Returns how many refetches the frames cause; a refetch answers with
+  // `refetched` and snapshots the live map of the frame that caused it.
+  function run(atLoad: Live, first: ReturnType<typeof payload>, frames: Live[], refetched = first): number {
+    let known: ReadonlySet<string> = overviewInboxSnapshot(atLoad);
+    let data = first;
+    let fetches = 0;
+    for (const live of frames) {
+      known = overviewForgetLeftInbox(known, live);
+      if (overviewMissingLiveThreads(data, live, known).length > 0) {
+        fetches++;
+        known = overviewInboxSnapshot(live);
+        data = refetched;
+        known = overviewForgetLeftInbox(known, live);
+        assert.deepEqual(overviewMissingLiveThreads(data, live, known), [], "a refetch must not loop");
+      }
+    }
+    return fetches;
+  }
+  const cases: [string, Live, ReturnType<typeof payload>, Live[], number][] = [
+    ["a closed thread in the store at load runs again (the reported case)", st([["s1", "closed"]]), payload([]), [st([["s1", "running"]])], 1],
+    ["an archived thread at load runs again", st([["s1", "archived"]]), payload([]), [st([["s1", "running"]])], 1],
+    ["a closed thread at load is suspended into the inbox", st([["s1", "closed"]]), payload([]), [st([["s1", "suspended"]])], 1],
+    ["a thread started since the load", {}, payload([]), [st([["s9", "running"]])], 1],
+    ["a thread started since the load and closed before the frame", {}, payload([]), [st([["s9", "closed"]])], 0],
+    ["a capped thread changes state within the inbox", st([["c", "running"]]), payload([]), [st([["c", "suspended"]]), st([["c", "running"]])], 0],
+    ["a capped thread closes", st([["c", "running"]]), payload([]), [st([["c", "closed"]])], 0],
+    ["a capped thread closes and runs again", st([["c", "running"]]), payload([]), [st([["c", "closed"]]), st([["c", "running"]])], 1],
+    ["a listed thread closes and runs again", st([["s1", "running"]]), payload(["s1"]), [st([["s1", "closed"]]), st([["s1", "running"]])], 0],
+    ["a listed thread is suspended", st([["s1", "running"]]), payload(["s1"]), [st([["s1", "suspended"]])], 0],
+    ["a closed thread stays closed", st([["s1", "closed"]]), payload([]), [st([["s1", "closed"]]), st([["s1", "archived"]])], 0],
+  ];
+  for (const [name, atLoad, first, frames, fetches] of cases) {
+    it(name, () => assert.equal(run(atLoad, first, frames), fetches));
+  }
+
+  // A load in flight (OverviewView's `pendingKnown`): the snapshot is taken
+  // when the request starts, frames during the flight forget what left the
+  // inbox, and the answer -- built while the thread was closed -- does not
+  // list it. Counterexample from the independent review of this fix.
+  it("a thread closed and run again while the load flies is asked for once it lands", () => {
+    let pending: ReadonlySet<string> = overviewInboxSnapshot(st([["R", "running"]]));
+    for (const live of [st([["R", "closed"]]), st([["R", "running"]])]) pending = overviewForgetLeftInbox(pending, live);
+    const live = st([["R", "running"]]);
+    const known = overviewForgetLeftInbox(pending, live);
+    assert.deepEqual(overviewMissingLiveThreads(payload([]), live, known), ["R"]);
+    // The refetch it causes lists R (it runs now) and settles.
+    const after = overviewInboxSnapshot(live);
+    assert.deepEqual(overviewMissingLiveThreads(payload(["R"]), live, after), []);
+  });
+
+  it("a thread that stays in the inbox through the flight is not asked for again", () => {
+    let pending: ReadonlySet<string> = overviewInboxSnapshot(st([["c", "running"]]));
+    for (const live of [st([["c", "suspended"]]), st([["c", "running"]])]) pending = overviewForgetLeftInbox(pending, live);
+    assert.deepEqual(overviewMissingLiveThreads(payload([]), st([["c", "running"]]), pending), []);
+  });
+
+  it("overviewForgetLeftInbox returns the same set when nothing left", () => {
+    const known = new Set(["a"]);
+    assert.equal(overviewForgetLeftInbox(known, st([["a", "suspended"]])), known);
+    assert.equal(overviewForgetLeftInbox(known, {}), known);
+  });
+
+  it("overviewInboxSnapshot keeps running and suspended only", () => {
+    const snap = overviewInboxSnapshot(st([["r", "running"], ["p", "suspended"], ["c", "closed"], ["a", "archived"]]));
+    assert.deepEqual([...snap].sort(), ["p", "r"]);
   });
 });
 

@@ -22,6 +22,7 @@
 // Native formats (gdoc/gsheet/gslide) are not plain-text round-trippable:
 // PUT is rejected with NOT_EDITABLE and reads are short-circuited the same way.
 
+import { publishNodeChange } from "../../infra/change-feed.js";
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
@@ -500,6 +501,7 @@ async function auditFile(
           VALUES (?, ?, ?, 'file', ?, ?, ?)`,
     args: [ulid(), userId, action, fileId, JSON.stringify(detail), at],
   });
+  if (typeof detail.node_id === "string") publishNodeChange(detail.node_id, "files");
 }
 
 export interface CreateFileRemoteResult {

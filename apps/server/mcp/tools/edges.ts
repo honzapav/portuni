@@ -6,6 +6,7 @@ import { ulid } from "ulid";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
+import { publishNodeChange } from "../../infra/change-feed.js";
 import { EDGE_RELATIONS } from "../../infra/schema.js";
 import { moveNodeToOrganization } from "../../domain/edges.js";
 import { nodeVisibleTo } from "../../auth/node-access.js";
@@ -131,6 +132,8 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
         target_id: args.target_id,
         relation: args.relation,
       });
+      publishNodeChange(args.source_id, "node");
+      publishNodeChange(args.target_id, "node");
 
       return {
         content: [
@@ -232,6 +235,8 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
         target_id: args.target_id,
         relation: args.relation ?? "all",
       });
+      publishNodeChange(args.source_id, "node");
+      publishNodeChange(args.target_id, "node");
 
       return {
         content: [

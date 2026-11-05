@@ -493,7 +493,12 @@ node_id }` — one session, sent on every `state_changed`, `question` or
 `run_ended` anywhere, with no subscription needed. A thread the runtime
 suspends on its own (idle, an error or limit, the process ending) sends one
 more `state_changed` once it is suspended, so the last frame always says
-`suspended`. This is what lets the Threads tab, the Work sidebar and Overview
+`suspended`. The same socket also carries `node_changed { changes: [{ node_id,
+kind }], reset }`: the nodes whose record (`"node"`) or files (`"files"`)
+changed anywhere — your own edit, a teammate's, an agent's, a sync — so the
+node detail, the Files tab, an open file and the unsynced counter refresh
+when something happened rather than on a timer (`reset` means the server
+restarted and the app refetches what it shows once). This is what lets the Threads tab, the Work sidebar and Overview
 update live instead of polling. A frame for a node open in Work also refetches that node's thread
 list (`GET /nodes/:id/sessions`), which is how a thread started outside the sidebar shows up there;
 the refetch is coalesced per node, so a burst of frames costs at most two round trips.

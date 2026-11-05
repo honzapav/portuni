@@ -1,6 +1,7 @@
 // REST endpoints for /responsibilities + /responsibilities/:id/assignments.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { z } from "zod";
 import { getDb } from "../infra/db.js";
 import {
   assignResponsibility,
@@ -9,10 +10,12 @@ import {
   listResponsibilities,
   unassignResponsibility,
   updateResponsibility,
+  reorderResponsibilities,
 } from "../domain/responsibilities.js";
 import {
   respondApiError,
   parseBody,
+  parseJsonBody,
   respondError,
   respondJson,
   type RequestIdentity,
@@ -68,6 +71,30 @@ export async function handleCreateResponsibility(
     respondJson(res, 201, row);
   } catch (err) {
     respondError(res, `${req.method} /responsibilities`, err);
+  }
+}
+
+// POST /responsibilities/reorder (client traffic contract, rule 6): every
+// row's sort_order in one request. Each row's node must be writable.
+const ReorderBody = z.object({
+  updates: z.array(z.object({ id: z.string().min(1), sort_order: z.number().int().min(0) })).min(1).max(200),
+});
+
+export async function handleReorderResponsibilities(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    const body = await parseJsonBody(req, res, ReorderBody);
+    if (!body) return;
+    const db = getDb();
+    for (const u of body.updates) {
+      if (!(await guardNodeChildWrite(req, res, identity, db, responsibilityLookup(u.id)))) return;
+    }
+    respondJson(res, 200, await reorderResponsibilities(db, identity.userId, body.updates));
+  } catch (err) {
+    respondError(res, `${req.method} /responsibilities/reorder`, err);
   }
 }
 

@@ -227,12 +227,12 @@ export function selectThreadsByNode(
   );
 }
 
-// The live-state map the surfaces that fetch their own lists still take
-// (Přehled's Relace card, the node detail's Relace tab): the store projected
-// down to what a `session_state` frame carries, so those lists overlay the
-// records this window already has instead of a second live map. Only the
-// projected fields count for identity -- a refetch that changes nothing but
-// `last_active_at` must not restamp a list's refetch effect.
+// The live-state map the one surface that still fetches its own list takes
+// (Přehled's Relace card; the Relace tab reads selectNodeSessionRows): the
+// store projected down to what a `session_state` frame carries, so that
+// list overlays the records this window already has instead of a second
+// live map. Only the projected fields count for identity -- a refetch that
+// changes nothing but `last_active_at` must not restamp a list's effect.
 function liveChannelState(state: StoredSession["state"]): SessionStateMessage["state"] | null {
   return state === "running" || state === "suspended" || state === "closed" || state === "archived" ? state : null;
 }
@@ -277,6 +277,50 @@ export function selectLiveStates(store: SessionStore): Readonly<Record<string, S
       return true;
     },
   );
+}
+
+// The Relace tab's rows (client traffic contract, rule 3): every complete
+// record of the node in any state and of any session type -- a hand-opened
+// CLI session belongs here -- archived ones only on request, newest
+// activity first (the order every server list uses). The tab's one REST
+// fetch fills the store; from then on a frame, a rename or a close lands in
+// the row through the store, never through a refetch. One Relace tab is
+// mounted at a time, so the node is a variant, not a key: viewing a
+// hundred nodes leaves one entry.
+export function selectNodeSessionRows(
+  store: SessionStore,
+  nodeId: string,
+  includeArchived: boolean,
+): CompleteSession[] {
+  return cached(
+    store,
+    "nodeSessions",
+    `${nodeId}|${includeArchived}`,
+    () => {
+      const rows: CompleteSession[] = [];
+      for (const s of store.snapshot().values()) {
+        if (s.node_id !== nodeId || s.partial) continue;
+        if (s.state === "archived" && !includeArchived) continue;
+        rows.push(s);
+      }
+      return rows.sort(byLastActive);
+    },
+    sameRows,
+  );
+}
+
+// The node's stubs -- sessions a frame named that no list has completed --
+// as one sorted string, empty when there are none. The Relace tab of a
+// node that is not open in Práce (App.tsx refetches only open nodes)
+// fetches the node's list once when this changes to something; the fetch
+// completes the stubs, which turns it back to "". A primitive, so
+// `useSyncExternalStore` compares it by value and no cache entry is needed.
+export function selectNodeStubStamp(store: SessionStore, nodeId: string): string {
+  const ids: string[] = [];
+  for (const s of store.snapshot().values()) {
+    if (s.node_id === nodeId && s.partial) ids.push(s.id);
+  }
+  return ids.sort().join(",");
 }
 
 // The records a node takes with it when it is closed in Práce (what

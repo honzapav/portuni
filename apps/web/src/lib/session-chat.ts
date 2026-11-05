@@ -596,13 +596,16 @@ export function runIsLiveFor(liveRunId: string | null, state: SessionState): boo
 // form field says nothing: a field either handles Escape or it does not.
 // It also stays out of an IME composition and of a thread that is not the
 // shown one (every open thread stays mounted, hidden).
+// `surfaceActive`: Práce stays mounted behind the other views, and a
+// chat shown there answers no Esc pressed in Graf, Přehled or Settings.
 export function escapeStopsTurn(
   e: { key: string; defaultPrevented: boolean; isComposing: boolean },
   turnActive: boolean,
   shown: boolean,
+  surfaceActive = true,
 ): boolean {
   if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return false;
-  return turnActive && shown;
+  return turnActive && shown && surfaceActive;
 }
 
 // Whether the live run still owes an answer: the working row, the stop

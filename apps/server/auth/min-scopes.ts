@@ -109,6 +109,10 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // /graph -- the one manage-gated field inside it (pending access
   // requests) is filtered by the handler itself, not by this route gate.
   if (pathname === "/overview" && m === "GET") return "read";
+  if (pathname === "/changes" && m === "GET") return "read";
+  // Reads sent as POST because they carry a list of ids: the boot's batch
+  // of harness configs and the Relace tab's batch of resume-info answers.
+  if (m === "POST" && (pathname === "/nodes/config-batch" || pathname === "/sessions/resume-info")) return "read";
   if (pathname === "/scope" && m === "GET") return "read";
   // GET /users backs the OwnerPicker dropdown (apps/server/api/users.ts).
   // Its only frontend call site is ActorModal's user_id picker
@@ -204,6 +208,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // --- Responsibilities & assignments ---
   if (pathname === "/responsibilities" && m === "GET") return "read";
   if (pathname === "/responsibilities" && m === "POST") return "write";
+  if (pathname === "/responsibilities/reorder" && m === "POST") return "write";
   if (/^\/responsibilities\/[^/]+\/assignments$/.test(pathname) && m === "POST") return "write";
   if (/^\/responsibilities\/[^/]+\/assignments\/[^/]+$/.test(pathname) && m === "DELETE") return "write";
   if (pathname.startsWith("/responsibilities/") && m === "PATCH") return "write";

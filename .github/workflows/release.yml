@@ -55,8 +55,12 @@ jobs:
           # Apple Silicon only — the user base has no Intel Macs and
           # GitHub retired macos-13 in 2025-12. If Intel ever comes
           # back, macos-15-intel is the last x86_64 image (until
-          # 2027-08).
-          - runner: macos-14
+          # 2027-08). Pinned, not macos-latest: GitHub removed the
+          # macos-14 arm64 image in 2026-11 (a tagged release then
+          # failed with "configuration not supported" before any step
+          # ran), and a pin fails loudly on retirement instead of
+          # drifting to a new major under a release.
+          - runner: macos-15
             target: aarch64-apple-darwin
 
     runs-on: ${{ matrix.runner }}

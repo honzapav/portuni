@@ -12,6 +12,7 @@
 // no Authorization header is needed (the proxy injects one).
 
 import { ClientError } from "./api-error";
+import { noteRateLimited, retryAfterFromBody } from "./rate-limit-cooldown";
 import { DesktopError, invoke, toDesktopError } from "./tauri-invoke";
 import { withTransportRetry } from "./transport-retry";
 import { errorCode, startApiCall } from "./ui-trail";
@@ -186,11 +187,20 @@ async function apiFetchOnce(method: string, path: string, init?: RequestInit): P
       const headers = new Headers(init?.headers);
       headers.set(REQUEST_ID_HEADER, requestId);
       res = await fetch(`${BROWSER_BASE}${path}`, { ...init, headers });
-      if (res.status >= 400) code = errorCode(await res.clone().text());
+      if (res.status >= 400) {
+        const text = await res.clone().text();
+        code = errorCode(text);
+        if (res.status === 429) noteRateLimited(retryAfterFromBody(text));
+      }
     } else {
       const proxied = await proxyRequest(method, path, init, requestId);
       res = proxied.response;
-      if (proxied.status >= 400) code = errorCode(proxied.body);
+      if (proxied.status >= 400) {
+        code = errorCode(proxied.body);
+        // A 429 puts the window's background polls on hold for the
+        // Retry-After the server sent (lib/rate-limit-cooldown.ts).
+        if (proxied.status === 429) noteRateLimited(retryAfterFromBody(proxied.body));
+      }
     }
   } catch (err) {
     record(null);

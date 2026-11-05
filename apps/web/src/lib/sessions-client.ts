@@ -21,6 +21,7 @@
 // reply/error/event/delta/session_state) -- see that file's own header
 // comment for the canonical protocol description.
 
+import { emitNodeChanges, type NodeChangeBatch } from "./node-changes";
 import { isTauri } from "./backend-url.js";
 import { ApiError, ClientError } from "./api-error.js";
 import { requestLocale } from "./locale.js";
@@ -90,6 +91,12 @@ interface SessionStatesFrame {
   type: "session_states";
   payload: { sessions: SessionStateMessage[] };
 }
+// The change feed (lib/node-changes.ts): the nodes whose record or files
+// changed, coalesced server side; `reset` says "refetch what you show".
+interface NodeChangedFrame {
+  type: "node_changed";
+  payload: NodeChangeBatch;
+}
 type ServerFrame =
   | ReplyFrame
   | ErrorFrame
@@ -97,7 +104,8 @@ type ServerFrame =
   | EventsFrame
   | DeltaFrame
   | SessionStateFrame
-  | SessionStatesFrame;
+  | SessionStatesFrame
+  | NodeChangedFrame;
 
 type ClientFrame =
   | { id: string; type: "subscribe"; payload: { session_id: string; after?: number } }
@@ -653,6 +661,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
   const subscribedSessions = new Set<string>();
   const lastSeq = new Map<string, number>();
   let isOpen = false;
+  let everOpened = false;
 
   // #496: a request is delivered once, or reported as failed and never sent
   // afterwards. Every request frame carries an id the server echoes on its
@@ -824,6 +833,10 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     }
     if (frame.type === "session_states") {
       for (const cb of sessionStateListeners) cb(frame.payload.sessions);
+      return;
+    }
+    if (frame.type === "node_changed") {
+      emitNodeChanges(frame.payload);
     }
   });
 
@@ -841,6 +854,10 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       // connection): the old one took its subscriptions and its unanswered
       // requests with it.
       if (isOpen) onConnectionLost();
+      // A reopen after a loss may have missed node_changed frames: every
+      // surface refetches what it shows once (lib/node-changes.ts).
+      if (everOpened) emitNodeChanges({ changes: [], reset: true });
+      everOpened = true;
       isOpen = true;
       onConnectionOpened();
     } else if (isOpen) {

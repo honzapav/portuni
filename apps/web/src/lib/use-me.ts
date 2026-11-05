@@ -1,52 +1,41 @@
-// The caller's own identity, as GET /me answers it: id and whether the
-// global scope allows the manage tier. Session surfaces no longer consult
-// it -- a thread is its owner's (#457) and nothing else is ever listed --
-// so the live consumer is the node sharing UI (DetailPane's AccessSection,
-// SettingsPage). Defaults to "nobody, no manage" until the fetch resolves
-// or if it fails, so nothing is ever offered optimistically.
-import { useEffect, useState } from "react";
-import { fetchMe } from "../api";
+// The caller's own identity, as GET /me answers it, read from the
+// window's one meResource (lib/resources.ts): App (create-node gate, the
+// account's language), SettingsPage (tab tiers), AccountSection (profile)
+// and the sharing UI (DetailPane's AccessSection) all read the same
+// answer. Defaults to "nobody, no manage" until the fetch resolves or if
+// it fails, so nothing is ever offered optimistically.
+import type { MeResponse } from "../api";
+import { meResource } from "./resources";
+import { useResourceState } from "./use-resource";
 
 export interface Me {
+  me: MeResponse | null;
   meId: string | null;
   canManage: boolean;
+  // The global scope tier, or null until known.
+  globalScope: string | null;
+  // The answer arrived, or the fetch failed (the tiers then read as
+  // "read"): a tab gated on a tier waits for this before bouncing.
+  scopeKnown: boolean;
 }
 
-let cached: Me | null = null;
-let inflight: Promise<Me> | null = null;
-
-function loadMe(): Promise<Me> {
-  if (cached) return Promise.resolve(cached);
-  if (!inflight) {
-    inflight = fetchMe()
-      .then((me) => {
-        cached = { meId: me.id, canManage: me.global_scope === "manage" || me.global_scope === "admin" };
-        return cached;
-      })
-      .catch(() => {
-        inflight = null;
-        return { meId: null, canManage: false };
-      });
-  }
-  return inflight;
+export function invalidateMe(): void {
+  meResource.invalidate();
 }
 
 // Test-only: forget the cached answer between tests.
 export function resetMeForTesting(): void {
-  cached = null;
-  inflight = null;
+  meResource.resetForTesting();
 }
 
 export function useMe(): Me {
-  const [me, setMe] = useState<Me>(() => cached ?? { meId: null, canManage: false });
-  useEffect(() => {
-    let cancelled = false;
-    void loadMe().then((m) => {
-      if (!cancelled) setMe(m);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return me;
+  const { value, error } = useResourceState(meResource);
+  const globalScope = value?.global_scope ?? null;
+  return {
+    me: value,
+    meId: value?.id ?? null,
+    canManage: globalScope === "manage" || globalScope === "admin",
+    globalScope,
+    scopeKnown: value !== null || error !== null,
+  };
 }

@@ -79,7 +79,7 @@ import {
 } from "../types";
 import { safeHref } from "../lib/safe-url";
 import { useMe } from "../lib/use-me";
-import type { SessionStateMessage } from "../lib/sessions-client";
+import type { SessionStore } from "../lib/session-store";
 import { groupEventsByDate } from "../lib/events";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { externalLinkProps } from "../lib/external-link";
@@ -90,9 +90,9 @@ import {
   moveNode,
   createEdge,
   deleteEdge,
-  fetchActors,
   createResponsibility,
   updateResponsibility,
+  reorderResponsibilities,
   deleteResponsibility,
   assignResponsibility,
   unassignResponsibility,
@@ -105,7 +105,6 @@ import {
   fetchNodeSyncStatus,
   runNodeSync,
   createNodeMirror,
-  fetchNodeFolderUrl,
   createFile,
   renameFile,
   deleteFile,
@@ -143,6 +142,12 @@ import { useDataMode } from "../lib/central";
 import { showsPersonalWorkspaceBanner, showsSyncSurfaces } from "../lib/sync-visibility";
 import { compareText, formatDate } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
+import { FALLBACK_POLL_MS, isFresh, shouldPollSyncStatus } from "../lib/poll-policy";
+import { nodeChangeTouches, onNodeChanges } from "../lib/node-changes";
+import type { NodeChange } from "../lib/graph-patch";
+import { actorsResource, folderUrlByNode } from "../lib/resources";
+import { useKeyedResource, useResourceState } from "../lib/use-resource";
+import { isRateLimited } from "../lib/rate-limit-cooldown";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -151,6 +156,12 @@ import { useLocale } from "../lib/use-locale";
 // already DB-only, but caching here also avoids the network round-trip
 // for repeat visits during a single session.
 const SYNC_STATUS_CACHE = new Map<string, Map<string, SyncStatusFile>>();
+// When the node's sync status was last fetched and what was untracked then:
+// a remount within SYNC_STATUS_FRESH_MS (collapse, editor close, a view
+// switch) reads these instead of asking again (lib/poll-policy.ts isFresh).
+const SYNC_STATUS_FETCHED_AT = new Map<string, number>();
+const SYNC_UNTRACKED_CACHE = new Map<string, UntrackedFile[]>();
+const SYNC_STATUS_FRESH_MS = 5000;
 // Same caching rationale, for sync-status's watcher_errors field (#202).
 const SYNC_WATCHER_ERRORS_CACHE = new Map<string, WatcherErrorEntry[]>();
 
@@ -184,7 +195,7 @@ type Props = {
   onSelect: (id: string | null) => void;
   canGoBack: boolean;
   onBack: () => void;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   // True when this pane is rendered inside another column (e.g. the
   // workspace's right-side detail). Drops the slide-in animation, the
   // 40vw / min-w-440 sizing, and the left border so the parent's layout
@@ -207,8 +218,11 @@ type Props = {
   // (works from both the graph and workspace views); absent nowhere today,
   // but optional for the same reason onSessionStarted is.
   onOpenChat?: (nodeId: string, sessionId: string) => void;
-  // Live session_state map for the Relace tab (see SessionsSection).
-  liveSessionStates?: Readonly<Record<string, SessionStateMessage>>;
+  // The window's session store, for the Relace tab (see SessionsSection).
+  sessionStore: SessionStore;
+  // False while the pane's surface (Práce) is mounted behind another view:
+  // nothing polls then.
+  visible?: boolean;
 };
 
 // Memoized: 3.5k lines of pane re-rendered wholesale on every App render
@@ -229,7 +243,8 @@ function DetailPane({
   onOpenFile,
   onSessionStarted,
   onOpenChat,
-  liveSessionStates,
+  sessionStore,
+  visible = true,
 }: Props) {
   // Drives whether the sharing section is editable.
   const { canManage } = useMe();
@@ -286,7 +301,8 @@ function DetailPane({
       onOpenFile={onOpenFile}
       onSessionStarted={onSessionStarted}
       onOpenChat={onOpenChat}
-      liveSessionStates={liveSessionStates}
+      sessionStore={sessionStore}
+      visible={visible}
     />
   );
 }
@@ -304,22 +320,13 @@ function DetailPaneBody({
   onOpenFile,
   onSessionStarted,
   onOpenChat,
-  liveSessionStates,
-}: {
+  sessionStore,
+  visible = true,
+}: Omit<Props, "node" | "loading" | "error"> & {
+  // The body renders a loaded node only; the shell above handles the
+  // loading and error states.
   node: NodeDetail;
-  graph: GraphPayload | null;
   canManage: boolean;
-  onSelect: (id: string | null) => void;
-  canGoBack: boolean;
-  onBack: () => void;
-  onMutate: () => Promise<void>;
-  embedded?: boolean;
-  onCollapse?: () => void;
-  onOpenFile?: (nodeId: string, relPath: string) => void;
-  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
-  onOpenChat?: (nodeId: string, sessionId: string) => void;
-  // Live session_state map for the Relace tab (see SessionsSection).
-  liveSessionStates?: Readonly<Record<string, SessionStateMessage>>;
 }) {
   const { t } = useTranslation("node");
   const { t: tFiles } = useTranslation("files");
@@ -365,7 +372,9 @@ function DetailPaneBody({
   const [syncRunResult, setSyncRunResult] = useState<SyncRunResponse | null>(
     null,
   );
-  const [untracked, setUntracked] = useState<UntrackedFile[]>([]);
+  const [untracked, setUntracked] = useState<UntrackedFile[]>(
+    () => SYNC_UNTRACKED_CACHE.get(node.id) ?? [],
+  );
   // Recent mirror-watcher failures for this node (#202) -- rides along on
   // the same sync-status fetch, no separate poll.
   const [watcherErrors, setWatcherErrors] = useState<WatcherErrorEntry[]>(
@@ -494,6 +503,7 @@ function DetailPaneBody({
     const requestNodeId = node.id;
     try {
       await createNodeMirror(requestNodeId);
+      folderUrlByNode.invalidate(requestNodeId);
       if (lastIdRef.current !== requestNodeId) return;
       await onMutate();
       try {
@@ -536,6 +546,8 @@ function DetailPaneBody({
       const m = new Map<string, SyncStatusFile>();
       for (const f of res.files) m.set(f.file_id, f);
       SYNC_STATUS_CACHE.set(requestNodeId, m);
+      SYNC_STATUS_FETCHED_AT.set(requestNodeId, Date.now());
+      SYNC_UNTRACKED_CACHE.set(requestNodeId, res.untracked ?? []);
       setSyncStatus(m);
       setUntracked(res.untracked ?? []);
       setSyncLoaded(true);
@@ -556,19 +568,57 @@ function DetailPaneBody({
     }
   }, [node.id]);
 
+  // The tab, read by the poll below without restarting it on a switch (a
+  // restart would fetch once more per tab switch).
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  // The change feed (lib/node-changes.ts): this node's files changed on
+  // this device or elsewhere, so the sync status is read again -- while
+  // the pane is on screen; a pane behind another view marks itself stale
+  // and reads once it shows.
+  const syncStaleRef = useRef(false);
+  useEffect(() => {
+    return onNodeChanges((batch) => {
+      if (!nodeChangeTouches(batch, node.id, "files")) return;
+      if (visibleRef.current && !document.hidden) void loadSyncStatus();
+      else syncStaleRef.current = true;
+    });
+  }, [node.id, loadSyncStatus]);
+  useEffect(() => {
+    if (visible && syncStaleRef.current) {
+      syncStaleRef.current = false;
+      void loadSyncStatus();
+    }
+  }, [visible, loadSyncStatus]);
   useEffect(() => {
     let cancelled = false;
-    void loadSyncStatus();
-    // Poll while visible so agent-written (untracked) and MCP-registered
-    // files appear without a manual refresh. ~5s; paused when hidden.
+    // A remount within the freshness window reads the cached answer.
+    if (!isFresh(SYNC_STATUS_FETCHED_AT.get(node.id), Date.now(), SYNC_STATUS_FRESH_MS)) void loadSyncStatus();
+    // A slow fallback: a file change arrives on the change feed (above),
+    // this only catches a dropped frame. Only while the Files tab is on
+    // screen, the pane's surface and the window visible and no 429
+    // cooldown running (lib/poll-policy.ts). The header's sync dot keeps
+    // what the mount load and the last Files visit left.
     const id = setInterval(() => {
-      if (!document.hidden && !cancelled) void loadSyncStatus();
-    }, 5000);
+      if (cancelled) return;
+      if (
+        !shouldPollSyncStatus({
+          tab: tabRef.current,
+          hidden: document.hidden,
+          rateLimited: isRateLimited(),
+          visible: visibleRef.current,
+        })
+      )
+        return;
+      void loadSyncStatus();
+    }, FALLBACK_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [loadSyncStatus]);
+  }, [loadSyncStatus, node.id]);
 
   const startEdit = () => {
     setDraftName(node.name);
@@ -586,10 +636,10 @@ function DetailPaneBody({
     setSaving(true);
     setErrorMsg(null);
     try {
-      await updateNode(node.id, {
+      const updated = await updateNode(node.id, {
         name: draftName.trim(),
       });
-      await onMutate();
+      await onMutate({ node: updated });
       setEditing(false);
     } catch (e) {
       setErrorMsg(displayError(e));
@@ -607,7 +657,7 @@ function DetailPaneBody({
     setErrorMsg(null);
     try {
       await archiveNode(node.id);
-      await onMutate();
+      await onMutate({ archived: true, graph: true });
       onSelect(null);
     } catch (e) {
       setErrorMsg(displayError(e));
@@ -620,7 +670,7 @@ function DetailPaneBody({
     setErrorMsg(null);
     try {
       await deleteEdge(edgeId);
-      await onMutate();
+      await onMutate({ graph: true });
     } catch (e) {
       setErrorMsg(displayError(e));
     } finally {
@@ -641,7 +691,7 @@ function DetailPaneBody({
         target_id: direction === "outgoing" ? targetId : node.id,
         relation,
       });
-      await onMutate();
+      await onMutate({ graph: true });
     } catch (e) {
       setErrorMsg(displayError(e));
     } finally {
@@ -671,7 +721,7 @@ function DetailPaneBody({
         relation: newRelation,
       });
       await deleteEdge(edge.id);
-      await onMutate();
+      await onMutate({ graph: true });
     } catch (e) {
       setErrorMsg(displayError(e));
     } finally {
@@ -1303,7 +1353,7 @@ function DetailPaneBody({
             onOpenFile={onOpenFile}
             onOpenChat={onOpenChat ? (sessionId) => onOpenChat(node.id, sessionId) : undefined}
             onSessionStarted={onSessionStarted}
-            liveStates={liveSessionStates}
+            sessionStore={sessionStore}
           />
         )}
 
@@ -1895,7 +1945,7 @@ function LifecycleDropdown({
   nodeId: string;
   nodeType: string;
   value: string | null;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -1910,8 +1960,7 @@ function LifecycleDropdown({
     setSaving(true);
     onError(null);
     try {
-      await updateNode(nodeId, { lifecycle_state: next });
-      await onMutate();
+      await onMutate({ node: await updateNode(nodeId, { lifecycle_state: next }) });
     } catch (e) {
       onError(displayError(e));
     } finally {
@@ -1969,7 +2018,7 @@ function HealthDropdown({
 }: {
   nodeId: string;
   value: string;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -1980,8 +2029,7 @@ function HealthDropdown({
     setSaving(true);
     onError(null);
     try {
-      await updateNode(nodeId, { health: next });
-      await onMutate();
+      await onMutate({ node: await updateNode(nodeId, { health: next }) });
     } catch (e) {
       onError(displayError(e));
     } finally {
@@ -2033,7 +2081,7 @@ function EditableTextField({
   field: "description" | "goal";
   nodeId: string;
   value: string | null;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -2052,8 +2100,7 @@ function EditableTextField({
     onError(null);
     try {
       const trimmed = draft.trim();
-      await updateNode(nodeId, { [field]: trimmed ? trimmed : null });
-      await onMutate();
+      await onMutate({ node: await updateNode(nodeId, { [field]: trimmed ? trimmed : null }) });
       setEditing(false);
     } catch (e) {
       onError(displayError(e));
@@ -2150,7 +2197,7 @@ function OrganizationPicker({
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -2172,8 +2219,8 @@ function OrganizationPicker({
     setSaving(true);
     onError(null);
     try {
-      await moveNode(node.id, orgId);
-      await onMutate();
+      const moved = await moveNode(node.id, orgId);
+      await onMutate({ node: moved.node, graph: true });
     } catch (e) {
       onError(displayError(e));
     } finally {
@@ -2249,50 +2296,43 @@ function OwnerPicker({
   onError,
 }: {
   node: NodeDetail;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [actors, setActors] = useState<Actor[] | null>(null);
   const [saving, setSaving] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // The window's actor registry (lib/resources.ts), read once per window
+  // however many pickers open; asked for on the first open.
+  const registry = useActorRegistry(open);
+  const loading = registry.loading;
+  const fetchError = registry.fetchError;
+  const actors = useMemo(() => {
+    if (!registry.actors) return null;
+    const rank = (a: Actor) => {
+      if (a.type === "automation") return 2;
+      if (a.is_placeholder === 1 || a.user_id === null) return 1;
+      return 0;
+    };
+    return [...registry.actors].sort((a, b) => {
+      const r = rank(a) - rank(b);
+      return r !== 0 ? r : a.name.localeCompare(b.name);
+    });
+  }, [registry.actors]);
 
   // Auto-focus the search input as soon as the popover renders.
   useEffect(() => {
     if (open) inputRef.current?.focus();
   }, [open]);
 
-  const openPicker = async () => {
+  const openPicker = () => {
     setOpen(true);
     setQuery("");
     setHighlight(0);
-    if (actors !== null) return;
-    setLoading(true);
-    setFetchError(null);
-    try {
-      const list = await fetchActors();
-      const rank = (a: Actor) => {
-        if (a.type === "automation") return 2;
-        if (a.is_placeholder === 1 || a.user_id === null) return 1;
-        return 0;
-      };
-      setActors(
-        [...list].sort((a, b) => {
-          const r = rank(a) - rank(b);
-          return r !== 0 ? r : a.name.localeCompare(b.name);
-        }),
-      );
-    } catch (e) {
-      setFetchError(displayError(e));
-    } finally {
-      setLoading(false);
-    }
   };
 
   const pick = async (actorId: string | null) => {
@@ -2301,8 +2341,7 @@ function OwnerPicker({
     setSaving(true);
     onError(null);
     try {
-      await updateNode(node.id, { owner_id: actorId });
-      await onMutate();
+      await onMutate({ node: await updateNode(node.id, { owner_id: actorId }) });
     } catch (e) {
       onError(displayError(e));
     } finally {
@@ -2549,7 +2588,7 @@ function ResponsibilitiesEditor({
   onError,
 }: {
   node: NodeDetail;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -2570,15 +2609,9 @@ function ResponsibilitiesEditor({
     next.splice(target, 0, moved);
     onError(null);
     try {
-      await Promise.all(
-        next
-          .map((r, i) =>
-            r.sort_order === i
-              ? null
-              : updateResponsibility(r.id, { sort_order: i }),
-          )
-          .filter((p): p is Promise<DetailResponsibility> => p !== null),
-      );
+      // One request for the whole order (client traffic contract, rule 6).
+      const updates = next.map((r, i) => ({ id: r.id, sort_order: i })).filter((_u, i) => next[i].sort_order !== i);
+      if (updates.length > 0) await reorderResponsibilities(updates);
       await onMutate();
     } catch (e) {
       onError(displayError(e));
@@ -2642,7 +2675,7 @@ function ResponsibilityItem({
   canMoveDown: boolean;
   onMoveUp: () => Promise<void>;
   onMoveDown: () => Promise<void>;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -3042,7 +3075,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
     },
   ) => Promise<TItem>;
   removeCreator: (id: string) => Promise<{ deleted: string }>;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -3340,33 +3373,13 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
   );
 }
 
-// The global actor registry, loaded once on mount (AddResponsibilityForm,
-// AssigneePicker).
-function useActorRegistry() {
-  const [actors, setActors] = useState<Actor[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setFetchError(null);
-    fetchActors()
-      .then((list) => {
-        if (!cancelled) setActors(list);
-      })
-      .catch((e) => {
-        if (!cancelled) setFetchError(displayError(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return { actors, loading, fetchError };
+// The global actor registry, the window's one copy (lib/resources.ts
+// actorsResource): AddResponsibilityForm, AssigneePicker and OwnerPicker
+// read it; the first of them to need it fetches it. `wanted` false reads
+// without fetching (a closed picker).
+function useActorRegistry(wanted = true) {
+  const { value, error, loading } = useResourceState(actorsResource, wanted);
+  return { actors: value, loading, fetchError: error === null ? null : displayError(error) };
 }
 
 // An actor's name (placeholder actors dimmed and marked) and type badge, as
@@ -3573,19 +3586,11 @@ function MetaSection({ meta }: { meta: unknown }) {
 // Drive mark; anything else a generic link icon labelled by remote name.
 function RemoteFolderActions({ nodeId }: { nodeId: string }) {
   const { t } = useTranslation("node");
-  const [info, setInfo] = useState<{ url: string; remote_name?: string } | null>(null);
+  // The window's answer per node (lib/resources.ts folderUrlByNode): a
+  // remount of the pane asks nothing; creating a mirror forgets it.
+  const folder = useKeyedResource(folderUrlByNode, nodeId);
+  const info = folder?.url ? { url: folder.url, remote_name: folder.remote_name } : null;
   const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    setInfo(null);
-    fetchNodeFolderUrl(nodeId)
-      .then((r) => {
-        if (cancelled) return;
-        if (r.url) setInfo({ url: r.url, remote_name: r.remote_name });
-      })
-      .catch(() => { /* best-effort -- absence is fine */ });
-    return () => { cancelled = true; };
-  }, [nodeId]);
   if (!info) return null;
   const isDrive = /(^|\.)drive\.google\.com$/.test(safeHost(info.url));
   const remoteName = info.remote_name;

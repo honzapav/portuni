@@ -27,6 +27,7 @@ import type { CentralClient } from "../domain/sync/central/client.js";
 import { CentralHttpError } from "../domain/sync/central/client.js";
 import {
   readFileContent,
+  readFileVersion,
   writeFileContent,
   FileContentError,
   type FileContentErrorCode,
@@ -66,6 +67,8 @@ import {
   MessageBody,
   ContinueSessionBody,
   SessionLocaleBody,
+  ResumeInfoBatchBody,
+  resumeInfoBatch,
   sessionResumeInfoPayload,
 } from "./sessions.js";
 import { respondSessionRefusal } from "./session-refusals.js";
@@ -96,6 +99,7 @@ import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import type {
   FileContentResponse,
+  FileVersionResponse,
   NodeMirrorResponse,
   PreviewAssetResponse,
   SyncStatusResponse,
@@ -795,6 +799,27 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       return true;
     }
 
+    // The Relace tab's one request for every suspended row (client traffic
+    // contract, rule 6): the records come from central in one request too
+    // (GET /sessions?ids=, listSessionRecordsByIds) where the client has
+    // it; the answers are this device's, as for the single route below.
+    if (pathname === "/sessions/resume-info" && method === "POST") {
+      const body = await parseJsonBody(req, res, ResumeInfoBatchBody);
+      if (!body) return true;
+      try {
+        const ids = [...new Set(body.ids)];
+        const rows = client.listSessionRecordsByIds
+          ? await client.listSessionRecordsByIds(ids)
+          : (await Promise.all(ids.map((id) => sessionRuntime.getSession(id)))).filter(
+              (s): s is NonNullable<typeof s> => s !== null,
+            );
+        respondJson(res, 200, await resumeInfoBatch(rows, body.config_dir ?? null));
+      } catch (err) {
+        respondError(res, "POST /sessions/resume-info", err);
+      }
+      return true;
+    }
+
     // #456: resume-info moved from the central list to the device-local
     // one -- the inline handoff summary it reports is content, and content
     // lives in this device's content.db. The mirror it hashes the handoff
@@ -1276,6 +1301,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
             // A .showtime deck reads as the preview.html it carries; the
             // reader never touches the DB when a mirror holds the file.
             const args = { userId: identity.userId, nodeId, relPath };
+            // The open-file poll asks for the version only (client traffic
+            // contract, rule 5): the hash of the mirror copy, no content.
+            if (url.searchParams.get("version_only") === "1") {
+              respondJson(res, 200, { version: await readFileVersion(args) } satisfies FileVersionResponse);
+              return true;
+            }
             const r = isShowtimePath(relPath)
               ? await readShowtimePreview(NO_DB, args)
               : await readFileContent(NO_DB, args);
@@ -1301,6 +1332,10 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           const filename = relPath.split("/").pop() ?? relPath;
           const mime = mimeFor(filename);
           const raw = await client.getFileRaw(nodeId, relPath);
+          if (url.searchParams.get("version_only") === "1") {
+            respondJson(res, 200, { version: raw.version } satisfies FileVersionResponse);
+            return true;
+          }
           if (isShowtimePath(relPath)) {
             let entry: Buffer | null = null;
             try {

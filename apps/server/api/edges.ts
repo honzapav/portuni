@@ -6,6 +6,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
+import { publishNodeChange } from "../infra/change-feed.js";
 import { EDGE_RELATIONS } from "../infra/schema.js";
 import { disconnectEdgeById, EdgeError, EDGE_ERROR_STATUS } from "../domain/edges.js";
 import {
@@ -74,6 +75,8 @@ export async function handleCreateEdge(
       target_id: body.target_id,
       relation: body.relation,
     });
+    publishNodeChange(body.source_id, "node");
+    publishNodeChange(body.target_id, "node");
     respondJson(res, 201, {
       id,
       source_id: body.source_id,

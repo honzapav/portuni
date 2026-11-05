@@ -4229,6 +4229,19 @@ mod device_local_path_tests {
     }
 
     #[test]
+    fn mcp_info_is_device_local() {
+        // The footer's MCP indicator asks this device's server, never central.
+        assert!(is_device_local_path("/mcp/info"));
+    }
+
+    #[test]
+    fn sessions_resume_info_batch_is_device_local_and_a_session_id_stays_central() {
+        // The literal segment routes to the sidecar; a real id does not.
+        assert!(is_device_local_path("/sessions/resume-info"));
+        assert!(!is_device_local_path("/sessions/01ABC"));
+    }
+
+    #[test]
     fn node_file_content_is_device_local() {
         // File CONTENT (GET/PUT /nodes/:id/file) routes to the local sync
         // agent so unsynced device-mirror files open in the editor; the agent

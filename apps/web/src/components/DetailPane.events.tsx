@@ -4,6 +4,7 @@
 // the rest of DetailPane.
 
 import { displayError } from "../errors";
+import type { NodeChange } from "../lib/graph-patch";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
@@ -29,7 +30,7 @@ export function EventCard({
   busy,
 }: {
   event: DetailEvent;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   busy: boolean;
 }) {
   const { t } = useTranslation("node");
@@ -224,7 +225,7 @@ export function AddEventForm({
   disabled,
 }: {
   nodeId: string;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   disabled: boolean;
 }) {
   const { t } = useTranslation("node");

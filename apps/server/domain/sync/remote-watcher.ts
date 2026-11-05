@@ -16,6 +16,7 @@
 // classifies off files.current_remote_hash, which is exactly what this
 // updates) and the bytes arrive through a deliberate sync, as today.
 
+import { publishNodeChange } from "../../infra/change-feed.js";
 import type { DbClient } from "../../infra/db.js";
 import { nowExpr } from "../../infra/sql.js";
 import type { FileAdapter, RemoteChange } from "./types.js";
@@ -448,6 +449,8 @@ async function relocateWatchedRecord(
       now,
     ],
   });
+  publishNodeChange(a.nodeId, "files");
+  publishNodeChange(a.record.node_id as string, "files");
 }
 
 async function refreshOne(

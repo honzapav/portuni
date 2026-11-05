@@ -24,6 +24,7 @@
 // Scope matches discover-local.ts: only files inside the wip / outputs /
 // resources sections, minus mirror-ignore, are eligible.
 
+import { publishNodeChange } from "../../infra/change-feed.js";
 import { stat as fsStat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { DbClient } from "../../infra/db.js";
@@ -172,6 +173,7 @@ export async function reconcilePath(
         new Date().toISOString(),
       ],
     });
+    publishNodeChange(a.nodeId, "files");
     return { action: "unregistered", file_id: fileId };
   }
   await upsertFileState({

@@ -124,12 +124,13 @@ async function updateRow<T>(
   if (result.rowsAffected === 0) {
     throw new Error(`update_${table}: ${id} not found`);
   }
-  await writeAudit(db, updatedBy, `update_${table}`, table.slice(0, -1), id, {
-    changes: parsed,
-  });
   const res = await db.execute({
     sql: `SELECT * FROM ${table} WHERE id = ?`,
     args: [id],
+  });
+  await writeAudit(db, updatedBy, `update_${table}`, table.slice(0, -1), id, {
+    changes: parsed,
+    node_id: res.rows[0]?.node_id as string | undefined,
   });
   return parser(res.rows[0]);
 }
