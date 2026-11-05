@@ -12,6 +12,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { getDb, type DbClient } from "../infra/db.js";
 import {
+  ApiError,
   parseJsonBody,
   respondApiError,
   respondJson,
@@ -54,6 +55,7 @@ import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { NodeNotFoundError } from "../domain/sync/node-info.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
 import { filterVisibleNodeIds } from "../auth/node-access.js";
+import { nodeVisibleTo } from "../auth/node-access.js";
 import { guardFileWrite } from "./write-gate.js";
 import type { FileContentResponse, PreviewAssetResponse } from "../shared/api-types.js";
 import {
@@ -460,13 +462,36 @@ export async function handleCreateFile(
 // Record+remote move. On the central server getMirrorPath is null, so
 // moveFile's local disk step no-ops by design -- the device that owns the
 // mirror applies its own disk step (agent front door / watcher pairing).
-// The node a file mutation is authorized against: the file's own node, never
-// just the one the URL names, or a caller could reach a file on a hidden node
-// through a node it can see. A file with no row keeps the URL's node, so a
+function fileNotFound(fileId: string): ApiError {
+  return new ApiError(404, "FILE_NOT_FOUND", "file not found", { fileId });
+}
+
+// Opens the node a file mutation is authorized against: the file's own node,
+// never just the one the URL names, or a caller could reach a file on a hidden
+// node through a node it can see. A file on a hidden node answers exactly like
+// an unknown one. allowMissing keeps a row-less file on the URL's node, so a
 // retried delete still reaches its replay branch.
-async function fileOwnerNodeId(fileId: string, urlNodeId: string): Promise<string> {
-  const r = await getDb().execute({ sql: "SELECT node_id FROM files WHERE id = ?", args: [fileId] });
-  return r.rows.length > 0 ? String(r.rows[0].node_id) : urlNodeId;
+async function openFileOwnerNode(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  urlNodeId: string,
+  fileId: string,
+  opts: { allowMissing?: boolean } = {},
+): Promise<{ db: DbClient; ownerNodeId: string } | null> {
+  const db = await openWritableNode(req, res, identity, urlNodeId, guardFileWrite);
+  if (!db) return null;
+  const r = await db.execute({ sql: "SELECT node_id FROM files WHERE id = ?", args: [fileId] });
+  if (r.rows.length === 0) {
+    if (opts.allowMissing) return { db, ownerNodeId: urlNodeId };
+    throw fileNotFound(fileId);
+  }
+  const ownerNodeId = String(r.rows[0].node_id);
+  if (ownerNodeId !== urlNodeId) {
+    if (!(await nodeVisibleTo(db, identity, ownerNodeId))) throw fileNotFound(fileId);
+    if (!(await guardFileWrite(req, res, identity, ownerNodeId))) return null;
+  }
+  return { db, ownerNodeId };
 }
 
 export async function handleMoveFile(
@@ -479,10 +504,10 @@ export async function handleMoveFile(
   const body = await parseJsonBody(req, res, fileMoveSchema);
   if (!body) return;
   try {
-    const ownerNodeId = await fileOwnerNodeId(fileId, nodeId);
-    const db = await openWritableNode(req, res, identity, ownerNodeId, guardFileWrite);
-    if (!db) return;
-    if (body.new_node_id && !(await guardFileWrite(req, res, identity, body.new_node_id))) return;
+    if (body.new_node_id && !(await openWritableNode(req, res, identity, body.new_node_id, guardFileWrite))) return;
+    const owner = await openFileOwnerNode(req, res, identity, nodeId, fileId);
+    if (!owner) return;
+    const { db } = owner;
     const r = await moveFile(db, {
       userId: identity.userId,
       fileId,
@@ -508,9 +533,9 @@ export async function handleRenameFile(
   const body = await parseJsonBody(req, res, fileRenameSchema);
   if (!body) return;
   try {
-    const ownerNodeId = await fileOwnerNodeId(fileId, nodeId);
-    const db = await openWritableNode(req, res, identity, ownerNodeId, guardFileWrite);
-    if (!db) return;
+    const owner = await openFileOwnerNode(req, res, identity, nodeId, fileId);
+    if (!owner) return;
+    const { db, ownerNodeId } = owner;
     const r = await byMirror(
       identity,
       ownerNodeId,
@@ -544,9 +569,9 @@ export async function handleDeleteFile(
 ): Promise<void> {
   const confirmed = url.searchParams.get("confirmed") === "true";
   try {
-    const ownerNodeId = await fileOwnerNodeId(fileId, nodeId);
-    const db = await openWritableNode(req, res, identity, ownerNodeId, guardFileWrite);
-    if (!db) return;
+    const owner = await openFileOwnerNode(req, res, identity, nodeId, fileId, { allowMissing: true });
+    if (!owner) return;
+    const { db, ownerNodeId } = owner;
     const r = await byMirror(
       identity,
       ownerNodeId,
@@ -568,6 +593,8 @@ export async function handleDeleteFile(
     );
     respondJson(res, 200, r);
   } catch (err) {
-    respondError(res, `DELETE /nodes/${nodeId}/files/${fileId}`, err);
+    // The domain's unknown-file throw, past the replay branch.
+    const unknownFile = err instanceof Error && err.message === `File ${fileId} not found`;
+    respondError(res, `DELETE /nodes/${nodeId}/files/${fileId}`, unknownFile ? fileNotFound(fileId) : err);
   }
 }

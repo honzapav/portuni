@@ -354,6 +354,7 @@ describe("REST file mutations: authorized on the file's own node", () => {
   let visibleNodeId: string;
   let privateNodeId: string;
   let fileId: string;
+  let visibleFileId: string;
 
   before(async () => {
     workspace = await mkdtemp(join(tmpdir(), "portuni-api-file-node-"));
@@ -379,6 +380,12 @@ describe("REST file mutations: authorized on the file's own node", () => {
       sql: `INSERT INTO files (id, node_id, filename, remote_path, status, created_by)
             VALUES (?, ?, 'secret.md', 'x/wip/secret.md', 'wip', ?)`,
       args: [fileId, privateNodeId, SOLO],
+    });
+    visibleFileId = ulid();
+    await db.execute({
+      sql: `INSERT INTO files (id, node_id, filename, remote_path, status, created_by)
+            VALUES (?, ?, 'open.md', 'x/wip/open.md', 'wip', ?)`,
+      args: [visibleFileId, visibleNodeId, SOLO],
     });
   });
 
@@ -413,6 +420,39 @@ describe("REST file mutations: authorized on the file's own node", () => {
     });
     assert.equal(r.statusCode, 404, r.body);
   });
+
+  it("a file on a hidden node answers exactly like an unknown file, naming no node", async () => {
+    for (const [method, suffix, body] of [
+      ["DELETE", "?confirmed=true", undefined],
+      ["POST", "/rename", { new_filename: "x.md" }],
+      ["POST", "/move", { new_section: "outputs", confirmed: true }],
+    ] as const) {
+      const hidden = await call(method, `/nodes/${visibleNodeId}/files/${fileId}${suffix}`, teammate, body);
+      const unknownId = ulid();
+      const unknown = await call(method, `/nodes/${visibleNodeId}/files/${unknownId}${suffix}`, teammate, body);
+      assert.equal(hidden.statusCode, 404, hidden.body);
+      assert.equal(unknown.statusCode, 404, unknown.body);
+      assert.ok(!hidden.body.includes(privateNodeId), hidden.body);
+      const shape = (b: string, id: string) => {
+        const { request_id: _id, ...rest } = JSON.parse(b.replaceAll(id, "F")) as Record<string, unknown>;
+        return rest;
+      };
+      assert.deepEqual(shape(hidden.body, fileId), shape(unknown.body, unknownId));
+    }
+  });
+
+  for (const confirmed of [false, true]) {
+    it(`move cannot put a file into a hidden node (confirmed: ${confirmed})`, async () => {
+      const r = await call("POST", `/nodes/${visibleNodeId}/files/${visibleFileId}/move`, teammate, {
+        new_section: "wip",
+        new_node_id: privateNodeId,
+        confirmed,
+      });
+      assert.equal(r.statusCode, 404, r.body);
+      const row = await db.execute({ sql: "SELECT node_id FROM files WHERE id = ?", args: [visibleFileId] });
+      assert.equal(row.rows[0].node_id, visibleNodeId);
+    });
+  }
 
   for (const [label, method, path, body] of [
     ["create", "POST", () => `/nodes/${visibleNodeId}/files`, { filename: "n.md", section: "wip", content: "x" }],
