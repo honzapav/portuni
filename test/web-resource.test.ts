@@ -91,6 +91,25 @@ describe("createResource", () => {
   });
 });
 
+describe("createResource error state", () => {
+  it("remembers the last failure until a load succeeds or the value is invalidated", async () => {
+    let fail = true;
+    const res = createResource(() => (fail ? Promise.reject(new Error("down")) : Promise.resolve("ok")));
+    let notified = 0;
+    res.subscribe(() => {
+      notified += 1;
+    });
+    await assert.rejects(res.get());
+    assert.ok(res.error() instanceof Error);
+    assert.equal(notified, 1, "a failure notifies, so a view can show it");
+    fail = false;
+    await res.get();
+    assert.equal(res.error(), null);
+    res.invalidate();
+    assert.equal(res.error(), null);
+  });
+});
+
 describe("createKeyedResource", () => {
   it("keys load separately and invalidate() clears them all", async () => {
     const loads: string[] = [];

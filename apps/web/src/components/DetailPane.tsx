@@ -90,7 +90,6 @@ import {
   moveNode,
   createEdge,
   deleteEdge,
-  fetchActors,
   createResponsibility,
   updateResponsibility,
   deleteResponsibility,
@@ -144,6 +143,8 @@ import { showsPersonalWorkspaceBanner, showsSyncSurfaces } from "../lib/sync-vis
 import { compareText, formatDate } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
 import { shouldPollSyncStatus } from "../lib/poll-policy";
+import { actorsResource } from "../lib/resources";
+import { useResourceState } from "../lib/use-resource";
 import { isRateLimited } from "../lib/rate-limit-cooldown";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
@@ -2255,45 +2256,38 @@ function OwnerPicker({
 }) {
   const { t } = useTranslation("node");
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [actors, setActors] = useState<Actor[] | null>(null);
   const [saving, setSaving] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // The window's actor registry (lib/resources.ts), read once per window
+  // however many pickers open; asked for on the first open.
+  const registry = useActorRegistry(open);
+  const loading = registry.loading;
+  const fetchError = registry.fetchError;
+  const actors = useMemo(() => {
+    if (!registry.actors) return null;
+    const rank = (a: Actor) => {
+      if (a.type === "automation") return 2;
+      if (a.is_placeholder === 1 || a.user_id === null) return 1;
+      return 0;
+    };
+    return [...registry.actors].sort((a, b) => {
+      const r = rank(a) - rank(b);
+      return r !== 0 ? r : a.name.localeCompare(b.name);
+    });
+  }, [registry.actors]);
 
   // Auto-focus the search input as soon as the popover renders.
   useEffect(() => {
     if (open) inputRef.current?.focus();
   }, [open]);
 
-  const openPicker = async () => {
+  const openPicker = () => {
     setOpen(true);
     setQuery("");
     setHighlight(0);
-    if (actors !== null) return;
-    setLoading(true);
-    setFetchError(null);
-    try {
-      const list = await fetchActors();
-      const rank = (a: Actor) => {
-        if (a.type === "automation") return 2;
-        if (a.is_placeholder === 1 || a.user_id === null) return 1;
-        return 0;
-      };
-      setActors(
-        [...list].sort((a, b) => {
-          const r = rank(a) - rank(b);
-          return r !== 0 ? r : a.name.localeCompare(b.name);
-        }),
-      );
-    } catch (e) {
-      setFetchError(displayError(e));
-    } finally {
-      setLoading(false);
-    }
   };
 
   const pick = async (actorId: string | null) => {
@@ -3341,33 +3335,13 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
   );
 }
 
-// The global actor registry, loaded once on mount (AddResponsibilityForm,
-// AssigneePicker).
-function useActorRegistry() {
-  const [actors, setActors] = useState<Actor[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setFetchError(null);
-    fetchActors()
-      .then((list) => {
-        if (!cancelled) setActors(list);
-      })
-      .catch((e) => {
-        if (!cancelled) setFetchError(displayError(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return { actors, loading, fetchError };
+// The global actor registry, the window's one copy (lib/resources.ts
+// actorsResource): AddResponsibilityForm, AssigneePicker and OwnerPicker
+// read it; the first of them to need it fetches it. `wanted` false reads
+// without fetching (a closed picker).
+function useActorRegistry(wanted = true) {
+  const { value, error, loading } = useResourceState(actorsResource, wanted);
+  return { actors: value, loading, fetchError: error === null ? null : displayError(error) };
 }
 
 // An actor's name (placeholder actors dimmed and marked) and type badge, as

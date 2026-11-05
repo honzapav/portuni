@@ -5,12 +5,18 @@
 // not kept, and an invalidation wins over an answer already on its way.
 // Plain modules, no React: use-resource.ts binds a resource to a
 // component; test/web-resource.test.ts pins the rules.
+//
+// A value is never `null`: a loader whose answer can be "nothing" wraps it
+// (`{ defaults: null }`), because null means "not loaded" here.
 
 export type Resource<T> = {
   // The value, else the in-flight answer, else a fresh load.
   get(): Promise<T>;
   // The stored value or null; never loads.
   peek(): T | null;
+  // The last load's failure, until a load succeeds or the value is
+  // invalidated; a view shows it instead of loading forever.
+  error(): unknown | null;
   // Stores an answer a mutation returned.
   set(value: T): void;
   // Forgets the value; an answer in flight is handed to its callers but
@@ -22,6 +28,7 @@ export type Resource<T> = {
 
 export function createResource<T>(load: () => Promise<T>): Resource<T> {
   let value: T | null = null;
+  let lastError: unknown | null = null;
   let flight: { promise: Promise<T>; stale: boolean } | null = null;
   const listeners = new Set<() => void>();
   const notify = () => {
@@ -37,12 +44,17 @@ export function createResource<T>(load: () => Promise<T>): Resource<T> {
           if (flight === entry) flight = null;
           if (!entry.stale) {
             value = v;
+            lastError = null;
             notify();
           }
           return v;
         },
         (err: unknown) => {
           if (flight === entry) flight = null;
+          if (!entry.stale) {
+            lastError = err;
+            notify();
+          }
           throw err;
         },
       );
@@ -52,13 +64,18 @@ export function createResource<T>(load: () => Promise<T>): Resource<T> {
     peek() {
       return value;
     },
+    error() {
+      return lastError;
+    },
     set(v) {
       value = v;
+      lastError = null;
       if (flight) flight.stale = true;
       notify();
     },
     invalidate() {
       value = null;
+      lastError = null;
       if (flight) flight.stale = true;
       notify();
     },
@@ -68,6 +85,7 @@ export function createResource<T>(load: () => Promise<T>): Resource<T> {
     },
     resetForTesting() {
       value = null;
+      lastError = null;
       if (flight) flight.stale = true;
       flight = null;
       listeners.clear();
@@ -78,6 +96,7 @@ export function createResource<T>(load: () => Promise<T>): Resource<T> {
 export type KeyedResource<K extends string, T> = {
   get(key: K): Promise<T>;
   peek(key: K): T | null;
+  error(key: K): unknown | null;
   set(key: K, value: T): void;
   // No key: every key.
   invalidate(key?: K): void;
@@ -103,6 +122,7 @@ export function createKeyedResource<K extends string, T>(load: (key: K) => Promi
   return {
     get: (key) => resourceFor(key).get(),
     peek: (key) => byKey.get(key)?.peek() ?? null,
+    error: (key) => byKey.get(key)?.error() ?? null,
     set: (key, value) => resourceFor(key).set(value),
     invalidate(key) {
       if (key === undefined) {

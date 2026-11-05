@@ -1116,12 +1116,18 @@ export async function fetchAccountUsers(): Promise<AccountUser[]> {
 // canManage (global_scope 'manage' | 'admin') drives the sharing UI. Since
 // #457 no session surface gates on identity any more -- every thread the
 // app lists is the caller's own -- so `id` is carried for future callers.
-// /me returns more (email, name, groups, via) but nothing else here
-// consumes it yet. `locale` is the account's UI language (users.locale),
-// null when the account never chose one.
+// The whole of what /me answers (server api/auth.ts meBody): one window
+// fetches it once (lib/resources.ts meResource) and the account section,
+// the settings tabs, the sharing UI and the composer read from that.
+// `locale` is the account's UI language (users.locale), null when the
+// account never chose one.
 export interface MeResponse {
   id: string;
+  email: string;
+  name: string;
   global_scope: string;
+  groups: string[];
+  via: string;
   locale: Locale | null;
 }
 

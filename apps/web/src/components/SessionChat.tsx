@@ -169,16 +169,13 @@ import {
   patchSessionRunnerInstance,
   renamePersistentSession,
 } from "../api";
-import {
-  fetchRunnerDefaults,
-  fetchRunnerModels,
-  listRunnerInstances,
-  listRunners,
-  type RunnerInfo,
-  type RunnerInstanceSummary,
-  type RunnerDefaultsInfo,
-  type RunnerModel,
-} from "../lib/runners";
+import type { RunnerInstanceSummary, RunnerModel } from "../lib/runners";
+import { runnerDefaults, runnerInstancesResource, runnerModels, runnersResource } from "../lib/resources";
+import { runnerDefaultsKey, runnerModelsKey } from "../lib/runner-resources";
+import { useKeyedResource, useResource } from "../lib/use-resource";
+
+const EMPTY_INSTANCES: RunnerInstanceSummary[] = [];
+const EMPTY_MODELS: RunnerModel[] = [];
 import { useLocale } from "../lib/use-locale";
 
 // Spec rule 3 (docs/superpowers/specs/2026-09-21-task-surface-v2-design.md):
@@ -282,67 +279,31 @@ export default function SessionChat({
   // thread is a draft. The lists come from the device (both routes are
   // device-local), the draft's initial value is what the organisation's
   // default resolved to, so it is what the picker marks as "(výchozí)".
-  const [runners, setRunners] = useState<RunnerInfo[]>([]);
-  const [instances, setInstances] = useState<RunnerInstanceSummary[]>([]);
+  // The lists are the window's (lib/resources.ts): one fetch per window
+  // however many chats are mounted, not one per chat.
+  const allRunners = useResource(runnersResource);
+  const runners = useMemo(
+    () => (allRunners ?? []).filter((x) => x.availability.installed && x.availability.logged_in),
+    [allRunners],
+  );
+  const instances = useResource(runnerInstancesResource) ?? EMPTY_INSTANCES;
   const initialChoiceRef = useRef({ runner: session?.runner ?? null, instanceId: session?.instance_id ?? null });
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.all([listRunners(), listRunnerInstances()])
-      .then(([r, i]) => {
-        if (cancelled) return;
-        setRunners(r.filter((x) => x.availability.installed && x.availability.logged_in));
-        setInstances(i);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // #376: the model picker's list, for the thread's runner and the account
   // its instance logs in to. A draft on a device with no logged-in runner
   // falls back to "claude", the only runner this codebase registers today.
-  const [models, setModels] = useState<RunnerModel[]>([]);
   const runner = session?.runner ?? null;
   const instanceId = session?.instance_id ?? null;
-  useEffect(() => {
-    let cancelled = false;
-    fetchRunnerModels(runner ?? "claude", instanceId)
-      .then((list) => {
-        if (!cancelled) setModels(list);
-      })
-      .catch(() => {
-        if (!cancelled) setModels([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runner, instanceId]);
+  const models = useKeyedResource(runnerModels, runnerModelsKey(runner ?? "claude", instanceId)) ?? EMPTY_MODELS;
 
   // What the thread runs on without its own model or effort, and from where
-  // -- shown before the first run. Asked again when the thread's runner,
-  // instance or own model changes (the effort default follows the model).
-  // The first answer may follow a probe of the runner, so the models list
-  // is re-read with it.
-  const [defaults, setDefaults] = useState<RunnerDefaultsInfo | null>(null);
+  // -- shown before the first run. Keyed on the thread's runner, instance
+  // and own model (the effort default follows the model). The first answer
+  // may follow a probe of the runner, so lib/runner-resources.ts re-reads
+  // that runner's models once after it.
   const ownModel = session?.model ?? null;
-  useEffect(() => {
-    let cancelled = false;
-    const runnerId = runner ?? "claude";
-    fetchRunnerDefaults(runnerId, instanceId, ownModel)
-      .then(async (d) => {
-        if (cancelled) return;
-        setDefaults(d);
-        const list = await fetchRunnerModels(runnerId, instanceId);
-        if (!cancelled) setModels(list);
-      })
-      .catch(() => {
-        if (!cancelled) setDefaults(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runner, instanceId, ownModel]);
+  const defaults =
+    useKeyedResource(runnerDefaults, runnerDefaultsKey(runner ?? "claude", instanceId, ownModel))?.defaults ?? null;
 
   // Backfill + subscribe. Keyed on the thread id alone: state and waiting
   // come from the store's record now, so nothing in here reads a session

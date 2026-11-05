@@ -21,7 +21,6 @@ import type {
   GraphPayload,
 } from "../types";
 import {
-  fetchAccountUsers,
   fetchNodeAccess,
   fetchNodeAccessRequests,
   putNodeAccess,
@@ -29,6 +28,8 @@ import {
   GoogleModeOnlyError,
 } from "../api";
 import { AccessRequestList } from "./AccessRequests";
+import { accountUsersResource } from "../lib/resources";
+import { useResource } from "../lib/use-resource";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -917,22 +918,14 @@ function EntryPicker({
     inputRef.current?.focus();
   }, []);
 
-  // Full user list fetched once; filtered locally on every keystroke.
+  // The window's account user list (lib/resources.ts), fetched once
+  // however often the picker opens; filtered locally on every keystroke.
+  const allUsers = useResource(accountUsersResource);
   useEffect(() => {
-    let cancelled = false;
-    fetchAccountUsers()
-      .then((list) => {
-        if (cancelled) return;
-        allUsersRef.current = list;
-        setUsers(filterUsers(list, ""));
-      })
-      .catch(() => {
-        /* users list stays empty; group search may still work */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (!allUsers) return;
+    allUsersRef.current = allUsers;
+    setUsers(filterUsers(allUsers, ""));
+  }, [allUsers]);
 
   // Debounced group search + local user re-filter on every query change.
   useEffect(() => {

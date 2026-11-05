@@ -12,7 +12,6 @@ import CreateNodeModal from "./components/CreateNodeModal";
 import {
   fetchGraph,
   fetchNode,
-  fetchMe,
   startDraftThread,
   deleteDraftSession,
   renamePersistentSession,
@@ -25,6 +24,7 @@ import { requestChatSession, shownChatSessionId, threadCloseAction } from "./lib
 import { createSessionStore } from "./lib/session-store";
 import { nodesAddedToOpenSet, nodesToRefetchForFrames } from "./lib/session-refresh-policy";
 import { refreshNodeSessions as refreshNodeSessions_ } from "./lib/node-sessions-refresh";
+import { useMe } from "./lib/use-me";
 import { invalidateResumeInfo } from "./lib/resume-info-cache";
 import {
   selectLiveStates,
@@ -195,23 +195,16 @@ export default function App() {
   // submit. Optimistic (true) until /me resolves -- the server still
   // enforces, and a fetch failure must not hide the primary action.
   const [canCreateNode, setCanCreateNode] = useState(true);
+  // One /me per window (lib/resources.ts meResource); a failure leaves
+  // the gate open, the server gates the request.
+  const { me } = useMe();
   useEffect(() => {
-    let cancelled = false;
-    void fetchMe()
-      .then((me) => {
-        if (cancelled) return;
-        // The account's language wins over the boot guess (cache / OS).
-        void syncAccountLocale(me.locale);
-        if (!isGlobalScope(me.global_scope)) return;
-        setCanCreateNode(scopeAtLeast(me.global_scope, CREATE_NODE_SCOPE));
-      })
-      .catch(() => {
-        /* stays true -- server gates the request */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (!me) return;
+    // The account's language wins over the boot guess (cache / OS).
+    void syncAccountLocale(me.locale);
+    if (!isGlobalScope(me.global_scope)) return;
+    setCanCreateNode(scopeAtLeast(me.global_scope, CREATE_NODE_SCOPE));
+  }, [me]);
 
   // Stable identities for props of memoized children (Sidebar, GraphView,
   // DetailPane). Inline arrows would defeat React.memo on every render.
@@ -1208,7 +1201,7 @@ export default function App() {
         )}
         {view === "settings" && (
           <Suspense fallback={null}>
-            <SettingsPage appUpdate={appUpdate} />
+            <SettingsPage appUpdate={appUpdate} graph={graph} />
           </Suspense>
         )}
       </main>

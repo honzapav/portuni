@@ -6,7 +6,7 @@
 // lives on the sidecar, not in the desktop's own config.json.
 
 import { displayError } from "../errors";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -25,8 +25,6 @@ import {
   createRunnerInstance,
   deleteRunnerInstance,
   envKeysToText,
-  listRunnerInstances,
-  listRunners,
   parseEnvText,
   setRunnerInstanceOrgDefault,
   clearRunnerOrgDefault,
@@ -35,14 +33,13 @@ import {
   type RunnerInfo,
   type RunnerInstanceSummary,
 } from "../lib/runners";
-import { fetchGraph } from "../api";
-import type { GraphNode } from "../types";
+import type { GraphPayload } from "../types";
 import { compareText } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
-import { useFormAction, useListLoad, usePendingIds } from "../lib/use-list-load";
+import { useFormAction, useMountedRef, usePendingIds } from "../lib/use-list-load";
+import { invalidateRunnerResources, runnerInstancesResource, runnersResource } from "../lib/resources";
+import { useResourceState } from "../lib/use-resource";
 import { ErrorActionAlert } from "./ErrorActionAlert";
-
-const fetchInstances = async () => ({ instances: await listRunnerInstances() });
 
 // Radix Select refuses an empty-string item value, so "no default instance"
 // travels as this sentinel and is mapped back to null at the call site.
@@ -55,46 +52,40 @@ const FIELD_LABEL =
 const ROW_FIELD_LABEL =
   "mb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-text-dim)]";
 
-export default function RunnersSection() {
+// The lists are the window's (lib/resources.ts): the same runners and
+// instances every mounted chat reads, fetched once; a mutation here
+// forgets them and the next read fetches again. The organizations come
+// from the graph App already holds.
+export default function RunnersSection({ graph }: { graph: GraphPayload | null }) {
   const { t } = useTranslation("settings");
   const locale = useLocale();
-  const [runners, setRunners] = useState<RunnerInfo[] | null>(null);
-  const [runnersError, setRunnersError] = useState<string | null>(null);
-  const { state, load: loadList, mountedRef } = useListLoad(fetchInstances);
-  const [orgs, setOrgs] = useState<GraphNode[]>([]);
+  const mountedRef = useMountedRef();
+  const runnersState = useResourceState(runnersResource);
+  const runners = runnersState.value;
+  const runnersError = runnersState.error === null ? null : displayError(runnersState.error);
+  const instancesState = useResourceState(runnerInstancesResource);
+  const state =
+    instancesState.value !== null
+      ? ({ kind: "ok", instances: instancesState.value } as const)
+      : instancesState.error !== null
+        ? ({ kind: "error", reason: displayError(instancesState.error) } as const)
+        : ({ kind: "loading" } as const);
+  const orgs = useMemo(
+    () =>
+      (graph?.nodes ?? [])
+        .filter((n) => n.type === "organization")
+        .sort((a, b) => compareText(locale, a.name, b.name)),
+    [graph, locale],
+  );
   const [rowError, setRowError] = useState<string | null>(null);
   const { pending, withPending } = usePendingIds(mountedRef);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  useEffect(() => {
-    listRunners()
-      .then((r) => {
-        if (mountedRef.current) setRunners(r);
-      })
-      .catch((e) => {
-        if (mountedRef.current) setRunnersError(displayError(e));
-      });
-  }, []);
-
   const load = useCallback(async () => {
     setConfirmDeleteId(null);
-    await loadList();
-  }, [loadList]);
-
-  useEffect(() => {
-    fetchGraph()
-      .then((g) => {
-        if (!mountedRef.current) return;
-        setOrgs(
-          g.nodes
-            .filter((n) => n.type === "organization")
-            .sort((a, b) => compareText(locale, a.name, b.name)),
-        );
-      })
-      .catch(() => {
-        // The org-default picker just stays empty -- not fatal to the tab.
-      });
+    invalidateRunnerResources();
+    await runnerInstancesResource.get().catch(() => undefined);
   }, []);
 
   async function handleDelete(instance: RunnerInstanceSummary) {
