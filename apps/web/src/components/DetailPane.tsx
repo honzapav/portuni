@@ -307,20 +307,11 @@ function DetailPaneBody({
   onSessionStarted,
   onOpenChat,
   sessionStore,
-}: {
+}: Omit<Props, "node" | "loading" | "error"> & {
+  // The body renders a loaded node only; the shell above handles the
+  // loading and error states.
   node: NodeDetail;
-  graph: GraphPayload | null;
   canManage: boolean;
-  onSelect: (id: string | null) => void;
-  canGoBack: boolean;
-  onBack: () => void;
-  onMutate: () => Promise<void>;
-  embedded?: boolean;
-  onCollapse?: () => void;
-  onOpenFile?: (nodeId: string, relPath: string) => void;
-  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
-  onOpenChat?: (nodeId: string, sessionId: string) => void;
-  sessionStore: SessionStore;
 }) {
   const { t } = useTranslation("node");
   const { t: tFiles } = useTranslation("files");
