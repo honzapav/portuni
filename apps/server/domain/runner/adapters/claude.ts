@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
 import { access, readFile, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { query as sdkQuery, resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -120,6 +121,18 @@ export interface CreateClaudeAdapterDeps {
   // How long defaults() waits for the runner's list before answering
   // without it.
   modelsProbeTimeoutMs?: number;
+  // Working directory for detect()'s `claude --version` / `auth status`;
+  // defaults to `detectCwd()`. Tests inject it.
+  detectCwd?: () => string;
+}
+
+// #644: detect() never inherits this process's working directory. The
+// desktop sidecar starts inside the app bundle, which an updater install
+// deletes while the app is still running; `claude auth status` then exits 1
+// ("The current directory no longer exists") and the device reads as logged
+// out until a restart. The home directory outlives any bundle swap.
+function detectCwd(): string {
+  return homedir() || process.env.HOME || tmpdir();
 }
 
 const DEFAULT_MODELS_PROBE_TIMEOUT_MS = 20_000;
@@ -984,6 +997,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   const query = deps.query ?? sdkQuery;
   const exec = deps.exec ?? nodeExecFile;
   const resolveExecutable = deps.resolveExecutable ?? (() => resolveClaudeExecutable());
+  const execCwd = deps.detectCwd ?? detectCwd;
   const closePollIntervalMs = deps.closePollIntervalMs ?? DEFAULT_CLOSE_POLL_INTERVAL_MS;
   const closeTimeoutMs = deps.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
@@ -1090,7 +1104,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
   async function runExec(executable: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
     return new Promise((resolve) => {
-      exec(executable, args, { timeout: DETECT_TIMEOUT_MS }, (err, stdout) => {
+      exec(executable, args, { timeout: DETECT_TIMEOUT_MS, cwd: execCwd() }, (err, stdout) => {
         resolve({ ok: !err, stdout: stdout?.toString() ?? "" });
       });
     });

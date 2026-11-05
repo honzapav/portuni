@@ -607,7 +607,13 @@ human verification.
   reasoning: each turn's duration counts that turn's thinking only (#502).
   A thinking block without a streamed delta has no `duration_ms`.
 - `detect()` runs `claude --version` and `claude auth status`, 5 s timeout
-  each.
+  each, always with an explicit `cwd` (the home directory), never the
+  process's own (#644): `auth status` exits 1 when its working directory
+  no longer exists, which an updater install causes by deleting the
+  running app bundle the sidecar started in. The desktop sidecar also
+  `chdir`s to its data dir once the libsql binding is loaded
+  (`desktop.ts`); the host starts it in `Resources/sidecar-deps` only so
+  Bun finds that binding.
 - **`turn_ended` on every successful result.** The CLI stays alive between
   turns, so this is the only signal that the agent stopped working; the
   web's working row, stop button and Escape key on a turn in flight

@@ -129,4 +129,5 @@ instead of spawning a terminal:
 Settings → Runners shows whether `claude` is installed and logged in on
 this device (`claude --version` / `claude auth status`), and lets you
 manage the provider instances (name, environment, default per organization)
-a task's runner picks from when more than one exists.
+a task's runner picks from when more than one exists. The check keeps
+working after the app downloads an update and before you restart it.

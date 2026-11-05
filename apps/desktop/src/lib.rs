@@ -2865,7 +2865,9 @@ fn spawn_sidecar_ws_with_token(
 
     // The Bun-compiled sidecar walks up from cwd looking for the platform
     // @libsql native binding; set cwd to the staged sidecar-deps dir so a
-    // Finder-launched .app (cwd=/) still resolves it.
+    // Finder-launched .app (cwd=/) still resolves it. The sidecar leaves
+    // this dir for its data dir once the binding is loaded (#644): an
+    // updater install deletes the running bundle.
     let resource_dir = app.path().resource_dir()?;
     let sidecar_cwd = resource_dir.join("sidecar-deps");
     if !sidecar_cwd.exists() {

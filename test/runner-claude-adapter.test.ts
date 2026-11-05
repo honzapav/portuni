@@ -6,6 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import process from "node:process";
@@ -2171,6 +2172,55 @@ describe("Claude adapter: detect()", () => {
     const availability = await adapter.detect();
     assert.equal(availability.installed, true);
     assert.equal(availability.logged_in, false);
+  });
+});
+
+describe("Claude adapter: detect() without the process's working directory (#644)", () => {
+  it("passes an existing cwd to every probe instead of inheriting the process's", async () => {
+    const cwds: unknown[] = [];
+    const exec = ((_cmd: string, args: readonly string[], opts: { cwd?: unknown }, cb: (err: Error | null, stdout: string) => void) => {
+      cwds.push(opts.cwd);
+      cb(null, args[0] === "--version" ? "1.2.3\n" : "Logged in\n");
+    }) as unknown as CreateClaudeAdapterDeps["exec"];
+    const adapter = createClaudeAdapter({ exec, resolveExecutable: resolveFake });
+    await adapter.detect();
+    assert.equal(cwds.length, 2);
+    for (const cwd of cwds) {
+      assert.equal(typeof cwd, "string");
+      assert.ok(existsSync(cwd as string), `probe cwd ${String(cwd)} exists`);
+    }
+  });
+
+  it("reports logged_in with a real child process while the process's cwd is deleted", async () => {
+    // A stand-in for `claude` that behaves like 2.1.318 does: --version
+    // passes anywhere, `auth status` exits 1 when its cwd no longer exists.
+    const binDir = await mkdtemp(join(tmpdir(), "portuni-claude-bin-"));
+    const goneDir = await mkdtemp(join(tmpdir(), "portuni-gone-cwd-"));
+    const fake = join(binDir, "claude");
+    await writeFile(
+      fake,
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "--version" ]; then echo "9.9.9 (Claude Code)"; exit 0; fi',
+        '/bin/pwd -P >/dev/null 2>&1 || { echo "The current directory no longer exists (it was deleted or moved)." >&2; exit 1; }',
+        'echo "Logged in"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const before = process.cwd();
+    try {
+      process.chdir(goneDir);
+      await rm(goneDir, { recursive: true, force: true });
+      const adapter = createClaudeAdapter({ resolveExecutable: async () => fake });
+      const availability = await adapter.detect();
+      assert.equal(availability.installed, true);
+      assert.equal(availability.version, "9.9.9 (Claude Code)");
+      assert.equal(availability.logged_in, true);
+    } finally {
+      process.chdir(before);
+      await rm(binDir, { recursive: true, force: true });
+    }
   });
 });
 
