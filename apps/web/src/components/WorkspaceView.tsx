@@ -28,6 +28,7 @@ import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary
 import type { SessionsClient } from "../lib/sessions-client";
 import type { SessionStore } from "../lib/session-store";
 import { shownChatSessionId } from "../lib/session-views";
+import type { NodeChange } from "../lib/graph-patch";
 import type { FileEditor } from "../lib/use-file-editor";
 import { scopedKey } from "../lib/workspace-storage";
 import WorkspaceEmpty from "./WorkspaceEmpty";
@@ -57,7 +58,7 @@ type Props = {
   nodeDetailError: string | null;
   // Refetch graph + this view's node detail after an edit. DetailPane's
   // edit / lifecycle / sync flows all funnel through this.
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   // Source-editor wiring. When a file is open for the selected node, the
   // detail surface swaps DetailPane for EditorPane (Option C).
   editorFile: { nodeId: string; relPath: string } | null;

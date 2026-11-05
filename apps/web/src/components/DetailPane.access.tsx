@@ -7,6 +7,7 @@
 // DetailPane.tsx self-fetches sync status for the Files tab.
 
 import { displayError } from "../errors";
+import type { NodeChange } from "../lib/graph-patch";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -130,7 +131,7 @@ export function AccessSection({
 }: {
   nodeId: string;
   canManage: boolean;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   // Used only to look up the type of the inherited-from node (for "Přebírá
   // sdílení z organizace X" phrasing) without a second network round trip --
   // the graph is already loaded for the rest of the app.
@@ -264,7 +265,7 @@ export function AccessSection({
     try {
       nodeAccessByNode.invalidate(nodeId);
       applyView(await nodeAccessByNode.get(nodeId));
-      await onMutate();
+      await onMutate({ graph: true });
     } catch {
       /* stale view until the next node change; the grant itself landed */
     }
@@ -298,7 +299,7 @@ export function AccessSection({
       setEditingGroup(false);
       setConfirm(null);
       flashSaved();
-      await onMutate();
+      await onMutate({ graph: true });
     } catch (e) {
       console.error(e);
       setSaveError(t(($) => $.access.save_error));

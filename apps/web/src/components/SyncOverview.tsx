@@ -50,7 +50,9 @@ export default function SyncOverview({
   // Applied per finished run, so a synced node leaves the list at once
   // instead of waiting out the cross-mirror rescan behind onMutated.
   onSynced: (nodeId: string, run: SyncRunResponse) => void;
-  onMutated: () => void;
+  // The node a single sync touched (its detail refreshes), null when a
+  // whole job finished (the shown details refresh).
+  onMutated: (nodeId: string | null) => void;
   onSelectNode: (id: string) => void;
 }) {
   const { t } = useTranslation("files");
@@ -105,7 +107,8 @@ export default function SyncOverview({
         window.clearInterval(timer);
         if (notifiedMutatedRef.current !== next.id) {
           notifiedMutatedRef.current = next.id;
-          onMutated();
+          // A whole job touched many nodes: the shown details refresh.
+          onMutated(null);
         }
       }
     }, JOB_POLL_MS);
@@ -120,7 +123,7 @@ export default function SyncOverview({
     setBusy((b) => new Set(b).add(nodeId));
     try {
       onSynced(nodeId, await runNodeSync(nodeId));
-      onMutated();
+      onMutated(nodeId);
     } catch {
       /* per-node failure is surfaced by the refreshed aggregate */
     } finally {

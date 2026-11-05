@@ -25,6 +25,7 @@ import { createSessionStore } from "./lib/session-store";
 import { nodesAddedToOpenSet, nodesToRefetchForFrames } from "./lib/session-refresh-policy";
 import { refreshNodeSessions as refreshNodeSessions_ } from "./lib/node-sessions-refresh";
 import { useMe } from "./lib/use-me";
+import { graphNeedsReload, patchGraphNode, type NodeChange } from "./lib/graph-patch";
 import { invalidateResumeInfo } from "./lib/resume-info-cache";
 import {
   selectLiveStates,
@@ -302,8 +303,8 @@ export default function App() {
     };
   }, [selectedId]);
 
-  // Refetch both the graph and the current node. Called by the DetailPane
-  // after any mutation so the viz and the detail stay in sync.
+  // Refetch both the graph and the current node: for what a node's own
+  // row cannot carry -- a new organization, a sync overview action.
   const refetchAll = useCallback(async () => {
     const [graphRes, nodeRes] = await Promise.all([
       fetchGraph(),
@@ -527,6 +528,40 @@ export default function App() {
   // A failed refresh of a detail already on screen stays silent (the
   // graph view's poll does the same): an error here unmounts the pane's
   // body, and a remount asks for everything the pane shows again.
+  // What a detail-pane action did (lib/graph-patch.ts NodeChange): the
+  // node the server returned becomes the detail and patches its graph row;
+  // nothing returned means the one node detail is fetched again; `graph`
+  // reloads the graph (edges, a move, sharing, an archive). The graph and
+  // Práce details of the same node both take the answer.
+  const applyNodeDetail = useCallback((n: NodeDetail) => {
+    if (selectedIdRef.current === n.id) setNodeDetail(n);
+    if (selectedWorkspaceNodeIdRef.current === n.id) {
+      setWorkspaceNodeDetail(n);
+      setWorkspaceDetailError(null);
+    }
+  }, []);
+  const handleNodeChanged = useCallback(
+    async (nodeId: string | null, change?: NodeChange) => {
+      const tasks: Promise<unknown>[] = [];
+      if (graphNeedsReload(change)) {
+        tasks.push(
+          fetchGraph().then((g) => {
+            setGraph(g);
+            setGraphError(null);
+          }),
+        );
+      }
+      if (change?.node) {
+        applyNodeDetail(change.node);
+        if (!graphNeedsReload(change)) setGraph((g) => (g ? patchGraphNode(g, change.node!) : g));
+      } else if (nodeId && !change?.archived) {
+        tasks.push(fetchNode(nodeId).then(applyNodeDetail));
+      }
+      await Promise.all(tasks);
+    },
+    [applyNodeDetail],
+  );
+
   const refetchWorkspaceDetail = useCallback(async () => {
     if (!selectedWorkspaceNodeId) return;
     try {
@@ -1199,9 +1234,7 @@ export default function App() {
               nodeDetail={workspaceNodeDetail}
               nodeDetailLoading={workspaceDetailLoading}
               nodeDetailError={workspaceDetailError}
-              onMutate={async () => {
-                await Promise.all([refetchAll(), refetchWorkspaceDetail()]);
-              }}
+              onMutate={(change) => handleNodeChanged(selectedWorkspaceNodeId, change)}
               editorFile={editorFile}
               editor={fileEditor}
               editorFullscreen={editorFullscreen}
@@ -1254,7 +1287,7 @@ export default function App() {
               onSelect={setSelectedId}
               canGoBack={historyRef.current.length > 0}
               onBack={goBack}
-              onMutate={refetchAll}
+              onMutate={(change) => handleNodeChanged(selectedId, change)}
               onOpenFile={openFileInEditor}
               onOpenChat={openSessionChat}
               onSessionStarted={(result) => {
@@ -1381,9 +1414,14 @@ export default function App() {
           pending={syncPending}
           onClose={() => setSyncOverviewOpen(false)}
           onSynced={applySyncRun}
-          onMutated={() => {
+          onMutated={(nodeId) => {
             refreshSyncPending();
-            refetchAll().catch(() => undefined);
+            if (nodeId !== null) {
+              void handleNodeChanged(nodeId);
+              return;
+            }
+            void handleNodeChanged(selectedId);
+            if (selectedWorkspaceNodeId !== selectedId) void handleNodeChanged(selectedWorkspaceNodeId);
           }}
           onSelectNode={(id) => {
             setSyncOverviewOpen(false);

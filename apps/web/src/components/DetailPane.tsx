@@ -142,6 +142,7 @@ import { showsPersonalWorkspaceBanner, showsSyncSurfaces } from "../lib/sync-vis
 import { compareText, formatDate } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
 import { isFresh, shouldPollSyncStatus } from "../lib/poll-policy";
+import type { NodeChange } from "../lib/graph-patch";
 import { actorsResource, folderUrlByNode } from "../lib/resources";
 import { useKeyedResource, useResourceState } from "../lib/use-resource";
 import { isRateLimited } from "../lib/rate-limit-cooldown";
@@ -192,7 +193,7 @@ type Props = {
   onSelect: (id: string | null) => void;
   canGoBack: boolean;
   onBack: () => void;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   // True when this pane is rendered inside another column (e.g. the
   // workspace's right-side detail). Drops the slide-in animation, the
   // 40vw / min-w-440 sizing, and the left border so the parent's layout
@@ -615,10 +616,10 @@ function DetailPaneBody({
     setSaving(true);
     setErrorMsg(null);
     try {
-      await updateNode(node.id, {
+      const updated = await updateNode(node.id, {
         name: draftName.trim(),
       });
-      await onMutate();
+      await onMutate({ node: updated });
       setEditing(false);
     } catch (e) {
       setErrorMsg(displayError(e));
@@ -636,7 +637,7 @@ function DetailPaneBody({
     setErrorMsg(null);
     try {
       await archiveNode(node.id);
-      await onMutate();
+      await onMutate({ archived: true, graph: true });
       onSelect(null);
     } catch (e) {
       setErrorMsg(displayError(e));
@@ -649,7 +650,7 @@ function DetailPaneBody({
     setErrorMsg(null);
     try {
       await deleteEdge(edgeId);
-      await onMutate();
+      await onMutate({ graph: true });
     } catch (e) {
       setErrorMsg(displayError(e));
     } finally {
@@ -670,7 +671,7 @@ function DetailPaneBody({
         target_id: direction === "outgoing" ? targetId : node.id,
         relation,
       });
-      await onMutate();
+      await onMutate({ graph: true });
     } catch (e) {
       setErrorMsg(displayError(e));
     } finally {
@@ -700,7 +701,7 @@ function DetailPaneBody({
         relation: newRelation,
       });
       await deleteEdge(edge.id);
-      await onMutate();
+      await onMutate({ graph: true });
     } catch (e) {
       setErrorMsg(displayError(e));
     } finally {
@@ -1924,7 +1925,7 @@ function LifecycleDropdown({
   nodeId: string;
   nodeType: string;
   value: string | null;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -1939,8 +1940,7 @@ function LifecycleDropdown({
     setSaving(true);
     onError(null);
     try {
-      await updateNode(nodeId, { lifecycle_state: next });
-      await onMutate();
+      await onMutate({ node: await updateNode(nodeId, { lifecycle_state: next }) });
     } catch (e) {
       onError(displayError(e));
     } finally {
@@ -1998,7 +1998,7 @@ function HealthDropdown({
 }: {
   nodeId: string;
   value: string;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -2009,8 +2009,7 @@ function HealthDropdown({
     setSaving(true);
     onError(null);
     try {
-      await updateNode(nodeId, { health: next });
-      await onMutate();
+      await onMutate({ node: await updateNode(nodeId, { health: next }) });
     } catch (e) {
       onError(displayError(e));
     } finally {
@@ -2062,7 +2061,7 @@ function EditableTextField({
   field: "description" | "goal";
   nodeId: string;
   value: string | null;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -2081,8 +2080,7 @@ function EditableTextField({
     onError(null);
     try {
       const trimmed = draft.trim();
-      await updateNode(nodeId, { [field]: trimmed ? trimmed : null });
-      await onMutate();
+      await onMutate({ node: await updateNode(nodeId, { [field]: trimmed ? trimmed : null }) });
       setEditing(false);
     } catch (e) {
       onError(displayError(e));
@@ -2179,7 +2177,7 @@ function OrganizationPicker({
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -2201,8 +2199,8 @@ function OrganizationPicker({
     setSaving(true);
     onError(null);
     try {
-      await moveNode(node.id, orgId);
-      await onMutate();
+      const moved = await moveNode(node.id, orgId);
+      await onMutate({ node: moved.node, graph: true });
     } catch (e) {
       onError(displayError(e));
     } finally {
@@ -2278,7 +2276,7 @@ function OwnerPicker({
   onError,
 }: {
   node: NodeDetail;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -2323,8 +2321,7 @@ function OwnerPicker({
     setSaving(true);
     onError(null);
     try {
-      await updateNode(node.id, { owner_id: actorId });
-      await onMutate();
+      await onMutate({ node: await updateNode(node.id, { owner_id: actorId }) });
     } catch (e) {
       onError(displayError(e));
     } finally {
@@ -2571,7 +2568,7 @@ function ResponsibilitiesEditor({
   onError,
 }: {
   node: NodeDetail;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -2664,7 +2661,7 @@ function ResponsibilityItem({
   canMoveDown: boolean;
   onMoveUp: () => Promise<void>;
   onMoveDown: () => Promise<void>;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");
@@ -3064,7 +3061,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
     },
   ) => Promise<TItem>;
   removeCreator: (id: string) => Promise<{ deleted: string }>;
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
   const { t } = useTranslation("node");

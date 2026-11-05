@@ -394,6 +394,14 @@ this bound.
   lands on the node surface as `workspaceDetailError`.
   `test/web-session-refresh-policy.test.ts` pins the request count per
   action.
+- **`handleNodeChanged(nodeId, change)`**, what a detail-pane action
+  reports (`lib/graph-patch.ts` `NodeChange`): the node the server
+  returned (`PATCH /nodes/:id`, `POST /nodes/:id/move`) becomes the
+  detail -- the graph's and Práce's when both show it -- and patches its
+  graph row (`patchGraphNode`); nothing returned (a file, an event, a
+  responsibility, an attribute, a sync run) fetches the one node detail
+  again; `graph` (edges, a move, sharing, an archive) reloads the graph
+  (`graphNeedsReload`). `refetchAll` remains for a new organization only.
 - **`registerSessionStarted`**, the single entry point for every
   `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's
   `DetailPane`, the sidebar `+`, the Relace tab's "Navázat na handoff"):
