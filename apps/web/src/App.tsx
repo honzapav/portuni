@@ -637,7 +637,9 @@ export default function App() {
         // surface, so it reads as a failure instead of a click that did
         // nothing; another open node's refetch stays silent, as before.
         if (selectedWorkspaceNodeIdRef.current !== nodeId) return;
-        setWorkspaceDetailError(tRef.current(($) => $.app.thread_error.load_failed, { error: displayError(e) }));
+        // Named `t` so the i18n extractor sees the key as used.
+        const t = tRef.current;
+        setWorkspaceDetailError(t(($) => $.app.thread_error.load_failed, { error: displayError(e) }));
       })
       .finally(() => {
         nodeThreadRefetches.current.delete(nodeId);

@@ -362,6 +362,11 @@ One line each; the linked doc carries the mechanism and the reasoning.
 - A fact about a thread lives in the session store (`lib/session-store.ts`,
   one record per session id, read through `useSessionStore` and the
   selectors); a component or map that copies it is a bug.
+- A UI action requests only what it needs; a change elsewhere arrives on
+  the live channel; polls cover what is on screen and pause after a `429`.
+  A change to a surface's traffic comes with a policy test
+  (`lib/poll-policy.ts`, `lib/session-refresh-policy.ts`). Contract:
+  `docs/superpowers/specs/2026-11-05-client-traffic-contract.md`.
 - One `SessionsClient` for the app's lifetime, created lazily in `useState`;
   `SessionChat` is lazy-loaded. Compare the main chunk size when adding
   dependencies to it.
