@@ -162,7 +162,7 @@ class FakeCentral implements CentralClient {
 
   async patchSessionRecord(id: string, patch: PatchSessionInput): Promise<SessionRow> {
     const row = this.sessions.get(id);
-    if (!row) throw new CentralHttpError("session not found", 404);
+    if (!row) throw new CentralHttpError("session not found", 404, "SESSION_NOT_FOUND");
     // The real record route refuses what the state machine refuses
     // (transitionSessionState); a fake that took any state would prove
     // nothing about a closed or archived thread.
@@ -1369,6 +1369,58 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(fake.sessions.get(session.id)?.effort, "xhigh");
 
     await authFetch(`${base}/sessions/${session.id}/close`, { method: "POST" });
+  });
+
+  // The access rule (auth/session-access.ts): a thread central does not
+  // return -- an unknown id or another user's thread, both a 404 there,
+  // a null from getSessionRecord -- is SESSION_NOT_FOUND on every verb,
+  // never a 500. Expected answers come from that rule and the local
+  // router's guardSessionAccess, which answers 404 SESSION_NOT_FOUND for
+  // every one of these before the runtime is reached.
+  const UNKNOWN_SESSION_VERBS: ReadonlyArray<[method: string, path: string, body?: unknown]> = [
+    ["POST", "/sessions/nope/runner-defaults"],
+    ["POST", "/sessions/nope/messages", { text: "hi" }],
+    ["POST", "/sessions/nope/model", { model: "m" }],
+    ["POST", "/sessions/nope/rename", { name: "n" }],
+    ["POST", "/sessions/nope/close"],
+    ["POST", "/sessions/nope/continue", {}],
+    ["POST", "/sessions/nope/handoff", {}],
+    ["POST", "/sessions/nope/interrupt"],
+    ["GET", "/sessions/nope/resume-info"],
+    ["GET", "/sessions/nope/events"],
+    ["GET", "/sessions/nope/events?after=abc"],
+    ["GET", "/sessions/nope/signals"],
+    ["POST", "/sessions/nope/questions/q1", { decision: { value: "allow" } }],
+  ];
+  for (const [method, path, body] of UNKNOWN_SESSION_VERBS) {
+    it(`${method} ${path} for a session central does not return answers 404 SESSION_NOT_FOUND`, async () => {
+      const res = await authFetch(`${base}${path}`, {
+        method,
+        ...(body !== undefined
+          ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+          : {}),
+      });
+      const text = await res.text();
+      assert.equal(res.status, 404, `${method} ${path} -> ${res.status} ${text}`);
+      assert.equal((JSON.parse(text) as { code: string }).code, "SESSION_NOT_FOUND");
+    });
+  }
+
+  it("POST /sessions/:id/runner-defaults writes a runner-less draft's runner on central (#645)", async () => {
+    const create = await authFetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID }),
+    });
+    const { session } = (await create.json()) as { session: SessionRow };
+    // As if the draft was created while no runner was usable on this device.
+    fake.sessions.set(session.id, { ...fake.sessions.get(session.id)!, runner: null, instance_id: null });
+
+    const res = await authFetch(`${base}/sessions/${session.id}/runner-defaults`, { method: "POST" });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as SessionRow).runner, "fake");
+    assert.equal(fake.sessions.get(session.id)?.runner, "fake");
+    assert.equal(fake.sessions.get(session.id)?.state, "draft");
   });
 
   it("POST /sessions/:id/close closes the session on central", async () => {

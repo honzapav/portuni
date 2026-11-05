@@ -41,7 +41,17 @@ export async function detectAll(now: number = Date.now()): Promise<RunnerDetecti
       continue;
     }
     const availability = await adapter.detect();
-    detectCache.set(adapter.id, { availability, at: now });
+    // #645: only a usable answer is cached. A negative one (not installed,
+    // or not logged in) is asked again on the next call: it may come from
+    // a transient failure (a probe at boot), and holding it for a minute
+    // left the first draft after startup with no runner while `claude` was
+    // signed in. A signed-out device costs one probe per call, which is
+    // what the composer asking "is there a runner now?" means anyway.
+    if (availability.installed && availability.logged_in) {
+      detectCache.set(adapter.id, { availability, at: now });
+    } else {
+      detectCache.delete(adapter.id);
+    }
     results.push({ id: adapter.id, availability });
   }
   return results;

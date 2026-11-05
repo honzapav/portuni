@@ -23,7 +23,12 @@ import { createSessionsWsServer, errorFrameFor, type SessionsWsDeps } from "../a
 import { respondSessionRefusal, sessionRefusal } from "../apps/server/api/session-refusals.js";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
-import { NoRunnerAvailableError, SessionHandoffError, type SessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
+import {
+  NoRunnerAvailableError,
+  SessionHandoffError,
+  SessionNotFoundError,
+  type SessionRuntime,
+} from "../apps/server/domain/runner/session-runtime.js";
 import { CentralHttpError, type CentralClient } from "../apps/server/domain/sync/central/client.js";
 import { isErrorCode } from "../apps/server/shared/error-codes.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
@@ -178,6 +183,13 @@ describe("session refusals carry code and params (#531)", () => {
     assert.deepEqual(errorFrameFor(new NoRunnerAvailableError("no runner")), {
       code: "NO_RUNNER_AVAILABLE",
       message: "no runner",
+      params: undefined,
+    });
+    // A session the record store does not return (unknown, or another
+    // user's in a team workspace) is the access rule's SESSION_NOT_FOUND.
+    assert.deepEqual(errorFrameFor(new SessionNotFoundError("sendMessage", "S1")), {
+      code: "SESSION_NOT_FOUND",
+      message: "sendMessage: session S1 not found",
       params: undefined,
     });
     assert.deepEqual(errorFrameFor(new Error("boom")), { code: "INTERNAL_ERROR", message: "internal error" });

@@ -12,6 +12,7 @@ import {
   type BearerCheck,
 } from "../infra/auth-config.js";
 import { LocalModeNoRemoteError } from "../domain/sync/types.js";
+import { SessionNotFoundError } from "../domain/runner/session-errors.js";
 import { getDb } from "../infra/db.js";
 import { constraintViolation } from "../infra/sql.js";
 import { CentralHttpError } from "../domain/sync/central/client.js";
@@ -309,6 +310,12 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
   }
   if (err instanceof LocalModeNoRemoteError) {
     writeApiError(res, 409, err.code, err.message, undefined, withId);
+    return;
+  }
+  // Every session verb, on both routers: a session the record store does
+  // not return is the access rule's 404, never a 500.
+  if (err instanceof SessionNotFoundError) {
+    writeApiError(res, 404, "SESSION_NOT_FOUND", "session not found", undefined, withId);
     return;
   }
   if (err instanceof CentralHttpError && isErrorCode(err.code) && err.status >= 400 && err.status < 500) {

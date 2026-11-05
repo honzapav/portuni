@@ -1242,3 +1242,87 @@ describe("session runtime: organization default instance on draft promotion", ()
     assert.match(warnings[0], new RegExp(nodeId));
   });
 });
+
+// #645: a draft opened while detection found no runner keeps `runner:
+// null`; refreshDraftRunner fills it in once a runner is usable again --
+// in both workspaces, since the record half goes through whatever store
+// the runtime was built with (DbSessionStore here, CentralSessionStore in
+// sync-agent mode; the same SessionStore interface).
+describe("session runtime: refreshDraftRunner (#645)", () => {
+  let dataDir: string;
+  const originalDataDir = process.env.PORTUNI_DATA_DIR;
+
+  afterEach(async () => {
+    clearRegistryForTests();
+    if (originalDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+    else process.env.PORTUNI_DATA_DIR = originalDataDir;
+    if (dataDir) await rm(dataDir, { recursive: true, force: true });
+  });
+
+  function toggledAdapter(): { adapter: FakeRunnerAdapter; setLoggedIn: (v: boolean) => void } {
+    let loggedIn = false;
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    adapter.detect = async () => ({ installed: true, version: "fake-1.0.0", logged_in: loggedIn, instances_supported: true });
+    return { adapter, setLoggedIn: (v) => {
+      loggedIn = v;
+    } };
+  }
+
+  it("gives a runner-less draft the default runner and the organization's instance once one is usable", async () => {
+    const { db, nodeId, orgId } = await sharedDb();
+    dataDir = await mkdtemp(join(tmpdir(), "portuni-refresh-draft-"));
+    process.env.PORTUNI_DATA_DIR = dataDir;
+    await createInstance({ name: "Osobní", runner: "fake" });
+    const orgDefault = await createInstance({ name: "Tempo", runner: "fake" });
+    await setOrgDefault(orgId, orgDefault.id);
+
+    const { adapter, setLoggedIn } = toggledAdapter();
+    registerAdapter(adapter);
+    const store = new DbSessionStore(db);
+    const runtime = createSessionRuntime({
+      content,
+      store,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+    });
+    const draft = await runtime.createDraft({ userId: "U1", nodeId });
+    const published: string[] = [];
+    runtime.subscribe(draft.id, (sessionId, event) => {
+      if (event.type === "session_changed") published.push(sessionId);
+    });
+    assert.equal(draft.runner, null);
+    assert.equal(draft.instance_id, null);
+
+    // Still nothing usable: the row stays as it is and nothing is published.
+    const still = await runtime.refreshDraftRunner(draft.id);
+    assert.equal(still.runner, null);
+    assert.deepEqual(published, []);
+
+    // The runner is back. The negative detection was not cached, so the
+    // very next call sees it.
+    setLoggedIn(true);
+    const filled = await runtime.refreshDraftRunner(draft.id);
+    assert.equal(filled.runner, "fake");
+    assert.equal(filled.instance_id, orgDefault.id);
+    const row = await store.getSession(draft.id);
+    assert.equal(row?.runner, "fake");
+    assert.equal(row?.instance_id, orgDefault.id);
+    assert.equal(row?.state, "draft");
+    assert.deepEqual(published, [draft.id]);
+  });
+
+  it("leaves a draft that already has a runner untouched", async () => {
+    const { db, nodeId } = await sharedDb();
+    const { adapter, setLoggedIn } = toggledAdapter();
+    setLoggedIn(true);
+    registerAdapter(adapter);
+    const store = new DbSessionStore(db);
+    const runtime = createSessionRuntime({ content, store, registry: registryOf(adapter), provision: stubProvision() });
+    const draft = await runtime.createDraft({ userId: "U1", nodeId });
+    assert.equal(draft.runner, "fake");
+    await store.patchSession(draft.id, { instance_id: null });
+    const after = await runtime.refreshDraftRunner(draft.id);
+    assert.equal(after.runner, "fake");
+    assert.equal(after.instance_id, null);
+  });
+});

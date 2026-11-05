@@ -6,6 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import process from "node:process";
@@ -163,14 +164,19 @@ const FAKE_CLAUDE = "/fake/bin/claude";
 const resolveFake = async () => FAKE_CLAUDE;
 
 function fakeExec(
-  responses: Record<string, { err?: Error; stdout?: string }>,
+  responses: Record<string, { err?: Error; stdout?: string; stderr?: string }>,
   seen: string[] = [],
 ): CreateClaudeAdapterDeps["exec"] {
-  return ((cmd: string, args: readonly string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+  return ((
+    cmd: string,
+    args: readonly string[],
+    _opts: unknown,
+    cb: (err: Error | null, stdout: string, stderr: string) => void,
+  ) => {
     seen.push(cmd);
     const key = args.join(" ");
     const r = responses[key] ?? { err: new Error("unexpected args") };
-    cb(r.err ?? null, r.stdout ?? "");
+    cb(r.err ?? null, r.stdout ?? "", r.stderr ?? "");
   }) as unknown as CreateClaudeAdapterDeps["exec"];
 }
 
@@ -2171,6 +2177,95 @@ describe("Claude adapter: detect()", () => {
     const availability = await adapter.detect();
     assert.equal(availability.installed, true);
     assert.equal(availability.logged_in, false);
+  });
+});
+
+describe("Claude adapter: detect() logs a failed probe (#645)", () => {
+  it("writes the exit code and stderr of a failing auth status", async () => {
+    const lines: string[] = [];
+    const err = Object.assign(new Error("Command failed: claude auth status"), { code: 1 });
+    const exec = fakeExec({
+      "--version": { stdout: "1.2.3\n" },
+      "auth status": { err, stderr: "The current directory no longer exists\n" },
+    });
+    const adapter = createClaudeAdapter({ exec, resolveExecutable: resolveFake, warn: (l) => lines.push(l) });
+    const availability = await adapter.detect();
+    assert.equal(availability.logged_in, false);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /auth status/);
+    assert.match(lines[0], /exit 1/);
+    assert.match(lines[0], /The current directory no longer exists/);
+  });
+
+  it("writes the failure of --version, and nothing on success", async () => {
+    const lines: string[] = [];
+    const err = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+    const failing = createClaudeAdapter({
+      exec: fakeExec({ "--version": { err } }),
+      resolveExecutable: resolveFake,
+      warn: (l) => lines.push(l),
+    });
+    await failing.detect();
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /--version/);
+    assert.match(lines[0], /EACCES/);
+
+    const ok = createClaudeAdapter({
+      exec: fakeExec({ "--version": { stdout: "1.2.3\n" }, "auth status": { stdout: "ok\n" } }),
+      resolveExecutable: resolveFake,
+      warn: (l) => lines.push(l),
+    });
+    await ok.detect();
+    assert.equal(lines.length, 1);
+  });
+});
+
+describe("Claude adapter: detect() without the process's working directory (#644)", () => {
+  it("passes an existing cwd to every probe instead of inheriting the process's", async () => {
+    const cwds: unknown[] = [];
+    const exec = ((_cmd: string, args: readonly string[], opts: { cwd?: unknown }, cb: (err: Error | null, stdout: string) => void) => {
+      cwds.push(opts.cwd);
+      cb(null, args[0] === "--version" ? "1.2.3\n" : "Logged in\n");
+    }) as unknown as CreateClaudeAdapterDeps["exec"];
+    const adapter = createClaudeAdapter({ exec, resolveExecutable: resolveFake });
+    await adapter.detect();
+    assert.equal(cwds.length, 2);
+    for (const cwd of cwds) {
+      assert.equal(typeof cwd, "string");
+      assert.ok(existsSync(cwd as string), `probe cwd ${String(cwd)} exists`);
+    }
+  });
+
+  it("reports logged_in with a real child process while the process's cwd is deleted", async () => {
+    // A stand-in for `claude` that behaves like 2.1.318 does: --version
+    // passes anywhere, `auth status` exits 1 when its cwd no longer exists.
+    const binDir = await mkdtemp(join(tmpdir(), "portuni-claude-bin-"));
+    const goneDir = await mkdtemp(join(tmpdir(), "portuni-gone-cwd-"));
+    const fake = join(binDir, "claude");
+    await writeFile(
+      fake,
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "--version" ]; then echo "9.9.9 (Claude Code)"; exit 0; fi',
+        '/bin/pwd -P >/dev/null 2>&1 || { echo "The current directory no longer exists (it was deleted or moved)." >&2; exit 1; }',
+        'echo "Logged in"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const before = process.cwd();
+    try {
+      process.chdir(goneDir);
+      await rm(goneDir, { recursive: true, force: true });
+      const adapter = createClaudeAdapter({ resolveExecutable: async () => fake });
+      const availability = await adapter.detect();
+      assert.equal(availability.installed, true);
+      assert.equal(availability.version, "9.9.9 (Claude Code)");
+      assert.equal(availability.logged_in, true);
+    } finally {
+      process.chdir(before);
+      await rm(binDir, { recursive: true, force: true });
+    }
   });
 });
 

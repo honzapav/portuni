@@ -347,6 +347,14 @@ async function main(): Promise<void> {
   // a sync agent has no graph db but it does have content.
   await getDeviceContentDb();
 
+  // #644: the host starts this process inside the app bundle
+  // (Resources/sidecar-deps) only so Bun's ancestor walk finds the libsql
+  // native binding; opening content.db above has loaded it. An updater
+  // install deletes the old bundle while the app keeps running, so leave it
+  // for the data dir before anything (a `claude` child, a relative path)
+  // can depend on the working directory.
+  process.chdir(dataDir);
+
   // Central-mode sync agent: PORTUNI_AGENT_MODE=1 (plus central URL+token)
   // branches before any Turso/graph-db wiring.
   const agentClient = createCentralClientFromEnv();
