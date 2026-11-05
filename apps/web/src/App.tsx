@@ -24,6 +24,7 @@ import type { SessionSummary, SessionRunRow } from "./types";
 import { createSessionsClient } from "./lib/sessions-client";
 import { requestChatSession, threadCloseAction } from "./lib/session-views";
 import { createSessionStore } from "./lib/session-store";
+import { nodesAddedToOpenSet, nodesToRefetchForFrames } from "./lib/session-refresh-policy";
 import {
   selectLiveStates,
   selectMountedThreads,
@@ -618,6 +619,10 @@ export default function App() {
   // in the store (fetchNodePersistentSessions puts them itself), and the
   // selectors above pick the threads and the shown one out of them.
   const nodeThreadRefetches = useRef(new Map<string, { trailing: boolean }>());
+  // `t` through a ref: a language change must not re-create the callback
+  // (and with it re-run the effects below, refetching every open node).
+  const tRef = useRef(t);
+  tRef.current = t;
   const refreshNodeSessions = useCallback(function refresh(nodeId: string): void {
     const inFlight = nodeThreadRefetches.current.get(nodeId);
     if (inFlight) {
@@ -632,28 +637,35 @@ export default function App() {
         // surface, so it reads as a failure instead of a click that did
         // nothing; another open node's refetch stays silent, as before.
         if (selectedWorkspaceNodeIdRef.current !== nodeId) return;
-        setWorkspaceDetailError(t(($) => $.app.thread_error.load_failed, { error: displayError(e) }));
+        setWorkspaceDetailError(tRef.current(($) => $.app.thread_error.load_failed, { error: displayError(e) }));
       })
       .finally(() => {
         nodeThreadRefetches.current.delete(nodeId);
         if (entry.trailing && openNodeIdsRef.current.includes(nodeId)) refresh(nodeId);
       });
-  }, [t]);
+  }, []);
+  // Only the nodes just opened fetch their list (lib/session-refresh-policy.ts):
+  // closing a node, or opening one, used to refetch every open node.
+  const prevOpenNodeIdsRef = useRef<string[]>([]);
   useEffect(() => {
-    for (const id of openNodeIds) refreshNodeSessions(id);
+    for (const id of nodesAddedToOpenSet(prevOpenNodeIdsRef.current, openNodeIds)) refreshNodeSessions(id);
+    prevOpenNodeIdsRef.current = openNodeIds;
   }, [openNodeIds, refreshNodeSessions]);
   // #412: a thread started anywhere else in the app (the Relace tab's
   // "Navázat", the node detail's "Nový úkol", another window) announces
-  // itself only as a session_state frame, so that frame is what refetches
-  // the node it belongs to -- without it the sidebar's map only ever
-  // changed when the open-node set did.
+  // itself only as a session_state frame. The frame is folded into the
+  // store first (the listener above); a REST refetch follows only for a
+  // node whose frame names a session the store holds as a stub -- a known
+  // thread's state, waiting and name change arrive in the frame itself.
   useEffect(() => {
     return sessionsClient.onSessionStates((states) => {
-      const nodeIds = new Set<string>();
-      for (const s of states) if (s.node_id && openNodeIdsRef.current.includes(s.node_id)) nodeIds.add(s.node_id);
+      const nodeIds = nodesToRefetchForFrames(states, openNodeIdsRef.current, (id) => {
+        const record = sessionStore.get(id);
+        return record !== undefined && !record.partial;
+      });
       for (const nodeId of nodeIds) refreshNodeSessions(nodeId);
     });
-  }, [sessionsClient, refreshNodeSessions]);
+  }, [sessionsClient, sessionStore, refreshNodeSessions]);
   // The Práce sidebar's sub-rows: each open node's threads, derived from
   // the store. Drafts are in it the moment POST /sessions answers (#374,
   // #463) because a draft is a record like any other.

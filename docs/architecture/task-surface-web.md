@@ -352,12 +352,17 @@ this bound.
   closed node's records from the store, keeping the shown thread's.
 - **`refreshNodeSessions(nodeId)`**, coalesced per node: a request while
   one is in flight sets a trailing flag instead of racing a second fetch.
-  It runs whenever `openNodeIds` changes and on every `session_state` frame
-  whose `node_id` is open, because a thread started anywhere else (Relace
-  tab, node detail, another window) announces itself only through that
-  frame. It ends in the store's `putMany` (inside `api.ts`) and decides
+  `lib/session-refresh-policy.ts` says when it runs: for the nodes just
+  added to `openNodeIds` (closing a node fetches nothing), and for a node
+  whose `session_state` frame names a session the store holds as a stub --
+  a thread started anywhere else (Relace tab, node detail, another window)
+  announces itself only through that frame, while a known thread's state,
+  waiting and name arrive in the frame itself and need no REST round trip.
+  It ends in the store's `putMany` (inside `api.ts`) and decides
   nothing about what is shown; a failure on the node currently selected
   lands on the node surface as `workspaceDetailError`.
+  `test/web-session-refresh-policy.test.ts` pins the request count per
+  action.
 - **`registerSessionStarted`**, the single entry point for every
   `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's
   `DetailPane`, the sidebar `+`, the Relace tab's "Navázat na handoff"):
