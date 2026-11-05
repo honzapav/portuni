@@ -427,6 +427,31 @@ describe("createHttpCentralClient", () => {
     assert.equal(c.getLegacySessionContent, undefined);
   });
 
+  it("changes GETs /changes with the cursor and the wait, and returns the feed's answer", async () => {
+    const answer = { cursor: "01I:7", reset: false, changes: [{ node_id: "N1", kind: "files", seq: 7 }] };
+    const { fetchImpl, calls } = fakeFetch([{ status: 200, json: answer }]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    assert.deepEqual(await c.changes!("01I:6", 20), answer);
+    assert.equal(calls[0].url, "https://api.example.com/changes?since=01I%3A6&wait=20");
+    const { fetchImpl: first, calls: firstCalls } = fakeFetch([{ status: 200, json: { ...answer, reset: true } }]);
+    await createHttpCentralClient({ ...BASE, fetchImpl: first }).changes!(null, 20);
+    assert.equal(firstCalls[0].url, "https://api.example.com/changes?wait=20");
+  });
+
+  it("nodeConfigs POSTs /nodes/config-batch once per 500 ids and returns the configs", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      { status: 200, json: { configs: [{ node_id: "N1", orientation: null, data_sources: [] }] } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const configs = await c.nodeConfigs!(["N1", "N2"]);
+    assert.equal(configs.length, 1);
+    assert.equal(configs[0].node_id, "N1");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://api.example.com/nodes/config-batch");
+    assert.equal(calls[0].method, "POST");
+    assert.deepEqual(JSON.parse(calls[0].body ?? "{}"), { node_ids: ["N1", "N2"] });
+  });
+
   it("orientation GETs /nodes/:id/orientation and returns null on 404 or a null orientation", async () => {
     const { fetchImpl, calls } = fakeFetch([
       { status: 200, json: { orientation: { node: { name: "N", type: "project" } } } },

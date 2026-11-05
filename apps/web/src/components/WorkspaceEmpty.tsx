@@ -14,6 +14,9 @@ import { Input } from "@/components/ui/input";
 type Props = {
   graph: GraphPayload | null;
   onPick: (node: GraphNode) => void;
+  // False while Práce is mounted behind another view: the search box must
+  // not take the focus away from what is on screen.
+  autoFocus?: boolean;
 };
 
 function nodeTypeVar(type: string): string {
@@ -21,7 +24,7 @@ function nodeTypeVar(type: string): string {
   return known.includes(type) ? `var(--color-node-${type})` : "var(--color-node-default)";
 }
 
-export default function WorkspaceEmpty({ graph, onPick }: Props) {
+export default function WorkspaceEmpty({ graph, onPick, autoFocus = true }: Props) {
   const { t } = useTranslation("common");
   const [query, setQuery] = useState("");
   const q = foldForSearch(query.trim());
@@ -58,7 +61,7 @@ export default function WorkspaceEmpty({ graph, onPick }: Props) {
           className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)]"
         />
         <Input
-          autoFocus
+          autoFocus={autoFocus}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t(($) => $.workspace.empty.search_placeholder)}

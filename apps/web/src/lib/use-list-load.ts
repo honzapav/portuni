@@ -18,7 +18,7 @@ type ListLoadState<T extends object> =
 // resetting to true on setup (not just false on cleanup) is what keeps a
 // real async response after that dance from being silently dropped for the
 // rest of the mount's lifetime.
-function useMountedRef(): MutableRefObject<boolean> {
+export function useMountedRef(): MutableRefObject<boolean> {
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;

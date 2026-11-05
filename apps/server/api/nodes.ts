@@ -32,13 +32,20 @@ import {
   createMirrorForNode,
   MirrorCreateError,
 } from "../domain/sync/mirror-create.js";
-import type { NodeDetail, SyncStatusResponse, SyncWatchResponse, UntrackedFile } from "../shared/api-types.js";
+import type {
+  NodeConfigBatchResponse,
+  NodeDetail,
+  SyncStatusResponse,
+  SyncWatchResponse,
+  UntrackedFile,
+} from "../shared/api-types.js";
 import { isLocalWorkspace } from "../infra/server-config.js";
 import { remoteWatchStatus } from "../domain/sync/remote-watch-status.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob, withNodeSyncLock } from "../domain/sync/sync-jobs.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { orientationForNode } from "../domain/scope-materialize.js";
+import { listDataSources } from "../domain/entity-attributes.js";
 import {
   parseBody,
   parseJsonBody,
@@ -551,6 +558,40 @@ export async function handleGetCurrentSyncJob(
 // task's runner with real node context -- the sidecar has no local graph
 // db to compute this itself. Reachable in every auth mode (harmless
 // outside agent mode, same as the rest of the "central record half").
+// POST /nodes/config-batch (client traffic contract, rule 6): the sync
+// agent's boot used to read the orientation and the data sources of every
+// mirror one node at a time; one request carries them for every visible
+// node, unknown and hidden ids left out.
+const NodeConfigBatchBody = z.object({ node_ids: z.array(z.string().min(1)).min(1).max(500) });
+
+export async function handleNodeConfigBatch(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  const body = await parseJsonBody(req, res, NodeConfigBatchBody);
+  if (!body) return;
+  try {
+    const db = getDb();
+    const ids = [...new Set(body.node_ids)];
+    const visible = await filterVisibleNodeIds(db, identity, ids);
+    const configs: NodeConfigBatchResponse["configs"] = [];
+    for (const nodeId of ids) {
+      if (!visible.has(nodeId)) continue;
+      const exists = await db.execute({ sql: "SELECT 1 FROM nodes WHERE id = ?", args: [nodeId] });
+      if (exists.rows.length === 0) continue;
+      configs.push({
+        node_id: nodeId,
+        orientation: (await orientationForNode(nodeId, identity.userId)) as NodeConfigBatchResponse["configs"][number]["orientation"],
+        data_sources: await listDataSources(db, nodeId),
+      });
+    }
+    respondJson(res, 200, { configs } satisfies NodeConfigBatchResponse);
+  } catch (err) {
+    respondError(res, "POST /nodes/config-batch", err);
+  }
+}
+
 export async function handleGetNodeOrientation(
   req: IncomingMessage,
   res: ServerResponse,

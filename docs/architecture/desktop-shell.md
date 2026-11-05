@@ -372,9 +372,17 @@ Design: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
     all hand back their original 401 when it failed. A 401 for a JWT the
     Keychain has already replaced retries with the stored one without
     refreshing.
+  - A `429` is never retried by any layer. The webview's `apiFetch` notes
+    it with its `Retry-After` (`lib/rate-limit-cooldown.ts`) and the polls
+    that reach the central server -- the node-detail poll, the sync-status
+    poll and the focus refetch (`lib/poll-policy.ts`) -- skip their ticks
+    until the cooldown is over; a request the user makes on purpose still
+    goes out. Contract:
+    `docs/superpowers/specs/2026-11-05-client-traffic-contract.md`.
 - The device-local list is the set of routes the device must serve itself
   (mirrors, sync status and runs, file content and file lifecycle, runner
-  registry, task actions). The canonical list is
+  registry, task actions, and `/mcp/info`, the footer's MCP status, which
+  describes this device's server). The canonical list is
   `apps/server/shared/device-local-routes.json`; `is_device_local_path` in
   `lib.rs` embeds it (`include_str!`) and matches the request path against
   its `device_local` patterns (`{name}` is one segment, the query string is

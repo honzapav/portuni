@@ -6,6 +6,7 @@
 //     edited copies come back as new_local and get pushed again)
 //   - a remote file under wip/outputs/resources that no record tracks ->
 //     adopted (devices pull it in the same run)
+import { publishNodeChange } from "../../infra/change-feed.js";
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
@@ -212,6 +213,7 @@ export async function deleteRemovedRecords(
         now,
       ],
     });
+    publishNodeChange(a.nodeId, "files");
     deleted.push({ file_id: r.id, filename: r.filename, remote_path: r.remote_path });
   }
   return { deleted, errors };

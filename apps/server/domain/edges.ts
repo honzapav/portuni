@@ -5,6 +5,7 @@
 
 import type { DbClient } from "../infra/db.js";
 import { writeAudit } from "../infra/audit.js";
+import { publishNodeChange } from "../infra/change-feed.js";
 import { resolveNodeInfo } from "./sync/node-info.js";
 import { buildNodeRoot } from "./sync/remote-path.js";
 import { resolveRemote } from "./sync/routing.js";
@@ -113,6 +114,8 @@ export async function disconnectEdgeById(
     target_id: row.target_id,
     relation,
   });
+  publishNodeChange(String(row.source_id), "node");
+  publishNodeChange(String(row.target_id), "node");
   return { deleted: edgeId };
 }
 

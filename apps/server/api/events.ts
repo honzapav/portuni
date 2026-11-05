@@ -159,7 +159,10 @@ export async function handleArchiveEvent(
       respondApiError(res, 404, "EVENT_ALREADY_ARCHIVED", "event already archived", { eventId });
       return;
     }
-    await logAudit(identity.userId, "archive_event", "event", eventId, {});
+    const archived = await db.execute({ sql: "SELECT node_id FROM events WHERE id = ?", args: [eventId] });
+    await logAudit(identity.userId, "archive_event", "event", eventId, {
+      node_id: archived.rows[0]?.node_id as string | undefined,
+    });
     respondJson(res, 200, { archived: eventId });
   } catch (err) {
     respondError(res, `${req.method} /events/${eventId}`, err);

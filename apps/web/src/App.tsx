@@ -12,8 +12,6 @@ import CreateNodeModal from "./components/CreateNodeModal";
 import {
   fetchGraph,
   fetchNode,
-  fetchMe,
-  fetchNodePersistentSessions,
   startDraftThread,
   deleteDraftSession,
   renamePersistentSession,
@@ -22,8 +20,13 @@ import {
 } from "./api";
 import type { SessionSummary, SessionRunRow } from "./types";
 import { createSessionsClient } from "./lib/sessions-client";
-import { requestChatSession, threadCloseAction } from "./lib/session-views";
+import { requestChatSession, shownChatSessionId, threadCloseAction } from "./lib/session-views";
 import { createSessionStore } from "./lib/session-store";
+import { nodesAddedToOpenSet, nodesToRefetchForFrames } from "./lib/session-refresh-policy";
+import { refreshNodeSessions as refreshNodeSessions_ } from "./lib/node-sessions-refresh";
+import { useMe } from "./lib/use-me";
+import { graphNeedsReload, patchGraphNode, type NodeChange } from "./lib/graph-patch";
+import { invalidateResumeInfo } from "./lib/resume-info-cache";
 import {
   selectLiveStates,
   selectMountedThreads,
@@ -38,6 +41,10 @@ import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { deriveWorkspaceNodeRows } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
+import { FALLBACK_POLL_MS, focusRefetchTargets, nodeDetailPollTarget } from "./lib/poll-policy";
+import { nodeChangeTouches, onNodeChanges } from "./lib/node-changes";
+import { invalidateRegistriesOnFocus } from "./lib/resources";
+import { isRateLimited } from "./lib/rate-limit-cooldown";
 import { invoke } from "./lib/tauri-invoke";
 import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
@@ -191,23 +198,16 @@ export default function App() {
   // submit. Optimistic (true) until /me resolves -- the server still
   // enforces, and a fetch failure must not hide the primary action.
   const [canCreateNode, setCanCreateNode] = useState(true);
+  // One /me per window (lib/resources.ts meResource); a failure leaves
+  // the gate open, the server gates the request.
+  const { me } = useMe();
   useEffect(() => {
-    let cancelled = false;
-    void fetchMe()
-      .then((me) => {
-        if (cancelled) return;
-        // The account's language wins over the boot guess (cache / OS).
-        void syncAccountLocale(me.locale);
-        if (!isGlobalScope(me.global_scope)) return;
-        setCanCreateNode(scopeAtLeast(me.global_scope, CREATE_NODE_SCOPE));
-      })
-      .catch(() => {
-        /* stays true -- server gates the request */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (!me) return;
+    // The account's language wins over the boot guess (cache / OS).
+    void syncAccountLocale(me.locale);
+    if (!isGlobalScope(me.global_scope)) return;
+    setCanCreateNode(scopeAtLeast(me.global_scope, CREATE_NODE_SCOPE));
+  }, [me]);
 
   // Stable identities for props of memoized children (Sidebar, GraphView,
   // DetailPane). Inline arrows would defeat React.memo on every render.
@@ -305,8 +305,8 @@ export default function App() {
     };
   }, [selectedId]);
 
-  // Refetch both the graph and the current node. Called by the DetailPane
-  // after any mutation so the viz and the detail stay in sync.
+  // Refetch both the graph and the current node: for what a node's own
+  // row cannot carry -- a new organization, a sync overview action.
   const refetchAll = useCallback(async () => {
     const [graphRes, nodeRes] = await Promise.all([
       fetchGraph(),
@@ -376,6 +376,15 @@ export default function App() {
 
   // --- Workspace state ---
   const [selectedWorkspaceNodeId, setSelectedWorkspaceNodeId] = useState<string | null>(null);
+  // Whether Práce shows its detail aside (WorkspaceView owns the toggle and
+  // reports it): a collapsed aside is nothing to poll for.
+  const [workspaceDetailVisible, setWorkspaceDetailVisible] = useState(true);
+  // Práce mounts on its first visit and then stays mounted behind the
+  // other views, so its chats keep their transcripts.
+  const [workspaceVisited, setWorkspaceVisited] = useState(view === "workspace");
+  useEffect(() => {
+    if (view === "workspace") setWorkspaceVisited(true);
+  }, [view]);
   // The set of nodes open in the workspace. Persisted across restarts and
   // pruned against the graph once it loads.
   const [openNodeIds, setOpenNodeIds] = useState<string[]>(() => loadOpenNodes());
@@ -488,6 +497,8 @@ export default function App() {
   // selection (the graph is for browsing, the workspace is for active
   // work — different selections make sense).
   const [workspaceNodeDetail, setWorkspaceNodeDetail] = useState<NodeDetail | null>(null);
+  const workspaceNodeDetailRef = useRef<NodeDetail | null>(null);
+  workspaceNodeDetailRef.current = workspaceNodeDetail;
   const [workspaceDetailLoading, setWorkspaceDetailLoading] = useState(false);
   const [workspaceDetailError, setWorkspaceDetailError] = useState<string | null>(null);
 
@@ -516,6 +527,53 @@ export default function App() {
     };
   }, [selectedWorkspaceNodeId]);
 
+  // A failed refresh of a detail already on screen stays silent (the
+  // graph view's poll does the same): an error here unmounts the pane's
+  // body, and a remount asks for everything the pane shows again.
+  // What a detail-pane action did (lib/graph-patch.ts NodeChange): the
+  // node the server returned becomes the detail and patches its graph row;
+  // nothing returned means the one node detail is fetched again; `graph`
+  // reloads the graph (edges, a move, sharing, an archive). The graph and
+  // Práce details of the same node both take the answer.
+  const applyNodeDetail = useCallback((n: NodeDetail) => {
+    if (selectedIdRef.current === n.id) setNodeDetail(n);
+    if (selectedWorkspaceNodeIdRef.current === n.id) {
+      setWorkspaceNodeDetail(n);
+      setWorkspaceDetailError(null);
+    }
+  }, []);
+  const handleNodeChanged = useCallback(
+    async (nodeId: string | null, change?: NodeChange) => {
+      const tasks: Promise<unknown>[] = [];
+      if (graphNeedsReload(change)) {
+        tasks.push(
+          fetchGraph().then((g) => {
+            setGraph(g);
+            setGraphError(null);
+          }),
+        );
+      }
+      if (change?.node) {
+        applyNodeDetail(change.node);
+        if (!graphNeedsReload(change)) setGraph((g) => (g ? patchGraphNode(g, change.node!) : g));
+      } else if (nodeId && !change?.archived) {
+        // A refetch that fails (the node purged meanwhile, a cooldown) is
+        // not the mutation failing: the write landed, the view keeps what
+        // it has until the next change.
+        tasks.push(
+          fetchNode(nodeId)
+            .then((n) => {
+              applyNodeDetail(n);
+              if (!graphNeedsReload(change)) setGraph((g) => (g ? patchGraphNode(g, n) : g));
+            })
+            .catch(() => undefined),
+        );
+      }
+      await Promise.all(tasks);
+    },
+    [applyNodeDetail],
+  );
+
   const refetchWorkspaceDetail = useCallback(async () => {
     if (!selectedWorkspaceNodeId) return;
     try {
@@ -523,6 +581,7 @@ export default function App() {
       setWorkspaceNodeDetail(n);
       setWorkspaceDetailError(null);
     } catch (err) {
+      if (workspaceNodeDetailRef.current?.id === selectedWorkspaceNodeId) return;
       setWorkspaceDetailError(displayError(err));
     }
   }, [selectedWorkspaceNodeId]);
@@ -552,9 +611,9 @@ export default function App() {
     return sessionsClient.onSessionStates(sessionStore.applyFrames);
   }, [sessionsClient, sessionStore]);
   const runningSessionCount = useSessionStore(sessionStore, selectRunningCount);
-  // The surfaces that fetch their own lists (Přehled's Relace card, the node
-  // detail's Relace tab) still take a live-state map; it is the store
-  // projected down to what a frame carries, not a second copy.
+  // Přehled's Relace card, the one surface that still fetches its own list,
+  // takes a live-state map; it is the store projected down to what a frame
+  // carries, not a second copy.
   const liveSessionStates = useSessionStore(sessionStore, selectLiveStates);
 
 
@@ -612,43 +671,92 @@ export default function App() {
   // It fills records and decides nothing about what is shown: the rows land
   // in the store (fetchNodePersistentSessions puts them itself), and the
   // selectors above pick the threads and the shown one out of them.
-  const nodeThreadRefetches = useRef(new Map<string, { trailing: boolean }>());
-  const refreshNodeSessions = useCallback(function refresh(nodeId: string): void {
-    const inFlight = nodeThreadRefetches.current.get(nodeId);
-    if (inFlight) {
-      inFlight.trailing = true;
-      return;
-    }
-    const entry = { trailing: false };
-    nodeThreadRefetches.current.set(nodeId, entry);
-    void fetchNodePersistentSessions(nodeId, false)
-      .catch((e: unknown) => {
-        // A failure on the node the user is looking at lands on the node
-        // surface, so it reads as a failure instead of a click that did
-        // nothing; another open node's refetch stays silent, as before.
-        if (selectedWorkspaceNodeIdRef.current !== nodeId) return;
-        setWorkspaceDetailError(t(($) => $.app.thread_error.load_failed, { error: displayError(e) }));
-      })
-      .finally(() => {
-        nodeThreadRefetches.current.delete(nodeId);
-        if (entry.trailing && openNodeIdsRef.current.includes(nodeId)) refresh(nodeId);
-      });
-  }, [t]);
+  // `t` through a ref: a language change must not re-create the callback
+  // (and with it re-run the effects below, refetching every open node).
+  const tRef = useRef(t);
+  tRef.current = t;
+  // The coalescing lives in lib/node-sessions-refresh.ts, shared with the
+  // Relace tab, so a node open in Práce and shown in Relace costs one
+  // request per burst, not two.
+  const refreshNodeSessions = useCallback((nodeId: string): void => {
+    refreshNodeSessions_(nodeId).catch((e: unknown) => {
+      // A failure on the node the user is looking at lands on the node
+      // surface, so it reads as a failure instead of a click that did
+      // nothing; another open node's refetch stays silent, as before.
+      if (selectedWorkspaceNodeIdRef.current !== nodeId) return;
+      // Named `t` so the i18n extractor sees the key as used.
+      const t = tRef.current;
+      setWorkspaceDetailError(t(($) => $.app.thread_error.load_failed, { error: displayError(e) }));
+    });
+  }, []);
+  // Only the nodes just opened fetch their list (lib/session-refresh-policy.ts):
+  // closing a node, or opening one, used to refetch every open node.
+  const prevOpenNodeIdsRef = useRef<string[]>([]);
   useEffect(() => {
-    for (const id of openNodeIds) refreshNodeSessions(id);
+    for (const id of nodesAddedToOpenSet(prevOpenNodeIdsRef.current, openNodeIds)) refreshNodeSessions(id);
+    prevOpenNodeIdsRef.current = openNodeIds;
   }, [openNodeIds, refreshNodeSessions]);
   // #412: a thread started anywhere else in the app (the Relace tab's
   // "Navázat", the node detail's "Nový úkol", another window) announces
-  // itself only as a session_state frame, so that frame is what refetches
-  // the node it belongs to -- without it the sidebar's map only ever
-  // changed when the open-node set did.
+  // itself only as a session_state frame. The frame is folded into the
+  // store first (the listener above); a REST refetch follows only for a
+  // node whose frame names a session the store holds as a stub -- a known
+  // thread's state, waiting and name change arrive in the frame itself.
+  // The change feed (lib/node-changes.ts): a change to the node a view
+  // shows refetches that detail, coalesced over a short window; a reset
+  // refetches what both views show. Everything else the pane shows
+  // (sync status, the open file, the sync counter) listens on its own.
+  const nodeChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nodeChangeQueue = useRef(new Set<string>());
+  // Only the view on screen refetches at once; the other view's detail is
+  // marked stale and fetched when that view comes back.
+  const staleDetailRef = useRef<{ graph: boolean; workspace: boolean }>({ graph: false, workspace: false });
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  useEffect(() => {
+    return onNodeChanges((batch) => {
+      const graphId = selectedIdRef.current;
+      const workspaceId = selectedWorkspaceNodeIdRef.current;
+      if (graphId && nodeChangeTouches(batch, graphId, "node")) {
+        if (viewRef.current === "graph") nodeChangeQueue.current.add(graphId);
+        else staleDetailRef.current.graph = true;
+      }
+      if (workspaceId && nodeChangeTouches(batch, workspaceId, "node")) {
+        if (viewRef.current === "workspace") nodeChangeQueue.current.add(workspaceId);
+        else staleDetailRef.current.workspace = true;
+      }
+      if (nodeChangeQueue.current.size === 0 || nodeChangeTimer.current !== null) return;
+      nodeChangeTimer.current = setTimeout(() => {
+        nodeChangeTimer.current = null;
+        const ids = [...nodeChangeQueue.current];
+        nodeChangeQueue.current.clear();
+        for (const id of ids) void handleNodeChanged(id);
+      }, 300);
+    });
+  }, [handleNodeChanged]);
+  useEffect(() => {
+    if (view === "graph" && staleDetailRef.current.graph) {
+      staleDetailRef.current.graph = false;
+      void handleNodeChanged(selectedIdRef.current);
+    }
+    if (view === "workspace" && staleDetailRef.current.workspace) {
+      staleDetailRef.current.workspace = false;
+      void handleNodeChanged(selectedWorkspaceNodeIdRef.current);
+    }
+  }, [view, handleNodeChanged]);
+
   useEffect(() => {
     return sessionsClient.onSessionStates((states) => {
-      const nodeIds = new Set<string>();
-      for (const s of states) if (s.node_id && openNodeIdsRef.current.includes(s.node_id)) nodeIds.add(s.node_id);
+      // A thread that runs again has a new suspension ahead of it: what
+      // the Relace row knew about resuming the old one is over.
+      for (const s of states) if (s.state !== "suspended") invalidateResumeInfo(s.session_id);
+      const nodeIds = nodesToRefetchForFrames(states, openNodeIdsRef.current, (id) => {
+        const record = sessionStore.get(id);
+        return record !== undefined && !record.partial;
+      });
       for (const nodeId of nodeIds) refreshNodeSessions(nodeId);
     });
-  }, [sessionsClient, refreshNodeSessions]);
+  }, [sessionsClient, sessionStore, refreshNodeSessions]);
   // The Práce sidebar's sub-rows: each open node's threads, derived from
   // the store. Drafts are in it the moment POST /sessions answers (#374,
   // #463) because a draft is a record like any other.
@@ -834,11 +942,12 @@ export default function App() {
     };
   }, []);
 
-  // Refetch on focus AND tab-visible. Covers BOTH the graph selection and
-  // the workspace selection so files registered elsewhere (MCP / another
-  // window) show up without a manual reselect. Both events fire on the
-  // same cmd-tab activation, so dedupe within a short window -- otherwise
-  // every activation costs 2x fetchGraph + 2x fetchNode against Turso.
+  // Refetch on focus AND tab-visible: the graph, and the node of the view
+  // that is showing, so files registered elsewhere (MCP / another window)
+  // show up without a manual reselect. Both events fire on the same
+  // cmd-tab activation, so dedupe within a short window. What a focus may
+  // ask for is lib/poll-policy.ts's call (client traffic contract): never
+  // the other view's selection, nothing during a 429 cooldown.
   useEffect(() => {
     let lastRun = 0;
     const handler = () => {
@@ -846,8 +955,34 @@ export default function App() {
       const now = Date.now();
       if (now - lastRun < 500) return;
       lastRun = now;
-      refetchAll().catch((err) => setGraphError(displayError(err)));
-      refetchWorkspaceDetail().catch(() => undefined);
+      const targets = focusRefetchTargets({
+        view,
+        rateLimited: isRateLimited(),
+        selectedId,
+        selectedWorkspaceNodeId,
+      });
+      // Registries that change out of sight are forgotten on focus; a
+      // mounted consumer reads again (lib/resources.ts).
+      if (targets.graph) invalidateRegistriesOnFocus();
+      if (targets.graph) {
+        fetchGraph()
+          .then((g) => {
+            setGraph(g);
+            setGraphError(null);
+          })
+          .catch((err) => setGraphError(displayError(err)));
+      }
+      if (targets.nodeId === null) return;
+      if (view === "workspace") {
+        refetchWorkspaceDetail().catch(() => undefined);
+      } else {
+        const requestId = targets.nodeId;
+        fetchNode(requestId)
+          .then((n) => {
+            if (selectedIdRef.current === requestId) setNodeDetail(n);
+          })
+          .catch(() => undefined);
+      }
     };
     window.addEventListener("focus", handler);
     document.addEventListener("visibilitychange", handler);
@@ -855,18 +990,34 @@ export default function App() {
       window.removeEventListener("focus", handler);
       document.removeEventListener("visibilitychange", handler);
     };
-  }, [refetchAll, refetchWorkspaceDetail]);
+  }, [view, selectedId, selectedWorkspaceNodeId, refetchWorkspaceDetail]);
 
-  // Poll the active node detail so externally-registered files appear within
-  // seconds. Node-detail only (the graph poll stays on focus). Paused when
-  // the tab is hidden to avoid background churn against Turso.
+  // A slow fallback for the node detail on screen: a change arrives on
+  // the change feed (above), this only catches a frame that was dropped.
+  // Node-detail only (the graph poll stays on focus), and
+  // only for a detail somebody is looking at: lib/poll-policy.ts says
+  // which one -- none in Přehled or Settings, none while Práce's aside is
+  // collapsed, none while hidden or during a 429 cooldown. Whether Práce
+  // shows a thread (the detail is then the aside) is the same rule
+  // WorkspaceView applies, as a boolean so a frame on the shown thread
+  // does not restart the interval.
+  const workspaceShowsThread = shownChatSessionId(selectedWorkspaceNodeId, shownThread) !== null;
   useEffect(() => {
     const id = setInterval(() => {
-      if (document.hidden) return;
-      if (view === "workspace" && selectedWorkspaceNodeId) {
+      const target = nodeDetailPollTarget({
+        view,
+        hidden: document.hidden,
+        rateLimited: isRateLimited(),
+        selectedId,
+        selectedWorkspaceNodeId,
+        // No thread shown: the detail is the centre and always visible.
+        workspaceDetailVisible: workspaceDetailVisible || !workspaceShowsThread,
+      });
+      if (target === null) return;
+      if (target.kind === "workspace") {
         refetchWorkspaceDetail().catch(() => undefined);
-      } else if (selectedId) {
-        const requestId = selectedId;
+      } else {
+        const requestId = target.nodeId;
         fetchNode(requestId)
           // Drop responses that arrive after the selection moved on --
           // otherwise a slow poll paints the previous node's detail.
@@ -884,9 +1035,9 @@ export default function App() {
           })
           .catch(() => undefined);
       }
-    }, 5000);
+    }, FALLBACK_POLL_MS);
     return () => clearInterval(id);
-  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail]);
+  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail, workspaceDetailVisible, workspaceShowsThread]);
 
   // "+" on a Práce node row: open a fresh, empty thread there (#374, "one
   // click, thread is there, composer has focus") -- no dialog, nothing to
@@ -1120,11 +1271,20 @@ export default function App() {
             />
           </Suspense>
         )}
-        {/* Mounted on demand so the picker's autoFocus doesn't steal focus
-            from the graph view. */}
-        {view === "workspace" && (
-          <div className="absolute inset-0">
+        {/* Mounted on the first visit and kept mounted behind the other
+            views (hidden, inert): every chat keeps its transcript, scroll
+            and composer across a view switch instead of replaying it all
+            on the way back. While hidden it polls nothing, focuses nothing
+            and answers no key (`active`). */}
+        {workspaceVisited && (
+          <div
+            className="absolute inset-0"
+            style={view === "workspace" ? undefined : { visibility: "hidden", pointerEvents: "none" }}
+            aria-hidden={view === "workspace" ? undefined : true}
+            inert={view === "workspace" ? undefined : true}
+          >
             <WorkspaceView
+              active={view === "workspace"}
               graph={graph}
               selectedNodeId={selectedWorkspaceNodeId}
               onSelectNode={workspaceSelectNode}
@@ -1133,9 +1293,7 @@ export default function App() {
               nodeDetail={workspaceNodeDetail}
               nodeDetailLoading={workspaceDetailLoading}
               nodeDetailError={workspaceDetailError}
-              onMutate={async () => {
-                await Promise.all([refetchAll(), refetchWorkspaceDetail()]);
-              }}
+              onMutate={(change) => handleNodeChanged(selectedWorkspaceNodeId, change)}
               editorFile={editorFile}
               editor={fileEditor}
               editorFullscreen={editorFullscreen}
@@ -1147,16 +1305,16 @@ export default function App() {
               openSession={shownThread}
               mountedSessions={workspaceMountedSessions}
               sessionsClient={sessionsClient}
-              liveSessionStates={liveSessionStates}
               sessionStore={sessionStore}
               onSessionStarted={registerSessionStarted}
               onOpenChat={openSessionChat}
+              onDetailVisibleChange={setWorkspaceDetailVisible}
             />
           </div>
         )}
         {view === "settings" && (
           <Suspense fallback={null}>
-            <SettingsPage appUpdate={appUpdate} />
+            <SettingsPage appUpdate={appUpdate} graph={graph} />
           </Suspense>
         )}
       </main>
@@ -1188,7 +1346,7 @@ export default function App() {
               onSelect={setSelectedId}
               canGoBack={historyRef.current.length > 0}
               onBack={goBack}
-              onMutate={refetchAll}
+              onMutate={(change) => handleNodeChanged(selectedId, change)}
               onOpenFile={openFileInEditor}
               onOpenChat={openSessionChat}
               onSessionStarted={(result) => {
@@ -1199,7 +1357,7 @@ export default function App() {
                 registerSessionStarted(result);
                 if (result.session.node_id) openSessionChat(result.session.node_id, result.session.id);
               }}
-              liveSessionStates={liveSessionStates}
+              sessionStore={sessionStore}
             />
           </Suspense>
         ))}
@@ -1315,9 +1473,14 @@ export default function App() {
           pending={syncPending}
           onClose={() => setSyncOverviewOpen(false)}
           onSynced={applySyncRun}
-          onMutated={() => {
+          onMutated={(nodeId) => {
             refreshSyncPending();
-            refetchAll().catch(() => undefined);
+            if (nodeId !== null) {
+              void handleNodeChanged(nodeId);
+              return;
+            }
+            void handleNodeChanged(selectedId);
+            if (selectedWorkspaceNodeId !== selectedId) void handleNodeChanged(selectedWorkspaceNodeId);
           }}
           onSelectNode={(id) => {
             setSyncOverviewOpen(false);

@@ -454,6 +454,32 @@ describe("session REST endpoints", () => {
     assert.equal(body.handoff_changed, false);
   });
 
+  // One request for every suspended row of the Relace tab (client traffic
+  // contract, rule 6): the caller's own sessions answer, anyone else's and
+  // unknown ids are left out, never a 404 for the whole batch.
+  test("POST /sessions/resume-info answers the caller's own sessions in one request", async () => {
+    const mine = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const mineToo = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const theirs = await createSession(db, "U2", { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity(SOLO), "POST", "/sessions/resume-info", {
+      ids: [mine.id, theirs.id, "01NOPE0000000000000000000", mineToo.id],
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as { infos: SessionResumeInfo[] };
+    assert.deepEqual(
+      body.infos.map((i) => i.session_id).sort(),
+      [mine.id, mineToo.id].sort(),
+    );
+    assert.equal(body.infos[0].conversation_resumable, false);
+  });
+
+  test("POST /sessions/resume-info refuses an empty or oversized batch", async () => {
+    assert.equal((await call(makeIdentity(SOLO), "POST", "/sessions/resume-info", {})).statusCode, 400);
+    assert.equal((await call(makeIdentity(SOLO), "POST", "/sessions/resume-info", { ids: [] })).statusCode, 400);
+    const many = Array.from({ length: 201 }, (_, i) => `01ID${String(i).padStart(21, "0")}`);
+    assert.equal((await call(makeIdentity(SOLO), "POST", "/sessions/resume-info", { ids: many })).statusCode, 400);
+  });
+
   test("GET /sessions/:id/resume-info accepts a config_dir override without erroring", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(

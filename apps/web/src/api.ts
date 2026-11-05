@@ -315,16 +315,17 @@ export function patchSessionRunnerInstance(
   });
 }
 
-// configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
-// caller can resolve one from the desktop profiles registry (#204) --
-// lets the server check conversation-resumability at the right transcript
-// location instead of always the default (~/.claude).
-export function fetchPersistentSessionResumeInfo(
-  id: string,
+// POST /sessions/resume-info -- the Relace tab's one request for every
+// suspended row it has no fresh answer for (client traffic contract, rule
+// 6); unknown and foreign ids are left out of the answer.
+export function fetchSessionsResumeInfo(
+  ids: readonly string[],
   configDir?: string | null,
-): Promise<SessionResumeInfo> {
-  const qs = configDir ? `?config_dir=${encodeURIComponent(configDir)}` : "";
-  return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
+): Promise<{ infos: SessionResumeInfo[] }> {
+  return jsonRequest<{ infos: SessionResumeInfo[] }>("POST", "/sessions/resume-info", {
+    ids,
+    ...(configDir ? { config_dir: configDir } : {}),
+  });
 }
 
 // GET /sessions/:id/events -- a device-local route (#458): the transcript
@@ -721,6 +722,14 @@ export function createResponsibility(input: {
   return jsonRequest<DetailResponsibility>("POST", "/responsibilities", input);
 }
 
+// POST /responsibilities/reorder -- every row's sort_order in one request
+// (client traffic contract, rule 6).
+export function reorderResponsibilities(
+  updates: readonly { id: string; sort_order: number }[],
+): Promise<{ updated: number }> {
+  return jsonRequest<{ updated: number }>("POST", "/responsibilities/reorder", { updates });
+}
+
 export function updateResponsibility(
   id: string,
   patch: { title?: string; description?: string | null; sort_order?: number },
@@ -836,6 +845,16 @@ export class FileConflictError extends ApiError {
     super(409, "CONFLICT", "file changed on disk since it was opened");
     this.name = "FileConflictError";
   }
+}
+
+// GET /nodes/:id/file?version_only=1 -- the open-file poll's check: the
+// version alone, no content on the wire (client traffic contract, rule 5).
+export async function fetchFileVersion(nodeId: string, relPath: string): Promise<string> {
+  const res = await apiFetch(
+    `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}&version_only=1`,
+  );
+  await throwForStatus(res, "file");
+  return ((await res.json()) as { version: string }).version;
 }
 
 export async function fetchFileContent(
@@ -1116,12 +1135,18 @@ export async function fetchAccountUsers(): Promise<AccountUser[]> {
 // canManage (global_scope 'manage' | 'admin') drives the sharing UI. Since
 // #457 no session surface gates on identity any more -- every thread the
 // app lists is the caller's own -- so `id` is carried for future callers.
-// /me returns more (email, name, groups, via) but nothing else here
-// consumes it yet. `locale` is the account's UI language (users.locale),
-// null when the account never chose one.
+// The whole of what /me answers (server api/auth.ts meBody): one window
+// fetches it once (lib/resources.ts meResource) and the account section,
+// the settings tabs, the sharing UI and the composer read from that.
+// `locale` is the account's UI language (users.locale), null when the
+// account never chose one.
 export interface MeResponse {
   id: string;
+  email: string;
+  name: string;
   global_scope: string;
+  groups: string[];
+  via: string;
   locale: Locale | null;
 }
 

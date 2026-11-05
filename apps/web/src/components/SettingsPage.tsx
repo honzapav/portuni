@@ -14,7 +14,9 @@ import WorkspacesSection from "./WorkspacesSection";
 import RunnersSection from "./RunnersSection";
 import UpdateSection from "./UpdateSection";
 import DiagnosticsSection from "./DiagnosticsSection";
-import { fetchAccessRequestCount, fetchMe } from "../api";
+import { fetchAccessRequestCount } from "../api";
+import type { GraphPayload } from "../types";
+import { useMe } from "../lib/use-me";
 import { isTauri } from "../lib/backend-url";
 import { showtimeInstalled } from "../lib/showtime";
 import type { AppUpdate } from "../lib/updater";
@@ -28,6 +30,9 @@ const SyncSection = lazyWithNamespaces(() => import("./SyncSection"), ["files"])
 
 type Props = {
   appUpdate: AppUpdate;
+  // The graph App already holds; the Runners tab lists its organizations
+  // instead of fetching the graph again.
+  graph: GraphPayload | null;
 };
 
 type SubTab =
@@ -40,7 +45,7 @@ type SubTab =
   | "users"
   | "access-requests";
 
-export default function SettingsPage({ appUpdate }: Props) {
+export default function SettingsPage({ appUpdate, graph }: Props) {
   const { t } = useTranslation("settings");
   const [tab, setTab] = useState<SubTab>(() => {
     const p = new URLSearchParams(window.location.search);
@@ -62,32 +67,13 @@ export default function SettingsPage({ appUpdate }: Props) {
     recordView(url);
   }, [tab]);
 
-  // Uzivatele tab is admin-only, Zadosti o pristup is manage+. fetchMe()
-  // resolves the caller's global_scope; scopeState starts "unknown" so a
-  // direct ?settingsTab=users link isn't bounced before the check resolves
-  // -- the tab button/panel just stay hidden until we know. Once resolved,
-  // a caller below the tab's tier is bounced back to "general".
-  const [scopeState, setScopeState] = useState<"unknown" | "read" | "write" | "manage" | "admin">(
-    "unknown",
-  );
-  useEffect(() => {
-    let cancelled = false;
-    fetchMe()
-      .then((me) => {
-        if (cancelled) return;
-        const s = me.global_scope;
-        setScopeState(s === "admin" || s === "manage" || s === "write" ? s : "read");
-      })
-      .catch(() => {
-        if (!cancelled) setScopeState("read");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  const isAdmin = scopeState === "admin";
-  const canManage = scopeState === "admin" || scopeState === "manage";
-  const scopeKnown = scopeState !== "unknown";
+  // Uzivatele tab is admin-only, Zadosti o pristup is manage+. The window's
+  // one /me answer (useMe) says the caller's global_scope; until it is known
+  // a direct ?settingsTab=users link isn't bounced -- the tab button/panel
+  // just stay hidden. Once known, a caller below the tab's tier is bounced
+  // back to "general"; a failed fetch reads as "read".
+  const { globalScope, scopeKnown, canManage } = useMe();
+  const isAdmin = globalScope === "admin";
   useEffect(() => {
     if (tab === "users" && scopeKnown && !isAdmin) setTab("general");
     if (tab === "access-requests" && scopeKnown && !canManage) setTab("general");
@@ -179,7 +165,7 @@ export default function SettingsPage({ appUpdate }: Props) {
 
         {tab === "workspaces" && <WorkspacesSection />}
 
-        {tab === "runners" && <RunnersSection />}
+        {tab === "runners" && <RunnersSection graph={graph} />}
 
         {tab === "sync" && showSyncTab && (
           <Suspense fallback={null}>

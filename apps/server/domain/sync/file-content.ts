@@ -129,6 +129,20 @@ export async function readFileContent(
   return editableTextContent(buf, a.relPath, filename, mime, abs);
 }
 
+// The version alone (the sha256 of the mirror copy), for the open-file
+// poll (client traffic contract, rule 5): no content on the wire.
+export async function readFileVersion(a: { userId: string; nodeId: string; relPath: string }): Promise<string> {
+  const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
+  if (!mirrorRoot) throw new FileContentError("node has no local mirror", "NO_MIRROR");
+  const abs = resolveMirrorAbs(mirrorRoot, a.relPath);
+  try {
+    return sha256Buffer(await readFile(abs));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") throw fileNotFoundError(a.relPath);
+    throw e;
+  }
+}
+
 export async function writeFileContent(
   _db: DbClient,
   a: {

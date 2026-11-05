@@ -133,6 +133,31 @@ export type UntrackedFile = {
 };
 
 // Response of GET /nodes/:nodeId/file?path=<rel>.
+// GET /changes?since=&wait=: the node and file changes since a cursor
+// (domain/change-feed.ts). `reset`: the cursor is unknown to this server
+// instance (a restart) or older than it keeps; the reader refetches what it
+// shows and continues from `cursor`.
+export type ChangesResponse = {
+  cursor: string;
+  reset: boolean;
+  changes: { node_id: string; kind: "node" | "files"; seq: number }[];
+};
+
+// GET /nodes/:id/file?version_only=1: the version alone, for the open-file
+// poll (client traffic contract, rule 5).
+export type FileVersionResponse = { version: string };
+
+// POST /nodes/config-batch: what the sync agent's boot writes into every
+// mirror's harness config, for many nodes in one request. `orientation` is
+// the server's OrientationSummary (domain/scope-materialize.ts), opaque to
+// the web.
+export type NodeConfigEntry = {
+  node_id: string;
+  orientation: { node: { name: string; type: string } } & Record<string, unknown> | null;
+  data_sources: Array<Record<string, unknown> & { id: string; name: string }>;
+};
+export type NodeConfigBatchResponse = { configs: NodeConfigEntry[] };
+
 export type FileContentResponse = {
   content: string;
   version: string; // sha256 of the on-disk bytes; pass back as baseVersion on save

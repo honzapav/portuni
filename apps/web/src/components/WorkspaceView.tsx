@@ -20,14 +20,15 @@
 // for. `inert` keeps a hidden pane out of the tab order and out of reach
 // of the pointer.
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
-import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
+import type { SessionsClient } from "../lib/sessions-client";
 import type { SessionStore } from "../lib/session-store";
 import { shownChatSessionId } from "../lib/session-views";
+import type { NodeChange } from "../lib/graph-patch";
 import type { FileEditor } from "../lib/use-file-editor";
 import { scopedKey } from "../lib/workspace-storage";
 import WorkspaceEmpty from "./WorkspaceEmpty";
@@ -57,7 +58,7 @@ type Props = {
   nodeDetailError: string | null;
   // Refetch graph + this view's node detail after an edit. DetailPane's
   // edit / lifecycle / sync flows all funnel through this.
-  onMutate: () => Promise<void>;
+  onMutate: (change?: NodeChange) => Promise<void>;
   // Source-editor wiring. When a file is open for the selected node, the
   // detail surface swaps DetailPane for EditorPane (Option C).
   editorFile: { nodeId: string; relPath: string } | null;
@@ -91,7 +92,13 @@ type Props = {
   onSessionStarted: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
   // Relace tab's "Otevřít chat" (#343), threaded through to DetailPane.
   onOpenChat: (nodeId: string, sessionId: string) => void;
-  liveSessionStates: Readonly<Record<string, SessionStateMessage>>;
+  // Reports the detail aside's visibility so App polls the node detail only
+  // while somebody can see it (lib/poll-policy.ts).
+  onDetailVisibleChange?: (visible: boolean) => void;
+  // Whether Práce is the view on screen. App keeps it mounted behind Graf,
+  // Přehled and Settings so the chats keep their transcripts; while hidden
+  // nothing here polls, focuses or answers a key.
+  active: boolean;
 };
 
 export default function WorkspaceView({
@@ -118,12 +125,16 @@ export default function WorkspaceView({
   sessionStore,
   onSessionStarted,
   onOpenChat,
-  liveSessionStates,
+  onDetailVisibleChange,
+  active,
 }: Props) {
   const { t } = useTranslation("common");
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
   });
+  useEffect(() => {
+    onDetailVisibleChange?.(detailVisible);
+  }, [detailVisible, onDetailVisibleChange]);
   const toggleDetail = () => {
     setDetailVisible((v) => {
       localStorage.setItem(scopedKey("workspace.detailVisible"), String(!v));
@@ -178,7 +189,8 @@ export default function WorkspaceView({
           onCollapse={collapsible ? toggleDetail : undefined}
           onSessionStarted={onSessionStarted}
           onOpenChat={onOpenChat}
-          liveSessionStates={liveSessionStates}
+          sessionStore={sessionStore}
+          visible={active}
         />
       </Suspense>
     );
@@ -211,6 +223,7 @@ export default function WorkspaceView({
                 onOpenFile={session.node_id ? (relPath) => onOpenFile(session.node_id!, relPath) : undefined}
                 onContinued={onSessionStarted}
                 shown={visible}
+                surfaceActive={active}
               />
             </div>
           );
@@ -239,7 +252,7 @@ export default function WorkspaceView({
             empty; otherwise nudge the user to pick from the left. */}
         {!selectedNodeId &&
           (openNodeCount === 0 ? (
-            <WorkspaceEmpty graph={graph} onPick={(n) => onOpenNodeFromPicker(n)} />
+            <WorkspaceEmpty graph={graph} onPick={(n) => onOpenNodeFromPicker(n)} autoFocus={active} />
           ) : (
             <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-text-dim)]">
               {t(($) => $.workspace.pick_node_hint)}

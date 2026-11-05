@@ -355,7 +355,12 @@ central server: bare `GET`/`PATCH /sessions/:id`, `/state`, `/scope`,
 device's: the inline handoff summary in `content.db` and the handoff file
 in this device's mirror, which it hashes to report `handoff_changed`.
 Both routers build the answer from the one
-`sessionResumeInfoPayload` in `api/sessions.ts`.
+`sessionResumeInfoPayload` in `api/sessions.ts`. `POST /sessions/resume-info`
+(`{ids}`, up to 200) is the same answer for every id in one request -- the
+Relace tab's one call per mount -- device-local too; the sync agent reads
+the records from the central server in one `GET /sessions?ids=`
+(`listSessionRecordsByIds`), and unknown or foreign ids are left out
+rather than failing the batch.
 `signals` is device-local because it reads in-memory live-run state
 (`liveRuns`, `runStartScopeSize`) that exists only in the process running
 the task. A new per-session verb must be added to `router.ts`,
@@ -1083,6 +1088,25 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   (`test/api-sessions-ws.test.ts`), or that subscription sticks to an
   abandoned instance. `SessionRuntime.subscriberCount(target)` exists for
   leak checks.
+- **`node_changed`** (client traffic contract): the server's change feed
+  (`infra/change-feed.ts`, every graph and file write publishes the node
+  it touched) reaches every open socket as one coalesced
+  `node_changed { changes: [{node_id, kind: "node" | "files"}], reset }`
+  frame per 200 ms (`NODE_CHANGED_COALESCE_MS`), naming only the nodes
+  that socket's identity may know about (`SessionsWsDeps.visibleNodes`,
+  the same rule `GET /changes` applies; resolved once per identity per
+  flush) -- on the device the feed only holds what central let it see, so
+  the agent deps pass everything. In the
+  sync agent the feed is fed by `boot/change-poller.ts`, one long-poll of
+  central's `GET /changes?since=&wait=20` after another (central keeps a
+  woken request open 750 ms so a burst answers as one batch, and the
+  poller waits 2 s after an answer that carried changes, so a burst of
+  writes on central never becomes a request storm from a device), plus the
+  watcher's own successful reconciles (`onReconciled`); a `reset` from
+  central (a restart, a cursor let go) is `announceReset()`, and the
+  window refetches what it shows once. A personal workspace's server
+  publishes into its own feed and sends the frame itself. The web hands
+  the frame to `lib/node-changes.ts`.
 
 ## Known gaps
 

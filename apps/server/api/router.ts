@@ -4,6 +4,7 @@
 // /responsibilities/:id/assignments precedence over the bare
 // /responsibilities/:id handlers — live in one place.
 
+import { handleGetChanges } from "./changes.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { minScopeForRoute } from "../auth/min-scopes.js";
@@ -46,6 +47,7 @@ import {
   handleListResponsibilities,
   handleUnassignResponsibility,
   handleUpdateResponsibility,
+  handleReorderResponsibilities,
 } from "./responsibilities.js";
 import {
   handleCreateDataSource,
@@ -79,6 +81,7 @@ import {
   handleFolderUrl,
   handleGetNode,
   handleGetNodeOrientation,
+  handleNodeConfigBatch,
   handleMoveNode,
   handlePatchNode,
   handlePositions,
@@ -119,6 +122,7 @@ import {
   handleDeleteSession,
   handleGetSession,
   handleGetSessionResumeInfo,
+  handlePostSessionsResumeInfo,
   handleGetSessionScope,
   handleGetSessionSignals,
   handleInterruptSession,
@@ -293,6 +297,10 @@ async function routeSystem(
     await handleGraph(req, res, identity);
     return true;
   }
+  if (pathname === "/changes" && method === "GET") {
+    await handleGetChanges(req, res, identity, url);
+    return true;
+  }
   if (pathname === "/overview" && method === "GET") {
     await handleGetOverview(req, res, identity);
     return true;
@@ -400,6 +408,10 @@ async function routeResponsibilities(
   }
   if (pathname === "/responsibilities" && method === "POST") {
     await handleCreateResponsibility(req, res, identity);
+    return true;
+  }
+  if (pathname === "/responsibilities/reorder" && method === "POST") {
+    await handleReorderResponsibilities(req, res, identity);
     return true;
   }
   if (pathname.startsWith("/responsibilities/")) {
@@ -661,6 +673,12 @@ async function routeNodes(
     await handlePositions(req, res, identity);
     return true;
   }
+  // The sync agent's boot reads every mirror's harness config in one
+  // request (client traffic contract, rule 6).
+  if (pathname === "/nodes/config-batch" && method === "POST") {
+    await handleNodeConfigBatch(req, res, identity);
+    return true;
+  }
   if (pathname === "/nodes" && method === "POST") {
     await handleCreateNode(req, res, identity);
     return true;
@@ -759,7 +777,12 @@ async function routeSessions(
   // record half; under the hardened posture (#213) only the app itself may
   // call them over REST -- a spawned terminal drives its session through
   // the MCP tools. Reads are ungated here (sessionAccess still applies).
-  if (method !== "GET" && pathname.startsWith("/sessions") && !guardRestSessionWrite(req, res, identity)) {
+  if (
+    method !== "GET" &&
+    pathname.startsWith("/sessions") &&
+    pathname !== "/sessions/resume-info" &&
+    !guardRestSessionWrite(req, res, identity)
+  ) {
     return true;
   }
   if (pathname === "/sessions" && method === "POST") {
@@ -788,6 +811,13 @@ async function routeSessions(
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
   if (stateMatch && method === "POST") {
     await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));
+    return true;
+  }
+  // The Relace tab's one request for every suspended row (client traffic
+  // contract, rule 6); the literal segment never collides with a session
+  // id, like /sessions/record above.
+  if (pathname === "/sessions/resume-info" && method === "POST") {
+    await handlePostSessionsResumeInfo(req, res, identity);
     return true;
   }
   const resumeInfoMatch = pathname.match(/^\/sessions\/([^/]+)\/resume-info$/);

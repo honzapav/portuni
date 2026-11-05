@@ -17,6 +17,7 @@ import {
   assignResponsibility,
   unassignResponsibility,
   updateResponsibility,
+  reorderResponsibilities,
   deleteResponsibility,
 } from "../apps/server/domain/responsibilities.js";
 
@@ -99,6 +100,33 @@ describe("updateResponsibility and deleteResponsibility", () => {
     await deleteResponsibility(db, "U1", r.id);
     const rows = await db.execute({ sql: "SELECT COUNT(*) as c FROM responsibility_assignments WHERE responsibility_id = ?", args: [r.id] });
     assert.equal(rows.rows[0].c, 0);
+  });
+});
+
+// Reordering is one request for the whole list (client traffic contract,
+// rule 6): every row's sort_order in one go, one audit entry.
+describe("reorderResponsibilities", () => {
+  it("sets every row's sort_order and writes one audit entry", async () => {
+    const { db, projectId } = await freshEnv();
+    const a = await createResponsibility(db, "U1", { node_id: projectId, title: "A" });
+    const b = await createResponsibility(db, "U1", { node_id: projectId, title: "B" });
+    const c = await createResponsibility(db, "U1", { node_id: projectId, title: "C" });
+    const auditBefore = (await db.execute("SELECT COUNT(*) AS n FROM audit_log")).rows[0].n as number;
+    const result = await reorderResponsibilities(db, "U1", [
+      { id: c.id, sort_order: 0 },
+      { id: a.id, sort_order: 1 },
+      { id: b.id, sort_order: 2 },
+    ]);
+    assert.equal(result.updated, 3);
+    const rows = await listResponsibilities(db, { node_id: projectId });
+    assert.deepEqual(rows.map((r) => r.title), ["C", "A", "B"]);
+    const auditAfter = (await db.execute("SELECT COUNT(*) AS n FROM audit_log")).rows[0].n as number;
+    assert.equal(Number(auditAfter) - Number(auditBefore), 1);
+  });
+
+  it("refuses an id that does not exist", async () => {
+    const { db } = await freshEnv();
+    await assert.rejects(reorderResponsibilities(db, "U1", [{ id: ulid(), sort_order: 0 }]));
   });
 });
 

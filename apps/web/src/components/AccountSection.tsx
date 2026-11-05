@@ -22,6 +22,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { patchMeLocale } from "../api";
+import { meResource } from "../lib/resources";
+import { invalidateMe } from "../lib/use-me";
 import { applyUiLocale, PSEUDO_ENABLED } from "../i18n";
 import { isLocale, PSEUDO_LOCALE, type UiLocale } from "../../../server/shared/i18n/config";
 import { copyText } from "../lib/clipboard";
@@ -67,11 +69,11 @@ export default function AccountSection() {
       } else if (!s.logged_in || !s.user) {
         setState({ kind: "logged-out" });
       } else {
-        // Eager: try to enrich with /me; fall back to JWT claims from auth_status.
+        // Eager: enrich with the window's /me answer (one fetch per window,
+        // lib/resources.ts); fall back to JWT claims from auth_status.
         let enriched = s.user;
         try {
-          const me = await centralFetch<UserInfo>("GET", "/me");
-          enriched = me;
+          enriched = await meResource.get();
         } catch {
           // /me unreachable or token issue — use claims as fallback, don't block
         }
@@ -92,11 +94,11 @@ export default function AccountSection() {
     setBusy(true);
     try {
       const user = await googleLogin();
-      // Refresh from /me after login to get full profile
+      // A new account: whatever /me said before is over.
+      invalidateMe();
       let enriched = user;
       try {
-        const me = await centralFetch<UserInfo>("GET", "/me");
-        enriched = me;
+        enriched = await meResource.get();
       } catch {
         /* use returned user claims */
       }
@@ -113,6 +115,7 @@ export default function AccountSection() {
     setBusy(true);
     try {
       await authLogout();
+      invalidateMe();
       setState({ kind: "logged-out" });
     } catch (e) {
       setError(displayError(e));
@@ -231,7 +234,9 @@ function LanguagePicker() {
     setError(null);
     setPending(true);
     try {
-      if (isLocale(value)) await patchMeLocale(value);
+      // The answer is the account as it now is: it replaces the window's
+      // /me without another fetch.
+      if (isLocale(value)) meResource.set(await patchMeLocale(value));
       else if (!(PSEUDO_ENABLED && value === PSEUDO_LOCALE)) return;
       await applyUiLocale(value as UiLocale);
     } catch (e) {

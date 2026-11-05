@@ -16,6 +16,7 @@
 // Byte transfer itself goes through file-content-remote.ts (GET/PUT
 // /nodes/:id/file with base64 for binary), so this module is metadata-only.
 
+import { publishNodeChange } from "../../infra/change-feed.js";
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 import { auditRemotePathExpr } from "../../infra/sql.js";
@@ -373,6 +374,7 @@ export async function registerFileRecordRemote(
       now,
     ],
   });
+  publishNodeChange(a.nodeId, "files");
 
   return { id: fileId, filename, remote_name: remoteName, remote_path: remotePath };
 }
@@ -435,6 +437,7 @@ export async function registerFileRecordsRemote(
       now,
     ],
   });
+  publishNodeChange(a.nodeId, "files");
 
   return results;
 }

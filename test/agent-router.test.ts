@@ -478,6 +478,26 @@ describe("agent router over HTTP", () => {
     assert.equal(body.version, sha(Buffer.from("# jen lokálně")));
   });
 
+  // The open-file poll asks for the version only (client traffic contract,
+  // rule 5): the hash of the mirror copy, no content on the wire; central's
+  // when the file is not on this device.
+  it("GET /nodes/:id/file?version_only=1 answers the version without the content", async () => {
+    await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "draft.md"), "# jen lokálně");
+    const local = await authFetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/draft.md")}&version_only=1`,
+    );
+    assert.equal(local.status, 200);
+    assert.deepEqual(await local.json(), { version: sha(Buffer.from("# jen lokálně")) });
+
+    fake.bytes.set(posix.join(NODE_ROOT, "wip/remote.md"), Buffer.from("remote body"));
+    const remote = await authFetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/remote.md")}&version_only=1`,
+    );
+    assert.equal(remote.status, 200);
+    assert.deepEqual(await remote.json(), { version: sha(Buffer.from("remote body")) });
+  });
+
   it("GET /nodes/:id/file falls back to central when the file is not on disk", async () => {
     await authFetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     // Pull-pending: registered on central with bytes, absent locally.

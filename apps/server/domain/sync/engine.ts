@@ -1,4 +1,5 @@
 import { copyFile, mkdir, readFile, readdir, rm, stat as fsStat, writeFile } from "node:fs/promises";
+import { publishNodeChange } from "../../infra/change-feed.js";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { DbClient } from "../../infra/db.js";
 import { auditRemotePathExpr } from "../../infra/sql.js";
@@ -269,6 +270,7 @@ export async function storeFile(db: DbClient, a: StoreFileArgs): Promise<StoreFi
         now,
       ],
     });
+    publishNodeChange(a.nodeId, "files");
 
     // Local sync.db file_state. Fast status trusts cached_local_hash outright,
     // so the cache must describe the file as it is NOW: if it changed while
@@ -468,6 +470,7 @@ export async function registerLocalFile(
       now,
     ],
   });
+  publishNodeChange(a.nodeId, "files");
 
   return {
     file_id: fileId,
@@ -593,6 +596,7 @@ export async function pullFile(db: DbClient, a: PullFileArgs): Promise<PullFileR
         now,
       ],
     });
+    publishNodeChange(nodeId, "files");
 
     return hash;
   });

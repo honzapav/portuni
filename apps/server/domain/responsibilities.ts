@@ -112,6 +112,43 @@ export async function createResponsibility(
   return row;
 }
 
+// Every row's sort_order in one go (client traffic contract, rule 6): the
+// detail pane's reorder used to PATCH one row per position. One audit
+// entry per node touched. Refuses an id that does not exist before any
+// write.
+export async function reorderResponsibilities(
+  db: DbClient,
+  updatedBy: string,
+  updates: readonly { id: string; sort_order: number }[],
+): Promise<{ updated: number }> {
+  const nodes = new Map<string, { id: string; sort_order: number }[]>();
+  for (const u of updates) {
+    const existing = await loadResponsibility(db, u.id);
+    if (!existing) throw new Error(`reorderResponsibilities: ${u.id} not found`);
+    const list = nodes.get(existing.node_id) ?? [];
+    list.push(u);
+    nodes.set(existing.node_id, list);
+  }
+  const now = new Date().toISOString();
+  let updated = 0;
+  for (const [nodeId, list] of nodes) {
+    // One batch per node: a failure part-way leaves no half order.
+    await db.batch(
+      list.map((u) => ({
+        sql: "UPDATE responsibilities SET sort_order = ?, updated_at = ? WHERE id = ?",
+        args: [u.sort_order, now, u.id],
+      })),
+      "write",
+    );
+    updated += list.length;
+    await writeAudit(db, updatedBy, "reorder_responsibilities", "node", nodeId, {
+      node_id: nodeId,
+      order: list.map((u) => ({ id: u.id, sort_order: u.sort_order })),
+    });
+  }
+  return { updated };
+}
+
 export async function updateResponsibility(
   db: DbClient,
   updatedBy: string,
@@ -157,6 +194,7 @@ export async function updateResponsibility(
 
   await writeAudit(db, updatedBy, "update_responsibility", "responsibility", parsed.responsibility_id, {
     changes,
+    node_id: existing.node_id,
   });
 
   const row = await loadResponsibility(db, parsed.responsibility_id);
@@ -241,13 +279,14 @@ export async function assignResponsibility(
     args: [parsed.responsibility_id, parsed.actor_id, now],
   });
 
+  const assigned = await loadResponsibility(db, parsed.responsibility_id);
   await writeAudit(
     db,
     assignedBy,
     "assign_responsibility",
     "responsibility_assignment",
     `${parsed.responsibility_id}:${parsed.actor_id}`,
-    { responsibility_id: parsed.responsibility_id, actor_id: parsed.actor_id },
+    { responsibility_id: parsed.responsibility_id, actor_id: parsed.actor_id, node_id: assigned?.node_id },
   );
 }
 
@@ -264,12 +303,13 @@ export async function unassignResponsibility(
     args: [parsed.responsibility_id, parsed.actor_id],
   });
 
+  const unassigned = await loadResponsibility(db, parsed.responsibility_id);
   await writeAudit(
     db,
     unassignedBy,
     "unassign_responsibility",
     "responsibility_assignment",
     `${parsed.responsibility_id}:${parsed.actor_id}`,
-    { responsibility_id: parsed.responsibility_id, actor_id: parsed.actor_id },
+    { responsibility_id: parsed.responsibility_id, actor_id: parsed.actor_id, node_id: unassigned?.node_id },
   );
 }
