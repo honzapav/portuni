@@ -38,6 +38,8 @@ import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { deriveWorkspaceNodeRows } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
+import { focusRefetchTargets, nodeDetailPollTarget } from "./lib/poll-policy";
+import { isRateLimited } from "./lib/rate-limit-cooldown";
 import { invoke } from "./lib/tauri-invoke";
 import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
@@ -376,6 +378,9 @@ export default function App() {
 
   // --- Workspace state ---
   const [selectedWorkspaceNodeId, setSelectedWorkspaceNodeId] = useState<string | null>(null);
+  // Whether Práce shows its detail aside (WorkspaceView owns the toggle and
+  // reports it): a collapsed aside is nothing to poll for.
+  const [workspaceDetailVisible, setWorkspaceDetailVisible] = useState(true);
   // The set of nodes open in the workspace. Persisted across restarts and
   // pruned against the graph once it loads.
   const [openNodeIds, setOpenNodeIds] = useState<string[]>(() => loadOpenNodes());
@@ -834,11 +839,12 @@ export default function App() {
     };
   }, []);
 
-  // Refetch on focus AND tab-visible. Covers BOTH the graph selection and
-  // the workspace selection so files registered elsewhere (MCP / another
-  // window) show up without a manual reselect. Both events fire on the
-  // same cmd-tab activation, so dedupe within a short window -- otherwise
-  // every activation costs 2x fetchGraph + 2x fetchNode against Turso.
+  // Refetch on focus AND tab-visible: the graph, and the node of the view
+  // that is showing, so files registered elsewhere (MCP / another window)
+  // show up without a manual reselect. Both events fire on the same
+  // cmd-tab activation, so dedupe within a short window. What a focus may
+  // ask for is lib/poll-policy.ts's call (client traffic contract): never
+  // the other view's selection, nothing during a 429 cooldown.
   useEffect(() => {
     let lastRun = 0;
     const handler = () => {
@@ -846,8 +852,31 @@ export default function App() {
       const now = Date.now();
       if (now - lastRun < 500) return;
       lastRun = now;
-      refetchAll().catch((err) => setGraphError(displayError(err)));
-      refetchWorkspaceDetail().catch(() => undefined);
+      const targets = focusRefetchTargets({
+        view,
+        rateLimited: isRateLimited(),
+        selectedId,
+        selectedWorkspaceNodeId,
+      });
+      if (targets.graph) {
+        fetchGraph()
+          .then((g) => {
+            setGraph(g);
+            setGraphError(null);
+          })
+          .catch((err) => setGraphError(displayError(err)));
+      }
+      if (targets.nodeId === null) return;
+      if (view === "workspace") {
+        refetchWorkspaceDetail().catch(() => undefined);
+      } else {
+        const requestId = targets.nodeId;
+        fetchNode(requestId)
+          .then((n) => {
+            if (selectedIdRef.current === requestId) setNodeDetail(n);
+          })
+          .catch(() => undefined);
+      }
     };
     window.addEventListener("focus", handler);
     document.addEventListener("visibilitychange", handler);
@@ -855,18 +884,29 @@ export default function App() {
       window.removeEventListener("focus", handler);
       document.removeEventListener("visibilitychange", handler);
     };
-  }, [refetchAll, refetchWorkspaceDetail]);
+  }, [view, selectedId, selectedWorkspaceNodeId, refetchWorkspaceDetail]);
 
-  // Poll the active node detail so externally-registered files appear within
-  // seconds. Node-detail only (the graph poll stays on focus). Paused when
-  // the tab is hidden to avoid background churn against Turso.
+  // Poll the node detail on screen so externally-registered files appear
+  // within seconds. Node-detail only (the graph poll stays on focus), and
+  // only for a detail somebody is looking at: lib/poll-policy.ts says
+  // which one -- none in Přehled or Settings, none while Práce's aside is
+  // collapsed, none while hidden or during a 429 cooldown.
   useEffect(() => {
     const id = setInterval(() => {
-      if (document.hidden) return;
-      if (view === "workspace" && selectedWorkspaceNodeId) {
+      const target = nodeDetailPollTarget({
+        view,
+        hidden: document.hidden,
+        rateLimited: isRateLimited(),
+        selectedId,
+        selectedWorkspaceNodeId,
+        // No thread shown: the detail is the centre and always visible.
+        workspaceDetailVisible: workspaceDetailVisible || shownThread === null,
+      });
+      if (target === null) return;
+      if (target.kind === "workspace") {
         refetchWorkspaceDetail().catch(() => undefined);
-      } else if (selectedId) {
-        const requestId = selectedId;
+      } else {
+        const requestId = target.nodeId;
         fetchNode(requestId)
           // Drop responses that arrive after the selection moved on --
           // otherwise a slow poll paints the previous node's detail.
@@ -886,7 +926,7 @@ export default function App() {
       }
     }, 5000);
     return () => clearInterval(id);
-  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail]);
+  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail, workspaceDetailVisible, shownThread]);
 
   // "+" on a Práce node row: open a fresh, empty thread there (#374, "one
   // click, thread is there, composer has focus") -- no dialog, nothing to
@@ -1151,6 +1191,7 @@ export default function App() {
               sessionStore={sessionStore}
               onSessionStarted={registerSessionStarted}
               onOpenChat={openSessionChat}
+              onDetailVisibleChange={setWorkspaceDetailVisible}
             />
           </div>
         )}

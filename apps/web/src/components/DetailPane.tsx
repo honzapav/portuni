@@ -143,6 +143,8 @@ import { useDataMode } from "../lib/central";
 import { showsPersonalWorkspaceBanner, showsSyncSurfaces } from "../lib/sync-visibility";
 import { compareText, formatDate } from "../lib/format";
 import { useLocale } from "../lib/use-locale";
+import { shouldPollSyncStatus } from "../lib/poll-policy";
+import { isRateLimited } from "../lib/rate-limit-cooldown";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -556,13 +558,22 @@ function DetailPaneBody({
     }
   }, [node.id]);
 
+  // The tab, read by the poll below without restarting it on a switch (a
+  // restart would fetch once more per tab switch).
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   useEffect(() => {
     let cancelled = false;
     void loadSyncStatus();
-    // Poll while visible so agent-written (untracked) and MCP-registered
-    // files appear without a manual refresh. ~5s; paused when hidden.
+    // Poll so agent-written (untracked) and MCP-registered files appear
+    // without a manual refresh. ~5s, and only while the Files tab is on
+    // screen, the window visible and no 429 cooldown running
+    // (lib/poll-policy.ts). The header's sync dot keeps what the mount
+    // load and the last Files visit left.
     const id = setInterval(() => {
-      if (!document.hidden && !cancelled) void loadSyncStatus();
+      if (cancelled) return;
+      if (!shouldPollSyncStatus({ tab: tabRef.current, hidden: document.hidden, rateLimited: isRateLimited() })) return;
+      void loadSyncStatus();
     }, 5000);
     return () => {
       cancelled = true;

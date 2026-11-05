@@ -20,7 +20,7 @@
 // for. `inert` keeps a hidden pane out of the tab order and out of reach
 // of the pointer.
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -92,6 +92,9 @@ type Props = {
   // Relace tab's "Otevřít chat" (#343), threaded through to DetailPane.
   onOpenChat: (nodeId: string, sessionId: string) => void;
   liveSessionStates: Readonly<Record<string, SessionStateMessage>>;
+  // Reports the detail aside's visibility so App polls the node detail only
+  // while somebody can see it (lib/poll-policy.ts).
+  onDetailVisibleChange?: (visible: boolean) => void;
 };
 
 export default function WorkspaceView({
@@ -119,11 +122,15 @@ export default function WorkspaceView({
   onSessionStarted,
   onOpenChat,
   liveSessionStates,
+  onDetailVisibleChange,
 }: Props) {
   const { t } = useTranslation("common");
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
   });
+  useEffect(() => {
+    onDetailVisibleChange?.(detailVisible);
+  }, [detailVisible, onDetailVisibleChange]);
   const toggleDetail = () => {
     setDetailVisible((v) => {
       localStorage.setItem(scopedKey("workspace.detailVisible"), String(!v));
