@@ -68,6 +68,7 @@ import {
   ContinueSessionBody,
   SessionLocaleBody,
   ResumeInfoBatchBody,
+  resumeInfoBatch,
   sessionResumeInfoPayload,
 } from "./sessions.js";
 import { respondSessionRefusal } from "./session-refusals.js";
@@ -771,12 +772,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           : (await Promise.all(ids.map((id) => sessionRuntime.getSession(id)))).filter(
               (s): s is NonNullable<typeof s> => s !== null,
             );
-        const infos = [];
-        for (const session of rows) {
-          const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
-          infos.push(await sessionResumeInfoPayload(session, mirrorRoot, body.config_dir ?? null));
-        }
-        respondJson(res, 200, { infos });
+        respondJson(res, 200, await resumeInfoBatch(rows, body.config_dir ?? null));
       } catch (err) {
         respondError(res, "POST /sessions/resume-info", err);
       }

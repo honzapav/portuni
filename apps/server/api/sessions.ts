@@ -524,6 +524,20 @@ export const ResumeInfoBatchBody = z.object({
   config_dir: z.string().min(1).optional(),
 });
 
+// The batch answer for rows already resolved to the caller's: one
+// resume-info per row, each against the row owner's mirror of its node.
+export async function resumeInfoBatch(
+  sessions: readonly SessionRow[],
+  configDir: string | null,
+): Promise<{ infos: SessionResumeInfo[] }> {
+  const infos: SessionResumeInfo[] = [];
+  for (const session of sessions) {
+    const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
+    infos.push(await sessionResumeInfoPayload(session, mirrorRoot, configDir));
+  }
+  return { infos };
+}
+
 export async function handlePostSessionsResumeInfo(
   req: IncomingMessage,
   res: ServerResponse,
@@ -533,19 +547,16 @@ export async function handlePostSessionsResumeInfo(
     const body = await parseJsonBody(req, res, ResumeInfoBatchBody);
     if (!body) return;
     const db = getDb();
-    const infos: SessionResumeInfo[] = [];
+    const sessions: SessionRow[] = [];
     for (const id of new Set(body.ids)) {
-      let session: SessionRow;
       try {
-        session = await sessionAccess(db, identity, id, "read");
+        sessions.push(await sessionAccess(db, identity, id, "read"));
       } catch (err) {
         if (err instanceof SessionAccessError) continue;
         throw err;
       }
-      const mirrorRoot = session.node_id ? await getMirrorPath(identity.userId, session.node_id) : null;
-      infos.push(await sessionResumeInfoPayload(session, mirrorRoot, body.config_dir ?? null));
     }
-    respondJson(res, 200, { infos });
+    respondJson(res, 200, await resumeInfoBatch(sessions, body.config_dir ?? null));
   } catch (err) {
     respondError(res, `${req.method} /sessions/resume-info`, err);
   }

@@ -315,18 +315,6 @@ export function patchSessionRunnerInstance(
   });
 }
 
-// configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
-// caller can resolve one from the desktop profiles registry (#204) --
-// lets the server check conversation-resumability at the right transcript
-// location instead of always the default (~/.claude).
-export function fetchPersistentSessionResumeInfo(
-  id: string,
-  configDir?: string | null,
-): Promise<SessionResumeInfo> {
-  const qs = configDir ? `?config_dir=${encodeURIComponent(configDir)}` : "";
-  return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
-}
-
 // POST /sessions/resume-info -- the Relace tab's one request for every
 // suspended row it has no fresh answer for (client traffic contract, rule
 // 6); unknown and foreign ids are left out of the answer.

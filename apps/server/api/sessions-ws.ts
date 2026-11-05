@@ -282,7 +282,7 @@ export interface SessionsWsServer {
 }
 
 // A burst of writes to one node is one frame.
-export const NODE_CHANGED_COALESCE_MS = 200;
+const NODE_CHANGED_COALESCE_MS = 200;
 
 export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSessionsWsDeps()): SessionsWsServer {
   const wss = new WebSocketServer({ noServer: true });

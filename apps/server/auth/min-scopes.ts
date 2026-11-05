@@ -110,6 +110,9 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // requests) is filtered by the handler itself, not by this route gate.
   if (pathname === "/overview" && m === "GET") return "read";
   if (pathname === "/changes" && m === "GET") return "read";
+  // Reads sent as POST because they carry a list of ids: the boot's batch
+  // of harness configs and the Relace tab's batch of resume-info answers.
+  if (m === "POST" && (pathname === "/nodes/config-batch" || pathname === "/sessions/resume-info")) return "read";
   if (pathname === "/scope" && m === "GET") return "read";
   // GET /users backs the OwnerPicker dropdown (apps/server/api/users.ts).
   // Its only frontend call site is ActorModal's user_id picker
@@ -171,8 +174,6 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // Creating and editing nodes is everyday work (write); placing them in
   // the network (move) and sharing them is manage.
   if (pathname === "/nodes" && m === "POST") return "write";
-  // A read, however it is sent: the boot's batch of harness configs.
-  if (pathname === "/nodes/config-batch" && m === "POST") return "read";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";
@@ -238,8 +239,6 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // frames on it are gated per frame at the write tier (api/sessions-ws.ts).
   if (pathname === "/sessions/ws" && m === "GET") return "read";
   if (pathname === "/sessions/record" && m === "POST") return "write";
-  // A read, however it is sent: the batch of resume-info answers.
-  if (pathname === "/sessions/resume-info" && m === "POST") return "read";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   // Removes a draft only (#374) -- sessionAccess's "message" tier further

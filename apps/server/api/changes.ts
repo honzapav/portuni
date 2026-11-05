@@ -11,7 +11,7 @@ import { filterVisibleNodeIds } from "../auth/node-access.js";
 import { respondApiError, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import type { ChangesResponse } from "../shared/api-types.js";
 
-export const CHANGES_MAX_WAIT_S = 25;
+const CHANGES_MAX_WAIT_S = 25;
 
 export async function handleGetChanges(
   req: IncomingMessage,

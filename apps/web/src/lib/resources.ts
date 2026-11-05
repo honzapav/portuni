@@ -49,21 +49,10 @@ export function invalidateRunnerResources(): void {
 // Per-node detail data, keyed by node id: fetched once per node per
 // window, so a remount of the detail pane (collapse, editor close, a
 // view switch) costs nothing.
-export type FolderUrlValue = { url: string | null; remote_name?: string };
+type FolderUrlValue = { url: string | null; remote_name?: string };
 export const folderUrlByNode = createKeyedResource<string, FolderUrlValue>(async (nodeId) => {
   const r = await fetchNodeFolderUrl(nodeId);
   return { url: r.url ?? null, remote_name: r.remote_name };
 });
 export const nodeAccessByNode = createKeyedResource<string, NodeAccessResponse>(fetchNodeAccess);
 export const nodeAccessRequestsByNode = createKeyedResource<string, AccessRequest[]>(fetchNodeAccessRequests);
-
-export function resetResourcesForTesting(): void {
-  for (const r of [meResource, actorsResource, usersResource, accountUsersResource, runnersResource, runnerInstancesResource]) {
-    r.resetForTesting();
-  }
-  runnerModels.resetForTesting();
-  runnerDefaults.resetForTesting();
-  folderUrlByNode.resetForTesting();
-  nodeAccessByNode.resetForTesting();
-  nodeAccessRequestsByNode.resetForTesting();
-}

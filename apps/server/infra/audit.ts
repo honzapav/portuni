@@ -8,7 +8,7 @@ import { publishNodeChange } from "./change-feed.js";
 // is a node, else the `node_id` the detail carries (every file action and
 // most child-entity actions do). A write with neither publishes nothing --
 // its caller publishes on its own (edges name two nodes, for instance).
-export function auditNodeId(targetType: string, targetId: string, detail?: Record<string, unknown>): string | null {
+function auditNodeId(targetType: string, targetId: string, detail?: Record<string, unknown>): string | null {
   if (targetType === "node") return targetId;
   const inDetail = detail?.node_id;
   return typeof inDetail === "string" && inDetail.length > 0 ? inDetail : null;

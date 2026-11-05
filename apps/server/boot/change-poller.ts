@@ -9,7 +9,7 @@
 import { CentralHttpError } from "../domain/sync/central/client.js";
 import type { ChangesResponse } from "../shared/api-types.js";
 
-export const CHANGE_WAIT_S = 20;
+const CHANGE_WAIT_S = 20;
 const BACKOFF_MIN_MS = 5_000;
 const BACKOFF_MAX_MS = 300_000;
 const DEFAULT_RATE_LIMIT_WAIT_MS = 60_000;
