@@ -311,16 +311,19 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     const reset = pendingReset;
     pendingChanges = new Map();
     pendingReset = false;
-    // Visibility once per identity, not per socket: a frame names only the
-    // nodes that identity may know about, and a socket with nothing to
-    // hear gets no frame (a reset reaches everyone).
+    // Visibility once per authorization view (user, scope, groups), not per
+    // socket: a frame names only the nodes that identity may know about,
+    // and a socket with nothing to hear gets no frame (a reset reaches
+    // everyone). The identity is the one the upgrade carried, as for
+    // session_state.
     const nodeIds = [...new Set(changes.map((c) => c.node_id))];
-    const byUser = new Map<string, Promise<ReadonlySet<string>>>();
+    const byView = new Map<string, Promise<ReadonlySet<string>>>();
     for (const conn of connections) {
-      let visible = byUser.get(conn.identity.userId);
+      const view = `${conn.identity.userId}|${conn.identity.globalScope}|${[...conn.identity.groupIds].sort().join(",")}`;
+      let visible = byView.get(view);
       if (!visible) {
         visible = nodeIds.length === 0 ? Promise.resolve(new Set<string>()) : deps.visibleNodes(conn.identity, nodeIds);
-        byUser.set(conn.identity.userId, visible);
+        byView.set(view, visible);
       }
       void visible
         .then((set) => {
