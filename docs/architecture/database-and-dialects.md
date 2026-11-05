@@ -303,6 +303,20 @@ drivers before merge. A schema or query change runs `npm run test:pglite`
 by hand as well, and a PR that claims "green on both drivers" carries both
 summary lines.
 
+Both test scripts start node with `--no-wasm-code-gc`, and `node --test`
+hands it to every per-file child process. Node 24's V8 can free a wasm
+wrapper twice when wasm code GC races another thread
+([nodejs/node#66366](https://github.com/nodejs/node/issues/66366)), which
+aborts the whole process with `Check failed: jit_page.has_value()` or
+`jit_page_->allocations_.erase(addr) == 1` (#643). PGlite is wasm, so the
+abort hit PGlite files at random. The flag keeps wasm code until the
+process exits, which costs nothing in a short-lived test process.
+`--no-memory-protection-keys` does not help. Drop the flag once CI runs a
+Node release that carries the V8 fix (backport nodejs/node#66376, or Node
+26). Running a single file by hand (`node --import tsx --test test/x.test.ts`)
+skips it, which is fine outside CI. `test/test-scripts-flags.test.ts`
+keeps the flag on both scripts.
+
 Conventions:
 
 - A test opens its database with `test/helpers/db.ts`'s `openTestDb()`
