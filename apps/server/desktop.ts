@@ -18,6 +18,9 @@ import { claimHostRecordsCentral, claimHostRecordsLocal } from "./boot/host-iden
 import { ensurePersonalWorkspaceSchema } from "./boot/content-import.js";
 import { SOLO_USER } from "./infra/schema.js";
 import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
+import type { OrientationSummary } from "./domain/write-scope.js";
+import type { NodeConfigEntry } from "./shared/api-types.js";
+import type { DataSourceRow } from "./shared/types.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { createCentralClientFromEnv, type CentralClient } from "./domain/sync/central/client.js";
 import { reconcilePathCentral } from "./domain/sync/central/engine-central.js";
@@ -250,20 +253,40 @@ async function agentMain(client: CentralClient, dataDir: string): Promise<void> 
       // A central read that failed degrades that mirror's files; such a
       // refresh is not recorded, so the next boot fetches again.
       let centralReadFailed = false;
+      // One request for every mirror's config (client traffic contract,
+      // rule 6); a node the answer leaves out (hidden, unknown, or a
+      // central without the batch route) falls back to the two per-node
+      // reads.
+      const prefetched = new Map<string, NodeConfigEntry>();
+      if (client.nodeConfigs) {
+        try {
+          for (const c of await client.nodeConfigs(refreshKey.mirrors.map((m) => m.node_id))) {
+            prefetched.set(c.node_id, c);
+          }
+        } catch {
+          centralReadFailed = true;
+        }
+      }
       const r = await materializeAllRegisteredMirrors({
-        dataSourcesFor: (nodeId) =>
-          client.dataSources(nodeId).catch(() => {
+        dataSourcesFor: (nodeId) => {
+          const hit = prefetched.get(nodeId);
+          if (hit) return Promise.resolve(hit.data_sources as DataSourceRow[]);
+          return client.dataSources(nodeId).catch(() => {
             centralReadFailed = true;
             return [];
-          }),
+          });
+        },
         // #323 ends the "no orientation in central mode" cut: no local db
         // in agent mode, but CentralClient.orientation now backs a real
         // GET /nodes/:id/orientation on central.
-        orientationFor: (nodeId) =>
-          client.orientation(nodeId).catch(() => {
+        orientationFor: (nodeId) => {
+          const hit = prefetched.get(nodeId);
+          if (hit) return Promise.resolve(hit.orientation as OrientationSummary | null);
+          return client.orientation(nodeId).catch(() => {
             centralReadFailed = true;
             return null;
-          }),
+          });
+        },
       });
       if (r.errors.length > 0) {
         console.error(

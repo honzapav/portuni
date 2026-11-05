@@ -170,6 +170,8 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // Creating and editing nodes is everyday work (write); placing them in
   // the network (move) and sharing them is manage.
   if (pathname === "/nodes" && m === "POST") return "write";
+  // A read, however it is sent: the boot's batch of harness configs.
+  if (pathname === "/nodes/config-batch" && m === "POST") return "read";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";
@@ -204,6 +206,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // --- Responsibilities & assignments ---
   if (pathname === "/responsibilities" && m === "GET") return "read";
   if (pathname === "/responsibilities" && m === "POST") return "write";
+  if (pathname === "/responsibilities/reorder" && m === "POST") return "write";
   if (/^\/responsibilities\/[^/]+\/assignments$/.test(pathname) && m === "POST") return "write";
   if (/^\/responsibilities\/[^/]+\/assignments\/[^/]+$/.test(pathname) && m === "DELETE") return "write";
   if (pathname.startsWith("/responsibilities/") && m === "PATCH") return "write";

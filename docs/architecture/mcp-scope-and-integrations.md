@@ -67,8 +67,10 @@ place of the one the client asked for. A headless device token without
   not `405`, which means central offers no stream) is a failed connect
   (`503`), never a session that silently cannot confirm anything.
   The boot itself stays small (#633): the backfill asks for every mirror's
-  sync-info in one `POST /sync/info-batch`, and the boot refresh of the
-  per-mirror configs (two central reads per mirror) is skipped when the last
+  sync-info in one `POST /sync/info-batch`, the boot refresh of the
+  per-mirror configs reads every mirror's orientation and data sources in
+  one `POST /nodes/config-batch` (`nodeConfigs`; a node the answer leaves
+  out falls back to the two per-node reads), and that refresh is skipped when the last
   complete refresh was under 5 minutes ago with the same MCP URL, mirrors
   and sidecar build (path, size and mtime of the executable and entry
   script, so an updater relaunch always refreshes;

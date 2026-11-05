@@ -734,6 +734,14 @@ export function createResponsibility(input: {
   return jsonRequest<DetailResponsibility>("POST", "/responsibilities", input);
 }
 
+// POST /responsibilities/reorder -- every row's sort_order in one request
+// (client traffic contract, rule 6).
+export function reorderResponsibilities(
+  updates: readonly { id: string; sort_order: number }[],
+): Promise<{ updated: number }> {
+  return jsonRequest<{ updated: number }>("POST", "/responsibilities/reorder", { updates });
+}
+
 export function updateResponsibility(
   id: string,
   patch: { title?: string; description?: string | null; sort_order?: number },
@@ -849,6 +857,16 @@ export class FileConflictError extends ApiError {
     super(409, "CONFLICT", "file changed on disk since it was opened");
     this.name = "FileConflictError";
   }
+}
+
+// GET /nodes/:id/file?version_only=1 -- the open-file poll's check: the
+// version alone, no content on the wire (client traffic contract, rule 5).
+export async function fetchFileVersion(nodeId: string, relPath: string): Promise<string> {
+  const res = await apiFetch(
+    `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}&version_only=1`,
+  );
+  await throwForStatus(res, "file");
+  return ((await res.json()) as { version: string }).version;
 }
 
 export async function fetchFileContent(

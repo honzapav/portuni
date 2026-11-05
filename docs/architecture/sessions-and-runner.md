@@ -355,7 +355,12 @@ central server: bare `GET`/`PATCH /sessions/:id`, `/state`, `/scope`,
 device's: the inline handoff summary in `content.db` and the handoff file
 in this device's mirror, which it hashes to report `handoff_changed`.
 Both routers build the answer from the one
-`sessionResumeInfoPayload` in `api/sessions.ts`.
+`sessionResumeInfoPayload` in `api/sessions.ts`. `POST /sessions/resume-info`
+(`{ids}`, up to 200) is the same answer for every id in one request -- the
+Relace tab's one call per mount -- device-local too; the sync agent reads
+the records from the central server in one `GET /sessions?ids=`
+(`listSessionRecordsByIds`), and unknown or foreign ids are left out
+rather than failing the batch.
 `signals` is device-local because it reads in-memory live-run state
 (`liveRuns`, `runStartScopeSize`) that exists only in the process running
 the task. A new per-session verb must be added to `router.ts`,

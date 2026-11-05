@@ -9,7 +9,9 @@
 // what its user could reach anyway.
 
 import type { DataSourceRow, SessionRow, SessionState } from "../../../shared/types.js";
-import type { SessionScopeRecord } from "../../../shared/api-types.js";
+import type {
+  NodeConfigBatchResponse,
+  NodeConfigEntry, SessionScopeRecord } from "../../../shared/api-types.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
@@ -126,6 +128,11 @@ export interface CentralClient {
   // the outcome into its own sync run instead of sweeping locally.
   remoteSweep(nodeId: string): Promise<RemoteSweepResult>;
   dataSources(nodeId: string): Promise<DataSourceRow[]>;
+  // POST /nodes/config-batch: every mirror's orientation and data sources
+  // in one request for the boot refresh of the harness configs. Optional
+  // so a fake that predates it still satisfies the interface; the boot
+  // falls back to dataSources + orientation per node.
+  nodeConfigs?(nodeIds: readonly string[]): Promise<NodeConfigEntry[]>;
   nodeExists(nodeId: string): Promise<boolean>;
   // The node's organization, read off central's own node-detail edges
   // (#407): the runner's task defaults resolve the organization default
@@ -422,6 +429,17 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       invalidate(nodeId);
       if (r.status !== 200) throwFor(r.status, p, r.json);
       return r.json as RemoteSweepResult;
+    },
+
+    async nodeConfigs(nodeIds) {
+      const out: NodeConfigEntry[] = [];
+      for (let i = 0; i < nodeIds.length; i += 500) {
+        const p = "/nodes/config-batch";
+        const r = await request("POST", p, { node_ids: nodeIds.slice(i, i + 500) });
+        if (r.status !== 200) throwFor(r.status, p, r.json);
+        out.push(...(r.json as NodeConfigBatchResponse).configs);
+      }
+      return out;
     },
 
     async dataSources(nodeId) {

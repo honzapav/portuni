@@ -112,6 +112,41 @@ export async function createResponsibility(
   return row;
 }
 
+// Every row's sort_order in one go (client traffic contract, rule 6): the
+// detail pane's reorder used to PATCH one row per position. One audit
+// entry per node touched. Refuses an id that does not exist before any
+// write.
+export async function reorderResponsibilities(
+  db: DbClient,
+  updatedBy: string,
+  updates: readonly { id: string; sort_order: number }[],
+): Promise<{ updated: number }> {
+  const nodes = new Map<string, { id: string; sort_order: number }[]>();
+  for (const u of updates) {
+    const existing = await loadResponsibility(db, u.id);
+    if (!existing) throw new Error(`reorderResponsibilities: ${u.id} not found`);
+    const list = nodes.get(existing.node_id) ?? [];
+    list.push(u);
+    nodes.set(existing.node_id, list);
+  }
+  const now = new Date().toISOString();
+  let updated = 0;
+  for (const [nodeId, list] of nodes) {
+    for (const u of list) {
+      await db.execute({
+        sql: "UPDATE responsibilities SET sort_order = ?, updated_at = ? WHERE id = ?",
+        args: [u.sort_order, now, u.id],
+      });
+      updated += 1;
+    }
+    await writeAudit(db, updatedBy, "reorder_responsibilities", "node", nodeId, {
+      node_id: nodeId,
+      order: list.map((u) => ({ id: u.id, sort_order: u.sort_order })),
+    });
+  }
+  return { updated };
+}
+
 export async function updateResponsibility(
   db: DbClient,
   updatedBy: string,

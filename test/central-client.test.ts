@@ -427,6 +427,20 @@ describe("createHttpCentralClient", () => {
     assert.equal(c.getLegacySessionContent, undefined);
   });
 
+  it("nodeConfigs POSTs /nodes/config-batch once per 500 ids and returns the configs", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      { status: 200, json: { configs: [{ node_id: "N1", orientation: null, data_sources: [] }] } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const configs = await c.nodeConfigs!(["N1", "N2"]);
+    assert.equal(configs.length, 1);
+    assert.equal(configs[0].node_id, "N1");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://api.example.com/nodes/config-batch");
+    assert.equal(calls[0].method, "POST");
+    assert.deepEqual(JSON.parse(calls[0].body ?? "{}"), { node_ids: ["N1", "N2"] });
+  });
+
   it("orientation GETs /nodes/:id/orientation and returns null on 404 or a null orientation", async () => {
     const { fetchImpl, calls } = fakeFetch([
       { status: 200, json: { orientation: { node: { name: "N", type: "project" } } } },

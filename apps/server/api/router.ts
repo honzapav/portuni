@@ -46,6 +46,7 @@ import {
   handleListResponsibilities,
   handleUnassignResponsibility,
   handleUpdateResponsibility,
+  handleReorderResponsibilities,
 } from "./responsibilities.js";
 import {
   handleCreateDataSource,
@@ -79,6 +80,7 @@ import {
   handleFolderUrl,
   handleGetNode,
   handleGetNodeOrientation,
+  handleNodeConfigBatch,
   handleMoveNode,
   handlePatchNode,
   handlePositions,
@@ -403,6 +405,10 @@ async function routeResponsibilities(
     await handleCreateResponsibility(req, res, identity);
     return true;
   }
+  if (pathname === "/responsibilities/reorder" && method === "POST") {
+    await handleReorderResponsibilities(req, res, identity);
+    return true;
+  }
   if (pathname.startsWith("/responsibilities/")) {
     const id = decodeURIComponent(pathname.slice("/responsibilities/".length));
     if (method === "PATCH") {
@@ -660,6 +666,12 @@ async function routeNodes(
   }
   if (pathname === "/positions" && method === "POST") {
     await handlePositions(req, res, identity);
+    return true;
+  }
+  // The sync agent's boot reads every mirror's harness config in one
+  // request (client traffic contract, rule 6).
+  if (pathname === "/nodes/config-batch" && method === "POST") {
+    await handleNodeConfigBatch(req, res, identity);
     return true;
   }
   if (pathname === "/nodes" && method === "POST") {

@@ -27,6 +27,7 @@ import type { CentralClient } from "../domain/sync/central/client.js";
 import { CentralHttpError } from "../domain/sync/central/client.js";
 import {
   readFileContent,
+  readFileVersion,
   writeFileContent,
   FileContentError,
   type FileContentErrorCode,
@@ -97,6 +98,7 @@ import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import type {
   FileContentResponse,
+  FileVersionResponse,
   NodeMirrorResponse,
   PreviewAssetResponse,
   SyncStatusResponse,
@@ -1256,6 +1258,12 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
             // A .showtime deck reads as the preview.html it carries; the
             // reader never touches the DB when a mirror holds the file.
             const args = { userId: identity.userId, nodeId, relPath };
+            // The open-file poll asks for the version only (client traffic
+            // contract, rule 5): the hash of the mirror copy, no content.
+            if (url.searchParams.get("version_only") === "1") {
+              respondJson(res, 200, { version: await readFileVersion(args) } satisfies FileVersionResponse);
+              return true;
+            }
             const r = isShowtimePath(relPath)
               ? await readShowtimePreview(NO_DB, args)
               : await readFileContent(NO_DB, args);
@@ -1281,6 +1289,10 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           const filename = relPath.split("/").pop() ?? relPath;
           const mime = mimeFor(filename);
           const raw = await client.getFileRaw(nodeId, relPath);
+          if (url.searchParams.get("version_only") === "1") {
+            respondJson(res, 200, { version: raw.version } satisfies FileVersionResponse);
+            return true;
+          }
           if (isShowtimePath(relPath)) {
             let entry: Buffer | null = null;
             try {

@@ -3,7 +3,7 @@
 // Synchronizovat).
 import { displayError } from "../errors";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchFileContent, saveFileContent, FileConflictError } from "../api";
+import { fetchFileContent, fetchFileVersion, saveFileContent, FileConflictError } from "../api";
 
 export type EditorStatus =
   | { kind: "loading" }
@@ -107,9 +107,9 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
     if (nodeId == null || relPath == null || version == null) return;
     const id = setInterval(() => {
       if (document.hidden) return;
-      fetchFileContent(nodeId, relPath)
-        .then((r) => {
-          if (r.version !== versionRef.current) setExternalChange(true);
+      fetchFileVersion(nodeId, relPath)
+        .then((v) => {
+          if (v !== versionRef.current) setExternalChange(true);
         })
         .catch(() => undefined);
     }, 5000);

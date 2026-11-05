@@ -21,6 +21,7 @@ import {
 } from "../http/middleware.js";
 import {
   readFileContent,
+  readFileVersion,
   writeFileContent,
   createFile,
   FileContentError,
@@ -57,7 +58,8 @@ import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutation
 import { filterVisibleNodeIds } from "../auth/node-access.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
 import { guardFileWrite } from "./write-gate.js";
-import type { FileContentResponse, PreviewAssetResponse } from "../shared/api-types.js";
+import type { FileContentResponse,
+  FileVersionResponse, PreviewAssetResponse } from "../shared/api-types.js";
 import {
   fileCreateSchema,
   fileMoveSchema,
@@ -179,6 +181,18 @@ export async function handleGetFileContent(
     // Mirror present -> local read (unchanged). No mirror (central / VPS)
     // -> Drive-direct read against the routed remote.
     const readArgs = { userId: identity.userId, nodeId, relPath };
+    // The open-file poll asks for the version only (client traffic
+    // contract, rule 5): the hash, no content on the wire.
+    if (url.searchParams.get("version_only") === "1") {
+      const version = await byMirror(
+        identity,
+        nodeId,
+        () => readFileVersion(readArgs),
+        async () => (await readFileContentRemote(db, readArgs)).version,
+      );
+      respondJson(res, 200, { version } satisfies FileVersionResponse);
+      return;
+    }
     const r = await byMirror(
       identity,
       nodeId,

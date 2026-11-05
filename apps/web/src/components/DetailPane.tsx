@@ -92,6 +92,7 @@ import {
   deleteEdge,
   createResponsibility,
   updateResponsibility,
+  reorderResponsibilities,
   deleteResponsibility,
   assignResponsibility,
   unassignResponsibility,
@@ -2589,15 +2590,9 @@ function ResponsibilitiesEditor({
     next.splice(target, 0, moved);
     onError(null);
     try {
-      await Promise.all(
-        next
-          .map((r, i) =>
-            r.sort_order === i
-              ? null
-              : updateResponsibility(r.id, { sort_order: i }),
-          )
-          .filter((p): p is Promise<DetailResponsibility> => p !== null),
-      );
+      // One request for the whole order (client traffic contract, rule 6).
+      const updates = next.map((r, i) => ({ id: r.id, sort_order: i })).filter((_u, i) => next[i].sort_order !== i);
+      if (updates.length > 0) await reorderResponsibilities(updates);
       await onMutate();
     } catch (e) {
       onError(displayError(e));

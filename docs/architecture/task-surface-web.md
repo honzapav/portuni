@@ -402,6 +402,12 @@ this bound.
   responsibility, an attribute, a sync run) fetches the one node detail
   again; `graph` (edges, a move, sharing, an archive) reloads the graph
   (`graphNeedsReload`). `refetchAll` remains for a new organization only.
+- **One request where the server can answer a list** (client traffic
+  contract, rule 6): the Relace tab's resume-info (`POST
+  /sessions/resume-info`), a responsibility reorder (`POST
+  /responsibilities/reorder`), and the open-file poll's version check
+  (`GET /nodes/:id/file?version_only=1`, the hash alone, no content on the
+  wire).
 - **`registerSessionStarted`**, the single entry point for every
   `onSessionStarted` call site (Práce's `NewTaskButton`, Graf's
   `DetailPane`, the sidebar `+`, the Relace tab's "Navázat na handoff"):
