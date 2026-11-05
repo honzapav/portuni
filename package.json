@@ -48,7 +48,7 @@
     "@types/pg": "8.23.1",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",
-    "i18next-cli": "^1.74.1",
+    "i18next-cli": "^1.83.0",
     "simple-git-hooks": "^2.14.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
