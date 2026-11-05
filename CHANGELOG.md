@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.32.0](https://github.com/honzapav/portuni/compare/v0.31.0...v0.32.0) (2026-11-05)
+
+
+### Features
+
+* **web,server,desktop:** the client traffic contract — UI actions, shared data, mutations, batch routes and a change feed ([#649](https://github.com/honzapav/portuni/issues/649)) ([448b4ac](https://github.com/honzapav/portuni/commit/448b4ac978969026f7b5568ad5a9882cce617309))
+
+
+### Bug Fixes
+
+* **server:** teammates can delete, rename and create files ([#646](https://github.com/honzapav/portuni/issues/646)) ([1c47002](https://github.com/honzapav/portuni/commit/1c470023bd000460299db96917abbb644b91a461))
+
 ## [0.31.0](https://github.com/honzapav/portuni/compare/v0.30.2...v0.31.0) (2026-11-04)
 
 
