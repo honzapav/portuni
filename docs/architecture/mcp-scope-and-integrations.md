@@ -24,9 +24,9 @@ per tool and REST route, `node-access.ts` decides node visibility.
 | Tier | Grants | Env var (central) |
 |---|---|---|
 | `read` | reads only; no group needed | — |
-| `write` | create/update nodes, edges, actors, responsibilities, data sources, tools, events, files | `PORTUNI_GROUPS_WRITE` |
+| `write` | create/update nodes, edges, actors, responsibilities, data sources, tools, events, files (including deleting them) | `PORTUNI_GROUPS_WRITE` |
 | `manage` | `move_node`, sharing (`PUT /nodes/:id/access`, access requests), positions | `PORTUNI_GROUPS_MANAGE` |
-| `admin` | deletes, users, `portuni_setup_remote`, routing policy | `PORTUNI_GROUPS_ADMIN` |
+| `admin` | deleting nodes, actors, responsibilities, data sources and tools, users, `portuni_setup_remote`, routing policy | `PORTUNI_GROUPS_ADMIN` |
 
 Each `PORTUNI_GROUPS_*` value is a comma-separated list of group emails.
 A personal workspace has one unscoped identity; the tiers only bite on

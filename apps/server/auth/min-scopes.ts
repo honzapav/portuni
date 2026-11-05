@@ -61,6 +61,9 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_move_file: "write",
   portuni_adopt_files: "write",
   portuni_rename_folder: "write",
+  // Removing a file is everyday file work, unlike deleting a node or actor.
+  portuni_delete_file: "write",
+  portuni_delete_files: "write",
 
   // --- manage ---
   portuni_move_node: "manage",
@@ -73,8 +76,6 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_delete_node: "admin",
   portuni_delete_actor: "admin",
   portuni_delete_responsibility: "admin",
-  portuni_delete_file: "admin",
-  portuni_delete_files: "admin",
 };
 
 // ---------------------------------------------------------------------------
@@ -150,7 +151,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/nodes\/[^/]+\/files\/[^/]+\/rename$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files\/[^/]+\/move$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files\/[^/]+\/resolve$/.test(pathname) && m === "POST") return "write";
-  if (/^\/nodes\/[^/]+\/files\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";
+  if (/^\/nodes\/[^/]+\/files\/[^/]+$/.test(pathname) && m === "DELETE") return "write";
 
   // --- Sync/mirror triggers ---
   if (/^\/nodes\/[^/]+\/sync$/.test(pathname) && m === "POST") return "manage";
@@ -266,8 +267,8 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/runners\/instances\/[^/]+\/org-default$/.test(pathname) && m === "PUT") return "write";
   if (/^\/runners\/org-defaults\/[^/]+$/.test(pathname) && m === "DELETE") return "write";
   if (/^\/runners\/instances\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
-  // Same tier as deleting an actor/node/responsibility/tool/data source --
-  // deletion is admin-only across every entity in this table.
+  // Same tier as deleting an actor/node/responsibility/tool/data source;
+  // files are the one deletion at the write tier.
   if (/^\/runners\/instances\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";
 
   // --- Hosts (#578): a device claims its own records under its previous ids ---

@@ -287,20 +287,20 @@ describe("REST write gate: graph-plane mutations", () => {
     assert.equal(r.statusCode, 403, r.body);
   });
 
-  it("POST /nodes/:id/files (create): device_token identity is refused before reaching the mirrorless remote-create path", async () => {
+  it("POST /nodes/:id/files (create) stays ungated for device_token: the sync agent's createFile rides it", async () => {
     const r = await call("POST", `/nodes/${nodeId}/files`, deviceTokenIdentity, {
       filename: "note.md",
       section: "wip",
       content: "hi",
     });
-    assert.equal(r.statusCode, 403, r.body);
+    assert.notEqual(r.statusCode, 403, r.body);
   });
 
-  it("POST /nodes/:id/files/:fileId/rename: device_token identity is refused", async () => {
+  it("POST /nodes/:id/files/:fileId/rename stays ungated for device_token: the sync agent's renameFile rides it", async () => {
     const r = await call("POST", `/nodes/${nodeId}/files/${ulid()}/rename`, deviceTokenIdentity, {
       new_filename: "renamed.md",
     });
-    assert.equal(r.statusCode, 403, r.body);
+    assert.notEqual(r.statusCode, 403, r.body);
   });
 
   it("POST /nodes/:id/file (PUT content) stays ungated for device_token: it is the central-mode sync agent's own channel", async () => {
@@ -342,6 +342,153 @@ describe("REST write gate: graph-plane mutations", () => {
     assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
     assert.deepEqual(JSON.parse(r.body), { updated: 1 });
   });
+});
+
+// File mutations act on the file's own node, whatever node the URL names, and
+// only a bare device token (the sync agent) skips the write gate.
+describe("REST file mutations: authorized on the file's own node", () => {
+  const OTHER_USER = "01OTHER000000000000000000";
+  const teammate: RequestIdentity = { ...deviceTokenIdentity, userId: OTHER_USER, globalScope: "write" };
+  let db: DbClient;
+  let workspace: string;
+  let visibleNodeId: string;
+  let privateNodeId: string;
+  let fileId: string;
+  let visibleFileId: string;
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-api-file-node-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    db = await openTestDb();
+    await ensureSchemaOn(db);
+    setDbForTesting(db);
+    await db.execute({
+      sql: "INSERT INTO users (id, email, name) VALUES (?, 'other@x.com', 'Other')",
+      args: [OTHER_USER],
+    });
+    visibleNodeId = ulid();
+    privateNodeId = ulid();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
+            VALUES (?, 'project', 'Open', 'active', 'team', 'open', ?),
+                   (?, 'project', 'Secret', 'active', 'private', 'secret', ?)`,
+      args: [visibleNodeId, SOLO, privateNodeId, SOLO],
+    });
+    fileId = ulid();
+    await db.execute({
+      sql: `INSERT INTO files (id, node_id, filename, remote_path, status, created_by)
+            VALUES (?, ?, 'secret.md', 'x/wip/secret.md', 'wip', ?)`,
+      args: [fileId, privateNodeId, SOLO],
+    });
+    visibleFileId = ulid();
+    await db.execute({
+      sql: `INSERT INTO files (id, node_id, filename, remote_path, status, created_by)
+            VALUES (?, ?, 'open.md', 'x/wip/open.md', 'wip', ?)`,
+      args: [visibleFileId, visibleNodeId, SOLO],
+    });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  async function fileRow(): Promise<{ filename: string } | undefined> {
+    const r = await db.execute({ sql: "SELECT filename FROM files WHERE id = ?", args: [fileId] });
+    return r.rows[0] as unknown as { filename: string } | undefined;
+  }
+
+  it("DELETE through a visible node cannot reach a file on a hidden node", async () => {
+    const r = await call("DELETE", `/nodes/${visibleNodeId}/files/${fileId}?confirmed=true`, teammate);
+    assert.equal(r.statusCode, 404, r.body);
+    assert.ok(await fileRow());
+  });
+
+  it("rename through a visible node cannot reach a file on a hidden node", async () => {
+    const r = await call("POST", `/nodes/${visibleNodeId}/files/${fileId}/rename`, teammate, {
+      new_filename: "stolen.md",
+    });
+    assert.equal(r.statusCode, 404, r.body);
+    assert.equal((await fileRow())?.filename, "secret.md");
+  });
+
+  it("move through a visible node cannot reach a file on a hidden node", async () => {
+    const r = await call("POST", `/nodes/${visibleNodeId}/files/${fileId}/move`, teammate, {
+      new_section: "outputs",
+      confirmed: true,
+    });
+    assert.equal(r.statusCode, 404, r.body);
+  });
+
+  it("a file on a hidden node answers exactly like an unknown file, naming no node", async () => {
+    for (const [method, suffix, body] of [
+      ["DELETE", "?confirmed=true", undefined],
+      ["POST", "/rename", { new_filename: "x.md" }],
+      ["POST", "/move", { new_section: "outputs", confirmed: true }],
+    ] as const) {
+      const hidden = await call(method, `/nodes/${visibleNodeId}/files/${fileId}${suffix}`, teammate, body);
+      const unknownId = ulid();
+      const unknown = await call(method, `/nodes/${visibleNodeId}/files/${unknownId}${suffix}`, teammate, body);
+      assert.equal(hidden.statusCode, 404, hidden.body);
+      assert.equal(unknown.statusCode, 404, unknown.body);
+      assert.ok(!hidden.body.includes(privateNodeId), hidden.body);
+      const shape = (b: string, id: string) => {
+        const { request_id: _id, ...rest } = JSON.parse(b.replaceAll(id, "F")) as Record<string, unknown>;
+        return rest;
+      };
+      assert.deepEqual(shape(hidden.body, fileId), shape(unknown.body, unknownId));
+    }
+  });
+
+  it("a delete replay confirms only the caller's own delete", async () => {
+    const goneId = ulid();
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail)
+            VALUES (?, ?, 'sync_delete_remote', 'file', ?, '{}')`,
+      args: [ulid(), SOLO, goneId],
+    });
+    const stranger = await call("DELETE", `/nodes/${visibleNodeId}/files/${goneId}?confirmed=true`, teammate);
+    assert.equal(stranger.statusCode, 404, stranger.body);
+    const own = await call("DELETE", `/nodes/${visibleNodeId}/files/${goneId}?confirmed=true`, deviceTokenIdentity);
+    assert.equal(own.statusCode, 200, own.body);
+    assert.equal((JSON.parse(own.body) as { already_deleted?: boolean }).already_deleted, true);
+  });
+
+  for (const confirmed of [false, true]) {
+    it(`move cannot put a file into a hidden node (confirmed: ${confirmed})`, async () => {
+      const r = await call("POST", `/nodes/${visibleNodeId}/files/${visibleFileId}/move`, teammate, {
+        new_section: "wip",
+        new_node_id: privateNodeId,
+        confirmed,
+      });
+      assert.equal(r.statusCode, 404, r.body);
+      const row = await db.execute({ sql: "SELECT node_id FROM files WHERE id = ?", args: [visibleFileId] });
+      assert.equal(row.rows[0].node_id, visibleNodeId);
+    });
+  }
+
+  for (const [label, method, path, body] of [
+    ["create", "POST", () => `/nodes/${visibleNodeId}/files`, { filename: "n.md", section: "wip", content: "x" }],
+    ["rename", "POST", () => `/nodes/${visibleNodeId}/files/${ulid()}/rename`, { new_filename: "n.md" }],
+    ["move", "POST", () => `/nodes/${visibleNodeId}/files/${ulid()}/move`, { new_section: "outputs" }],
+    ["delete", "DELETE", () => `/nodes/${visibleNodeId}/files/${ulid()}?confirmed=true`, undefined],
+  ] as const) {
+    it(`${label}: oauth_grant (chat connector) identity is refused`, async () => {
+      const r = await call(method, path(), oauthGrantIdentity, body);
+      assert.equal(r.statusCode, 403, r.body);
+    });
+
+    it(`${label}: env request without the webview proof is refused`, async () => {
+      const r = await call(method, path(), uiIdentity, body);
+      assert.equal(r.statusCode, 403, r.body);
+    });
+
+    it(`${label}: a device token carrying an unresolved spawn id is refused`, async () => {
+      const r = await call(method, path(), deviceTokenIdentity, body, { "x-portuni-spawn-id": ulid() });
+      assert.equal(r.statusCode, 403, r.body);
+    });
+  }
 });
 
 // #210 point 2 / #213: env auth mode resolves every request to the same

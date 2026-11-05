@@ -9,16 +9,15 @@
 // Deliberately NOT applied to the file-content/sync-plane REST endpoints
 // that CentralClient (domain/sync/central/client.ts, "Auth: a per-user
 // device token") itself calls to drive the central-mode sync agent's
-// deterministic reconciliation -- PUT file content, register-file(s),
-// move/delete file records (handleMoveFile/handleDeleteFile's mirror-less
-// branch is exactly CentralClient.moveFileRecord/deleteFileRecord), sync-info,
-// sync-run, remote-sweep. That reconciliation has no per-request home-node/
+// deterministic reconciliation and the desktop's file actions -- PUT file
+// content, create, register-file(s), rename/move/delete file records
+// (CentralClient.createFile/renameFile/moveFileRecord/deleteFileRecord),
+// sync-info, sync-run, remote-sweep. That reconciliation has no per-request home-node/
 // session context to check against -- gating it here would refuse the
 // agent's own already-approved sync traffic outright (its write-scope check
 // already happened once, at the MCP tool call that triggered the sync, or
 // the mirror watcher acting on the device's own disk state -- see
-// CLAUDE.md's "File state is deterministic" gotcha). File lifecycle
-// endpoints CentralClient never calls (create, rename) stay gated below.
+// CLAUDE.md's "File state is deterministic" gotcha).
 // #211 (verification follow-up to #203) asked to also gate the routes above
 // on the strength of "a device-token agent can still use them" -- but
 // test/api-write-gate.test.ts already asserts PUT /nodes/:id/file passes for
@@ -31,10 +30,10 @@
 // watcher's session-less reconcile loop has no session id to forward at
 // all). Left as-is; see the comment on issue #210 for the full reasoning.
 //
-// #212: those same file-plane routes are gated for ONE identity shape --
-// a headless device token (RequestIdentity.headless, admin-minted for
-// unattended/RALPH-style sessions, never self-declared) -- via the
-// dedicated guardHeadlessFileWrite below, not guardRestNodeWrite directly.
+// #212: those same file-plane routes go through guardFileWrite below, which
+// exempts only the bare device token. A headless device token
+// (RequestIdentity.headless, admin-minted for unattended/RALPH-style
+// sessions, never self-declared) is gated like any other caller.
 // A headless credential is not CentralClient's teammate-sync identity (that
 // stays a plain, non-headless device token), so narrowing it to its bound
 // session's home node here closes the hole without touching the exemption
@@ -260,28 +259,22 @@ export async function guardRestNodeWrite(
   return false;
 }
 
-// Headless-only gate for the file-plane routes that stay otherwise ungated
-// above (PUT file content, register/register-batch, move, delete, sync,
-// remote-sweep) -- CentralClient's own teammate-sync channel calls these
-// with a bare (non-headless) device token and must keep working unchanged,
-// so this deliberately does NOT call guardRestNodeWrite unconditionally
-// (that would 403 every teammate's sync run, see the header comment). It
-// only enforces write scope when the caller IS a headless device token
-// (#212): an admin-minted, unattended credential with no elicitation
-// channel, distinguishable from a teammate's device token via
-// RequestIdentity.headless. resolveRestWriteContext already resolves a
-// headless identity to its bound session's write scope via
-// X-Portuni-Spawn-Id when present (home node only, headless sessions never
-// expand mid-run) and refuses outright with an empty scope when absent --
-// exactly the "resolve via the session it's bound to, otherwise refuse"
-// rule this issue asks for.
-export async function guardHeadlessFileWrite(
+// Gate for the file-plane routes (PUT file content, create, register/
+// register-batch, rename, move, delete, sync, remote-sweep). A bare device
+// token passes: that is CentralClient's own teammate-sync channel, which has
+// no session to check against (see the header comment). Every other caller
+// takes guardRestNodeWrite, so a headless token is held to its bound session
+// (#212), a connector (oauth_grant) is refused, and an env request still
+// needs its webview proof.
+export async function guardFileWrite(
   req: Pick<IncomingMessage, "headers">,
   res: ServerResponse,
   identity: RequestIdentity,
   nodeId: string,
 ): Promise<boolean> {
-  if (!(identity.via === "device_token" && identity.headless === true)) return true;
+  if (identity.via === "device_token" && !identity.headless && !spawnSessionIdFromRequest(req)) {
+    return true;
+  }
   return guardRestNodeWrite(req, res, identity, nodeId);
 }
 

@@ -111,10 +111,10 @@ the `node_access` ACL — see
 
 | Group env var | Portuni scope | Capabilities |
 |---|---|---|
-| `PORTUNI_GROUPS_ADMIN` | admin | Everything: deletes, user management, remotes, routing policy; sees every node |
+| `PORTUNI_GROUPS_ADMIN` | admin | Everything: deleting nodes, actors and other graph entities, user management, remotes, routing policy; sees every node |
 | `PORTUNI_GROUPS_MANAGE` | manage | write + move nodes between organizations, node sharing (access lists, access requests), graph positions |
-| `PORTUNI_GROUPS_WRITE` | write | Create and edit nodes, edges, actors, responsibilities, data sources and tools; log events, resolve, supersede, files (store, pull, move, snapshot) |
-| (any authenticated user) | read | Get context, search, list nodes, get node, create nodes |
+| `PORTUNI_GROUPS_WRITE` | write | Create and edit nodes, edges, actors, responsibilities, data sources and tools; log events, resolve, supersede, files (store, pull, move, rename, delete, snapshot) |
+| (any authenticated user) | read | Get context, search, list nodes, get node |
 
 Highest matching group wins. Admin-scoped users bypass all node-level group checks.
 

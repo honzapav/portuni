@@ -58,7 +58,7 @@ type NodeWriteGuard = (
 ) => Promise<boolean>;
 
 // openVisibleNode followed by the route's write gate (guardRestNodeWrite or
-// guardHeadlessFileWrite), which answers its own refusal.
+// guardFileWrite), which answers its own refusal.
 export async function openWritableNode(
   req: IncomingMessage,
   res: ServerResponse,

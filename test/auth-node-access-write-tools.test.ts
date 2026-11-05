@@ -29,13 +29,8 @@ import {
 } from "../apps/server/mcp/tools/sync-snapshot.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 
-// portuni_delete_file requires globalScope 'admin' at the MCP tool-scope
-// gate (TOOL_MIN_SCOPE), and an 'admin' identity also bypasses node-level
-// ACLs entirely (canSeeNode's admin short-circuit) -- so there is no
-// identity that both passes the gate and is blocked by group visibility.
-// To exercise the access check this issue adds, register just the file
-// tools directly (bypassing gateToolsByScope) so a non-admin identity can
-// reach the handler and prove the nodeVisibleTo guard fires on its own.
+// Registers just the file tools directly (bypassing gateToolsByScope) so the
+// handler is reached and the nodeVisibleTo guard is proven on its own.
 async function connectRawFileTools(identity: RequestIdentity): Promise<McpClient> {
   // "env": historical unscoped behavior -- these tests deliberately bypass
   // the normal tool-scope gate to isolate the group-visibility check, and
@@ -404,7 +399,7 @@ describe("Access checks on the eight previously-unguarded write tools", () => {
     assert.ok(adoptPayload.adopted.some((a) => a.remote_path === adoptRemotePath));
   });
 
-  test("portuni_delete_file: non-member gets not-found, member succeeds (raw handler, bypassing the admin-only tool gate)", async () => {
+  test("portuni_delete_file: non-member gets not-found, member succeeds (raw handler, bypassing the tool gate)", async () => {
     const delSrc = join(workspace, "delete-src.md");
     await writeFile(delSrc, "delete me");
     const stored = await memberClient.callTool({
