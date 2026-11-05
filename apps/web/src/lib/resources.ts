@@ -27,9 +27,16 @@ import {
 } from "./runners";
 import { createKeyedResource, createResource } from "./resource";
 import { createRunnerResources } from "./runner-resources";
+import { onNodeChanges } from "./node-changes";
 import type { AccessRequest, AccountUser, NodeAccessResponse } from "../types";
 
 export const meResource = createResource<MeResponse>(fetchMe);
+
+export function invalidateRegistriesOnFocus(): void {
+  actorsResource.invalidate();
+  runnersResource.invalidate();
+  runnerInstancesResource.invalidate();
+}
 export const actorsResource = createResource<Actor[]>(() => fetchActors());
 export const usersResource = createResource<User[]>(fetchUsers);
 export const accountUsersResource = createResource<AccountUser[]>(fetchAccountUsers);
@@ -56,3 +63,27 @@ export const folderUrlByNode = createKeyedResource<string, FolderUrlValue>(async
 });
 export const nodeAccessByNode = createKeyedResource<string, NodeAccessResponse>(fetchNodeAccess);
 export const nodeAccessRequestsByNode = createKeyedResource<string, AccessRequest[]>(fetchNodeAccessRequests);
+
+// The change feed (lib/node-changes.ts): a node's own cached answers are
+// forgotten when it changes anywhere; a reset forgets every per-node
+// answer and the actor registry (an agent or a teammate may have added
+// one). A consumer that is mounted reads again; nothing else fetches.
+onNodeChanges((batch) => {
+  if (batch.reset) {
+    folderUrlByNode.invalidate();
+    nodeAccessByNode.invalidate();
+    nodeAccessRequestsByNode.invalidate();
+    actorsResource.invalidate();
+    return;
+  }
+  for (const c of batch.changes) {
+    if (c.kind !== "node") continue;
+    folderUrlByNode.invalidate(c.node_id);
+    nodeAccessByNode.invalidate(c.node_id);
+    nodeAccessRequestsByNode.invalidate(c.node_id);
+  }
+});
+
+// On a window focus the registries that change out of sight are forgotten
+// (an actor created by a teammate, a runner logged into meanwhile); a
+// mounted consumer reads again.

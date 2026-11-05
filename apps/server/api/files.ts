@@ -163,6 +163,19 @@ export async function handleGetFileContent(
       });
       return;
     }
+    const readArgs = { userId: identity.userId, nodeId, relPath };
+    // The open-file poll asks for the version only (client traffic
+    // contract, rule 5): the hash, no content on the wire.
+    if (url.searchParams.get("version_only") === "1") {
+      const version = await byMirror(
+        identity,
+        nodeId,
+        () => readFileVersion(readArgs),
+        async () => (await readFileContentRemote(db, readArgs)).version,
+      );
+      respondJson(res, 200, { version } satisfies FileVersionResponse);
+      return;
+    }
     // A Showtime deck is a zip the editor cannot show; what it reads as is
     // the rendered preview.html Showtime packs into it (mirror or remote,
     // the reader picks). Read-only: PUT refuses the path below.
@@ -180,19 +193,6 @@ export async function handleGetFileContent(
     }
     // Mirror present -> local read (unchanged). No mirror (central / VPS)
     // -> Drive-direct read against the routed remote.
-    const readArgs = { userId: identity.userId, nodeId, relPath };
-    // The open-file poll asks for the version only (client traffic
-    // contract, rule 5): the hash, no content on the wire.
-    if (url.searchParams.get("version_only") === "1") {
-      const version = await byMirror(
-        identity,
-        nodeId,
-        () => readFileVersion(readArgs),
-        async () => (await readFileContentRemote(db, readArgs)).version,
-      );
-      respondJson(res, 200, { version } satisfies FileVersionResponse);
-      return;
-    }
     const r = await byMirror(
       identity,
       nodeId,

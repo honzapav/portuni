@@ -9,30 +9,47 @@
 // A value is never `null`: a loader whose answer can be "nothing" wraps it
 // (`{ defaults: null }`), because null means "not loaded" here.
 
+// A failure blocks a retry for this long, then a mounted view asks again
+// (a sidecar still starting, a cooldown, a blip must not empty a picker
+// for the rest of the window's life).
+export const ERROR_RETRY_MS = 15_000;
+
 export type Resource<T> = {
   // The value, else the in-flight answer, else a fresh load.
   get(): Promise<T>;
   // The stored value or null; never loads.
   peek(): T | null;
-  // The last load's failure, until a load succeeds or the value is
-  // invalidated; a view shows it instead of loading forever.
+  // The last load's failure, until a load succeeds, the value is
+  // invalidated, or ERROR_RETRY_MS has passed; a view shows it instead of
+  // loading forever, and asks again after.
   error(): unknown | null;
+  // Counts invalidations: a mounted view keys its load effect on it, so an
+  // invalidation during its first flight loads again.
+  version(): number;
   // Stores an answer a mutation returned.
   set(value: T): void;
   // Forgets the value; an answer in flight is handed to its callers but
-  // not stored.
+  // not stored, and the next get starts a fresh load.
   invalidate(): void;
   subscribe(cb: () => void): () => void;
   resetForTesting(): void;
 };
 
-export function createResource<T>(load: () => Promise<T>): Resource<T> {
+export function createResource<T>(load: () => Promise<T>, opts: { now?: () => number } = {}): Resource<T> {
+  const now = opts.now ?? (() => Date.now());
   let value: T | null = null;
-  let lastError: unknown | null = null;
+  let lastError: { error: unknown; at: number } | null = null;
   let flight: { promise: Promise<T>; stale: boolean } | null = null;
+  let version = 0;
   const listeners = new Set<() => void>();
   const notify = () => {
     for (const cb of listeners) cb();
+  };
+  const dropFlight = () => {
+    if (flight) {
+      flight.stale = true;
+      flight = null;
+    }
   };
   return {
     get() {
@@ -52,7 +69,7 @@ export function createResource<T>(load: () => Promise<T>): Resource<T> {
         (err: unknown) => {
           if (flight === entry) flight = null;
           if (!entry.stale) {
-            lastError = err;
+            lastError = { error: err, at: now() };
             notify();
           }
           throw err;
@@ -65,18 +82,23 @@ export function createResource<T>(load: () => Promise<T>): Resource<T> {
       return value;
     },
     error() {
-      return lastError;
+      if (lastError === null) return null;
+      return now() - lastError.at < ERROR_RETRY_MS ? lastError.error : null;
+    },
+    version() {
+      return version;
     },
     set(v) {
       value = v;
       lastError = null;
-      if (flight) flight.stale = true;
+      dropFlight();
       notify();
     },
     invalidate() {
       value = null;
       lastError = null;
-      if (flight) flight.stale = true;
+      dropFlight();
+      version += 1;
       notify();
     },
     subscribe(cb) {
@@ -86,8 +108,7 @@ export function createResource<T>(load: () => Promise<T>): Resource<T> {
     resetForTesting() {
       value = null;
       lastError = null;
-      if (flight) flight.stale = true;
-      flight = null;
+      dropFlight();
       listeners.clear();
     },
   };
@@ -97,6 +118,7 @@ export type KeyedResource<K extends string, T> = {
   get(key: K): Promise<T>;
   peek(key: K): T | null;
   error(key: K): unknown | null;
+  version(key: K): number;
   set(key: K, value: T): void;
   // No key: every key.
   invalidate(key?: K): void;
@@ -123,6 +145,7 @@ export function createKeyedResource<K extends string, T>(load: (key: K) => Promi
     get: (key) => resourceFor(key).get(),
     peek: (key) => byKey.get(key)?.peek() ?? null,
     error: (key) => byKey.get(key)?.error() ?? null,
+    version: (key) => byKey.get(key)?.version() ?? 0,
     set: (key, value) => resourceFor(key).set(value),
     invalidate(key) {
       if (key === undefined) {

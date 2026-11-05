@@ -12,6 +12,9 @@ import { respondApiError, respondError, respondJson, type RequestIdentity } from
 import type { ChangesResponse } from "../shared/api-types.js";
 
 const CHANGES_MAX_WAIT_S = 25;
+// Once woken, the request stays open this long so a burst of writes
+// answers as one batch instead of one request per write per device.
+const CHANGES_SETTLE_MS = 750;
 
 export async function handleGetChanges(
   req: IncomingMessage,
@@ -29,7 +32,11 @@ export async function handleGetChanges(
     }
     let r = changesSince(since);
     if (!r.reset && r.changes.length === 0 && wait > 0) {
-      await waitForChanges(since, wait * 1000);
+      const gone = new AbortController();
+      req.on("close", () => gone.abort());
+      const woken = await waitForChanges(since, wait * 1000, gone.signal);
+      if (gone.signal.aborted) return;
+      if (woken) await new Promise<void>((resolve) => setTimeout(resolve, CHANGES_SETTLE_MS).unref?.());
       r = changesSince(since);
     }
     const ids = [...new Set(r.changes.map((c) => c.node_id))];

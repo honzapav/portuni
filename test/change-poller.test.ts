@@ -5,7 +5,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createChangePoller } from "../apps/server/boot/change-poller.js";
+import { MIN_INTERVAL_MS, createChangePoller } from "../apps/server/boot/change-poller.js";
 import { CentralHttpError } from "../apps/server/domain/sync/central/client.js";
 import type { ChangesResponse } from "../apps/server/shared/api-types.js";
 
@@ -34,7 +34,7 @@ function harness(steps: Step[]) {
 }
 
 describe("createChangePoller", () => {
-  it("passes the cursor along and delivers the changes", async () => {
+  it("passes the cursor along, delivers the changes, and paces itself after an answer that carried some", async () => {
     const h = harness([
       { cursor: "c1", reset: true, changes: [] },
       { cursor: "c2", reset: false, changes: [{ node_id: "n1", kind: "node", seq: 1 }] },
@@ -46,7 +46,28 @@ describe("createChangePoller", () => {
       { changes: [], reset: true },
       { changes: [{ node_id: "n1", kind: "node", seq: 1 }], reset: false },
     ]);
-    assert.deepEqual(h.slept, []);
+    // A burst of writes on central answers every poll at once; the pause
+    // after a non-empty answer bounds this device to one request per
+    // MIN_INTERVAL_MS during it, whatever the server does.
+    assert.deepEqual(h.slept, [MIN_INTERVAL_MS]);
+  });
+
+  it("an answer that lands after stop() is not delivered and the loop ends", async () => {
+    let release!: () => void;
+    const delivered: unknown[] = [];
+    const poller = createChangePoller({
+      fetchChanges: () =>
+        new Promise((resolve) => {
+          release = () => resolve({ cursor: "c1", reset: false, changes: [{ node_id: "n1", kind: "node", seq: 1 }] });
+        }),
+      onChanges: (c) => delivered.push(c),
+      sleep: async () => undefined,
+    });
+    const run = poller.run();
+    poller.stop();
+    release();
+    await run;
+    assert.deepEqual(delivered, []);
   });
 
   it("backs off after a failure and keeps the cursor", async () => {

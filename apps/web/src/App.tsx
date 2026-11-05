@@ -43,6 +43,7 @@ import { deriveWorkspaceNodeRows } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
 import { FALLBACK_POLL_MS, focusRefetchTargets, nodeDetailPollTarget } from "./lib/poll-policy";
 import { nodeChangeTouches, onNodeChanges } from "./lib/node-changes";
+import { invalidateRegistriesOnFocus } from "./lib/resources";
 import { isRateLimited } from "./lib/rate-limit-cooldown";
 import { invoke } from "./lib/tauri-invoke";
 import { useAppUpdate } from "./lib/updater";
@@ -556,7 +557,17 @@ export default function App() {
         applyNodeDetail(change.node);
         if (!graphNeedsReload(change)) setGraph((g) => (g ? patchGraphNode(g, change.node!) : g));
       } else if (nodeId && !change?.archived) {
-        tasks.push(fetchNode(nodeId).then(applyNodeDetail));
+        // A refetch that fails (the node purged meanwhile, a cooldown) is
+        // not the mutation failing: the write landed, the view keeps what
+        // it has until the next change.
+        tasks.push(
+          fetchNode(nodeId)
+            .then((n) => {
+              applyNodeDetail(n);
+              if (!graphNeedsReload(change)) setGraph((g) => (g ? patchGraphNode(g, n) : g));
+            })
+            .catch(() => undefined),
+        );
       }
       await Promise.all(tasks);
     },
@@ -697,11 +708,22 @@ export default function App() {
   // (sync status, the open file, the sync counter) listens on its own.
   const nodeChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nodeChangeQueue = useRef(new Set<string>());
+  // Only the view on screen refetches at once; the other view's detail is
+  // marked stale and fetched when that view comes back.
+  const staleDetailRef = useRef<{ graph: boolean; workspace: boolean }>({ graph: false, workspace: false });
+  const viewRef = useRef(view);
+  viewRef.current = view;
   useEffect(() => {
     return onNodeChanges((batch) => {
-      const wanted = [selectedIdRef.current, selectedWorkspaceNodeIdRef.current];
-      for (const id of wanted) {
-        if (id && nodeChangeTouches(batch, id, "node")) nodeChangeQueue.current.add(id);
+      const graphId = selectedIdRef.current;
+      const workspaceId = selectedWorkspaceNodeIdRef.current;
+      if (graphId && nodeChangeTouches(batch, graphId, "node")) {
+        if (viewRef.current === "graph") nodeChangeQueue.current.add(graphId);
+        else staleDetailRef.current.graph = true;
+      }
+      if (workspaceId && nodeChangeTouches(batch, workspaceId, "node")) {
+        if (viewRef.current === "workspace") nodeChangeQueue.current.add(workspaceId);
+        else staleDetailRef.current.workspace = true;
       }
       if (nodeChangeQueue.current.size === 0 || nodeChangeTimer.current !== null) return;
       nodeChangeTimer.current = setTimeout(() => {
@@ -712,6 +734,16 @@ export default function App() {
       }, 300);
     });
   }, [handleNodeChanged]);
+  useEffect(() => {
+    if (view === "graph" && staleDetailRef.current.graph) {
+      staleDetailRef.current.graph = false;
+      void handleNodeChanged(selectedIdRef.current);
+    }
+    if (view === "workspace" && staleDetailRef.current.workspace) {
+      staleDetailRef.current.workspace = false;
+      void handleNodeChanged(selectedWorkspaceNodeIdRef.current);
+    }
+  }, [view, handleNodeChanged]);
 
   useEffect(() => {
     return sessionsClient.onSessionStates((states) => {
@@ -929,6 +961,9 @@ export default function App() {
         selectedId,
         selectedWorkspaceNodeId,
       });
+      // Registries that change out of sight are forgotten on focus; a
+      // mounted consumer reads again (lib/resources.ts).
+      if (targets.graph) invalidateRegistriesOnFocus();
       if (targets.graph) {
         fetchGraph()
           .then((g) => {

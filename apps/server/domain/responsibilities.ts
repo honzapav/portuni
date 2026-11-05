@@ -132,13 +132,15 @@ export async function reorderResponsibilities(
   const now = new Date().toISOString();
   let updated = 0;
   for (const [nodeId, list] of nodes) {
-    for (const u of list) {
-      await db.execute({
+    // One batch per node: a failure part-way leaves no half order.
+    await db.batch(
+      list.map((u) => ({
         sql: "UPDATE responsibilities SET sort_order = ?, updated_at = ? WHERE id = ?",
         args: [u.sort_order, now, u.id],
-      });
-      updated += 1;
-    }
+      })),
+      "write",
+    );
+    updated += list.length;
     await writeAudit(db, updatedBy, "reorder_responsibilities", "node", nodeId, {
       node_id: nodeId,
       order: list.map((u) => ({ id: u.id, sort_order: u.sort_order })),

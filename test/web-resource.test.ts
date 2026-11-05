@@ -5,7 +5,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createKeyedResource, createResource } from "../apps/web/src/lib/resource.js";
+import { ERROR_RETRY_MS, createKeyedResource, createResource } from "../apps/web/src/lib/resource.js";
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -107,6 +107,47 @@ describe("createResource error state", () => {
     assert.equal(res.error(), null);
     res.invalidate();
     assert.equal(res.error(), null);
+  });
+
+  it("a failure is forgotten after ERROR_RETRY_MS, so a mounted view asks again", async () => {
+    let now = 1_000;
+    let loads = 0;
+    const res = createResource(
+      () => {
+        loads += 1;
+        return loads === 1 ? Promise.reject(new Error("down")) : Promise.resolve("ok");
+      },
+      { now: () => now },
+    );
+    await assert.rejects(res.get());
+    assert.ok(res.error() !== null);
+    now += ERROR_RETRY_MS;
+    assert.equal(res.error(), null, "an old failure no longer blocks a retry");
+    assert.equal(await res.get(), "ok");
+  });
+
+  it("invalidate during the first flight starts a fresh load for the next get", async () => {
+    const d = deferred<string>();
+    let loads = 0;
+    const res = createResource(() => {
+      loads += 1;
+      return loads === 1 ? d.promise : Promise.resolve("fresh");
+    });
+    const first = res.get();
+    res.invalidate();
+    const second = res.get();
+    assert.equal(loads, 2, "the stale flight is not handed out again");
+    d.resolve("stale");
+    assert.equal(await first, "stale");
+    assert.equal(await second, "fresh");
+    assert.equal(res.peek(), "fresh");
+  });
+
+  it("version counts invalidations, so a mounted view re-runs its load effect", () => {
+    const res = createResource(() => Promise.resolve("x"));
+    const v0 = res.version();
+    res.invalidate();
+    assert.equal(res.version(), v0 + 1);
   });
 });
 

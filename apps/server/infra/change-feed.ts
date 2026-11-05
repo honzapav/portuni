@@ -69,20 +69,25 @@ export function changesSince(cursor: string | null, max = 500): ChangesSince {
 }
 
 // Resolves true as soon as something is published after `cursor`, false
-// when `timeoutMs` passes first.
-export function waitForChanges(cursor: string | null, timeoutMs: number): Promise<boolean> {
+// when `timeoutMs` passes first or `signal` aborts (the reader went away).
+// The timer never holds the process open.
+export function waitForChanges(cursor: string | null, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
   const after = parseCursor(cursor);
   if (after === null || after < seq) return Promise.resolve(true);
+  if (signal?.aborted) return Promise.resolve(false);
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      waiters.delete(onChange);
-      resolve(false);
-    }, timeoutMs);
-    const onChange = () => {
+    const finish = (woken: boolean) => {
       clearTimeout(timer);
-      resolve(true);
+      waiters.delete(onChange);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(woken);
     };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    const onChange = () => finish(true);
+    const onAbort = () => finish(false);
     waiters.add(onChange);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

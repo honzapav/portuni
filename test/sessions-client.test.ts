@@ -1202,3 +1202,28 @@ describe("sessions-client: node_changed frames", () => {
     client.disconnect();
   });
 });
+
+// A gap in the live channel (sleep, a sidecar restart, the host replacing
+// its socket) may have dropped node_changed frames: a reopen after a loss
+// is a reset on the node-change bus, so every surface refetches what it
+// shows once instead of waiting out the 60 s fallbacks.
+describe("sessions-client: a reopened channel resets the node-change bus", () => {
+  it("emits a reset on reopen after a dropped connection, not on the first open", async () => {
+    const server = await fakeServer();
+    const transport = testTransport(server);
+    const client = createSessionsClient({ transport });
+    clients.push(client);
+    const heard: NodeChangeBatch[] = [];
+    const off = onNodeChanges((batch) => heard.push(batch));
+    const statuses: string[] = [];
+    client.onConnectionStatus((s) => statuses.push(s));
+    await waitUntil(() => statuses.includes("open"));
+    assert.deepEqual(heard, [], "the first open is not a reset");
+    server.dropAllConnections();
+    await waitUntil(() => statuses.filter((s) => s === "open").length === 2, 5000);
+    await waitUntil(() => heard.length === 1);
+    assert.deepEqual(heard[0], { changes: [], reset: true });
+    off();
+    client.disconnect();
+  });
+});

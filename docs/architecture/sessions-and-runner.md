@@ -1098,7 +1098,10 @@ in the codebase. The desktop bridge is documented with the desktop shell.
   flush) -- on the device the feed only holds what central let it see, so
   the agent deps pass everything. In the
   sync agent the feed is fed by `boot/change-poller.ts`, one long-poll of
-  central's `GET /changes?since=&wait=20` after another, plus the
+  central's `GET /changes?since=&wait=20` after another (central keeps a
+  woken request open 750 ms so a burst answers as one batch, and the
+  poller waits 2 s after an answer that carried changes, so a burst of
+  writes on central never becomes a request storm from a device), plus the
   watcher's own successful reconciles (`onReconciled`); a `reset` from
   central (a restart, a cursor let go) is `announceReset()`, and the
   window refetches what it shows once. A personal workspace's server

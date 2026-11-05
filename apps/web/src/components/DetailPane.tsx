@@ -575,12 +575,23 @@ function DetailPaneBody({
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
   // The change feed (lib/node-changes.ts): this node's files changed on
-  // this device or elsewhere, so the sync status is read again.
+  // this device or elsewhere, so the sync status is read again -- while
+  // the pane is on screen; a pane behind another view marks itself stale
+  // and reads once it shows.
+  const syncStaleRef = useRef(false);
   useEffect(() => {
     return onNodeChanges((batch) => {
-      if (nodeChangeTouches(batch, node.id, "files")) void loadSyncStatus();
+      if (!nodeChangeTouches(batch, node.id, "files")) return;
+      if (visibleRef.current && !document.hidden) void loadSyncStatus();
+      else syncStaleRef.current = true;
     });
   }, [node.id, loadSyncStatus]);
+  useEffect(() => {
+    if (visible && syncStaleRef.current) {
+      syncStaleRef.current = false;
+      void loadSyncStatus();
+    }
+  }, [visible, loadSyncStatus]);
   useEffect(() => {
     let cancelled = false;
     // A remount within the freshness window reads the cached answer.

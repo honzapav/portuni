@@ -403,12 +403,21 @@ this bound.
   again; `graph` (edges, a move, sharing, an archive) reloads the graph
   (`graphNeedsReload`). `refetchAll` remains for a new organization only.
 - **The change feed** (`lib/node-changes.ts`, fed by the live channel's
-  `node_changed` frames): a change to the node a view shows refetches that
-  detail, coalesced over 300 ms; `DetailPane` reads the sync status again
-  on a `files` change of its node, `use-file-editor` checks the open
-  file's version, `use-sync-pending` refreshes the counter (at most once
-  per 2 s). The detail, sync-status and editor polls are 60 s fallbacks
-  (`FALLBACK_POLL_MS`, `lib/poll-policy.ts`) for a dropped frame.
+  `node_changed` frames; a reopen of the channel after a loss is a
+  `reset`): a change to the node the view on screen shows refetches that
+  detail, coalesced over 300 ms -- the other view's detail is marked
+  stale and fetched when that view comes back; `DetailPane` reads the
+  sync status again on a `files` change of its node while it is on
+  screen, `use-file-editor` checks the open file's version,
+  `use-sync-pending` refreshes the counter (at most once per 2 s);
+  `lib/resources.ts` forgets a node's folder URL, access and access
+  requests on its `node` change, and every per-node answer plus the actor
+  registry on a reset. The actor and runner registries are forgotten on a
+  window focus too. The detail, sync-status and editor polls are 60 s
+  fallbacks (`FALLBACK_POLL_MS`, `lib/poll-policy.ts`) for a dropped frame.
+- **A resource that failed** shows its error and asks again after
+  `ERROR_RETRY_MS` (15 s); an invalidation during a flight starts a fresh
+  load (`lib/resource.ts`, `lib/use-resource.ts`).
 - **One request where the server can answer a list** (client traffic
   contract, rule 6): the Relace tab's resume-info (`POST
   /sessions/resume-info`), a responsibility reorder (`POST

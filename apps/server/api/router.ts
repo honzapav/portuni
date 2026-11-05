@@ -777,7 +777,12 @@ async function routeSessions(
   // record half; under the hardened posture (#213) only the app itself may
   // call them over REST -- a spawned terminal drives its session through
   // the MCP tools. Reads are ungated here (sessionAccess still applies).
-  if (method !== "GET" && pathname.startsWith("/sessions") && !guardRestSessionWrite(req, res, identity)) {
+  if (
+    method !== "GET" &&
+    pathname.startsWith("/sessions") &&
+    pathname !== "/sessions/resume-info" &&
+    !guardRestSessionWrite(req, res, identity)
+  ) {
     return true;
   }
   if (pathname === "/sessions" && method === "POST") {

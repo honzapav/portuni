@@ -661,6 +661,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
   const subscribedSessions = new Set<string>();
   const lastSeq = new Map<string, number>();
   let isOpen = false;
+  let everOpened = false;
 
   // #496: a request is delivered once, or reported as failed and never sent
   // afterwards. Every request frame carries an id the server echoes on its
@@ -853,6 +854,10 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       // connection): the old one took its subscriptions and its unanswered
       // requests with it.
       if (isOpen) onConnectionLost();
+      // A reopen after a loss may have missed node_changed frames: every
+      // surface refetches what it shows once (lib/node-changes.ts).
+      if (everOpened) emitNodeChanges({ changes: [], reset: true });
+      everOpened = true;
       isOpen = true;
       onConnectionOpened();
     } else if (isOpen) {
