@@ -168,13 +168,13 @@ async function sendDialog(
   }
 }
 
-// The OAuth client_id (a CIMD URL) claude.ai presents for its custom
+// claude.ai presents one OAuth client_id (a CIMD URL,
+// https://claude.ai/oauth/mcp-oauth-client-metadata) for its custom
 // connectors: claude.ai web, Claude Desktop chat, mobile, Cowork -- and
 // Claude Code using a connector it inherited from the claude.ai account
-// ("claude.ai Portuni Tempo"), which reaches this server through the same
-// claude.ai proxy under the same grant.
-export const CLAUDE_AI_CONNECTOR_CLIENT_ID = "https://claude.ai/oauth/mcp-oauth-client-metadata";
-
+// (tools named mcp__claude_ai_<name>__*), which reaches this server through
+// the same claude.ai proxy under the same grant.
+//
 // Claude Code signing in to Portuni directly (`claude mcp add --transport
 // http`) presents its own client_id, hosted on claude.ai as well, and talks
 // to this server without a proxy in between -- its dialogs work.

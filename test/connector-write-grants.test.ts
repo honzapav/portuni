@@ -41,7 +41,6 @@ import {
 } from "../apps/server/domain/sessions.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
 import {
-  CLAUDE_AI_CONNECTOR_CLIENT_ID,
   clientRelaysElicitation,
   createElicitor,
 } from "../apps/server/mcp/elicit.js";
@@ -72,6 +71,8 @@ function connectorIdentity(userId: string = USER, oauthClientId?: string): Reque
   };
 }
 
+// The OAuth client_id claude.ai presents for its custom connectors.
+const CLAUDE_AI_CONNECTOR_CLIENT_ID = "https://claude.ai/oauth/mcp-oauth-client-metadata";
 // Claude Code signing in to Portuni directly over OAuth (no claude.ai proxy).
 const CLAUDE_CODE_DIRECT_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata";
 
@@ -93,27 +94,16 @@ async function waitUntil(cond: () => boolean | Promise<boolean>, timeoutMs = 200
   throw new Error(`waitUntil: condition never became true within ${timeoutMs}ms`);
 }
 
-// A connector-shaped MCP client: no elicitation capability declared, exactly
-// like claude.ai web / mobile today.
-async function connectWithoutElicitation(scope: SessionScope, ident: RequestIdentity): Promise<McpClient> {
-  const server = new McpServer({ name: "connector-grants-test", version: "0.0.1" }, {});
-  const ctx: SessionCtx = { scope, identity: ident, elicit: createElicitor(server), spillSessionId: "test-spill" };
-  registerNodeTools(server, ctx);
-  registerScopeTools(server, ctx);
-  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
-  const client = new McpClient({ name: "connector-grants-test-client", version: "0.0.1" }, { capabilities: {} });
-  await server.connect(serverT);
-  await client.connect(clientT);
-  return client;
-}
-
-// A client that DOES declare elicitation (Claude Code), with the server's
-// elicitor built exactly as createMcpServer builds it for this identity.
-// Every dialog the server sends is counted and accepted -- so a dialog that
+// An MCP client wired to a server whose elicitor is built exactly as
+// createMcpServer builds it for this identity. With `elicitation` false the
+// client is connector-shaped -- no capability declared, exactly like
+// claude.ai web / mobile today. With it true the client is Claude Code:
+// every dialog the server sends is counted and accepted, so a dialog that
 // should not have been sent shows up as a count, never as a hung test.
-async function connectWithElicitation(
+async function connectClient(
   scope: SessionScope,
   ident: RequestIdentity,
+  elicitation: boolean,
 ): Promise<{ client: McpClient; dialogs: () => number }> {
   const server = new McpServer({ name: "connector-grants-test", version: "0.0.1" }, {});
   const ctx: SessionCtx = {
@@ -127,17 +117,40 @@ async function connectWithElicitation(
   registerEventTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   const client = new McpClient(
-    { name: "claude-code", version: "0.0.1" },
-    { capabilities: { elicitation: {} } },
+    { name: "connector-grants-test-client", version: "0.0.1" },
+    { capabilities: elicitation ? { elicitation: {} } : {} },
   );
   let count = 0;
-  client.setRequestHandler(ElicitRequestSchema, async () => {
-    count++;
-    return { action: "accept", content: { confirm: true } };
-  });
+  if (elicitation) {
+    client.setRequestHandler(ElicitRequestSchema, async () => {
+      count++;
+      return { action: "accept", content: { confirm: true } };
+    });
+  }
   await server.connect(serverT);
   await client.connect(clientT);
   return { client, dialogs: () => count };
+}
+
+async function connectWithoutElicitation(scope: SessionScope, ident: RequestIdentity): Promise<McpClient> {
+  return (await connectClient(scope, ident, false)).client;
+}
+
+// portuni_expand_scope(writable: true) on a client that cannot show a
+// dialog: refused, and the node stays out of the write set.
+async function assertWritableExpansionRefused(
+  client: McpClient,
+  scope: SessionScope,
+  nodeId: string,
+): Promise<void> {
+  const expand = (await client.callTool({
+    name: "portuni_expand_scope",
+    arguments: { node_ids: [nodeId], reason: "user-confirmed-in-chat", writable: true },
+  })) as ToolResult;
+  const expandPayload = payloadOf(expand) as { writable: string[]; refused_write: Array<{ node_id: string }> };
+  assert.deepEqual(expandPayload.writable, []);
+  assert.equal(expandPayload.refused_write[0]?.node_id, nodeId);
+  assert.equal(scope.canWrite(nodeId), false);
 }
 
 let workspace: string;
@@ -328,14 +341,7 @@ describe("write gate on a client without the elicitation capability", () => {
     assert.doesNotMatch(hint, /then call portuni_expand_scope/);
 
     // And the call the old hint used to recommend is indeed refused.
-    const expand = (await client.callTool({
-      name: "portuni_expand_scope",
-      arguments: { node_ids: [existingId], reason: "user-confirmed-in-chat", writable: true },
-    })) as ToolResult;
-    const expandPayload = payloadOf(expand) as { writable: string[]; refused_write: Array<{ node_id: string }> };
-    assert.deepEqual(expandPayload.writable, []);
-    assert.equal(expandPayload.refused_write[0]?.node_id, existingId);
-    assert.equal(scope.canWrite(existingId), false);
+    await assertWritableExpansionRefused(client, scope, existingId);
   });
 });
 
@@ -348,57 +354,42 @@ describe("write gate on a claude.ai connector used from Claude Code (Asana 12203
     return Number(r.rows[0].n);
   }
 
+  function logNote(client: McpClient, nodeId: string): Promise<ToolResult> {
+    return client.callTool({
+      name: "portuni_log",
+      arguments: { node_id: nodeId, type: "note", content: "a note" },
+    }) as Promise<ToolResult>;
+  }
+
   it("refuses portuni_log at once without sending a dialog, and says no grant is possible here", async () => {
     const nodeId = await insertNode("Connector Log Target");
     const identity = connectorIdentity(USER, CLAUDE_AI_CONNECTOR_CLIENT_ID);
     const scope = new SessionScope("interactive_chat");
-    const { client, dialogs } = await connectWithElicitation(scope, identity);
+    const { client, dialogs } = await connectClient(scope, identity, true);
 
-    const r = (await client.callTool({
-      name: "portuni_log",
-      arguments: { node_id: nodeId, type: "note", content: "should be refused" },
-    })) as ToolResult;
-    assert.equal(r.isError, true);
-    const payload = payloadOf(r);
-    assert.equal(payload.error, "write_expansion_required");
-    assert.equal(payload.node_id, nodeId);
-    assert.equal(payload.elicitation_supported, false);
-    assert.equal(payload.dialog_timed_out, undefined);
-    assert.match(String(payload.hint), /not a claude\.ai connector/);
+    // Twice: a retry gets the same immediate refusal, never a write.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await logNote(client, nodeId);
+      assert.equal(r.isError, true);
+      const payload = payloadOf(r);
+      assert.equal(payload.error, "write_expansion_required");
+      assert.equal(payload.node_id, nodeId);
+      assert.equal(payload.elicitation_supported, false);
+      assert.equal(payload.dialog_timed_out, undefined);
+      assert.match(String(payload.hint), /not a claude\.ai connector/);
+    }
+    await assertWritableExpansionRefused(client, scope, nodeId);
     assert.equal(dialogs(), 0, "no dialog may be sent through the claude.ai proxy");
     assert.equal(await eventCount(nodeId), 0);
-
-    // The explicit grant path is refused the same way, again without a dialog.
-    const expand = (await client.callTool({
-      name: "portuni_expand_scope",
-      arguments: { node_ids: [nodeId], reason: "user-confirmed-in-chat", writable: true },
-    })) as ToolResult;
-    const expandPayload = payloadOf(expand) as { writable: string[]; refused_write: Array<{ node_id: string }> };
-    assert.deepEqual(expandPayload.writable, []);
-    assert.equal(expandPayload.refused_write[0]?.node_id, nodeId);
-    assert.equal(dialogs(), 0);
-
-    // Repeating the call gives the same immediate refusal, never a duplicate write.
-    const again = (await client.callTool({
-      name: "portuni_log",
-      arguments: { node_id: nodeId, type: "note", content: "should be refused" },
-    })) as ToolResult;
-    assert.equal(payloadOf(again).error, "write_expansion_required");
-    assert.equal(dialogs(), 0);
-    assert.equal(await eventCount(nodeId), 0);
-    assert.equal(scope.canWrite(nodeId), false);
   });
 
   it("still shows the dialog to Claude Code connected directly, and writes once it is accepted", async () => {
     const nodeId = await insertNode("Direct Log Target");
     const identity = connectorIdentity(USER, CLAUDE_CODE_DIRECT_CLIENT_ID);
     const scope = new SessionScope("interactive_chat");
-    const { client, dialogs } = await connectWithElicitation(scope, identity);
+    const { client, dialogs } = await connectClient(scope, identity, true);
 
-    const r = (await client.callTool({
-      name: "portuni_log",
-      arguments: { node_id: nodeId, type: "note", content: "confirmed in the dialog" },
-    })) as ToolResult;
+    const r = await logNote(client, nodeId);
     assert.notEqual(r.isError, true, r.content[0]?.text);
     assert.equal(dialogs(), 1);
     assert.equal(await eventCount(nodeId), 1);
