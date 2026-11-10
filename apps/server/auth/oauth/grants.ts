@@ -87,9 +87,13 @@ export interface OAuthGrantHit {
 // (resource) matching against the canonical MCP URL is the caller's job
 // (apps/server/auth/request-identity.ts, issue #173) since this module has
 // no notion of "canonical". Bumps last_used_at on success.
+//
+// Same lookup-and-bump shape as verifyDeviceToken in ../device-tokens.ts, but
+// a different table and hit type, so the copy is deliberate.
 export async function verifyAccessToken(
   db: DbClient,
   token: string,
+  // fallow-ignore-next-line code-duplication
 ): Promise<OAuthGrantHit | null> {
   const r = await db.execute({
     sql: `SELECT id, user_id, client_id, resource, scope FROM oauth_grants
@@ -155,7 +159,7 @@ export async function rotateRefreshToken(
   }
 
   const r = await db.execute({
-    sql: `SELECT id, user_id, client_id, resource, scope FROM oauth_grants
+    sql: `SELECT id, user_id, resource, scope FROM oauth_grants
           WHERE refresh_token_hash = ? AND revoked_at IS NULL
             AND refresh_expires_at > ${nowExpr(db.dialect)}`,
     args: [hash],
