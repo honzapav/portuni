@@ -12,6 +12,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import {
+  clientRelaysElicitation,
   createElicitor,
   createElicitorFromServer,
   agentRelayElicitTimeoutMs,
@@ -43,6 +44,45 @@ describe("createElicitor: capability-absent fallback", () => {
     const elicitor = createElicitor(server);
     const outcome = await elicitor.confirm("Allow this?");
     assert.equal(outcome, "unsupported");
+    await client.close();
+  });
+});
+
+// The OAuth client_id claude.ai presents for its custom connectors.
+const CLAUDE_AI_CONNECTOR_CLIENT_ID = "https://claude.ai/oauth/mcp-oauth-client-metadata";
+
+describe("claude.ai connector: no dialog through the proxy (Asana 1220370590458264)", () => {
+  it("treats claude.ai-hosted OAuth clients other than Claude Code's own as unable to relay dialogs", () => {
+    const rows: Array<[Parameters<typeof clientRelaysElicitation>[0], boolean]> = [
+      [{ via: "oauth_grant", oauthClientId: CLAUDE_AI_CONNECTOR_CLIENT_ID }, false],
+      // Another claude.ai-hosted connector client_id: still the proxy.
+      [{ via: "oauth_grant", oauthClientId: "https://claude.ai/oauth/some-other-client-metadata" }, false],
+      [{ via: "oauth_grant", oauthClientId: "https://claude.com/oauth/mcp-oauth-client-metadata" }, false],
+      // Claude Code connected directly keeps its dialogs.
+      [{ via: "oauth_grant", oauthClientId: "https://claude.ai/oauth/claude-code-client-metadata" }, true],
+      [{ via: "oauth_grant", oauthClientId: "https://evil.example/claude.ai/oauth/mcp" }, true],
+      [{ via: "oauth_grant", oauthClientId: "not a url" }, true],
+      [{ via: "oauth_grant" }, true],
+      [{ via: "device_token" }, true],
+      [{ via: "env" }, true],
+      [{ via: "session_jwt", oauthClientId: CLAUDE_AI_CONNECTOR_CLIENT_ID }, true],
+    ];
+    for (const [identity, expected] of rows) {
+      assert.equal(clientRelaysElicitation(identity), expected, JSON.stringify(identity));
+    }
+  });
+
+  it("resolves 'unsupported' without sending a request even when the client declared elicitation", async () => {
+    const { server, client } = await connect({ elicitation: {} });
+    let dialogs = 0;
+    client.setRequestHandler(ElicitRequestSchema, async () => {
+      dialogs++;
+      return { action: "accept", content: { confirm: true } };
+    });
+    const elicitor = createElicitor(server, { relaysDialogs: false });
+    assert.equal(await elicitor.confirm("Allow this?"), "unsupported");
+    assert.equal(await elicitor.confirm("Allow this again?"), "unsupported");
+    assert.equal(dialogs, 0);
     await client.close();
   });
 });
