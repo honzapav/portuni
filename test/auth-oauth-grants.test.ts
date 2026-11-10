@@ -30,6 +30,7 @@ test("mint returns plaintext once; verify resolves the grant", async () => {
   assert.equal(hit.userId, USER);
   assert.equal(hit.grantId, minted.grantId);
   assert.equal(hit.resource, INPUT.resource);
+  assert.equal(hit.clientId, INPUT.clientId);
 });
 
 test("plaintext tokens are not stored", async () => {

@@ -74,6 +74,11 @@ export async function mintGrant(
 export interface OAuthGrantHit {
   grantId: string;
   userId: string;
+  // The OAuth client the grant was issued to (its CIMD URL). Lets the MCP
+  // layer tell a claude.ai connector, whose proxy cannot carry a
+  // server-initiated dialog, from a client connected directly (see
+  // mcp/elicit.ts's clientRelaysElicitation).
+  clientId: string;
   resource: string;
   scope: string;
 }
@@ -87,7 +92,7 @@ export async function verifyAccessToken(
   token: string,
 ): Promise<OAuthGrantHit | null> {
   const r = await db.execute({
-    sql: `SELECT id, user_id, resource, scope FROM oauth_grants
+    sql: `SELECT id, user_id, client_id, resource, scope FROM oauth_grants
           WHERE access_token_hash = ? AND revoked_at IS NULL
             AND access_expires_at > ${nowExpr(db.dialect)}`,
     args: [hashToken(token)],
@@ -101,6 +106,7 @@ export async function verifyAccessToken(
   return {
     grantId: String(row.id),
     userId: String(row.user_id),
+    clientId: String(row.client_id),
     resource: String(row.resource),
     scope: String(row.scope),
   };
@@ -149,7 +155,7 @@ export async function rotateRefreshToken(
   }
 
   const r = await db.execute({
-    sql: `SELECT id, user_id, resource, scope FROM oauth_grants
+    sql: `SELECT id, user_id, client_id, resource, scope FROM oauth_grants
           WHERE refresh_token_hash = ? AND revoked_at IS NULL
             AND refresh_expires_at > ${nowExpr(db.dialect)}`,
     args: [hash],
