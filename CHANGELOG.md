@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.3](https://github.com/honzapav/portuni/compare/v0.32.2...v0.32.3) (2026-11-14)
+
+
+### Bug Fixes
+
+* **ci,runner,web:** run tests with --no-wasm-code-gc; claude detection survives an update and a runner-less draft finds its runner ([#648](https://github.com/honzapav/portuni/issues/648)) ([b68687a](https://github.com/honzapav/portuni/commit/b68687a998148bf979c71fea0821399bf8b63c23))
+
 ## [0.32.2](https://github.com/honzapav/portuni/compare/v0.32.1...v0.32.2) (2026-11-14)
 
 
