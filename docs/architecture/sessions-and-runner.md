@@ -284,7 +284,14 @@ The table is one line: **every action is the owner's** (#457).
   every mutating `/sessions*` route and `POST /sessions` are `write`.
 - In a team workspace these checks run on the central server, on every store round
   trip: the device never re-implements them. A central 404 surfaces as
-  `SESSION_NOT_FOUND`.
+  `SESSION_NOT_FOUND`, on every verb of the sync agent's router: a
+  `CentralHttpError` 404 is relayed with its code, and a record lookup
+  that `CentralSessionStore` turns into `null` makes the runtime throw
+  `SessionNotFoundError` (`domain/runner/session-errors.ts`), which
+  `respondError` and `api/session-refusals.ts` answer as 404. The routes
+  that read only this device's memory (`signals`, an answer) look the
+  record up when no live run or pending question exists here;
+  `test/agent-router-sessions.test.ts` holds every verb to it.
 
 ## The runtime and its store seam
 
@@ -612,7 +619,13 @@ human verification.
   reasoning: each turn's duration counts that turn's thinking only (#502).
   A thinking block without a streamed delta has no `duration_ms`.
 - `detect()` runs `claude --version` and `claude auth status`, 5 s timeout
-  each.
+  each, always with an explicit `cwd` (the home directory), never the
+  process's own (#644): `auth status` exits 1 when its working directory
+  no longer exists, which an updater install causes by deleting the
+  running app bundle the sidecar started in. The desktop sidecar also
+  `chdir`s to its data dir once the libsql binding is loaded
+  (`desktop.ts`); the host starts it in `Resources/sidecar-deps` only so
+  Bun finds that binding.
 - **`turn_ended` on every successful result.** The CLI stays alive between
   turns, so this is the only signal that the agent stopped working; the
   web's working row, stop button and Escape key on a turn in flight
@@ -841,7 +854,18 @@ human verification.
   instance for it; `NoRunnerAvailableError` -> `400 NO_RUNNER_AVAILABLE`
   through `api/session-refusals.ts`, so the sync agent's router and the
   live channel's error frame answer the same code)
-  only when the draft carries none. Central's `PatchSessionBody` accepts
+  only when the draft carries none. `detectAll()` caches only a usable
+  detection (60 s); a negative one is probed again on the next call
+  (#645), and the Claude adapter logs every failed probe with its exit
+  code and stderr. A draft opened with no runner (`runner: null`) is
+  filled in by `SessionRuntime.refreshDraftRunner`, under the lifecycle
+  lock, through the device-local `POST /sessions/:id/runner-defaults`
+  that `SessionChat` calls once per opened runner-less draft: same
+  `resolveDraftDefaults`, written through the runtime's store (central's
+  `PATCH /sessions/:id` in a team workspace), then `session_changed`;
+  when a runner was found, the chat invalidates the window's
+  `runnersResource` so the picker re-reads the list once per window.
+  Central's `PatchSessionBody` accepts
   the promotion fields (`brief`, `runner`, `instance_id`, `name_is_custom`).
 - **Naming.** `threadNameFromFirstMessage` (`domain/sessions.ts`, mirrored
   by hand in `apps/web/src/lib/session-chat.ts`) takes the first line of

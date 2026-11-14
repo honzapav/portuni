@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
 import { access, readFile, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { query as sdkQuery, resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -120,6 +121,21 @@ export interface CreateClaudeAdapterDeps {
   // How long defaults() waits for the runner's list before answering
   // without it.
   modelsProbeTimeoutMs?: number;
+  // Working directory for detect()'s `claude --version` / `auth status`;
+  // defaults to `detectCwd()`. Tests inject it.
+  detectCwd?: () => string;
+  // Where detect() reports a failed probe (#645); defaults to console.warn.
+  // Tests inject it.
+  warn?: (line: string) => void;
+}
+
+// #644: detect() never inherits this process's working directory. The
+// desktop sidecar starts inside the app bundle, which an updater install
+// deletes while the app is still running; `claude auth status` then exits 1
+// ("The current directory no longer exists") and the device reads as logged
+// out until a restart. The home directory outlives any bundle swap.
+function detectCwd(): string {
+  return homedir() || process.env.HOME || tmpdir();
 }
 
 const DEFAULT_MODELS_PROBE_TIMEOUT_MS = 20_000;
@@ -983,7 +999,9 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
 export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerAdapter {
   const query = deps.query ?? sdkQuery;
   const exec = deps.exec ?? nodeExecFile;
+  const warnDetect = deps.warn ?? ((line: string) => console.warn(line));
   const resolveExecutable = deps.resolveExecutable ?? (() => resolveClaudeExecutable());
+  const execCwd = deps.detectCwd ?? detectCwd;
   const closePollIntervalMs = deps.closePollIntervalMs ?? DEFAULT_CLOSE_POLL_INTERVAL_MS;
   const closeTimeoutMs = deps.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
@@ -1090,10 +1108,26 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
   async function runExec(executable: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
     return new Promise((resolve) => {
-      exec(executable, args, { timeout: DETECT_TIMEOUT_MS }, (err, stdout) => {
+      exec(executable, args, { timeout: DETECT_TIMEOUT_MS, cwd: execCwd() }, (err, stdout, stderr) => {
+        // #645: a failed probe leaves a line in the sidecar's log -- the
+        // exit code (or the signal / spawn error) and stderr -- so a device
+        // that reads as "no runner" can be explained afterwards.
+        if (err) logDetectFailure(executable, args, err, stderr?.toString() ?? "");
         resolve({ ok: !err, stdout: stdout?.toString() ?? "" });
       });
     });
+  }
+
+  function logDetectFailure(executable: string, args: string[], err: Error, stderr: string): void {
+    const e = err as Error & { code?: unknown; signal?: unknown; killed?: boolean };
+    const exit =
+      typeof e.code === "number"
+        ? `exit ${e.code}`
+        : e.signal
+          ? `signal ${String(e.signal)}${e.killed ? " (timed out)" : ""}`
+          : `error ${String(e.code ?? e.message)}`;
+    const detail = stderr.trim() || e.message;
+    warnDetect(`[portuni:runner] claude detect: \`${executable} ${args.join(" ")}\` failed (${exit}): ${detail}`);
   }
 
   const notInstalled: RunnerAvailability = {
@@ -1105,7 +1139,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
 
   async function detect(): Promise<RunnerAvailability> {
     const executable = await resolveExecutable();
-    if (executable === null) return notInstalled;
+    if (executable === null) {
+      warnDetect("[portuni:runner] claude detect: no `claude` executable found on PATH or in the known install locations");
+      return notInstalled;
+    }
     const versionResult = await runExec(executable, ["--version"]);
     if (!versionResult.ok) return notInstalled;
     const version = versionResult.stdout.trim().split("\n")[0] || null;

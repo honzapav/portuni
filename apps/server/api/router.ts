@@ -132,6 +132,7 @@ import {
   handlePatchSession,
   handleSetSessionModel,
   handleRenameSession,
+  handleRefreshDraftRunner,
   handlePatchSessionRun,
   handleSendSessionMessage,
   handleStartSession,
@@ -868,6 +869,13 @@ async function routeSessions(
   const renameMatch = pathname.match(/^\/sessions\/([^/]+)\/rename$/);
   if (renameMatch && method === "POST") {
     await handleRenameSession(req, res, identity, decodeURIComponent(renameMatch[1]));
+    return true;
+  }
+  // #645: a runner-less draft asks the device for its runner again
+  // (agent-router.ts serves the same verb in sync-agent mode).
+  const runnerDefaultsMatch = pathname.match(/^\/sessions\/([^/]+)\/runner-defaults$/);
+  if (runnerDefaultsMatch && method === "POST") {
+    await handleRefreshDraftRunner(req, res, identity, decodeURIComponent(runnerDefaultsMatch[1]));
     return true;
   }
   const interruptMatch = pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);

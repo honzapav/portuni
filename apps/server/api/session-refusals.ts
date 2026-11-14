@@ -7,6 +7,9 @@
 //   to continue from on this device): 409 with the error's code.
 // - NoLiveRunError (a message into a thread whose run is not live): 409
 //   NO_LIVE_RUN.
+// - SessionNotFoundError (the record store has no such session: an unknown
+//   id, or another user's thread in a team workspace): 404
+//   SESSION_NOT_FOUND, the answer auth/session-access.ts gives.
 // - NoRunnerAvailableError (a start or a first message with no runner
 //   installed and signed in on this device): 400 NO_RUNNER_AVAILABLE.
 //
@@ -20,11 +23,16 @@
 import type { ServerResponse } from "node:http";
 import { respondApiError } from "../http/middleware.js";
 import type { ErrorParams } from "../shared/error-codes.js";
-import { NoLiveRunError, NoRunnerAvailableError, SessionHandoffError } from "../domain/runner/session-runtime.js";
+import {
+  NoLiveRunError,
+  NoRunnerAvailableError,
+  SessionHandoffError,
+  SessionNotFoundError,
+} from "../domain/runner/session-runtime.js";
 
 export interface SessionRefusal {
-  status: 400 | 409;
-  code: SessionHandoffError["code"] | "NO_LIVE_RUN" | "NO_RUNNER_AVAILABLE";
+  status: 400 | 404 | 409;
+  code: SessionHandoffError["code"] | "NO_LIVE_RUN" | "NO_RUNNER_AVAILABLE" | "SESSION_NOT_FOUND";
   message: string;
   params?: ErrorParams;
 }
@@ -40,6 +48,9 @@ export function sessionRefusal(err: unknown): SessionRefusal | null {
   }
   if (err instanceof NoLiveRunError) {
     return { status: 409, code: "NO_LIVE_RUN", message: err.message };
+  }
+  if (err instanceof SessionNotFoundError) {
+    return { status: 404, code: "SESSION_NOT_FOUND", message: err.message };
   }
   if (err instanceof NoRunnerAvailableError) {
     return { status: 400, code: "NO_RUNNER_AVAILABLE", message: err.message };

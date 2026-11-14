@@ -167,6 +167,7 @@ import {
   handoffSession,
   patchSessionModelEffort,
   patchSessionRunnerInstance,
+  refreshDraftRunner,
   renamePersistentSession,
 } from "../api";
 import type { RunnerInstanceSummary, RunnerModel } from "../lib/runners";
@@ -292,6 +293,31 @@ export default function SessionChat({
   );
   const instances = useResource(runnerInstancesResource) ?? EMPTY_INSTANCES;
   const initialChoiceRef = useRef({ runner: session?.runner ?? null, instanceId: session?.instance_id ?? null });
+
+  // #645: a draft opened while the device found no runner (a detection
+  // that failed at boot) has `runner: null` on its row. The device looks
+  // again once per opened draft; when a runner is usable now, the row gets
+  // the organisation's default runner and instance (the store folds the
+  // answer in), and that pair becomes what the picker marks as the default.
+  const needsRunner = session?.state === "draft" && !session.runner;
+  const refreshedRunnerRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!needsRunner || refreshedRunnerRef.current === sessionId) return;
+    refreshedRunnerRef.current = sessionId;
+    void refreshDraftRunner(sessionId)
+      .then((row) => {
+        if (!row.runner) return;
+        initialChoiceRef.current = { runner: row.runner, instanceId: row.instance_id };
+        // The window's runner list, and the models and defaults read under
+        // the "no runner" fallback key, may come from while the same failed
+        // detection still held; forget them, so every mounted picker reads
+        // them once more now a runner is there.
+        runnersResource.invalidate();
+        runnerModels.invalidate();
+        runnerDefaults.invalidate();
+      })
+      .catch(() => undefined);
+  }, [needsRunner, sessionId]);
 
   // #376: the model picker's list, for the thread's runner and the account
   // its instance logs in to. A draft on a device with no logged-in runner

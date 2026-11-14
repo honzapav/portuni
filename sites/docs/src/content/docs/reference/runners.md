@@ -7,7 +7,7 @@ A **runner** is a foreign coding agent (Claude Code today; Codex/OpenCode are a 
 
 ## GET /runners
 
-Lists every registered adapter and its detected availability. Detection is cached for 60 seconds per adapter.
+Lists every registered adapter and its detected availability. A usable detection (installed and logged in) is cached for 60 seconds per adapter; a negative one is never cached, so the next call probes again. When a probe fails (`claude --version` or `claude auth status` exits non-zero, times out or cannot start, or no `claude` binary is found), the server writes one line to its log with the exit code and stderr.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -52,7 +52,7 @@ Requires `admin` scope, same tier as deleting any other entity in this API (acto
 
 Body: `{ org_id: string }`. Sets this instance as the given organization's default — membership is exclusive, so the org is removed from every other instance's `org_defaults` first. Requires `write` scope; 404 for an unknown instance id.
 
-The default is applied when a thread opens: the device resolves the node's organization and, if that organization has a default instance for the runner it picked, writes that pair onto the new draft, where the composer shows it and lets you change it until the first message (`PATCH /sessions/:id` with `runner`/`instance_id`, refused with 409 `SESSION_NOT_DRAFT` afterwards). Promotion then runs the thread on the draft's own pair. This works in both kinds of workspace — a personal workspace reads the node's `belongs_to` edge from its own graph db, and a team-workspace device asks the central server for it (`GET /nodes/:id`). When the organization cannot be resolved at all, the run falls back to the runner's own default account and the sidecar logs one line saying so.
+The default is applied when a thread opens: the device resolves the node's organization and, if that organization has a default instance for the runner it picked, writes that pair onto the new draft, where the composer shows it and lets you change it until the first message (`PATCH /sessions/:id` with `runner`/`instance_id`, refused with 409 `SESSION_NOT_DRAFT` afterwards). Promotion then runs the thread on the draft's own pair. This works in both kinds of workspace — a personal workspace reads the node's `belongs_to` edge from its own graph db, and a team-workspace device asks the central server for it (`GET /nodes/:id`). A draft opened while the device detected no usable runner carries no runner; when the composer opens it, it calls `POST /sessions/:id/runner-defaults` (device-local, `write` scope, owner only), which detects again and, if a runner is usable now, writes the same default pair onto the draft and answers the updated row. On any other thread, or with still no runner, the row comes back unchanged. When the organization cannot be resolved at all, the run falls back to the runner's own default account and the sidecar logs one line saying so.
 
 ### DELETE /runners/org-defaults/:orgId
 
