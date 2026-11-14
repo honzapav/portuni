@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.32.2](https://github.com/honzapav/portuni/compare/v0.32.1...v0.32.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** bump astro to 7.4.7 in sites ([#658](https://github.com/honzapav/portuni/issues/658)) ([f68fb02](https://github.com/honzapav/portuni/commit/f68fb029cd85bb339bc294ccdb08fee4cd436085))
+* **mcp:** no confirmation dialog through a claude.ai connector ([#652](https://github.com/honzapav/portuni/issues/652)) ([8ef7013](https://github.com/honzapav/portuni/commit/8ef7013dfd6075e0584342d179be5baa5e85fa6b))
+
 ## [0.32.1](https://github.com/honzapav/portuni/compare/v0.32.0...v0.32.1) (2026-11-05)
 
 
