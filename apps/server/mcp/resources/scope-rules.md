@@ -115,6 +115,18 @@ so an agent talking to any client -- old or new -- sees a consistent
 contract either way. `headless` sessions never see a dialog, by
 session-type design, regardless of what the connected client declared.
 
+A claude.ai connector never gets a dialog either, whatever it declared.
+claude.ai itself declares no `elicitation` capability; Claude Code using
+a connector inherited from the claude.ai account does declare it, but
+the claude.ai proxy in between cannot carry the dialog request, so the
+dialog would never appear and the tool call would hang until the client
+aborts it. The server recognises these sessions by the OAuth client the
+grant was issued to (any client hosted on claude.ai, e.g.
+`https://claude.ai/oauth/mcp-oauth-client-metadata`, except Claude
+Code's own) and answers them the way it answers a client without the
+capability. Claude Code connected to Portuni directly (its own Portuni
+MCP server, or a direct OAuth connection) keeps its dialogs.
+
 A dialog nobody answers is bounded: after four minutes
 (`PORTUNI_ELICIT_TIMEOUT_MS`, and one minute less for the agent-mode
 relay hop below) the tool answers with the same structured refusal as a
@@ -217,10 +229,14 @@ text is never sufficient by itself. A client that has not declared the
 no honor-system fallback for writes the way there is for reads;
 `portuni_expand_scope(..., writable: true)` refuses outright
 (`refused_write` in its response) instead of silently trusting the
-call. On such a client the `write_expansion_required` payload carries
+call. The same holds for every claude.ai connector session, including
+Claude Code using one (see "Protocol elicitation" above). On such a
+client the `write_expansion_required` payload carries
 `elicitation_supported: false` and its `hint` says so directly instead
-of recommending that call: continue from a client with confirmation
-dialogs (Claude Code, the Portuni desktop app), or -- for new work --
+of recommending that call: continue from a client connected to Portuni
+directly, which shows confirmation dialogs (Claude Code with its own
+Portuni MCP server, not a claude.ai connector; the Portuni desktop app),
+or -- for new work --
 create the node from the chat, since connector-created nodes stay
 writable in that user's later connector sessions (see above). Do NOT
 retry `portuni_expand_scope` with `writable: true` after that payload.

@@ -24,6 +24,11 @@ export interface RequestIdentity {
   // derivation in apps/server/mcp/scope.ts -- never self-declared by the
   // client.
   headless?: boolean;
+  // Set when `via === "oauth_grant"`: the OAuth client the grant was issued
+  // to (its CIMD client_id URL). Decides whether a confirmation dialog can
+  // reach the user on this connection at all (mcp/elicit.ts,
+  // clientRelaysElicitation). Absent for every other auth path.
+  oauthClientId?: string;
 }
 
 export interface IdentityContext {
@@ -102,6 +107,7 @@ export async function resolveRequestIdentity(
       groups: access.groups,
       groupIds: access.groupIds,
       via: "oauth_grant",
+      oauthClientId: hit.clientId,
     };
   }
 

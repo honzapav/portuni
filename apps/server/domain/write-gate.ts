@@ -79,19 +79,22 @@ export function guardWrite(ctx: WriteContext, nodeId: string): WriteGuardOutcome
 
 // Hint for an "elicit" outcome whose dialog could not be shown because the
 // client never declared the MCP elicitation capability (claude.ai web and
-// mobile, Codex CLI): the default agentHint above tells the agent to call
-// portuni_expand_scope with writable: true, but that call is refused
-// outright on such a client (no honor-system fallback for writes) -- the
-// hint would send the agent down a path that cannot ever succeed. Say so
-// directly, and name the two paths that do work.
+// mobile, Codex CLI), or because the connection cannot carry a dialog at
+// all (any claude.ai connector, including Claude Code using one -- see
+// mcp/elicit.ts, clientRelaysElicitation): the default agentHint above
+// tells the agent to call portuni_expand_scope with writable: true, but
+// that call is refused outright on such a client (no honor-system fallback
+// for writes) -- the hint would send the agent down a path that cannot
+// ever succeed. Say so directly, and name the two paths that do work.
 export function noElicitationWriteHint(nodeId: string): string {
   return (
     `Node ${nodeId} is outside this session's write scope, and this client does not support ` +
     `MCP elicitation dialogs, so write access cannot be granted from this session -- do NOT call ` +
     `portuni_expand_scope with writable: true, it will be refused for the same reason. ` +
-    `Either continue from a client with confirmation dialogs (Claude Code, the Portuni desktop app) ` +
-    `or, for new work, create the node from this chat: nodes created by a connector session stay ` +
-    `writable in this user's later connector sessions.`
+    `Either continue from a client connected to Portuni directly, which shows confirmation dialogs ` +
+    `(Claude Code with its own Portuni MCP server, not a claude.ai connector; the Portuni ` +
+    `desktop app), or, for new work, create the node from this chat: nodes created by a ` +
+    `connector session stay writable in this user's later connector sessions.`
   );
 }
 

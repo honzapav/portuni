@@ -21,7 +21,7 @@ import { registerEventTools } from "./tools/events.js";
 import { registerActorTools } from "./tools/actors.js";
 import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
-import { createElicitor, type Elicitor } from "./elicit.js";
+import { clientRelaysElicitation, createElicitor, type Elicitor } from "./elicit.js";
 import { bindExistingSessionHandshake, bindSessionPersistence } from "./session-persistence.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
@@ -251,7 +251,7 @@ export function createMcpServer(
   const ctx: SessionCtx = {
     scope,
     identity,
-    elicit: createElicitor(server),
+    elicit: createElicitor(server, { relaysDialogs: clientRelaysElicitation(identity) }),
     spillSessionId: transportSessionId ?? randomUUID(),
   };
   gateToolsByScope(server, identity);

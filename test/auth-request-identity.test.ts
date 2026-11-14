@@ -87,6 +87,7 @@ test("google mode accepts a valid poa_ token within audience and resolves oauth_
     assert.equal(id.userId, "U1");
     assert.equal(id.email, "a@b");
     assert.equal(id.via, "oauth_grant");
+    assert.equal(id.oauthClientId, GRANT_INPUT.clientId);
     assert.equal(id.globalScope, "admin"); // EnvAdapter.resolveAccess
   } finally {
     delete process.env.PORTUNI_PUBLIC_URL;

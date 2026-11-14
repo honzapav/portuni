@@ -14,6 +14,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import type { RequestIdentity } from "../auth/request-identity.js";
 
 export type ElicitOutcome = "accept" | "decline" | "unsupported" | "timeout";
 
@@ -117,6 +118,21 @@ async function confirmVia(
   timeoutMs: number,
 ): Promise<ElicitOutcome> {
   if (!server.getClientCapabilities()?.elicitation) return "unsupported";
+  const started = Date.now();
+  const outcome = await sendDialog(server, message, timeoutMs);
+  // One line per dialog actually sent: the server logs no per-call trace,
+  // and a dialog that never comes back is otherwise invisible in the
+  // journal (#409 and its connector follow-up). stderr, never stdout: in
+  // stdio mode stdout is the protocol channel itself.
+  console.error(`[elicit] dialog ${outcome} after ${Date.now() - started} ms`);
+  return outcome;
+}
+
+async function sendDialog(
+  server: ElicitCapableServer,
+  message: string,
+  timeoutMs: number,
+): Promise<ElicitOutcome> {
   try {
     const result = await server.elicitInput(
       {
@@ -152,7 +168,61 @@ async function confirmVia(
   }
 }
 
-export function createElicitor(server: McpServer): Elicitor {
+// claude.ai presents one OAuth client_id (a CIMD URL,
+// https://claude.ai/oauth/mcp-oauth-client-metadata) for its custom
+// connectors: claude.ai web, Claude Desktop chat, mobile, Cowork -- and
+// Claude Code using a connector it inherited from the claude.ai account
+// (tools named mcp__claude_ai_<name>__*), which reaches this server through
+// the same claude.ai proxy under the same grant.
+//
+// Claude Code signing in to Portuni directly (`claude mcp add --transport
+// http`) presents its own client_id, hosted on claude.ai as well, and talks
+// to this server without a proxy in between -- its dialogs work.
+const CLAUDE_CODE_CLIENT_ID_PATH = "/oauth/claude-code-client-metadata";
+
+const CLAUDE_AI_ORIGINS = new Set(["https://claude.ai", "https://claude.com"]);
+
+// Any OAuth client hosted by claude.ai other than Claude Code's own counts
+// as a claude.ai connector, not just the one known client_id: a client_id
+// this misses would bring the five-minute hang back, while one it catches
+// wrongly only turns a dialog into the immediate structured refusal.
+function isClaudeAiConnectorClient(clientId: string | undefined): boolean {
+  if (clientId === undefined) return false;
+  let url: URL;
+  try {
+    url = new URL(clientId);
+  } catch {
+    return false;
+  }
+  return CLAUDE_AI_ORIGINS.has(url.origin) && url.pathname !== CLAUDE_CODE_CLIENT_ID_PATH;
+}
+
+// Whether a server-initiated dialog can reach the user on this connection
+// at all. Not on a claude.ai connector: claude.ai itself declares no
+// elicitation capability, and when Claude Code reaches this server through
+// a claude.ai connector, the proxy forwards Claude Code's own `elicitation`
+// capability but cannot carry the `elicitation/create` request -- the
+// dialog never appears, nothing answers it, and the tool result never
+// reaches the client, which aborts the call after its own 300 s idle
+// timeout with nothing written. Treating that connection as having no
+// dialogs answers at once with the structured refusal instead (the same
+// path claude.ai web takes).
+export function clientRelaysElicitation(
+  identity: Pick<RequestIdentity, "via" | "oauthClientId">,
+): boolean {
+  return !(identity.via === "oauth_grant" && isClaudeAiConnectorClient(identity.oauthClientId));
+}
+
+const NO_DIALOGS: Elicitor = { confirm: async () => "unsupported" };
+
+// `relaysDialogs: false` (see clientRelaysElicitation) never sends a
+// dialog: every confirm() resolves "unsupported" at once, whatever the
+// client declared at initialize.
+export function createElicitor(
+  server: McpServer,
+  opts: { relaysDialogs?: boolean } = {},
+): Elicitor {
+  if (opts.relaysDialogs === false) return NO_DIALOGS;
   // The deadline is resolved per call, so an operator override applies to
   // the next dialog rather than to whatever the process read at boot.
   return { confirm: (message) => confirmVia(server.server, message, elicitTimeoutMs()) };

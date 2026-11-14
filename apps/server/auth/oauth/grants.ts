@@ -74,6 +74,11 @@ export async function mintGrant(
 export interface OAuthGrantHit {
   grantId: string;
   userId: string;
+  // The OAuth client the grant was issued to (its CIMD URL). Lets the MCP
+  // layer tell a claude.ai connector, whose proxy cannot carry a
+  // server-initiated dialog, from a client connected directly (see
+  // mcp/elicit.ts's clientRelaysElicitation).
+  clientId: string;
   resource: string;
   scope: string;
 }
@@ -82,12 +87,16 @@ export interface OAuthGrantHit {
 // (resource) matching against the canonical MCP URL is the caller's job
 // (apps/server/auth/request-identity.ts, issue #173) since this module has
 // no notion of "canonical". Bumps last_used_at on success.
+//
+// Same lookup-and-bump shape as verifyDeviceToken in ../device-tokens.ts, but
+// a different table and hit type, so the copy is deliberate.
 export async function verifyAccessToken(
   db: DbClient,
   token: string,
+  // fallow-ignore-next-line code-duplication
 ): Promise<OAuthGrantHit | null> {
   const r = await db.execute({
-    sql: `SELECT id, user_id, resource, scope FROM oauth_grants
+    sql: `SELECT id, user_id, client_id, resource, scope FROM oauth_grants
           WHERE access_token_hash = ? AND revoked_at IS NULL
             AND access_expires_at > ${nowExpr(db.dialect)}`,
     args: [hashToken(token)],
@@ -101,6 +110,7 @@ export async function verifyAccessToken(
   return {
     grantId: String(row.id),
     userId: String(row.user_id),
+    clientId: String(row.client_id),
     resource: String(row.resource),
     scope: String(row.scope),
   };
