@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.4](https://github.com/honzapav/portuni/compare/v0.32.3...v0.32.4) (2026-11-27)
+
+
+### Bug Fixes
+
+* **sync:** stream large file pushes to central and upload them to Drive in resumable chunks ([#665](https://github.com/honzapav/portuni/issues/665)) ([bf8dee8](https://github.com/honzapav/portuni/commit/bf8dee829fab4dcde3b7efdc67f9a1ea1f5970bc))
+
 ## [0.32.3](https://github.com/honzapav/portuni/compare/v0.32.2...v0.32.3) (2026-11-14)
 
 
