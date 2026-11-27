@@ -266,8 +266,8 @@ An entry in `push_candidates` or `new_local` whose file is over the size
 limit (`PORTUNI_MAX_FILE_BYTES`, default 1 GiB) carries
 `error: { code: "FILE_TOO_LARGE", params: { size, limit } }`, in bytes. The
 file stays unsynced, and the error says why. In a team workspace the limit
-is the lower of the device's own limit and the one the central server last
-reported when it refused a push.
+is the one set on the central server, which publishes it to every device.
+The limit is at most 2 GiB.
 
 :::note[Deletions and moves propagate deterministically]
 - **`deleted_remote`** — an untracked disk copy whose record was removed
