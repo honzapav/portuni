@@ -42,5 +42,5 @@ Ověřitelné tvrzení. Pokud issue žádá měření nebo pokrytí, čísla jso
 ## Ověření
 
 - `npm run qa`, `npm --prefix apps/web run build`, `npm --prefix sites/docs run build`; souhrnné řádky patří do těla PR. `npm run test:pglite` navíc při změně schématu nebo dotazů (CI ho spouští vždy).
-- Co jde ověřit jen na macOS (Keychain, podepsaný build, vizuální layout, reálný Drive): napiš sem, agent to popíše v komentáři a nechá issue otevřenou.
+- Co jde ověřit jen na macOS (Keychain, podepsaný build, vizuální layout, reálný Drive): napiš sem. Agent tuto issue PR uzavře a kroky ověření založí jako navazující issue se štítkem `human-only`, na kterou odkáže v PR.
 - Dokumentace (`sites/docs/`, `docs/architecture/`, `CLAUDE.md`) ve stejné větvi.
