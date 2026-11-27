@@ -4,10 +4,11 @@
 import { stat } from "node:fs/promises";
 import type { DbClient } from "../../infra/db.js";
 import { listUserMirrors } from "./mirror-registry.js";
-import { statusScan } from "./engine.js";
+import { statusScan, type StatusResult } from "./engine.js";
 import { filterVisibleNodeIds, type GroupIdentityView } from "../../auth/node-access.js";
 import type { SyncPendingNode, SyncPendingResponse } from "../../shared/api-types.js";
 import { isLocalWorkspace } from "../../infra/server-config.js";
+import { pendingFileErrors } from "./file-size-limit.js";
 
 // Scan at most this many mirrors at once. A user can have dozens of mirrors;
 // scanning them one after another (the old serial loop) made this endpoint
@@ -58,52 +59,74 @@ export async function computeSyncPending(
       skipRemoteDiscovery: true,
     }).catch(() => null);
     if (!scan) return null; // unscannable mirror — skip, don't break the overview
-    const push = scan.push_candidates.length;
-    const conflict = scan.conflicts.length;
-    // deleted_remote copies count as untracked pending work: the sync run
-    // resolves them (cleanup instead of adopt), so they must keep the
-    // "something to sync" indicator alive.
-    const untracked = scan.new_local.length + scan.deleted_remote.length;
-    const remote_missing = scan.remote_missing.length;
-    const deleted_local = scan.deleted_local.length;
-    // remote_missing is surfaced per-node (SyncBar/file list) but does not
-    // count towards either total: a sync run neither pushes nor pulls it,
-    // so it would never clear.
-    //
-    // `total` (actionable) vs `decisions` (needs a human): a sync run
-    // pushes/pulls push+untracked but never resolves a conflict or restores
-    // a deleted_local file -- counting those into `total` made the footer
-    // badge / quit guard warn about work "Synchronizovat vše" can never
-    // actually clear. Split so each count means what it says; a node is
-    // still included below when it only has decisions, so it isn't hidden
-    // from the overview entirely.
-    // `pull` (#339) is the remote side: records the remote watcher on
-    // central has registered or re-hashed, whose bytes this device does not
-    // have yet. It is the signal the sync overview and the sidebar show
-    // outside the node detail, so a node holding only pull records is kept
-    // in the list -- but it counts towards neither `total` nor `decisions`:
-    // the user did not create this work, and the "unsynced local work"
-    // badge must not report someone else's edits.
-    const pull = scan.pull_candidates.length;
-    const total = push + untracked;
-    const decisions = conflict + deleted_local;
-    if (total === 0 && decisions === 0 && pull === 0) return null;
-    return {
-      node_id: m.node_id,
-      node_name: row.rows[0].name as string,
-      node_type: row.rows[0].type as string,
-      push,
-      conflict,
-      untracked,
-      remote_missing,
-      deleted_local,
-      pull,
-      total,
-      decisions,
-    };
+    return pendingNodeFromScan(
+      { node_id: m.node_id, node_name: row.rows[0].name as string, node_type: row.rows[0].type as string },
+      scan,
+    );
   };
 
-  // Bounded-concurrency fan-out: workers pull from a shared cursor.
+  return aggregatePending(mirrors, SCAN_CONCURRENCY, scanOne);
+}
+
+// One node's row of the aggregate from its status scan, shared by this
+// server's aggregate and the sync agent's (computeSyncPendingCentral); null
+// when the node has nothing to show.
+export function pendingNodeFromScan(
+  node: Pick<SyncPendingNode, "node_id" | "node_name" | "node_type">,
+  scan: StatusResult,
+): SyncPendingNode | null {
+  const push = scan.push_candidates.length;
+  const conflict = scan.conflicts.length;
+  // deleted_remote copies count as untracked pending work: the sync run
+  // resolves them (cleanup instead of adopt), so they must keep the
+  // "something to sync" indicator alive.
+  const untracked = scan.new_local.length + scan.deleted_remote.length;
+  const remote_missing = scan.remote_missing.length;
+  const deleted_local = scan.deleted_local.length;
+  // remote_missing is surfaced per-node (SyncBar/file list) but does not
+  // count towards either total: a sync run neither pushes nor pulls it,
+  // so it would never clear.
+  //
+  // `total` (actionable) vs `decisions` (needs a human): a sync run
+  // pushes/pulls push+untracked but never resolves a conflict or restores
+  // a deleted_local file -- counting those into `total` made the footer
+  // badge / quit guard warn about work "Synchronizovat vše" can never
+  // actually clear. Split so each count means what it says; a node is
+  // still included below when it only has decisions, so it isn't hidden
+  // from the overview entirely.
+  // `pull` (#339) is the remote side: records the remote watcher on
+  // central has registered or re-hashed, whose bytes this device does not
+  // have yet. It is the signal the sync overview and the sidebar show
+  // outside the node detail, so a node holding only pull records is kept
+  // in the list -- but it counts towards neither `total` nor `decisions`:
+  // the user did not create this work, and the "unsynced local work"
+  // badge must not report someone else's edits.
+  const pull = scan.pull_candidates.length;
+  const total = push + untracked;
+  const decisions = conflict + deleted_local;
+  if (total === 0 && decisions === 0 && pull === 0) return null;
+  const errors = pendingFileErrors(scan);
+  return {
+    ...node,
+    push,
+    conflict,
+    untracked,
+    remote_missing,
+    deleted_local,
+    pull,
+    total,
+    decisions,
+    ...(errors.length > 0 ? { errors } : {}),
+  };
+}
+
+// Scans the mirrors with bounded concurrency (workers pull from a shared
+// cursor) and sums the nodes into the response, total-desc.
+export async function aggregatePending<M>(
+  mirrors: readonly M[],
+  concurrency: number,
+  scanOne: (m: M) => Promise<SyncPendingNode | null>,
+): Promise<SyncPendingResponse> {
   const nodes: SyncPendingNode[] = [];
   let cursor = 0;
   const worker = async (): Promise<void> => {
@@ -114,10 +137,7 @@ export async function computeSyncPending(
       if (n) nodes.push(n);
     }
   };
-  await Promise.all(
-    Array.from({ length: Math.min(SCAN_CONCURRENCY, mirrors.length) }, () => worker()),
-  );
-
+  await Promise.all(Array.from({ length: Math.min(concurrency, mirrors.length) }, () => worker()));
   nodes.sort((a, b) => b.total - a.total);
   const total = nodes.reduce((s, n) => s + n.total, 0);
   const decisions = nodes.reduce((s, n) => s + n.decisions, 0);

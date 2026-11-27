@@ -16,6 +16,7 @@
 // Byte transfer itself goes through file-content-remote.ts (GET/PUT
 // /nodes/:id/file with base64 for binary), so this module is metadata-only.
 
+import { maxFileBytes } from "./file-size-limit.js";
 import { publishNodeChange } from "../../infra/change-feed.js";
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
@@ -53,6 +54,10 @@ export interface NodeSyncInfo {
     org_sync_key: string | null;
   };
   remote_name: string | null;
+  // The central server's PORTUNI_MAX_FILE_BYTES (#662). A sync agent
+  // applies it instead of its own, so the limit is one value set on the
+  // central server. Optional: an older central does not send it.
+  max_file_bytes?: number;
   files: SyncInfoFile[];
   // Recent deliberate deletions AND moves/renames on this node. Devices
   // match untracked disk files against these during discovery
@@ -199,6 +204,7 @@ export async function getNodeSyncInfos(
           org_sync_key: orgSyncKey,
         },
         remote_name: resolveRemoteFromRules(rulesList, nodeType, orgSyncKey),
+        max_file_bytes: maxFileBytes(),
         files: filesByNode.get(id) ?? [],
         deleted: dedupeByRemotePath(tombsByNode.get(id) ?? []),
       });
@@ -279,6 +285,7 @@ export async function getNodeSyncInfo(db: DbClient, nodeId: string): Promise<Nod
       org_sync_key: orgSyncKey,
     },
     remote_name: remoteName,
+    max_file_bytes: maxFileBytes(),
     files: filesRes.rows.map((r) => ({
       id: r.id as string,
       filename: r.filename as string,

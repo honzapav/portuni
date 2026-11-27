@@ -66,6 +66,7 @@
   "FILE_NO_REMOTE_PATH": "Soubor není na remote, takže není co nahradit lokální verzí.",
   "FILE_NOT_FOUND": "Soubor se nenašel.",
   "FILE_NOT_ON_DEVICE": "Soubor na tomto zařízení není.",
+  "FILE_TOO_LARGE": "Soubor má {{size}} MB, víc než limit {{limit}} MB pro synchronizaci.",
   "FORBIDDEN": "Na tuhle akci nemáš oprávnění.",
   "GOOGLE_MODE_ONLY": "Skupiny jsou dostupné jen s přihlášením přes Google.",
   "HANDOFF_FILE_NOT_HERE": "Soubor s předáním na tomto zařízení zatím není.",

@@ -732,6 +732,7 @@ export default interface Resources {
     "FILE_NOT_ON_DEVICE": "The file is not on this device.",
     "FILE_NO_LOCAL_COPY": "This device has no local copy of the file.",
     "FILE_NO_REMOTE_PATH": "The file is not on the remote, so there is nothing to keep the local version over.",
+    "FILE_TOO_LARGE": "The file is {{size}} MB, over the {{limit}} MB limit for syncing.",
     "FORBIDDEN": "You do not have permission for this action.",
     "GOOGLE_MODE_ONLY": "Groups are available only with Google sign-in.",
     "HANDOFF_FILE_NOT_HERE": "The handoff file is not on this device yet.",

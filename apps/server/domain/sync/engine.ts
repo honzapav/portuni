@@ -30,6 +30,7 @@ import {
 import { resolveNodeInfo } from "./node-info.js";
 import { loadMirrorIgnore } from "./mirror-ignore.js";
 import { withPathLock } from "./path-lock.js";
+import { assertFileSize, markTooLarge, maxFileBytes, type FileTooLargeInfo } from "./file-size-limit.js";
 
 // Re-export so existing imports `from "./engine.js"` keep working.
 export { resolveNodeInfo };
@@ -143,6 +144,8 @@ export async function storeFile(db: DbClient, a: StoreFileArgs): Promise<StoreFi
 
   // If source file is not already at the mirror path, copy it in.
   const sourceStat = await fsStat(a.localPath);
+  // Refused before a byte is copied or uploaded (#662).
+  assertFileSize(sourceStat.size, maxFileBytes(), basename(a.localPath));
   if (sourceStat.size > WARN_SIZE_BYTES) {
     console.warn(
       `[portuni:sync] file ${a.localPath} is ${(sourceStat.size / (1024 * 1024)).toFixed(1)}MB - large upload`,
@@ -633,6 +636,9 @@ export interface StatusFileEntry {
   local_hash: string | null;
   remote_hash: string | null;
   last_synced_hash: string | null;
+  // Why the file cannot reach the remote as it stands (#662): set by the
+  // status scan on a push candidate over PORTUNI_MAX_FILE_BYTES.
+  error?: FileTooLargeInfo;
   class:
     | "clean"
     | "push"
@@ -651,6 +657,8 @@ export interface NewLocalEntry {
   subpath: string | null;
   filename: string;
   hash: string;
+  // As StatusFileEntry.error: an untracked file over the limit.
+  error?: FileTooLargeInfo;
 }
 
 export interface NewRemoteEntry {
@@ -1111,6 +1119,14 @@ export async function statusScan(db: DbClient, a: StatusArgs): Promise<StatusRes
     // before any scan sees it as new_local, so the phase was dead code; the
     // always-empty `moved` StatusResult field it fed was removed with it
     // (#253) rather than kept as a field nothing ever populates.
+  }
+
+  // A file too large to push says so in the scan (#662), so the Unsynced
+  // dialog and portuni_status show why it stays unsynced. A personal
+  // workspace pushes nothing, so it has nothing to mark.
+  if (!localOnly) {
+    await markTooLarge(out.push_candidates);
+    await markTooLarge(out.new_local);
   }
 
   return out;

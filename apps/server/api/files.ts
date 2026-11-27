@@ -45,14 +45,16 @@ import {
 import { isShowtimePath, readShowtimePreview } from "../domain/sync/showtime-preview.js";
 import { readPreviewAssetLocal, requirePreviewAssetMime } from "../domain/sync/preview-asset.js";
 
-// File-content bodies carry whole files (base64-inflated for binary), so the
-// generic 5 MB JSON cap would hard-413 any push over ~3.7 MB raw. Dedicated
-// ceiling, aligned with the sync engine's 100 MB large-file warning
-// (WARN_SIZE_BYTES) plus base64 + JSON overhead.
+// JSON file-content bodies carry whole files (base64-inflated for binary),
+// so the generic 5 MB JSON cap would hard-413 any push over ~3.7 MB raw.
+// Dedicated ceiling for the JSON variant only: the sync agent sends its
+// bytes as a streamed application/octet-stream body (#662), bounded by
+// PORTUNI_MAX_FILE_BYTES instead (domain/sync/file-size-limit.ts).
 const FILE_BODY_MAX_BYTES = Number(
   process.env.PORTUNI_MAX_FILE_BODY_BYTES ?? 160 * 1024 * 1024,
 );
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
+import { FileTooLargeError, maxFileBytes } from "../domain/sync/file-size-limit.js";
 import { NodeNotFoundError } from "../domain/sync/node-info.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
 import { filterVisibleNodeIds } from "../auth/node-access.js";
@@ -84,7 +86,7 @@ function handleFileContentError(res: ServerResponse, err: unknown): boolean {
   if (err instanceof FileContentError) {
     const status = CODE_STATUS[err.code];
     const extra =
-      err.code === "CONFLICT" && err.currentVersion
+      (err.code === "CONFLICT" || err.code === "EXISTS") && err.currentVersion
         ? { currentVersion: err.currentVersion }
         : undefined;
     respondApiError(res, status, err.code, err.message, err.params, extra);
@@ -236,6 +238,10 @@ export async function handlePutFileContent(
 ): Promise<void> {
   const relPath = requirePathParam(res, url);
   if (!relPath) return;
+  if (isOctetStream(req)) {
+    await putStreamedFileContent(req, res, identity, nodeId, url, relPath);
+    return;
+  }
   const body = await parseJsonBody(req, res, putSchema, FILE_BODY_MAX_BYTES);
   if (!body) return;
   if ((body.content === undefined) === (body.content_base64 === undefined)) {
@@ -295,6 +301,56 @@ export async function handlePutFileContent(
   } catch (err) {
     if (handleFileContentError(res, err)) return;
     respondError(res, `PUT /nodes/${nodeId}/file`, err);
+  }
+}
+
+function isOctetStream(req: IncomingMessage): boolean {
+  const ct = req.headers["content-type"];
+  return typeof ct === "string" && ct.split(";")[0].trim().toLowerCase() === "application/octet-stream";
+}
+
+// PUT /nodes/:id/file?path=&baseCanonicalHash=&ifAbsent=1&force=1 with an
+// application/octet-stream body: the sync agent's byte push (#662). The
+// body is the file itself, no base64 and no JSON envelope; it goes to the
+// adapter as it arrives (a Drive resumable upload in chunks), so the server
+// holds about a chunk of it at a time. Content-Length is required: the
+// limit is checked before a byte is read, and a resumable session needs the
+// total up front. Preconditions are the JSON variant's, in the query.
+async function putStreamedFileContent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+  url: URL,
+  relPath: string,
+): Promise<void> {
+  const rawLength = req.headers["content-length"];
+  const size = typeof rawLength === "string" && /^\d+$/.test(rawLength) ? Number(rawLength) : NaN;
+  if (!Number.isSafeInteger(size)) {
+    respondApiError(res, 411, "INVALID_REQUEST", "a streamed file body needs a Content-Length");
+    return;
+  }
+  const q = url.searchParams;
+  const flag = (name: string): boolean => q.get(name) === "1" || q.get(name) === "true";
+  try {
+    const db = await openWritableNode(req, res, identity, nodeId, guardFileWrite);
+    if (!db) return;
+    const limit = maxFileBytes();
+    if (size > limit) throw new FileTooLargeError(size, limit, relPath);
+    const r = await writeFileBytesRemote(db, {
+      userId: identity.userId,
+      nodeId,
+      relPath,
+      stream: { source: req, size },
+      baseVersion: q.get("baseVersion") ?? undefined,
+      baseCanonicalHash: q.get("baseCanonicalHash") ?? undefined,
+      ifAbsent: flag("ifAbsent"),
+      force: flag("force"),
+    });
+    respondJson(res, 200, { version: r.version, canonical_hash: r.canonical_hash });
+  } catch (err) {
+    if (handleFileContentError(res, err)) return;
+    respondError(res, `PUT /nodes/${nodeId}/file (stream)`, err);
   }
 }
 

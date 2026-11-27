@@ -89,6 +89,15 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
     });
   });
 
+  // Node cuts a request it has not received in full within requestTimeout
+  // (default 5 min, https://nodejs.org/api/http.html#serverrequesttimeout).
+  // A streamed file push (#662) is read at the pace the remote accepts it,
+  // so a large file on a slow uplink takes longer than that: three hours,
+  // above what the sync agent itself waits for the largest file the limit
+  // allows (2 GiB at 256 KiB/s, central/client.ts putFileRaw). The header
+  // phase keeps its own headersTimeout (60 s).
+  httpServer.requestTimeout = 3 * 60 * 60 * 1000;
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse, requestId: string): Promise<void> {
     const startedAt = requestLogging ? Date.now() : 0;
     if (requestLogging) {

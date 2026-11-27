@@ -151,6 +151,12 @@ function s(value: string | number | undefined): string {
   return value === undefined ? "-" : String(value);
 }
 
+// A byte count as whole megabytes (MiB) for a message; "-" when missing.
+function megabytes(value: string | number | undefined): string {
+  const n = Number(value);
+  return value === undefined || !Number.isFinite(n) ? "-" : String(Math.ceil(n / (1024 * 1024)));
+}
+
 // One message per code, a complete Record so a code added to the server's
 // list (shared/error-codes.ts) fails the typecheck until it has a message.
 // Every entry is a literal selector, so i18next-cli sees each key in use.
@@ -181,6 +187,8 @@ const MESSAGES: Record<DisplayErrorCode, Render> = {
   EXISTS: (t, p) => t(($) => $.EXISTS, { ns: "errors", filename: s(p.filename) }),
   FILE_MOVE_FAILED: (t, p) => t(($) => $.FILE_MOVE_FAILED, { ns: "errors", status: s(p.status) }),
   FILE_NOT_FOUND: (t) => t(($) => $.FILE_NOT_FOUND, { ns: "errors" }),
+  FILE_TOO_LARGE: (t, p) =>
+    t(($) => $.FILE_TOO_LARGE, { ns: "errors", size: megabytes(p.size), limit: megabytes(p.limit) }),
   FILE_NOT_ON_DEVICE: (t) => t(($) => $.FILE_NOT_ON_DEVICE, { ns: "errors" }),
   FILE_NO_LOCAL_COPY: (t) => t(($) => $.FILE_NO_LOCAL_COPY, { ns: "errors" }),
   FILE_NO_REMOTE_PATH: (t) => t(($) => $.FILE_NO_REMOTE_PATH, { ns: "errors" }),
