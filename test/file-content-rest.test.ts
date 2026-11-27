@@ -14,7 +14,9 @@ import { ulid } from "ulid";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
-import { resetAdapterCacheForTests, getAdapter } from "../apps/server/domain/sync/adapter-cache.js";
+import { resetAdapterCacheForTests, getAdapter, setAdapterForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import { createHash } from "node:crypto";
+import type { FileAdapter, FileRef } from "../apps/server/domain/sync/types.js";
 import { resolveNodeInfo } from "../apps/server/domain/sync/node-info.js";
 import { buildRemotePath, type Section } from "../apps/server/domain/sync/remote-path.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
@@ -223,6 +225,176 @@ describe("PUT /nodes/:id/file (central, no mirror)", () => {
     });
     const r = await call("PUT", `/nodes/${shared.nodeId}/file?path=wip/x.md`, outsider(), { content: "hax" });
     assert.equal(r.statusCode, 404, r.body);
+  });
+});
+
+// The sync agent's byte push (#662): the file as an application/octet-stream
+// body, streamed to the adapter as it arrives.
+describe("PUT /nodes/:id/file streamed (application/octet-stream)", () => {
+  const PIECE = 64 * 1024;
+
+  // A request body of `size` deterministic bytes, produced on demand so the
+  // test never holds it either.
+  function streamedReq(pathWithQuery: string, size: number, contentLength: string | null = String(size)) {
+    let sent = 0;
+    const req = new Readable({
+      read() {
+        if (sent >= size) {
+          this.push(null);
+          return;
+        }
+        const n = Math.min(PIECE, size - sent);
+        const b = Buffer.alloc(n, sent / PIECE % 251);
+        sent += n;
+        this.push(b);
+      },
+    }) as unknown as IncomingMessage;
+    req.method = "PUT";
+    req.url = pathWithQuery;
+    req.headers = {
+      "content-type": "application/octet-stream",
+      ...(contentLength !== null ? { "content-length": contentLength } : {}),
+    };
+    return { req, readSoFar: () => sent };
+  }
+
+  function expectedSha(size: number): string {
+    const h = createHash("sha256");
+    for (let at = 0; at < size; at += PIECE) h.update(Buffer.alloc(Math.min(PIECE, size - at), at / PIECE % 251));
+    return h.digest("hex");
+  }
+
+  // An adapter with putStream that hashes what it reads and remembers the
+  // largest piece it was ever handed: the whole body never arrives as one.
+  function streamingAdapter() {
+    const seen = { total: 0, largestPiece: 0, putCalls: 0, sha: "" };
+    const adapter: FileAdapter = {
+      async put() {
+        seen.putCalls += 1;
+        throw new Error("put must not be used for a streamed body");
+      },
+      async putStream(path, source, opts): Promise<FileRef> {
+        const h = createHash("sha256");
+        for await (const piece of source) {
+          seen.total += piece.byteLength;
+          seen.largestPiece = Math.max(seen.largestPiece, piece.byteLength);
+          h.update(piece);
+        }
+        seen.sha = h.digest("hex");
+        return { path, hash: null, size: opts.size, modified_at: new Date(), is_native_format: false };
+      },
+      async get() {
+        throw new Error("no get");
+      },
+      async stat() {
+        return null;
+      },
+      async list() {
+        return [];
+      },
+      async delete() {
+        /* not used */
+      },
+      async rename() {
+        /* not used */
+      },
+      async url() {
+        return "";
+      },
+    };
+    return { adapter, seen };
+  }
+
+  async function send(req: IncomingMessage) {
+    const { res, captured } = makeMockReqRes("PUT", req.url!);
+    await routeApiRequest(req, res, new URL(`http://localhost${req.url}`), admin());
+    return captured;
+  }
+
+  it("accepts a body over 160 MB without collecting it into one buffer", async () => {
+    const { adapter, seen } = streamingAdapter();
+    setAdapterForTests("test-fs", adapter);
+    const size = 170 * 1024 * 1024 + 123;
+    const { req } = streamedReq(`/nodes/${shared.nodeId}/file?path=wip/big.csv&ifAbsent=1`, size);
+    const r = await send(req);
+    assert.equal(r.statusCode, 200, r.body);
+    const payload = JSON.parse(r.body) as { version: string; canonical_hash: string };
+    assert.equal(seen.total, size);
+    assert.equal(seen.putCalls, 0);
+    assert.ok(seen.largestPiece <= PIECE, `largest piece ${seen.largestPiece}`);
+    const sha = expectedSha(size);
+    assert.equal(seen.sha, sha);
+    assert.equal(payload.version, sha);
+    // No hash from the adapter: the canonical hash is the streamed sha256.
+    assert.equal(payload.canonical_hash, sha);
+  });
+
+  it("writes through put on an adapter without putStream", async () => {
+    const { req } = streamedReq(`/nodes/${shared.nodeId}/file?path=wip/s.bin`, 300_000);
+    const r = await send(req);
+    assert.equal(r.statusCode, 200, r.body);
+    const adapter = await getAdapter(shared.db, "test-fs");
+    const got = await adapter.get(await remotePathFor("wip/s.bin"));
+    assert.equal(got.length, 300_000);
+    assert.equal(JSON.parse(r.body).version, expectedSha(300_000));
+  });
+
+  it("answers FILE_TOO_LARGE with size and limit before reading the body", async () => {
+    const prev = process.env.PORTUNI_MAX_FILE_BYTES;
+    process.env.PORTUNI_MAX_FILE_BYTES = String(1024 * 1024);
+    try {
+      const { adapter, seen } = streamingAdapter();
+      setAdapterForTests("test-fs", adapter);
+      const size = 1024 * 1024 + 1;
+      const { req, readSoFar } = streamedReq(`/nodes/${shared.nodeId}/file?path=wip/big.csv`, size);
+      const r = await send(req);
+      assert.equal(r.statusCode, 413, r.body);
+      const body = JSON.parse(r.body) as { code: string; params: { size: number; limit: number } };
+      assert.equal(body.code, "FILE_TOO_LARGE");
+      assert.deepEqual(body.params, { size, limit: 1024 * 1024 });
+      assert.equal(seen.total, 0);
+      assert.ok(readSoFar() < size, "the body was not read to the end");
+    } finally {
+      if (prev === undefined) delete process.env.PORTUNI_MAX_FILE_BYTES;
+      else process.env.PORTUNI_MAX_FILE_BYTES = prev;
+    }
+  });
+
+  it("the JSON content_base64 variant is held to the same limit", async () => {
+    const prev = process.env.PORTUNI_MAX_FILE_BYTES;
+    process.env.PORTUNI_MAX_FILE_BYTES = "10";
+    try {
+      const r = await call("PUT", `/nodes/${shared.nodeId}/file?path=wip/b.bin`, admin(), {
+        content_base64: Buffer.alloc(11).toString("base64"),
+      });
+      assert.equal(r.statusCode, 413, r.body);
+      assert.equal(JSON.parse(r.body).code, "FILE_TOO_LARGE");
+    } finally {
+      if (prev === undefined) delete process.env.PORTUNI_MAX_FILE_BYTES;
+      else process.env.PORTUNI_MAX_FILE_BYTES = prev;
+    }
+  });
+
+  it("needs a Content-Length", async () => {
+    const { req } = streamedReq(`/nodes/${shared.nodeId}/file?path=wip/x.bin`, 10, null);
+    const r = await send(req);
+    assert.equal(r.statusCode, 411, r.body);
+  });
+
+  it("carries the preconditions in the query: ifAbsent refuses an existing object", async () => {
+    await seedRemote("wip/x.md", "v1");
+    const { req } = streamedReq(`/nodes/${shared.nodeId}/file?path=wip/x.md&ifAbsent=1`, 10);
+    const r = await send(req);
+    assert.equal(r.statusCode, 409, r.body);
+    assert.equal(JSON.parse(r.body).code, "EXISTS");
+  });
+
+  it("a body that ends before its Content-Length is not written", async () => {
+    const { req } = streamedReq(`/nodes/${shared.nodeId}/file?path=wip/short.bin`, 1000, "2000");
+    const r = await send(req);
+    assert.equal(r.statusCode, 500, r.body);
+    const adapter = await getAdapter(shared.db, "test-fs");
+    assert.equal(await adapter.stat(await remotePathFor("wip/short.bin")), null);
   });
 });
 

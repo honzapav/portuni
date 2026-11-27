@@ -124,6 +124,8 @@ The cross-mirror aggregate behind the footer badge, the quit guard, and `/sync/j
 
 - **`pull`** — the remote side: records whose remote copy is newer than this device's. On central the [remote watcher](#get-syncwatch--remote-watcher-state) keeps these current without anyone running a sync, so a teammate's edit shows up here on its own. A run *does* clear them, but the work is not the caller's own, so `pull` counts towards neither `total` nor `decisions` — the "unsynced local work" badge would otherwise report someone else's edits. A node holding only `pull` records still appears in the overview (and is what the status footer's "N nodes on the remote" signal counts).
 
+- **`errors`** (only present when there are any): the files of the node that cannot be synced as they stand, each as `{ file_id, filename, code, params }`. Today the only code is `FILE_TOO_LARGE`, for a file over `PORTUNI_MAX_FILE_BYTES` (default 1 GiB), with `params.size` and `params.limit` in bytes. `file_id` is `null` for an untracked file. Such a file still counts in `push` or untracked, because it is unsynced work. The Not synced dialog lists it under its node with the message.
+
 `remote_missing` is reported per node but counted in neither — a run does not push or pull it either, and (per the remote-sweep hash backfill above) most `remote_missing` misclassifications now self-correct on the next sweep instead of needing a decision at all. In a team workspace a device also falls back to a remote hash it observed first-hand on an earlier push or pull when central's record carries none, so a file it has provably reached stops reading as `remote_missing` even before the next sweep.
 
 ### `GET /sync/watch` — remote watcher state

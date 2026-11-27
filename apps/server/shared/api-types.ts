@@ -12,6 +12,7 @@
 import type { NodeType, EdgeRelation } from "./popp.js";
 import type { ModelDescriptionCode } from "./chat-event-codes.js";
 import type { GlobalScope } from "../auth/roles.js";
+import type { ErrorCode, ErrorParams } from "./error-codes.js";
 
 // -- Graph (list) endpoint --------------------------------------------
 
@@ -376,6 +377,17 @@ export type SyncPendingNode = {
   // "unsynced" indicator permanently non-zero for a node with a conflict.
   // Resolved via POST /nodes/:id/files/:fileId/resolve.
   decisions: number;
+  // Files of this node that cannot be synced as they stand, each with the
+  // error code and its params (#662: FILE_TOO_LARGE with size and limit,
+  // in bytes). Omitted when there are none. Such a file still counts in
+  // `push` or `untracked`: it is unsynced work, the error says why it stays.
+  errors?: SyncPendingFileError[];
+};
+export type SyncPendingFileError = {
+  file_id: string | null; // null for an untracked file
+  filename: string;
+  code: ErrorCode;
+  params: ErrorParams;
 };
 export type SyncPendingResponse = {
   nodes: SyncPendingNode[]; // nodes with total > 0, decisions > 0 OR pull > 0, sorted by total desc

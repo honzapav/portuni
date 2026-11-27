@@ -85,6 +85,16 @@ export interface RemoteChanges {
 
 export interface FileAdapter {
   put(path: string, content: Buffer, opts?: { mimeType?: string }): Promise<FileRef>;
+  // Streamed write of exactly `size` bytes (#662): the central server hands
+  // a request body straight to the remote without holding the whole file.
+  // Optional: a backend without it gets the bytes collected into one Buffer
+  // and written through put (file-content-remote.ts, writeFileBytesRemote).
+  // Throws when `source` yields more or fewer than `size` bytes.
+  putStream?(
+    path: string,
+    source: AsyncIterable<Uint8Array>,
+    opts: { size: number; mimeType?: string },
+  ): Promise<FileRef>;
   get(path: string): Promise<Buffer>;
   stat(path: string): Promise<FileRef | null>;
   list(prefix: string): Promise<FileRef[]>;

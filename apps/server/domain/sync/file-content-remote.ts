@@ -25,6 +25,8 @@
 import { publishNodeChange } from "../../infra/change-feed.js";
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
+import { createHash } from "node:crypto";
+import { assertFileSize, maxFileBytes } from "./file-size-limit.js";
 import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
 import { resolveNodeInfo } from "./node-info.js";
@@ -406,7 +408,12 @@ export async function writeFileBytesRemote(
     userId: string;
     nodeId: string;
     relPath: string;
-    bytes: Buffer;
+    // The bytes, whole (the JSON content_base64 variant), or `stream`: a
+    // request body of exactly `size` bytes handed to the adapter as it
+    // arrives (#662), so the central server never holds the file. Exactly
+    // one of the two.
+    bytes?: Buffer;
+    stream?: { source: AsyncIterable<Uint8Array>; size: number };
     baseVersion?: string;
     // Canonical-hash precondition: the write proceeds only when the remote's
     // CURRENT canonical hash (adapter.stat -- metadata only, no download)
@@ -435,7 +442,16 @@ export async function writeFileBytesRemote(
         // stat, its hash -- is proven right here; persist it before throwing
         // so this record does not stay stuck as remote_missing forever (#273).
         await backfillRemoteHash(db, record, stat.hash?.toLowerCase() ?? null, stat.remote_file_id);
-        throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS", undefined, { filename });
+        // The stat's hash rides along (currentVersion) so the sync agent can
+        // tell a byte-identical remote from a different one without
+        // downloading it (#662: a 250 MB file whose first push answer was
+        // lost comes back here on the client's retry).
+        throw new FileContentError(
+          `file already exists on the remote: ${a.relPath}`,
+          "EXISTS",
+          stat.hash?.toLowerCase() ?? undefined,
+          { filename },
+        );
       }
       if (a.baseCanonicalHash && stat) {
         let current = stat.hash?.toLowerCase() ?? null;
@@ -466,16 +482,60 @@ export async function writeFileBytesRemote(
     await assertBaseVersion(adapter, remotePath, a, nativeBytesError);
 
     const mime = mimeFor(filename);
-    const ref = await adapter.put(remotePath, a.bytes, mime ? { mimeType: mime } : undefined);
-    const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(a.bytes);
+    const { ref, version } = await putBytes(adapter, remotePath, a, mime);
+    const canonicalHash = ref.hash ? ref.hash.toLowerCase() : version;
 
     if (record) {
       await recordRemotePush(db, record.id, remoteName, canonicalHash, a.userId);
       await persistRemoteFileId(db, record.id, ref.remote_file_id);
     }
 
-    return { version: sha256Buffer(a.bytes), canonical_hash: canonicalHash };
+    return { version, canonical_hash: canonicalHash };
   });
+}
+
+// The put of writeFileBytesRemote. A stream is hashed (sha256, the version)
+// as it passes through to the adapter's putStream; an adapter without one
+// gets it collected into a Buffer first. Either way the limit of
+// PORTUNI_MAX_FILE_BYTES holds (file-size-limit.ts).
+async function putBytes(
+  adapter: FileAdapter,
+  remotePath: string,
+  a: { relPath: string; bytes?: Buffer; stream?: { source: AsyncIterable<Uint8Array>; size: number } },
+  mime: string | null,
+): Promise<{ ref: FileRef; version: string }> {
+  if ((a.bytes === undefined) === (a.stream === undefined)) {
+    throw new Error("writeFileBytesRemote: exactly one of bytes / stream");
+  }
+  if (a.bytes) {
+    assertFileSize(a.bytes.length, maxFileBytes(), a.relPath);
+    const ref = await adapter.put(remotePath, a.bytes, mime ? { mimeType: mime } : undefined);
+    return { ref, version: sha256Buffer(a.bytes) };
+  }
+  const { source, size } = a.stream!;
+  assertFileSize(size, maxFileBytes(), a.relPath);
+  const hash = createHash("sha256");
+  let seen = 0;
+  async function* hashed(): AsyncGenerator<Uint8Array> {
+    for await (const piece of source) {
+      seen += piece.byteLength;
+      if (seen > size) throw new Error(`body is longer than the declared ${size} bytes`);
+      hash.update(piece);
+      yield piece;
+    }
+    if (seen !== size) throw new Error(`body ended at ${seen} of the declared ${size} bytes`);
+  }
+  let ref: FileRef;
+  if (adapter.putStream) {
+    ref = await adapter.putStream(remotePath, hashed(), { size, ...(mime ? { mimeType: mime } : {}) });
+  } else {
+    const parts: Buffer[] = [];
+    for await (const piece of hashed()) parts.push(Buffer.from(piece));
+    ref = await adapter.put(remotePath, Buffer.concat(parts, size), mime ? { mimeType: mime } : undefined);
+  }
+  // An adapter that stopped reading early must not pass for a complete write.
+  if (seen !== size) throw new Error(`body ended at ${seen} of the declared ${size} bytes`);
+  return { ref, version: hash.digest("hex") };
 }
 
 // ---------------------------------------------------------------------------

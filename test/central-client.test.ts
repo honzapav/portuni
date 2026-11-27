@@ -76,7 +76,7 @@ describe("createHttpCentralClient", () => {
     assert.ok(calls[0].url.includes("path=wip%2Fp.png"));
   });
 
-  it("putFileRaw sends base64 + baseVersion and maps CONFLICT", async () => {
+  it("putFileRaw sends the raw bytes as an octet-stream body + baseVersion in the query and maps CONFLICT", async () => {
     const { fetchImpl, calls } = fakeFetch([
       { status: 409, json: { error: "changed", code: "CONFLICT", currentVersion: "cv" } },
     ]);
@@ -89,9 +89,29 @@ describe("createHttpCentralClient", () => {
         e.code === "CONFLICT" &&
         e.currentVersion === "cv",
     );
-    const sent = JSON.parse(calls[0].body ?? "");
-    assert.equal(sent.baseVersion, "old");
-    assert.equal(sent.content_base64, Buffer.from("x").toString("base64"));
+    const url = new URL(calls[0].url);
+    assert.equal(url.searchParams.get("baseVersion"), "old");
+    assert.equal(url.searchParams.get("path"), "wip/a.md");
+    assert.equal(calls[0].headers["content-type"], "application/octet-stream");
+    const body = calls[0].body as unknown as Buffer;
+    assert.ok(Buffer.isBuffer(body), "body is the file, not a JSON string");
+    assert.deepEqual(body, Buffer.from("x"));
+  });
+
+  it("putFileRaw surfaces FILE_TOO_LARGE with central's size and limit", async () => {
+    const { fetchImpl } = fakeFetch([
+      { status: 413, json: { error: "too big", code: "FILE_TOO_LARGE", params: { size: 5, limit: 4 } } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    await assert.rejects(
+      () => c.putFileRaw("N1", "wip/a.csv", Buffer.from("12345")),
+      (e: unknown) =>
+        e instanceof CentralHttpError &&
+        e.status === 413 &&
+        e.code === "FILE_TOO_LARGE" &&
+        e.params?.size === 5 &&
+        e.params?.limit === 4,
+    );
   });
 
   it("syncInfo micro-cache: sequential + concurrent calls within TTL share one fetch", async () => {
@@ -170,9 +190,9 @@ describe("createHttpCentralClient", () => {
       baseCanonicalHash: "abc",
       ifAbsent: true,
     });
-    const putBody = JSON.parse(calls[1].body ?? "");
-    assert.equal(putBody.baseCanonicalHash, "abc");
-    assert.equal(putBody.ifAbsent, true);
+    const put = new URL(calls[1].url).searchParams;
+    assert.equal(put.get("baseCanonicalHash"), "abc");
+    assert.equal(put.get("ifAbsent"), "1");
   });
 
   it("request retries once on a network failure (GH #80)", async () => {

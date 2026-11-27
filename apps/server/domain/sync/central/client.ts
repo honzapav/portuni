@@ -18,6 +18,7 @@ import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
 import type { ErrorParams } from "../../../shared/error-codes.js";
 import { readErrorParams } from "../../../shared/error-params.js";
+import { noteRemoteFileLimit } from "../file-size-limit.js";
 import { currentRequestId, newRequestId } from "../../../infra/request-context.js";
 import type {
   CreateDraftSessionInput,
@@ -212,6 +213,20 @@ interface HttpClientArgs {
 
 const GET_TIMEOUT_MS = 10_000;
 const MUTATION_TIMEOUT_MS = 30_000;
+// The uplink a file upload's timeout is sized for (256 KiB/s, about
+// 2 Mbit/s): putFileRaw gets one second per 256 KiB on top of the
+// mutation budget.
+const UPLOAD_MIN_BYTES_PER_SEC = 256 * 1024;
+
+// A request body that is sent as-is instead of as JSON.
+interface RawBody {
+  raw: Buffer;
+  contentType: string;
+}
+
+function isRawBody(body: unknown): body is RawBody {
+  return typeof body === "object" && body !== null && Buffer.isBuffer((body as RawBody).raw);
+}
 
 export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
   const base = args.baseUrl.replace(/\/+$/, "");
@@ -230,14 +245,15 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
     timeoutMs: number,
     requestId: string,
   ): Promise<{ status: number; json: unknown }> {
+    const raw = isRawBody(body) ? body : null;
     const res = await doFetch(`${base}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${args.token}`,
         "x-portuni-request-id": requestId,
-        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+        ...(raw ? { "content-type": raw.contentType } : body !== undefined ? { "content-type": "application/json" } : {}),
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: raw ? (raw.raw as unknown as BodyInit) : body !== undefined ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
     });
     let json: unknown = null;
@@ -294,7 +310,9 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
     const p = `/nodes/${encodeURIComponent(nodeId)}/sync-info`;
     const r = await request("GET", p);
     if (r.status !== 200) throwFor(r.status, p, r.json);
-    return r.json as NodeSyncInfo;
+    const info = r.json as NodeSyncInfo;
+    noteRemoteFileLimit(info.max_file_bytes);
+    return info;
   }
 
   function invalidate(nodeId: string): void {
@@ -335,6 +353,8 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       const r = await request("POST", p, { node_ids: nodeIds });
       if (r.status !== 200) throwFor(r.status, p, r.json);
       const infos = (r.json as { infos: NodeSyncInfo[] }).infos;
+      // central's file size limit rides on every answer (#662).
+      if (infos.length > 0) noteRemoteFileLimit(infos[0].max_file_bytes);
       // Freshest data we have -- seed the cache with it.
       if (ttl > 0) {
         const now = Date.now();
@@ -390,14 +410,20 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
     },
 
     async putFileRaw(nodeId, relPath, bytes, opts) {
-      const p = `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}`;
-      const r = await request("PUT", p, {
-        content_base64: bytes.toString("base64"),
-        ...(opts?.baseVersion ? { baseVersion: opts.baseVersion } : {}),
-        ...(opts?.baseCanonicalHash ? { baseCanonicalHash: opts.baseCanonicalHash } : {}),
-        ...(opts?.ifAbsent ? { ifAbsent: true } : {}),
-        ...(opts?.force ? { force: true } : {}),
-      });
+      // The file as the body (#662): application/octet-stream, no base64 and
+      // no JSON envelope, preconditions in the query. central streams it to
+      // the remote as it arrives (api/files.ts, putStreamedFileContent).
+      const qs = new URLSearchParams({ path: relPath });
+      if (opts?.baseVersion) qs.set("baseVersion", opts.baseVersion);
+      if (opts?.baseCanonicalHash) qs.set("baseCanonicalHash", opts.baseCanonicalHash);
+      if (opts?.ifAbsent) qs.set("ifAbsent", "1");
+      if (opts?.force) qs.set("force", "1");
+      const p = `/nodes/${encodeURIComponent(nodeId)}/file?${qs.toString()}`;
+      // The mutation budget plus time to move the bytes at a slow uplink:
+      // a 250 MB file must not hit the 30 s every other mutation gets.
+      const timeoutMs =
+        args.requestTimeoutMs ?? MUTATION_TIMEOUT_MS + Math.ceil(bytes.length / UPLOAD_MIN_BYTES_PER_SEC) * 1000;
+      const r = await request("PUT", p, { raw: bytes, contentType: "application/octet-stream" }, timeoutMs);
       invalidate(nodeId);
       if (r.status !== 200) throwFor(r.status, p, r.json);
       const j = r.json as { version: string; canonical_hash: string };

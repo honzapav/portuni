@@ -73,6 +73,8 @@ import { MirrorCreateError, type CreateMirrorResult } from "../mirror-create.js"
 import { ensureUnderRoot, PathTraversalError } from "../../../shared/safe-path.js";
 import { resolvePortuniRoot, resolveGuardScriptPath } from "../../write-scope.js";
 import { materializeScopeConfig } from "../../scope-materialize.js";
+import { assertFileSize, effectiveMaxFileBytes, FileTooLargeError, markTooLarge, noteRemoteFileLimit } from "../file-size-limit.js";
+import { aggregatePending, pendingNodeFromScan } from "../pending.js";
 
 const TYPE_PLURAL: Record<string, string> = {
   project: "projects",
@@ -364,6 +366,10 @@ async function statusScanForContext(
     out.new_local = m.remaining;
     out.deleted_remote = m.deleted_remote;
   }
+  // A file too large to push says so in the scan (#662): the limit is the
+  // lower of this device's and the one central last answered with.
+  await markTooLarge(out.push_candidates);
+  await markTooLarge(out.new_local);
   return out;
 }
 
@@ -546,6 +552,94 @@ export async function registerLocalFileCentral(
   };
 }
 
+// central refused a file as too large (#662): its limit, carried in the
+// answer's params, becomes this device's limit for the status scan.
+function rememberRemoteLimit(e: unknown): void {
+  if (e instanceof CentralHttpError && e.code === "FILE_TOO_LARGE") noteRemoteFileLimit(e.params?.limit);
+}
+
+// The remote side of an EXISTS answer to a create-only push: its canonical
+// hash and version. central puts the hash its stat saw in currentVersion
+// (#662), which settles "same bytes?" without downloading the object -- a
+// download of a large file is what a lost push answer used to cost on the
+// client's retry. An older central (or a backend whose stat has no hash)
+// sends none, and the object is downloaded as before.
+async function remoteForExists(
+  client: CentralClient,
+  nodeId: string,
+  relPath: string,
+  e: CentralHttpError,
+  localBytes: Buffer,
+): Promise<{ version: string; canonicalHash: string }> {
+  const reported = e.currentVersion?.toLowerCase();
+  if (reported && (reported.length === 32 || reported.length === 64)) {
+    return { version: sha256Buffer(localBytes), canonicalHash: reported };
+  }
+  const cur = await client.getFileRaw(nodeId, relPath);
+  return { version: cur.version, canonicalHash: cur.canonicalHash };
+}
+
+// A CONFLICT whose reported remote hash is these very bytes (md5 for
+// Drive, sha256 otherwise): nothing to resolve, the remote is what this
+// push wanted it to be. Happens when the client retries a large push after
+// a timeout while central was still finishing the first attempt (#662).
+function remoteHoldsThese(e: CentralHttpError, bytes: Buffer): boolean {
+  const cur = e.currentVersion?.toLowerCase();
+  if (!cur) return false;
+  if (cur.length === 32) return md5Buffer(bytes) === cur;
+  if (cur.length === 64) return sha256Buffer(bytes) === cur;
+  return false;
+}
+
+// What a refused byte push (putFileRaw) means, shared by both push paths:
+//   - EXISTS on a create-only push of a never-synced file: only a
+//     byte-identical remote is safe to claim, checked against the hash
+//     central's stat reported, else with one download. Whatever the
+//     comparison decides, the answer PROVED the remote object exists and
+//     what its hash is, so that is recorded before acting on it (throwing it
+//     away left the record classified as if there were no remote at all).
+//   - CONFLICT reporting these very bytes: a retried push that already
+//     landed (#662), settled as success.
+//   - any other CONFLICT: the remote moved since the scan.
+// A FILE_TOO_LARGE refusal teaches the device central's limit first.
+// Anything else is rethrown.
+async function settlePushRefusal(
+  client: CentralClient,
+  e: unknown,
+  a: { nodeId: string; relPath: string; fileId: string; filename: string; baseline: string | null; bytes: Buffer },
+): Promise<{ version: string; canonicalHash: string }> {
+  rememberRemoteLimit(e);
+  if (!(e instanceof CentralHttpError)) throw e;
+  if (e.code === "EXISTS" && a.baseline === null) {
+    const cur = await remoteForExists(client, a.nodeId, a.relPath, e, a.bytes);
+    await rememberRemoteHash(a.fileId, cur.canonicalHash);
+    const localInCanonical =
+      cur.canonicalHash.length === 32 ? md5Buffer(a.bytes) : sha256Buffer(a.bytes);
+    if (localInCanonical !== cur.canonicalHash) {
+      throw new RemoteConflictError(
+        "remote already has different content for a never-synced file -- resolve manually",
+        a.fileId,
+        a.filename,
+      );
+    }
+    // Identical bytes -- adopt the remote state without rewriting it.
+    return { version: cur.version, canonicalHash: cur.canonicalHash };
+  }
+  if (e.code === "CONFLICT" && remoteHoldsThese(e, a.bytes)) {
+    return { version: sha256Buffer(a.bytes), canonicalHash: e.currentVersion!.toLowerCase() };
+  }
+  if (e.code === "CONFLICT") {
+    // The precondition reported the remote's current hash back at us.
+    await rememberRemoteHash(a.fileId, e.currentVersion ?? null);
+    throw new RemoteConflictError(
+      `remote changed since the last scan (baseline ${a.baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
+      a.fileId,
+      a.filename,
+    );
+  }
+  throw e;
+}
+
 // Push one classified push-candidate. Conflict-safe without any pre-flight
 // download: the PUT carries a server-side precondition -- baseCanonicalHash
 // (remote must still match this device's synced baseline) for previously
@@ -581,6 +675,9 @@ async function pushEntryCentral(
     const state = await getFileState(a.entry.file_id);
     const baseline = state?.last_synced_hash ?? a.entry.last_synced_hash ?? null;
     const fsInfo = await statForCache(localPath);
+    // Refused before the file is read (#662): no point holding it to hear
+    // central say no.
+    assertFileSize(fsInfo.size, effectiveMaxFileBytes(), a.entry.filename);
     const bytes = await readFile(localPath);
     let put: { version: string; canonicalHash: string };
     try {
@@ -591,37 +688,14 @@ async function pushEntryCentral(
         baseline !== null ? { baseCanonicalHash: baseline } : { ifAbsent: true },
       );
     } catch (e) {
-      if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
-        // Never-synced file but the remote already has bytes. Only a
-        // byte-identical remote is safe to claim; verify with one download.
-        const cur = await client.getFileRaw(a.nodeId, relPath);
-        // Whatever the comparison decides, this download just PROVED the
-        // remote object exists and what its hash is. Record that before
-        // acting on it: throwing it away is what left the record classified
-        // as if there were no remote at all, with no resolve action offered.
-        await rememberRemoteHash(a.entry.file_id, cur.canonicalHash);
-        const localInCanonical =
-          cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
-        if (localInCanonical !== cur.canonicalHash) {
-          throw new RemoteConflictError(
-            "remote already has different content for a never-synced file -- resolve manually",
-            a.entry.file_id,
-            a.entry.filename,
-          );
-        }
-        // Identical bytes -- adopt the remote state without rewriting it.
-        put = { version: cur.version, canonicalHash: cur.canonicalHash };
-      } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
-        // The precondition reported the remote's current hash back at us.
-        await rememberRemoteHash(a.entry.file_id, e.currentVersion ?? null);
-        throw new RemoteConflictError(
-          `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
-          a.entry.file_id,
-          a.entry.filename,
-        );
-      } else {
-        throw e;
-      }
+      put = await settlePushRefusal(client, e, {
+        nodeId: a.nodeId,
+        relPath,
+        fileId: a.entry.file_id,
+        filename: a.entry.filename,
+        baseline,
+        bytes,
+      });
     }
     await rememberRemoteHash(a.entry.file_id, put.canonicalHash);
 
@@ -735,6 +809,9 @@ export async function storeFileCentral(
   if (!mirrorRoot) {
     throw new Error(`Node ${a.nodeId} has no local mirror. Register via portuni_mirror first.`);
   }
+  // Refused before anything is copied into the mirror or registered on
+  // central (#662), the way storeFile does it.
+  assertFileSize((await fsStat(a.localPath)).size, effectiveMaxFileBytes(), basename(a.localPath));
   // Copy an outside-the-mirror source into the correct section first, so the
   // rest of the push operates on an in-mirror path (relPath, register, read).
   const localPath = await resolveMirrorDestination(mirrorRoot, a);
@@ -773,6 +850,8 @@ export async function storeFileCentral(
     // create handler is still pushing in the background) would read as
     // clean and never be pushed.
     const fsInfo = await statForCache(localPath);
+    // Refused before the file is read (#662).
+    assertFileSize(fsInfo.size, effectiveMaxFileBytes(), basename(localPath));
     const bytes = await readFile(localPath);
 
     let put: { version: string; canonicalHash: string };
@@ -788,31 +867,14 @@ export async function storeFileCentral(
             : { ifAbsent: true },
       );
     } catch (e) {
-      if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
-        // Never-synced file but the remote already has bytes. Only a
-        // byte-identical remote is safe to claim; verify with one download.
-        const cur = await client.getFileRaw(a.nodeId, relPath);
-        await rememberRemoteHash(reg.file_id, cur.canonicalHash);
-        const localInCanonical =
-          cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
-        if (localInCanonical !== cur.canonicalHash) {
-          throw new RemoteConflictError(
-            "remote already has different content for a never-synced file -- resolve manually",
-            reg.file_id,
-            basename(localPath),
-          );
-        }
-        put = { version: cur.version, canonicalHash: cur.canonicalHash };
-      } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
-        await rememberRemoteHash(reg.file_id, e.currentVersion ?? null);
-        throw new RemoteConflictError(
-          `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
-          reg.file_id,
-          basename(localPath),
-        );
-      } else {
-        throw e;
-      }
+      put = await settlePushRefusal(client, e, {
+        nodeId: a.nodeId,
+        relPath,
+        fileId: reg.file_id,
+        filename: basename(localPath),
+        baseline,
+        bytes,
+      });
     }
     await rememberRemoteHash(reg.file_id, put.canonicalHash);
 
@@ -1387,6 +1449,19 @@ export async function syncRunCentral(
         });
         continue;
       }
+      // Over the size limit (#662, marked by the scan): the run does not
+      // register it either. A push would be refused anyway, so the run only
+      // reports it; the watcher may still have registered it on its own,
+      // as it does every new file.
+      if (u.error) {
+        result.errors.push({
+          file_id: "",
+          filename: u.filename,
+          error: new FileTooLargeError(u.error.params.size, u.error.params.limit, u.filename).message,
+          sync_class: "push",
+        });
+        continue;
+      }
       relPaths.push(rel);
       byRelPath.set(rel, u);
     }
@@ -1492,58 +1567,13 @@ export async function computeSyncPendingCentral(
       preloadedInfo: si,
     }).catch(() => null);
     if (!scan) return null;
-    const push = scan.push_candidates.length;
-    const conflict = scan.conflicts.length;
-    // deleted_remote copies count as untracked pending work: the sync run
-    // resolves them (cleanup instead of adopt).
-    const untracked = scan.new_local.length + scan.deleted_remote.length;
-    const remote_missing = scan.remote_missing.length;
-    const deleted_local = scan.deleted_local.length;
-    // remote_missing is informational only -- a sync run neither pushes nor
-    // pulls it, so it must not count towards either total. `total`
-    // (actionable) vs `decisions` (needs a human): see the local engine's
-    // computeSyncPending for the identical split and its rationale.
-    // The remote side (#339): what the remote watcher has registered on
-    // central and this device has not pulled yet. Counts towards neither
-    // total nor decisions -- see the local computeSyncPending for the
-    // identical rule -- but keeps its node in the list on its own.
-    const pull = scan.pull_candidates.length;
-    const total = push + untracked;
-    const decisions = conflict + deleted_local;
-    if (total === 0 && decisions === 0 && pull === 0) return null;
-    return {
-      node_id: m.node_id,
-      node_name: si.node.name,
-      node_type: si.node.type,
-      push,
-      conflict,
-      untracked,
-      remote_missing,
-      deleted_local,
-      pull,
-      total,
-      decisions,
-    };
+    return pendingNodeFromScan(
+      { node_id: m.node_id, node_name: si.node.name, node_type: si.node.type },
+      scan,
+    );
   };
 
-  const nodes: SyncPendingNode[] = [];
-  let cursor = 0;
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const i = cursor++;
-      if (i >= mirrors.length) return;
-      const n = await scanOne(mirrors[i]);
-      if (n) nodes.push(n);
-    }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(PENDING_SCAN_CONCURRENCY, mirrors.length) }, () => worker()),
-  );
-
-  nodes.sort((a, b) => b.total - a.total);
-  const total = nodes.reduce((s, n) => s + n.total, 0);
-  const decisions = nodes.reduce((s, n) => s + n.decisions, 0);
-  return { nodes, total, decisions };
+  return aggregatePending(mirrors, PENDING_SCAN_CONCURRENCY, scanOne);
 }
 
 // ---------------------------------------------------------------------------

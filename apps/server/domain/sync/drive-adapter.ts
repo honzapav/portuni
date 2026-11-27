@@ -25,6 +25,55 @@ const SNIPPET_FETCH_CONCURRENCY = 5;
 // inside one tick.
 const CHANGES_MAX_PAGES = 50;
 
+// Uploads (#662). Google documents the multipart upload for files up to
+// 5 MB; anything larger goes through a resumable session, sent in chunks
+// that are a multiple of 256 KiB (all but the last). 8 MiB keeps the number
+// of round trips low while bounding what a streamed upload holds in memory
+// to about one chunk being sent plus the next one filling.
+// https://developers.google.com/workspace/drive/api/guides/manage-uploads
+export const MULTIPART_MAX_BYTES = 5 * 1024 * 1024;
+const UPLOAD_CHUNK_UNIT = 256 * 1024;
+const DEFAULT_UPLOAD_CHUNK_BYTES = 32 * UPLOAD_CHUNK_UNIT;
+// Attempts per chunk before the upload gives up; between attempts the
+// session is asked how much it already has (Content-Range: bytes */total)
+// and the chunk resumes from there.
+const UPLOAD_CHUNK_ATTEMPTS = 5;
+const UPLOAD_RETRY_BASE_MS = 1000;
+// One chunk request (or status query) that has not answered in this long is
+// aborted and retried: a stalled request would otherwise hold the upload,
+// and the path lock around it, forever.
+const UPLOAD_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+
+// Re-slices a byte stream into pieces of exactly `size` bytes (the last may
+// be shorter). Holds at most one piece plus one incoming read.
+async function* rechunk(source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>, size: number): AsyncGenerator<Buffer> {
+  let parts: Buffer[] = [];
+  let held = 0;
+  for await (const raw of source) {
+    let buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+    while (buf.length > 0) {
+      const take = Math.min(size - held, buf.length);
+      parts.push(buf.subarray(0, take));
+      held += take;
+      buf = buf.subarray(take);
+      if (held === size) {
+        yield parts.length === 1 ? parts[0] : Buffer.concat(parts, held);
+        parts = [];
+        held = 0;
+      }
+    }
+  }
+  if (held > 0) yield parts.length === 1 ? parts[0] : Buffer.concat(parts, held);
+}
+
+// `Range: bytes=0-N` of a 308 answer -> the number of bytes the session
+// holds. No header means nothing has been received yet.
+function receivedFromRange(header: string | null): number {
+  if (!header) return 0;
+  const m = /bytes=0-(\d+)/.exec(header);
+  return m ? Number(m[1]) + 1 : 0;
+}
+
 // Bounded-concurrency map: workers pull from a shared index, results land in
 // the same positions as the inputs. Mirrors engine.ts's mapWithConcurrency
 // (statusScan) -- small enough, and specific enough to this module's fetch
@@ -83,6 +132,12 @@ export interface DriveAdapterDeps {
   // caller with no graph db at hand -- leaves the adapter on its in-process
   // memo alone, exactly as it behaved before the table was wired up.
   folderCache?: FolderPathStore | null;
+  // Resumable upload chunk size, rounded down to a multiple of 256 KiB
+  // (tests pass a small one). Default DEFAULT_UPLOAD_CHUNK_BYTES.
+  uploadChunkBytes?: number;
+  // Wait before a chunk's retry, multiplied by the attempt number. Tests pass
+  // 0; the default is one second.
+  uploadRetryDelayMs?: number;
 }
 
 export function createDriveAdapter(
@@ -388,40 +443,224 @@ export function createDriveAdapter(
     };
   }
 
+  // Where a new or replaced file goes: the parent folder (created when
+  // missing) and, for a replacement, the existing file's id.
+  async function uploadTarget(path: string): Promise<{ filename: string; parentId: string; existingId: string | null }> {
+    const parts = path.split("/");
+    const filename = parts.pop()!;
+    const parentId = await ensureFolderPath(parts.join("/"));
+    const existingId = await resolvePathToFileId(path);
+    return { filename, parentId, existingId };
+  }
+
+  // fields= makes the upload response carry everything fileRefFrom needs,
+  // so no trailing adapter.stat round-trip is required per upload.
+  function uploadParams(uploadType: "multipart" | "resumable"): URLSearchParams {
+    return withSAD(
+      new URLSearchParams({ uploadType, fields: "id,name,mimeType,size,md5Checksum,modifiedTime" }),
+    );
+  }
+
+  async function multipartUpload(path: string, content: Buffer, mimeType: string | undefined): Promise<FileRef> {
+    const { filename, parentId, existingId } = await uploadTarget(path);
+    const params = uploadParams("multipart");
+    const boundary = "boundary" + Math.random().toString(36).slice(2);
+    const metadata = existingId ? { name: filename } : { name: filename, parents: [parentId] };
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Type: ${mimeType ?? "application/octet-stream"}\r\n\r\n`),
+      content,
+      Buffer.from(`\r\n--${boundary}--`),
+    ]);
+    const url = existingId ? `${DRIVE_UPLOAD}/files/${existingId}?${params.toString()}` : `${DRIVE_UPLOAD}/files?${params.toString()}`;
+    const method = existingId ? "PATCH" : "POST";
+    const res = await driveFetch(url, {
+      method,
+      headers: { ...await authHeaders(), "Content-Type": `multipart/related; boundary=${boundary}` },
+      body: body as unknown as BodyInit,
+    });
+    if (!res.ok) throw new Error(`Drive upload: ${res.status} ${await res.text()}`);
+    const file = (await res.json()) as DriveFile;
+    pathCache.set(path, file.id);
+    return fileRefFrom(file, path);
+  }
+
+  const chunkBytes = Math.max(
+    UPLOAD_CHUNK_UNIT,
+    Math.floor((deps.uploadChunkBytes ?? DEFAULT_UPLOAD_CHUNK_BYTES) / UPLOAD_CHUNK_UNIT) * UPLOAD_CHUNK_UNIT,
+  );
+  const retryDelayMs = deps.uploadRetryDelayMs ?? UPLOAD_RETRY_BASE_MS;
+
+  function waitBeforeRetry(attempt: number): Promise<void> {
+    const ms = retryDelayMs * attempt;
+    return ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
+  }
+
+  // Resumable upload: one request opens the session (metadata only, the
+  // answer's Location header is the session URI), then the bytes go in
+  // chunks with Content-Range. Drive answers 308 with `Range: bytes=0-N`
+  // for every chunk but the last, and the file resource for the last one.
+  // A chunk that fails (network error, 5xx, a 308 that holds only part of
+  // it) is resumed from what the session reports it has; only the current
+  // chunk is held, so a session that lost bytes before it cannot be resumed
+  // and the upload fails.
+  async function resumableUpload(
+    path: string,
+    source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+    size: number,
+    mimeType: string | undefined,
+  ): Promise<FileRef> {
+    const { filename, parentId, existingId } = await uploadTarget(path);
+    const params = uploadParams("resumable");
+    const metadata = existingId ? { name: filename } : { name: filename, parents: [parentId] };
+    const initUrl = existingId ? `${DRIVE_UPLOAD}/files/${existingId}?${params.toString()}` : `${DRIVE_UPLOAD}/files?${params.toString()}`;
+    const init = await driveFetch(initUrl, {
+      method: existingId ? "PATCH" : "POST",
+      headers: {
+        ...await authHeaders(),
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": mimeType ?? "application/octet-stream",
+        "X-Upload-Content-Length": String(size),
+      },
+      body: JSON.stringify(metadata),
+    });
+    if (!init.ok) throw new Error(`Drive upload (resumable start): ${init.status} ${await init.text()}`);
+    const sessionUri = init.headers.get("location");
+    if (!sessionUri) throw new Error("Drive upload (resumable start): no session URI in the answer");
+
+    // Asks the session how many bytes it holds; a finished upload answers
+    // with the file itself. A network error, 5xx or 429 is transient (the
+    // caller tries again on its next attempt); any other answer (404/410: the
+    // session expired) ends the upload.
+    async function queryStatus(): Promise<{ received: number } | { file: DriveFile } | { transient: string }> {
+      let res: Response;
+      try {
+        res = await driveFetch(sessionUri!, {
+          method: "PUT",
+          headers: { ...await authHeaders(), "Content-Range": `bytes */${size}` },
+          signal: AbortSignal.timeout(UPLOAD_REQUEST_TIMEOUT_MS),
+        });
+      } catch (e) {
+        return { transient: e instanceof Error ? e.message : String(e) };
+      }
+      if (res.status === 308) {
+        await res.body?.cancel();
+        return { received: receivedFromRange(res.headers.get("range")) };
+      }
+      if (res.ok) return { file: (await res.json()) as DriveFile };
+      const text = await res.text();
+      if (res.status >= 500 || res.status === 429) return { transient: `${res.status} ${text}` };
+      throw new Error(`Drive upload (resumable status): ${res.status} ${text}`);
+    }
+
+    // Sends [start, start + chunk.length). Returns the file on the last
+    // chunk, null once the session holds the whole chunk otherwise. After a
+    // failure the next attempt first asks the session where it stands.
+    async function sendChunk(chunk: Buffer, start: number): Promise<DriveFile | null> {
+      const end = start + chunk.length;
+      let from = start;
+      let lastError = "";
+      let needStatus = false;
+      // How much of [start, end) a 308 or a status answer says the session
+      // holds: done, resume from there, or unrecoverable.
+      const advance = (received: number): boolean => {
+        if (received >= end) return true;
+        if (received < start) {
+          throw new Error(`Drive upload: session holds ${received} bytes, chunk starts at ${start}`);
+        }
+        from = received;
+        return false;
+      };
+      for (let attempt = 1; attempt <= UPLOAD_CHUNK_ATTEMPTS; attempt++) {
+        if (needStatus) {
+          await waitBeforeRetry(attempt - 1);
+          const st = await queryStatus();
+          if ("transient" in st) {
+            lastError = st.transient;
+            continue;
+          }
+          needStatus = false;
+          if ("file" in st) return st.file;
+          if (advance(st.received)) return null;
+        }
+        let res: Response;
+        try {
+          res = await driveFetch(sessionUri!, {
+            method: "PUT",
+            headers: { ...await authHeaders(), "Content-Range": `bytes ${from}-${end - 1}/${size}` },
+            body: chunk.subarray(from - start) as unknown as BodyInit,
+            signal: AbortSignal.timeout(UPLOAD_REQUEST_TIMEOUT_MS),
+          });
+        } catch (e) {
+          lastError = e instanceof Error ? e.message : String(e);
+          needStatus = true;
+          continue;
+        }
+        if (res.ok) return (await res.json()) as DriveFile;
+        if (res.status === 308) {
+          await res.body?.cancel();
+          if (advance(receivedFromRange(res.headers.get("range")))) return null;
+          lastError = `chunk accepted up to ${from} of ${end}`;
+          continue;
+        }
+        const text = await res.text();
+        if (res.status < 500 && res.status !== 429) {
+          throw new Error(`Drive upload (chunk at ${start}): ${res.status} ${text}`);
+        }
+        lastError = `${res.status} ${text}`;
+        needStatus = true;
+      }
+      throw new Error(`Drive upload (chunk at ${start}): gave up after ${UPLOAD_CHUNK_ATTEMPTS} attempts: ${lastError}`);
+    }
+
+    let offset = 0;
+    let file: DriveFile | null = null;
+    for await (const chunk of rechunk(source, chunkBytes)) {
+      if (offset + chunk.length > size) {
+        throw new Error(`Drive upload: stream is longer than the declared ${size} bytes`);
+      }
+      // A short piece is the stream's last; one that does not reach `size`
+      // means the source ended early, and sending it would not finish the
+      // session anyway (a non-final chunk must be a multiple of 256 KiB).
+      if (chunk.length < chunkBytes && offset + chunk.length !== size) {
+        throw new Error(`Drive upload: stream ended at ${offset + chunk.length} of the declared ${size} bytes`);
+      }
+      file = await sendChunk(chunk, offset);
+      offset += chunk.length;
+    }
+    if (offset !== size) {
+      throw new Error(`Drive upload: stream ended at ${offset} of the declared ${size} bytes`);
+    }
+    if (!file) throw new Error("Drive upload: the last chunk was accepted but no file came back");
+    pathCache.set(path, file.id);
+    return fileRefFrom(file, path);
+  }
+
   const adapter: FileAdapter = {
     async put(path, content, opts) {
-      const parts = path.split("/");
-      const filename = parts.pop()!;
-      const folderPath = parts.join("/");
-      const parentId = await ensureFolderPath(folderPath);
-      const existingId = await resolvePathToFileId(path);
-      // fields= makes the upload response carry everything fileRefFrom needs,
-      // so no trailing adapter.stat round-trip is required per upload.
-      const params = withSAD(
-        new URLSearchParams({
-          uploadType: "multipart",
-          fields: "id,name,mimeType,size,md5Checksum,modifiedTime",
-        }),
-      );
-      const boundary = "boundary" + Math.random().toString(36).slice(2);
-      const metadata = existingId ? { name: filename } : { name: filename, parents: [parentId] };
-      const body = Buffer.concat([
-        Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`),
-        Buffer.from(`--${boundary}\r\nContent-Type: ${opts?.mimeType ?? "application/octet-stream"}\r\n\r\n`),
-        content,
-        Buffer.from(`\r\n--${boundary}--`),
-      ]);
-      const url = existingId ? `${DRIVE_UPLOAD}/files/${existingId}?${params.toString()}` : `${DRIVE_UPLOAD}/files?${params.toString()}`;
-      const method = existingId ? "PATCH" : "POST";
-      const res = await driveFetch(url, {
-        method,
-        headers: { ...await authHeaders(), "Content-Type": `multipart/related; boundary=${boundary}` },
-        body: body as unknown as BodyInit,
-      });
-      if (!res.ok) throw new Error(`Drive upload: ${res.status} ${await res.text()}`);
-      const file = (await res.json()) as DriveFile;
-      pathCache.set(path, file.id);
-      return fileRefFrom(file, path);
+      if (content.length > MULTIPART_MAX_BYTES) {
+        return resumableUpload(path, [content], content.length, opts?.mimeType);
+      }
+      return multipartUpload(path, content, opts?.mimeType);
+    },
+
+    async putStream(path, source, opts) {
+      if (opts.size > MULTIPART_MAX_BYTES) {
+        return resumableUpload(path, source, opts.size, opts.mimeType);
+      }
+      // Small enough for one multipart request: collect it (at most 5 MB).
+      const parts: Buffer[] = [];
+      let n = 0;
+      for await (const raw of source) {
+        const b = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+        n += b.length;
+        if (n > opts.size) throw new Error(`Drive upload: stream is longer than the declared ${opts.size} bytes`);
+        parts.push(b);
+      }
+      if (n !== opts.size) {
+        throw new Error(`Drive upload: stream ended at ${n} of the declared ${opts.size} bytes`);
+      }
+      return multipartUpload(path, Buffer.concat(parts, n), opts.mimeType);
     },
 
     async get(path) {

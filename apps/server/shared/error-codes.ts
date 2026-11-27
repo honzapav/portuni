@@ -44,6 +44,8 @@ export const ERROR_CODES = [
   "SYNC_KEY_EMPTY",
   // Workspaces and sync
   "LOCAL_MODE_NO_REMOTE",
+  // A file over PORTUNI_MAX_FILE_BYTES (#662); params size and limit, in bytes.
+  "FILE_TOO_LARGE",
   // Graph: unknown (or hidden) entities
   "NODE_NOT_FOUND",
   "ORGANIZATION_NOT_FOUND",

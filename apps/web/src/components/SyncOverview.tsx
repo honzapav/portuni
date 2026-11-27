@@ -26,6 +26,7 @@ import {
 import type { SyncPendingResponse, SyncRunResponse, SyncJobSummary } from "../types";
 import { runNodeSync, startSyncJob, fetchSyncJob, fetchCurrentSyncJob } from "../api";
 import { useDataMode } from "../lib/central";
+import { displayError } from "../errors";
 import { pullNodeCount } from "../lib/remote-watch-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -249,8 +250,8 @@ export default function SyncOverview({
               // will not happen. Send it to the node instead.
               const decisionsOnly = n.total === 0 && n.decisions > 0;
               return (
+                <div key={n.node_id}>
                 <div
-                  key={n.node_id}
                   className="flex items-center gap-3 rounded-md px-1 py-1 hover:bg-[var(--color-surface)]"
                 >
                   <Button
@@ -329,6 +330,22 @@ export default function SyncOverview({
                       )}
                     </span>
                   )}
+                </div>
+                {/* Files this node cannot sync as they stand (#662: over the
+                    size limit), each with its error's message. */}
+                {n.errors && n.errors.length > 0 && (
+                  <ul className="mb-1 ml-3 flex flex-col gap-0.5 text-[11.5px] text-[var(--color-danger)]">
+                    {n.errors.map((e) => (
+                      <li key={`${e.file_id ?? ""}:${e.filename}`} className="flex min-w-0 items-center gap-1.5">
+                        <AlertTriangle size={11} className="shrink-0" />
+                        <span className="truncate" title={e.filename}>
+                          {e.filename}
+                        </span>
+                        <span className="shrink-0 text-[var(--color-text-dim)]">{displayError(e)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 </div>
               );
             })

@@ -78,6 +78,17 @@ remote location, so existing references stay valid.
 
 Returns: `{ file_id, remote_name, remote_path, local_path, hash }`
 
+:::note[Large files]
+A file of any size up to the limit `PORTUNI_MAX_FILE_BYTES` (default
+1 GiB) can be pushed. On Google Drive a file over 5 MB is uploaded through
+a resumable session in 8 MiB chunks, and a failed chunk is retried from
+where Drive says it stopped. In a team workspace the sync agent sends the
+file to the central server as a raw `application/octet-stream` body, and
+the server streams it on to Drive without holding the whole file. A file
+over the limit is refused before anything is uploaded, with the error
+`FILE_TOO_LARGE` and its `size` and `limit` in bytes.
+:::
+
 :::note
 The node must have a local mirror on the current device. Run
 `portuni_mirror` first.
@@ -250,6 +261,13 @@ entries left out). On a large node, `classes`/`path_prefix`/`limit`/
 while `counts` still answers "how much is left" in one call. There is no
 `moved` bucket — an on-disk move is paired as it happens (see below), not
 reported as a scan finding.
+
+An entry in `push_candidates` or `new_local` whose file is over the size
+limit (`PORTUNI_MAX_FILE_BYTES`, default 1 GiB) carries
+`error: { code: "FILE_TOO_LARGE", params: { size, limit } }`, in bytes. The
+file stays unsynced, and the error says why. In a team workspace the limit
+is the one set on the central server, which publishes it to every device.
+The limit is at most 2 GiB.
 
 :::note[Deletions and moves propagate deterministically]
 - **`deleted_remote`** — an untracked disk copy whose record was removed

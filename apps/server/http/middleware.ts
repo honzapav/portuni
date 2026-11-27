@@ -12,6 +12,7 @@ import {
   type BearerCheck,
 } from "../infra/auth-config.js";
 import { LocalModeNoRemoteError } from "../domain/sync/types.js";
+import { FileTooLargeError } from "../domain/sync/file-size-limit.js";
 import { SessionNotFoundError } from "../domain/runner/session-errors.js";
 import { getDb } from "../infra/db.js";
 import { constraintViolation } from "../infra/sql.js";
@@ -310,6 +311,10 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
   }
   if (err instanceof LocalModeNoRemoteError) {
     writeApiError(res, 409, err.code, err.message, undefined, withId);
+    return;
+  }
+  if (err instanceof FileTooLargeError) {
+    writeApiError(res, 413, "FILE_TOO_LARGE", err.message, err.params, withId);
     return;
   }
   // Every session verb, on both routers: a session the record store does
